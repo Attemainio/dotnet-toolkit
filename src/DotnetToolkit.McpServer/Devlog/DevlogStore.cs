@@ -36,7 +36,7 @@ public sealed class DevlogStore
         string? fix,
         string status,
         string[] classes,
-        string? ensemble,
+        string? domain,
         string[] tags)
     {
         lock (_gate)
@@ -53,7 +53,7 @@ public sealed class DevlogStore
                 Ts = now,
                 Status = status,
                 Classes = classes,
-                Ensemble = ensemble,
+                Domain = domain,
                 Tags = tags,
             };
 
@@ -78,7 +78,7 @@ public sealed class DevlogStore
     public List<(DevlogIndexEntry Entry, double Score)> Search(
         string? query,
         string? affectedClass,
-        string? ensemble,
+        string? domain,
         string? tag,
         string? status,
         DateOnly? from,
@@ -92,8 +92,8 @@ public sealed class DevlogStore
 
             if (affectedClass is not null)
                 entries = entries.Where(e => e.Classes.Any(c => c.Contains(affectedClass, StringComparison.OrdinalIgnoreCase)));
-            if (ensemble is not null)
-                entries = entries.Where(e => e.Ensemble?.Equals(ensemble, StringComparison.OrdinalIgnoreCase) == true);
+            if (domain is not null)
+                entries = entries.Where(e => e.Domain?.Equals(domain, StringComparison.OrdinalIgnoreCase) == true);
             if (tag is not null)
                 entries = entries.Where(e => e.Tags.Any(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase)));
             if (status is not null)
@@ -118,9 +118,9 @@ public sealed class DevlogStore
     }
 
     public int TotalMatching(
-        string? query, string? affectedClass, string? ensemble, string? tag, string? status,
+        string? query, string? affectedClass, string? domain, string? tag, string? status,
         DateOnly? from, DateOnly? to)
-        => Search(query, affectedClass, ensemble, tag, status, from, to, int.MaxValue).Count;
+        => Search(query, affectedClass, domain, tag, status, from, to, int.MaxValue).Count;
 
     /// <summary>Full markdown of a single entry (metadata comment stripped).</summary>
     public string? Get(string id)
@@ -178,7 +178,7 @@ public sealed class DevlogStore
                         Title = entry.Title,
                         Status = entry.Status,
                         Classes = entry.Classes,
-                        Ensemble = entry.Ensemble,
+                        Domain = entry.Domain,
                         Tags = entry.Tags,
                         Terms = DevlogSearch.BuildTerms(entry.Title, DevlogParser.StripMeta(entry.Markdown)),
                     });

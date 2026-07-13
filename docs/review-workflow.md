@@ -1,0 +1,79 @@
+# Review agent workflow
+
+Shared process for every `dotnet-*` review agent in this plugin (`dotnet-reviewer`,
+`dotnet-performance`, `dotnet-refactor-cleaner`, `dotnet-doc-reviewer`). Each agent's own file states
+**which** dimension it owns and **which** dimension-specific doc(s) to apply; this doc states **how** any
+of them operates — read once, referenced by all four, so the process stays in one place instead of being
+restated (and drifting) four times.
+
+These agents are a **validation layer**: they check that code follows the standards recorded in this
+`docs/` folder. They do not own the standards themselves — this folder does, and the main agent reads the
+same files, so the main agent and every review agent are working from one shared source of truth.
+
+## Setup — before reviewing anything
+
+1. **Read your dimension doc(s)**, named in your own agent file, checking for a repo-local override first:
+   `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
+   `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md`. A repo-local file fully replaces the bundled default for that
+   doc — don't blend the two.
+2. **Check devlog for prior decisions on this area**, via `devlog_search` scoped to the file(s)/class(es)
+   you're about to review (query by class name, or `affected_class`). If an entry explains why a pattern
+   that looks like a violation was deliberately chosen — a rejected alternative, a documented tradeoff —
+   don't flag it as a violation; note in your finding that it's a recorded, intentional decision instead
+   (cite the devlog entry id). This is a read-only check: `devlog_search`/`devlog_get` only. You never call
+   `devlog_add` — recording review outcomes is the main agent's call, not yours.
+3. **Orient using `project_tree`/`list_folder`/`outline`/`find_symbol`** before reading full files. Only
+   `Read` a file in full when you're about to judge specific lines or an outline is insufficient. Use
+   `find_references`/`find_implementations` to trace callers/implementers rather than grepping for them.
+
+## Review modes
+
+The invoking agent states your mode and scope. If neither is stated, default to diff mode against the
+working tree's uncommitted changes.
+
+- **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
+  working tree). Use `find_references` on every changed public symbol to find callers, and check those
+  call sites too — a change is only correct relative to how it's actually used.
+- **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
+  Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
+  `dotnet-refactor-cleaner` defaults to scope mode when unstated (dead code needs a wide view); the other
+  three default to diff mode when unstated.
+
+## Staying in your lane
+
+Each agent owns exactly one dimension (stated in its own file). When you notice something squarely in a
+sibling agent's lane, name it in one line and tag it `[see: dotnet-<agent-name>]` rather than reviewing it
+yourself — this keeps four agents from producing four overlapping opinions about the same line, and keeps
+each one's output genuinely focused.
+
+## Output format
+
+For each finding:
+- **File and line**: `path/to/File.cs:42`
+- **Severity**: 🔴 Bug/must-fix, 🟡 Convention violation or needs verification, 🔵 Suggestion.
+- **What**: the issue, concisely.
+- **Why**: why it matters in this code specifically — not generic advice restating the doc.
+- **Fix**: describe the remedy; a short snippet when the fix is unambiguous.
+- **How to verify** *(performance 🟡 findings only)*: a specific counter, trace, or benchmark setup.
+
+Group findings by file, ordered 🔴 → 🟡 → 🔵. End with a totals line. If a scope is clean, say so in one
+sentence — don't pad with praise, and don't manufacture findings to justify having run.
+
+## Boundaries — every agent
+
+- **Never modify code.** None of the four have `Edit`/`Write` tool access — this is enforced structurally,
+  not just by instruction. Report findings for the main agent (or the user) to act on.
+- **Never call `devlog_add`.** Read devlog for context; recording outcomes is the main agent's job.
+- **Never guess at something checkable.** A dead-code claim needs a stated `find_references` result, not a
+  text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
+  guess — say "uncertain, verify" rather than assert.
+- **Stay in your one dimension.** Defer everything else per "Staying in your lane" above.
+- **Don't flag pure preference** outside what your dimension doc actually states.
+
+## Memory
+
+Every agent has persistent, project-scoped memory (`memory: project` — one namespace per agent, per
+consuming repo). Record concise, factual notes on: project-specific conventions confirmed intentional
+(via a devlog entry or repeated deliberate pattern) so you stop re-flagging them, recurring finding
+classes, and anything your dimension doc doesn't cover that this project has clearly standardized on.
+Memory does not authorize editing anything in `docs/` — doc changes stay with the main agent and the user.

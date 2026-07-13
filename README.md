@@ -21,6 +21,12 @@ All read tools default to a compact pipe-delimited format (an `outline` is typic
 ~10–20% of the tokens of the file it describes); pass `format: "json"` for structured
 output.
 
+Four read-only review agents (`dotnet-reviewer`, `dotnet-performance`, `dotnet-refactor-cleaner`,
+`dotnet-doc-reviewer`) ship alongside the tools — each starts with no prior project context, has
+the full read-side MCP toolset (including read-only devlog access), reads bundled reference docs
+(`docs/*.md`, overridable per-repo under `.claude/dotnet-toolkit/`), and reports findings without
+editing code. See `CLAUDE.md`'s Code review section for details.
+
 ## Requirements
 
 - .NET 10 SDK (the server targets `net10.0`, and analyzed projects need their SDK
@@ -65,23 +71,25 @@ or add it to a plugin marketplace for a permanent install.
 ```json
 {
   "solution": "src/MyApp.slnx",
-  "devlogDir": "docs/devlog",
+  "devlogDir": "devlog",
   "excludeGlobs": ["**/Generated/**"],
   "defaultFormat": "compact"
 }
 ```
 
 `solution` resolves ambiguity when several solutions exist; `devlogDir` is where
-weekly devlog markdown files are written (commit these — they're for humans too).
+weekly devlog markdown files are written (commit these — they're for humans too),
+project-root-relative — the default `devlog/` sits at the target repo's root
+alongside `src/`/`docs/`, not nested inside `docs/`.
 
 ## Development log format
 
-Entries are appended to `docs/devlog/<year>-W<week>.md` — human-readable markdown
+Entries are appended to `devlog/<year>-W<week>.md` — human-readable markdown
 with a hidden metadata comment per entry:
 
 ```markdown
 ## 2026-07-12 — Fixed decimal rounding in price calculation
-<!-- devlog {"id":"20260712-1403-a3f2","ts":"...","status":"done","classes":["PriceCalculator"],"ensemble":"Ordering","tags":["bug"]} -->
+<!-- devlog {"id":"20260712-1403-a3f2","ts":"...","status":"done","classes":["PriceCalculator"],"domain":"Ordering","tags":["bug"]} -->
 
 **WHAT:** ...
 **WHY:** ...
@@ -91,6 +99,10 @@ with a hidden metadata comment per entry:
 
 The search index is a rebuildable cache; hand-edited or merge-conflicted devlog files
 are re-indexed automatically by mtime.
+
+Caches under `.claude/dotnet-toolkit/cache/` (`index.json`, `devlog-index.json`) are
+written compact (no indentation) since they're machine-only and gitignored. To inspect
+one: `dotnet run scripts/format-json.cs -- .claude/dotnet-toolkit/cache/index.json`.
 
 ## Compact format legend
 
@@ -110,5 +122,6 @@ dotnet test        # unit + MSBuildWorkspace integration tests
 
 Layout: `src/DotnetToolkit.McpServer/` (server: `Tools/`, `Workspace/`, `Index/`,
 `Devlog/`, `Output/`), `tests/` (xunit + `fixtures/SampleSolution`), `skills/`
-(plugin skills), `.claude-plugin/plugin.json` + `.mcp.json` (plugin manifest and MCP
-registration).
+(plugin skills), `agents/` (review subagents), `docs/*.md` (review reference docs),
+`devlog/` (this repo's own devlog, since it's a live consumer of its own plugin),
+`.claude-plugin/plugin.json` + `.mcp.json` (plugin manifest and MCP registration).

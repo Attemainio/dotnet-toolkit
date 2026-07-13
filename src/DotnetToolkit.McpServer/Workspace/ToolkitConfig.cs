@@ -9,7 +9,7 @@ public sealed class ToolkitConfig
     public string? Solution { get; set; }
 
     [JsonPropertyName("devlogDir")]
-    public string DevlogDir { get; set; } = "docs/devlog";
+    public string DevlogDir { get; set; } = "devlog";
 
     [JsonPropertyName("excludeGlobs")]
     public string[] ExcludeGlobs { get; set; } = [];

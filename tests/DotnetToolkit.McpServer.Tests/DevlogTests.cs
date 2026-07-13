@@ -33,7 +33,7 @@ public sealed class DevlogTests : IDisposable
             "Ordering",
             ["bug", "rounding"]);
 
-        Assert.StartsWith("docs/devlog/", file);
+        Assert.StartsWith("devlog/", file);
         Assert.Matches(@"^\d{8}-\d{4}-[0-9a-f]{4}$", id);
 
         var hits = _store.Search("decimal rounding", null, null, null, null, null, null, 10);
@@ -41,7 +41,7 @@ public sealed class DevlogTests : IDisposable
         Assert.Equal(id, hit.Entry.Id);
         Assert.True(hit.Score > 0);
 
-        // Filters: class (substring, case-insensitive), ensemble, tag, status.
+        // Filters: class (substring, case-insensitive), domain, tag, status.
         Assert.Single(_store.Search(null, "pricecalc", null, null, null, null, null, 10));
         Assert.Single(_store.Search(null, null, "ordering", null, null, null, null, 10));
         Assert.Single(_store.Search(null, null, null, "bug", null, null, null, 10));
@@ -70,7 +70,7 @@ public sealed class DevlogTests : IDisposable
     public void HandEditedFileIsReindexedByMtime()
     {
         _store.Add("First entry", "Something.", "Because.", null, null, "done", [], null, []);
-        var file = Directory.EnumerateFiles(Path.Combine(_root, "docs/devlog"), "*.md").Single();
+        var file = Directory.EnumerateFiles(Path.Combine(_root, "devlog"), "*.md").Single();
 
         // Simulate a hand-written entry without a metadata comment.
         File.AppendAllText(file, "\n## 2026-07-01 — Handwritten note\n\n**WHAT:** manual edit about caching.\n");

@@ -10,7 +10,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class DevlogTools
 {
     [McpServerTool(Name = "devlog_add")]
-    [Description("Record a development log entry after finishing (or abandoning) a change. Entries land in the weekly markdown file under docs/devlog/. Never edit those files by hand; always use this tool.")]
+    [Description("Record a development log entry after finishing (or abandoning) a change. Entries land in the weekly markdown file under devlog/. Never edit those files by hand; always use this tool.")]
     public static string DevlogAdd(
         DevlogStore store,
         [Description("Short entry title, e.g. 'Fixed decimal rounding in price calculation'.")] string title,
@@ -20,11 +20,11 @@ public static class DevlogTools
         [Description("FIX: the concrete change and how it was validated.")] string? fix = null,
         [Description("done | not-done | partial (default done).")] string status = "done",
         [Description("Affected class names, e.g. ['PriceCalculator','OrderService'].")] string[]? affected_classes = null,
-        [Description("Affected ensemble/module/folder, e.g. 'Ordering'.")] string? ensemble = null,
+        [Description("Affected domain/module/folder, e.g. 'Ordering'.")] string? domain = null,
         [Description("Free-form tags, e.g. ['bug','rounding'].")] string[]? tags = null)
     {
         var (id, file) = store.Add(title, what, why, observations, fix,
-            status.Trim().ToLowerInvariant(), affected_classes ?? [], ensemble, tags ?? []);
+            status.Trim().ToLowerInvariant(), affected_classes ?? [], domain, tags ?? []);
         return $"added {id} -> {file}";
     }
 
@@ -35,7 +35,7 @@ public static class DevlogTools
         SolutionLocator locator,
         [Description("Free-text query over titles and bodies; omit to list the most recent entries.")] string? query = null,
         [Description("Filter: entries touching this class name.")] string? affected_class = null,
-        [Description("Filter: entries in this ensemble/module.")] string? ensemble = null,
+        [Description("Filter: entries in this domain/module.")] string? domain = null,
         [Description("Filter: entries with this tag.")] string? tag = null,
         [Description("Filter: done | not-done | partial.")] string? status = null,
         [Description("Filter: entries on/after this date (yyyy-MM-dd).")] string? from = null,
@@ -47,8 +47,8 @@ public static class DevlogTools
         DateOnly? toDate = DateOnly.TryParse(to, out var t) ? t : null;
         limit = Math.Clamp(limit, 1, 50);
 
-        var hits = store.Search(query, affected_class, ensemble, tag, status, fromDate, toDate, limit);
-        var total = store.TotalMatching(query, affected_class, ensemble, tag, status, fromDate, toDate);
+        var hits = store.Search(query, affected_class, domain, tag, status, fromDate, toDate, limit);
+        var total = store.TotalMatching(query, affected_class, domain, tag, status, fromDate, toDate);
 
         if (Formats.Parse(format ?? locator.Config.DefaultFormat) == OutputFormat.Json)
             return Formats.ToJson(new
@@ -61,7 +61,7 @@ public static class DevlogTools
                     title = h.Entry.Title,
                     status = h.Entry.Status,
                     classes = h.Entry.Classes,
-                    ensemble = h.Entry.Ensemble,
+                    domain = h.Entry.Domain,
                     score = h.Score,
                 }),
             });
@@ -75,10 +75,10 @@ public static class DevlogTools
             CompactFormatter.Truncate(h.Entry.Title, 80),
             h.Entry.Status,
             string.Join(",", h.Entry.Classes),
-            h.Entry.Ensemble ?? "",
+            h.Entry.Domain ?? "",
             h.Score.ToString("0.#"),
         }).ToList();
-        return CompactFormatter.Table("devlog", ["id", "date", "title", "status", "classes", "ensemble", "score"], rows, total);
+        return CompactFormatter.Table("devlog", ["id", "date", "title", "status", "classes", "domain", "score"], rows, total);
     }
 
     [McpServerTool(Name = "devlog_get")]

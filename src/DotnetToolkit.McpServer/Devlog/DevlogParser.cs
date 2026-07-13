@@ -50,7 +50,7 @@ public static partial class DevlogParser
                 id, ts, title,
                 meta?.Status ?? "done",
                 meta?.Classes ?? [],
-                meta?.Ensemble,
+                meta?.Domain,
                 meta?.Tags ?? [],
                 relPath,
                 block));

@@ -9,7 +9,7 @@ public sealed class DevlogMeta
     [JsonPropertyName("ts")] public DateTimeOffset Ts { get; set; }
     [JsonPropertyName("status")] public string Status { get; set; } = "done";
     [JsonPropertyName("classes")] public string[] Classes { get; set; } = [];
-    [JsonPropertyName("ensemble")] public string? Ensemble { get; set; }
+    [JsonPropertyName("domain")] public string? Domain { get; set; }
     [JsonPropertyName("tags")] public string[] Tags { get; set; } = [];
 }
 
@@ -20,7 +20,7 @@ public sealed record DevlogEntry(
     string Title,
     string Status,
     string[] Classes,
-    string? Ensemble,
+    string? Domain,
     string[] Tags,
     string File,
     string Markdown);
@@ -33,14 +33,14 @@ public sealed class DevlogIndexEntry
     public string Title { get; set; } = "";
     public string Status { get; set; } = "done";
     public string[] Classes { get; set; } = [];
-    public string? Ensemble { get; set; }
+    public string? Domain { get; set; }
     public string[] Tags { get; set; } = [];
     public Dictionary<string, int> Terms { get; set; } = new(StringComparer.Ordinal);
 }
 
 public sealed class DevlogIndexDoc
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     public int Version { get; set; } = CurrentVersion;
     public Dictionary<string, long> Files { get; set; } = new(StringComparer.Ordinal);
