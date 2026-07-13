@@ -1,0 +1,5 @@
+{
+  "name": "dotnet-toolkit",
+  "description": "Token-efficient Roslyn code queries, project navigation and development log for .NET repos",
+  "version": "0.1.0"
+}

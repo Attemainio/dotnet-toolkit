@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "dotnet": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"
+    }
+  }
+}
