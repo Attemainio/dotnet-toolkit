@@ -145,9 +145,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
-    private Task<string> GetSymbol(string symbol, string resolution = "signature", string? knownVersion = null, bool refetch = false) =>
+    private Task<string> GetSymbol(
+        string symbol, string resolution = "signature", string? knownVersion = null, bool refetch = false,
+        string? include = null, string? exclude = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, resolution, knownVersion, refetch, Session, Task_);
+            symbol, resolution, include, exclude, knownVersion, refetch, Session, Task_);
 
     private Task<string> GetReferences(string symbol, string direction) =>
         ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction, sessionId: Session, taskId: Task_);
@@ -200,6 +202,98 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         Assert.Contains(names, n => n.Contains("Widget", StringComparison.Ordinal));
         Assert.Contains(names, n => n.Contains("Gadget", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The contract search_index's name field has to keep: whatever it emits must feed straight back
+    /// into get_symbol. Shortening parameter types is only safe because the resolver strips those same
+    /// prefixes before matching — this test is what proves the two stayed in step.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
+    {
+        var hit = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "SpinTwice"))
+            .GetProperty("items").EnumerateArray().First();
+        var name = hit.GetProperty("name").GetString()!;
+
+        // Fully qualified up to the member, but the parameter's namespace is gone.
+        Assert.StartsWith("Sample.Lib.WidgetExtensions.SpinTwice(", name);
+        Assert.DoesNotContain("Sample.Lib.IWidget", name);
+        Assert.Contains("IWidget", name);
+
+        var resolved = Root(await GetSymbol(name));
+
+        Assert.False(resolved.TryGetProperty("error", out _));
+        Assert.Equal(hit.GetProperty("symbolId").GetString(), resolved.GetProperty("symbolId").GetString());
+    }
+
+    /// <summary>
+    /// include/exclude adjust the resolution's default set. The point is a targeted fetch: everything
+    /// known about a symbol except the expensive part, in one call rather than a resolution that is
+    /// either too thin or drags the whole body along.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_ExcludeDropsAComponentFromTheResolutionDefault()
+    {
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        Assert.False(string.IsNullOrEmpty(full.GetProperty("content").GetProperty("source").GetString()));
+
+        var trimmed = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full", exclude: "source"));
+        var content = trimmed.GetProperty("content");
+
+        // Absent entirely, not present-and-null: an excluded component costs no tokens at all.
+        Assert.False(content.TryGetProperty("source", out _));
+        // ...while the rest of "full" is untouched.
+        Assert.True(content.TryGetProperty("referenceCounts", out _));
+        Assert.Equal("Method", content.GetProperty("kind").GetString());
+        // The resolved set is echoed only when the caller narrowed it, so it can see what it got.
+        Assert.DoesNotContain("source", trimmed.GetProperty("components").EnumerateArray()
+            .Select(c => c.GetString()));
+    }
+
+    [Fact]
+    public async Task GetSymbol_IncludeAddsAComponentToTheResolutionDefault()
+    {
+        var plain = Root(await GetSymbol("Sample.Lib.Widget"));
+        Assert.False(plain.GetProperty("content").TryGetProperty("members", out _));
+
+        var withMembers = Root(await GetSymbol("Sample.Lib.Widget", include: "members"));
+        var members = withMembers.GetProperty("content").GetProperty("members");
+
+        Assert.NotEmpty(members.EnumerateArray());
+        // Still no source: include adds one component, it does not escalate to full.
+        Assert.False(withMembers.GetProperty("content").TryGetProperty("source", out _));
+    }
+
+    /// <summary>
+    /// A misspelled component fails loudly. Ignoring it would leave the caller believing it dropped a
+    /// field it is in fact still paying for — the failure mode is silent and costs tokens every call.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_UnknownComponentIsRejectedRatherThanIgnored()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", exclude: "sourceCode"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("sourceCode", root.GetProperty("detail").GetString());
+        Assert.Contains("source", root.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// outline used to be built by an early return from its own object literal, which silently omitted
+    /// containingType and recentLog. One build path means a component appears whenever it is asked for,
+    /// regardless of which resolution named it.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_OutlineCarriesTheSameSkeletonAsEveryOtherResolution()
+    {
+        var outline = Root(await GetSymbol("Sample.Lib.Widget", "outline"));
+        var content = outline.GetProperty("content");
+
+        Assert.NotEmpty(content.GetProperty("members").EnumerateArray());
+        Assert.True(content.TryGetProperty("declarationSites", out _));
+        Assert.Equal("Type", content.GetProperty("kind").GetString());
+        Assert.True(content.TryGetProperty("accessibility", out _));
     }
 
     /// <summary>
@@ -402,17 +496,41 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_PartialLayerLease_ReportsWhichLayersMatched()
     {
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
-        var fullVersion = full.GetProperty("contentVersion").GetString()!;
-        Assert.Contains("|body:", fullVersion); // a method carries both layers
-        var declOnly = fullVersion.Split('|')[0];
+        // A component set derived from decl alone gets a decl-only token back — the response must not
+        // claim layers whose content it never sent.
+        const string DeclOnlySet = "referenceCounts,recentLog";
+        var first = Root(await GetSymbol("Sample.Lib.Widget.Spin", exclude: DeclOnlySet));
+        var declOnly = first.GetProperty("contentVersion").GetString()!;
+        Assert.DoesNotContain("|", declOnly);
+        Assert.StartsWith("decl:", declOnly);
 
-        var leased = Root(await GetSymbol("Sample.Lib.Widget.Spin", knownVersion: declOnly));
+        // Holding exactly what that response covered leases cleanly.
+        var leased = Root(await GetSymbol(
+            "Sample.Lib.Widget.Spin", knownVersion: declOnly, exclude: DeclOnlySet));
 
         Assert.False(leased.GetProperty("changed").GetBoolean());
         Assert.Equal(declOnly, leased.GetProperty("heldVersion").GetString());
-        Assert.Equal(fullVersion, leased.GetProperty("contentVersion").GetString());
-        Assert.NotEqual(leased.GetProperty("heldVersion").GetString(), leased.GetProperty("contentVersion").GetString());
+    }
+
+    /// <summary>
+    /// Escalating resolution while holding a narrower token must return content, not a lease hit.
+    /// <see cref="ContentVersion.Satisfies"/> compares only the layers the caller supplied, so a token
+    /// from a signature fetch matches on decl and would report changed:false against a request for the
+    /// source — handing back nothing, indistinguishable to the caller from an unchanged symbol. The
+    /// lease therefore also requires the held token to COVER the layers the requested components need.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_EscalatingResolution_DoesNotFalselyLeaseAwayNewContent()
+    {
+        var signature = Root(await GetSymbol("Sample.Lib.Widget.Spin"));
+        var signatureToken = signature.GetProperty("contentVersion").GetString()!;
+        Assert.False(signature.GetProperty("content").TryGetProperty("source", out _));
+
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full", knownVersion: signatureToken));
+
+        Assert.False(full.TryGetProperty("changed", out _));
+        Assert.False(string.IsNullOrEmpty(
+            full.GetProperty("content").GetProperty("source").GetString()));
     }
 
     [Fact]

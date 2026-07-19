@@ -31,7 +31,11 @@ public static class ContextTools
         + "USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when it is split across "
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
         + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
-        + "changed:false when nothing moved, or refetch:true to force content.")]
+        + "changed:false when nothing moved, or refetch:true to force content. "
+        + "For a targeted fetch, adjust the resolution's default set with include/exclude, naming components "
+        + "exactly as they appear in the response: source, xmlDoc, mechanicalFacts, referenceCounts, "
+        + "recentLog, members. e.g. resolution:\"full\" exclude:\"source\" for everything known about a symbol "
+        + "except its text, or resolution:\"signature\" include:\"members\" to list a type's API without bodies.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -42,6 +46,10 @@ public static class ContextTools
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("signature | outline | full (default signature).")] string resolution = "signature",
+        [Description("Comma-separated components to ADD to the resolution's default set: "
+            + "source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members.")] string? include = null,
+        [Description("Comma-separated components to REMOVE from the resolution's default set. "
+            + "Same names as include.")] string? exclude = null,
         [Description("Held version token to lease against.")] string? knownVersion = null,
         [Description("Force full content even if the version matches.")] bool refetch = false,
         [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
@@ -87,9 +95,22 @@ public static class ContextTools
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
 
         var symbolId = SymbolKey.IdOf(sym);
-        var version = FullVersionOf(sym, symbolStore);
+
+        var components = SymbolComponents.Resolve(
+            resolution, include, exclude, sym is INamedTypeSymbol, out var invalidComponent);
+        if (components is not { } parts)
+        {
+            var badComponent = Error(toolCallId, "invalid_component",
+                $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.");
+            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, resolution,
+                knownVersion, refetch, false, null, 0, "live", "invalid_component", badComponent);
+        }
+
+        // The token describes only the layers this response's components were derived from, so a caller
+        // that held it can never be told "unchanged" about content it was never sent.
+        var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
         var staleness = indexBuilder.Ready ? "live" : "index_only";
-        var lease = Lease.Evaluate(version, knownVersion, refetch);
+        var lease = Lease.Evaluate(version, knownVersion, refetch, parts.RequiredLayers);
 
         object envelope;
         if (lease.OmitContent)
@@ -108,13 +129,16 @@ public static class ContextTools
         }
         else
         {
-            var content = await BuildContent(sym, resolution, solution, locator, symbolStore, indexBuilder, featureLog);
+            var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
             // "changed" is omitted here: content being present already says it.
             envelope = new
             {
                 symbolId,
                 contentVersion = version.ToString(),
                 staleness = staleness == "live" ? null : staleness,
+                // Echoed only when the caller narrowed the set: on a plain resolution it would repeat
+                // what the resolution name already said, on every single call.
+                components = include is null && exclude is null ? null : parts.Resolved,
                 content,
             };
         }
@@ -237,9 +261,12 @@ public static class ContextTools
             items = hits.Select(h => new
             {
                 symbolId = h.SymbolId,
-                // The fully-qualified name: unambiguous across namespaces AND directly usable as a
-                // retrieval target. Rank/score and matchedOn are omitted — the list is already ordered.
-                name = h.FqName,
+                // Fully qualified up to the member — unambiguous across namespaces and directly usable
+                // as a retrieval target — but with parameter types shortened. A 15-parameter method spent
+                // ~500 characters here repeating the same namespace once per parameter, and the resolver
+                // strips those prefixes before matching anyway, so the long form bought nothing.
+                // Rank/score and matchedOn are omitted — the list is already ordered.
+                name = SymbolResolver.CompactName(h.FqName),
                 kind = h.Kind,
             }),
         };
@@ -251,56 +278,57 @@ public static class ContextTools
 
     // ---- content builder -----------------------------------------------------
 
+    /// <summary>
+    /// Builds the response body for exactly the requested components. One path for every resolution:
+    /// the outline case used to return early from its own object literal, which is why an outline
+    /// silently lacked containingType and recentLog — a divergence, not a decision.
+    ///
+    /// Every optional field is null when not requested, and <c>WhenWritingNull</c> drops it from the
+    /// JSON — so an excluded component costs nothing, not even an empty key.
+    /// </summary>
     private static async Task<object> BuildContent(
-        ISymbol sym, string resolution, Solution solution, SolutionLocator locator,
+        ISymbol sym, SymbolComponents components, Solution solution, SolutionLocator locator,
         SymbolStore symbolStore, SymbolIndexBuilder indexBuilder, FeatureLogStore featureLog)
     {
-        var res = resolution.Trim().ToLowerInvariant();
-        var sites = DeclarationSites(sym, locator);
-        var counts = indexBuilder.Ready ? await ReferenceCounts(sym, solution, symbolStore) : null;
+        // referenceCounts is the one component with a real latency cost — it awaits the semantic model —
+        // so it is computed only when asked for, rather than computed and then thrown away.
+        var counts = components.Has(SymbolComponents.ReferenceCounts) && indexBuilder.Ready
+            ? await ReferenceCounts(sym, solution, symbolStore)
+            : null;
 
-        if (res == "outline" && sym is INamedTypeSymbol outlineType)
-        {
-            return new
+        var members = components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
+            ? type.GetMembers().Where(IsListable).Select(m => (object)new
             {
-                kind = SymbolKey.KindOf(sym),
-                displayString = sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                accessibility = sym.DeclaredAccessibility.ToString().ToLowerInvariant(),
-                declarationSites = sites,
-                xmlDoc = OutlineBuilder.SummaryFromXml(sym.GetDocumentationCommentXml()),
-                referenceCounts = counts,
-                members = outlineType.GetMembers().Where(IsListable).Select(m => new
-                {
-                    symbolId = SymbolKey.IdOf(m),
-                    displayString = m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                    kind = SymbolKey.KindOf(m),
-                    // decl-layer version so members can be leased without ever fetching their bodies.
-                    contentVersion = VersionOf(m).ToString(),
-                }),
-            };
-        }
+                symbolId = SymbolKey.IdOf(m),
+                displayString = m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                kind = SymbolKey.KindOf(m),
+                // decl-layer version so members can be leased without ever fetching their bodies.
+                contentVersion = VersionOf(m).ToString(),
+            }).ToArray()
+            : null;
 
-        string? source = null;
-        if (res == "full")
-            source = SourceOf(sym);
-
-        // attachedContracts (P4) and recentLog (P5) are deliberately absent rather than emitted as
-        // null/empty — an unpopulated field is pure overhead until it carries data.
+        // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
+        // unpopulated field is pure overhead until it carries data.
         return new
         {
             kind = SymbolKey.KindOf(sym),
             displayString = sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             accessibility = sym.DeclaredAccessibility.ToString().ToLowerInvariant(),
             containingType = ContainingType(sym),
-            declarationSites = sites,
-            source,
-            xmlDoc = OutlineBuilder.SummaryFromXml(sym.GetDocumentationCommentXml()),
+            declarationSites = DeclarationSites(sym, locator),
+            source = components.Has(SymbolComponents.Source) ? SourceOf(sym) : null,
+            xmlDoc = components.Has(SymbolComponents.XmlDoc)
+                ? OutlineBuilder.SummaryFromXml(sym.GetDocumentationCommentXml())
+                : null,
             // Body-derived facts, served only while the body hash they were computed from still holds.
-            mechanicalFacts = res == "signature" ? null : MechanicalFactsFor(sym, symbolStore),
+            mechanicalFacts = components.Has(SymbolComponents.MechanicalFacts)
+                ? MechanicalFactsFor(sym, symbolStore)
+                : null,
             referenceCounts = counts,
+            members,
             // Why this code is the way it is. Entries describing a superseded body are flagged rather
             // than presented as current truth.
-            recentLog = RecentLogFor(sym, featureLog),
+            recentLog = components.Has(SymbolComponents.RecentLog) ? RecentLogFor(sym, featureLog) : null,
         };
     }
 
@@ -712,7 +740,9 @@ public static class ContextTools
         }));
     }
 
-    private static string Error(string toolCallId, string kind) => Formats.ToJson(new { error = kind });
+    // detail carries what the caller needs to correct the call — omitted when the kind says it all.
+    private static string Error(string toolCallId, string kind, string? detail = null) =>
+        Formats.ToJson(new { error = kind, detail });
 
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,

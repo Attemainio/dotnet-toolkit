@@ -61,6 +61,21 @@ public static partial class SymbolResolver
             || (displayParams is not null && displayParams.Equals(specParams, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// A fully-qualified name with its parameter list reduced to short type names — the form search
+    /// results are emitted in. The container path stays fully qualified because that is what makes the
+    /// name unambiguous across namespaces; the parameter types do not need it, and repeating a namespace
+    /// once per parameter is most of what a stored display name costs.
+    ///
+    /// This is deliberately the same reduction <see cref="MatchesSpec"/> applies to both sides before
+    /// comparing, so a name emitted here is resolvable by construction rather than by coincidence.
+    /// </summary>
+    public static string CompactName(string fqName)
+    {
+        var paren = fqName.IndexOf('(');
+        return paren < 0 ? fqName : fqName[..paren] + ShortParams(fqName[paren..]);
+    }
+
     /// <summary>Reduces a parenthesized parameter list to short type names without whitespace.</summary>
     private static string ShortParams(string parenList) =>
         NamespacePrefixRegex().Replace(parenList, "").Replace(" ", "");

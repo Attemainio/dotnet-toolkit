@@ -80,6 +80,26 @@ Only split into separate calls when you need different `kinds` filters.
 3. **`full`** — adds `source`. Request this directly **only** when you already intend to
    edit that symbol.
 
+### Narrowing with include/exclude
+
+When a resolution is close but not right, adjust it instead of picking a wider one. Component
+names are exactly the response fields they control: `source`, `xmlDoc`, `mechanicalFacts`,
+`referenceCounts`, `recentLog`, `members`.
+
+- `resolution: "full", exclude: "source"` — everything known about a symbol except its text.
+  Use when you want facts and history but are not going to edit it.
+- `resolution: "signature", include: "members"` — a type's API surface with no bodies.
+- `exclude: "referenceCounts"` — the one component with a real latency cost (it waits on the
+  semantic model). Drop it when you already know you are not expanding.
+
+An excluded component is absent from the JSON, not null, so it costs nothing. A misspelled
+name is an `invalid_component` error rather than being silently ignored.
+
+**A narrowed response returns a narrowed version token**, covering only the layers it served.
+That is deliberate: escalating later (`signature` → `full`) with that token returns the new
+content rather than a false `changed: false`. It also means you cannot lease a wide request
+against a narrow token — hold the token from a fetch of the same shape.
+
 ## Gate expansion on referenceCounts
 
 `get_symbol` returns `referenceCounts: { callers, implementations, overrides }`. Use it to

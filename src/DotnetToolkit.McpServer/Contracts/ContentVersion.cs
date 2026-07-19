@@ -42,6 +42,47 @@ public readonly struct ContentVersion
 
     public string? Get(string layer) => _layers is not null && _layers.TryGetValue(layer, out var hash) ? hash : null;
 
+    /// <summary>The layer names this token actually carries, in canonical order.</summary>
+    public IReadOnlyList<string> Layers
+    {
+        get
+        {
+            if (IsEmpty)
+                return [];
+            var layers = _layers;
+            return [.. Order.Where(layers.ContainsKey)];
+        }
+    }
+
+    /// <summary>
+    /// A copy carrying only <paramref name="layers"/>. A response that served a subset of the symbol must
+    /// hand back a token describing that subset and no more: a token claiming layers whose content was
+    /// never sent would satisfy a later, wider request and omit content the caller has never held.
+    /// </summary>
+    public ContentVersion Narrow(IEnumerable<string> layers)
+    {
+        if (IsEmpty)
+            return this;
+        var kept = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var layer in layers)
+        {
+            if (Get(layer) is { } hash)
+                kept[layer] = hash;
+        }
+        return new ContentVersion(kept);
+    }
+
+    /// <summary>True when this token carries every one of <paramref name="layers"/>.</summary>
+    public bool Covers(IEnumerable<string> layers)
+    {
+        foreach (var layer in layers)
+        {
+            if (Get(layer) is null)
+                return false;
+        }
+        return true;
+    }
+
     /// <summary>
     /// True when, for every layer present in <paramref name="known"/>, this (current) version has the
     /// same hash. This is the lease predicate: all supplied layers match ⇒ <c>changed:false</c> (§8).
