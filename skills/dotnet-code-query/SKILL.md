@@ -181,10 +181,25 @@ touched non-C# files. Defaults are `HEAD~1`..`HEAD`.
 `get_symbol` returns `referenceCounts: { callers, implementations, overrides }`. Use it to
 decide whether an expansion is worth the tokens:
 
-- **0 callers** → do not call `get_references`; there is nothing to find.
+- **0 callers** → usually nothing to find; skip `get_references`. **But not if the symbol can
+  be invoked without being named** — see below.
 - **1–5 and you plan a signature change** → fetch them.
 - **more than 5** → fetch the list without bodies first, then bodies only for the ones you
   will actually edit.
+
+`callers` counts **static call sites in the loaded solution**. Anything a framework invokes
+by reflection is invisible to it, so for such a symbol the number measures only who else
+happens to call it directly — which is incidental. In this plugin's own code
+`HistoryTools.SearchLog` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely
+because tests call one by name and not the other; both are live MCP tools reached the same
+way. Treat 0 as "no information" rather than "unused" when the symbol is an entry point, has
+a registration attribute (its own or on its type), is a DI-registered implementation, a
+serialization target, or a test/event handler. Never conclude "dead code" from a 0 alone.
+
+A count is **omitted entirely** when it could not be measured — the workspace is still
+loading, or the symbol's project contributed no edges. Absent is not 0: absent means unknown.
+`callers` and `tests` are also omitted for named types, where call edges are recorded against
+members and a type-level count would structurally always be zero.
 
 Before writing a helper that plausibly already exists, check with `search_index` first —
 one cheap call beats a duplicate implementation.
