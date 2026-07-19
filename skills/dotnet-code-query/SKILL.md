@@ -41,7 +41,7 @@ Do not invent a fresh id per call; that destroys the grouping.
 
 | You want | Call | Do NOT |
 |---|---|---|
-| Find a symbol when you don't know the exact name | `search_index` | Grep/Glob over .cs files |
+| Find symbols when you don't know the exact names | `search_index`, **all terms in one call** | Grep/Glob over .cs files; one call per word |
 | A type or member's shape, docs, location | `get_symbol` | Read the .cs file |
 | A type's member list | `get_symbol` with `resolution: "outline"` | Read the file |
 | Callers / usages | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
@@ -50,6 +50,26 @@ Do not invent a fresh id per call; that destroys the grouping.
 
 Read a .cs file only when you are about to edit lines that `get_symbol` did not give you,
 or for non-C# files (csproj, json, md) where Read/Grep are the right tools.
+
+## Search for everything at once
+
+`search_index` OR-es its terms and ranks the results, so one call answers for many names:
+
+```
+search_index(query: "fee ledger TryBuy TrySell")     ← one call, all four
+```
+
+Not this:
+
+```
+search_index(query: "fee"); search_index(query: "ledger"); ...   ← several × the tokens
+```
+
+Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` finds
+`TryBuy`. When a question spans two subsystems, name both in the same query — the ranking
+puts the symbols matching more of your terms first, which is exactly the overlap you want.
+
+Only split into separate calls when you need different `kinds` filters.
 
 ## Escalate resolution, don't over-fetch
 

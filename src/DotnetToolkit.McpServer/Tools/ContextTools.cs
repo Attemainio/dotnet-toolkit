@@ -202,10 +202,14 @@ public static class ContextTools
     }
 
     [McpServerTool(Name = "search_index")]
-    [Description("Find a C# symbol when you don't know its exact name. "
+    [Description("Find C# symbols when you don't know their exact names. "
         + "USE THIS INSTEAD OF GREP/GLOB over .cs files — it returns ranked symbols with ids and locations, not "
         + "raw text lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
-        + "Follow up with get_symbol on the one you want.")]
+        + "PUT EVERY TERM YOU ARE LOOKING FOR IN ONE CALL: terms are OR-ed and ranked, so "
+        + "query:\"fee ledger TryBuy TrySell\" returns the symbols for all four in a single response. Do NOT "
+        + "issue one call per word — that is several times the tokens for a worse-ranked result. Partial and "
+        + "camel-case-interior terms work too: \"Ledger\" finds FIFOLedger. "
+        + "Follow up with get_symbol on the ones you want.")]
     public static string SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
