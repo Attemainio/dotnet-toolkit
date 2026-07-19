@@ -28,22 +28,75 @@ public sealed class SymbolStore
     /// callers / tests reference counts for a symbol, derived from cached edges. Tests come from
     /// <c>test_reference</c> edges, so the count is real rather than assumed.
     /// </summary>
-    public (int Callers, int Tests)? ReferenceCounts(string symbolId)
+    public (int Callers, int Tests)? ReferenceCounts(string symbolId) => ReferenceCounts([symbolId]);
+
+    /// <summary>
+    /// Counts across a set of equivalent ids. A call made through an interface is recorded against the
+    /// INTERFACE member, but Roslyn's caller search cascades to implementations — so counting only the
+    /// implementation's own id under-reports exactly the callers get_references would show. Passing the
+    /// symbol plus the interface members it implements keeps the two in agreement.
+    /// </summary>
+    public (int Callers, int Tests)? ReferenceCounts(IReadOnlyCollection<string> symbolIds)
+    {
+        if (!_store.Available || symbolIds.Count == 0)
+            return null;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var names = symbolIds.Select((_, i) => "$s" + i).ToList();
+        var list = string.Join(',', names);
+        cmd.CommandText = $"""
+            SELECT
+              (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
+                 WHERE to_symbol IN ({list}) AND edge_kind = 'call'),
+              (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
+                 WHERE to_symbol IN ({list}) AND edge_kind = 'test_reference');
+            """;
+        var i = 0;
+        foreach (var id in symbolIds)
+            cmd.Parameters.AddWithValue("$s" + i++, id);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? (reader.GetInt32(0), reader.GetInt32(1)) : (0, 0);
+    }
+
+    /// <summary>
+    /// Call targets reachable in one hop. Interface members are followed through to their registered
+    /// implementations, so a slice does not dead-end at an interface boundary the way a literal call
+    /// graph would.
+    /// </summary>
+    public IReadOnlyList<string> CallTargets(string symbolId) => Neighbors(symbolId, outgoing: true);
+
+    /// <summary>Callers one hop away — the reverse direction for the meet-in-the-middle search.</summary>
+    public IReadOnlyList<string> Callers(string symbolId) => Neighbors(symbolId, outgoing: false);
+
+    private IReadOnlyList<string> Neighbors(string symbolId, bool outgoing)
+    {
+        if (!_store.Available)
+            return [];
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        // 'call' plus 'implementation' so interface dispatch is traversable in both directions.
+        cmd.CommandText = outgoing
+            ? "SELECT DISTINCT to_symbol FROM reference_edges WHERE from_symbol = $id AND edge_kind IN ('call','implementation');"
+            : "SELECT DISTINCT from_symbol FROM reference_edges WHERE to_symbol = $id AND edge_kind IN ('call','implementation');";
+        cmd.Parameters.AddWithValue("$id", symbolId);
+
+        var result = new List<string>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            result.Add(reader.GetString(0));
+        return result;
+    }
+
+    /// <summary>Display string for a symbol id, for rendering slice nodes without a semantic lookup.</summary>
+    public string? DisplayFor(string symbolId)
     {
         if (!_store.Available)
             return null;
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT
-              (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
-                 WHERE to_symbol = $id AND edge_kind = 'call'),
-              (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
-                 WHERE to_symbol = $id AND edge_kind = 'test_reference');
-            """;
+        cmd.CommandText = "SELECT display_string FROM symbols WHERE symbol_id = $id LIMIT 1;";
         cmd.Parameters.AddWithValue("$id", symbolId);
-        using var reader = cmd.ExecuteReader();
-        return reader.Read() ? (reader.GetInt32(0), reader.GetInt32(1)) : (0, 0);
+        return cmd.ExecuteScalar() as string;
     }
 
     /// <summary>The semantic version layers (refs/api) recorded for a symbol, if the index has them.</summary>

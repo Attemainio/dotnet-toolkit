@@ -369,11 +369,30 @@ public static class ContextTools
 
     private static async Task<object> ReferenceCounts(ISymbol sym, Solution solution, SymbolStore symbolStore)
     {
-        var counts = symbolStore.ReferenceCounts(SymbolKey.IdOf(sym));
+        // Include the interface members this symbol implements: calls made through the interface are
+        // recorded against the interface member, and get_references cascades to implementations.
+        var equivalentIds = new List<string> { SymbolKey.IdOf(sym) };
+        equivalentIds.AddRange(ImplementedInterfaceMembers(sym).Select(SymbolKey.IdOf));
+        var counts = symbolStore.ReferenceCounts(equivalentIds);
         var implementations = await CountImplementations(sym, solution);
         var overrides = await CountOverrides(sym, solution);
         // tests is now backed by real test_reference edges rather than a fabricated zero.
         return new { callers = counts?.Callers ?? 0, implementations, overrides, tests = counts?.Tests ?? 0 };
+    }
+
+    /// <summary>Interface members this symbol implements, so counts can span the interface boundary.</summary>
+    private static IEnumerable<ISymbol> ImplementedInterfaceMembers(ISymbol sym)
+    {
+        if (sym.ContainingType is not { } type)
+            yield break;
+        foreach (var iface in type.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers())
+            {
+                if (SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(member), sym))
+                    yield return member;
+            }
+        }
     }
 
     private static async Task<int> CountImplementations(ISymbol sym, Solution solution) => sym switch

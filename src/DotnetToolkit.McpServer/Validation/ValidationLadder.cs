@@ -11,8 +11,11 @@ namespace DotnetToolkit.McpServer.Validation;
 /// </summary>
 public static class ValidationLadder
 {
-    /// <summary>Highest level this build can actually execute.</summary>
-    public static readonly ValidationLevel MaxSupported = ValidationLevel.TargetedTests;
+    /// <summary>
+    /// Highest level this build can execute. Level 6 compiles every project; the full test set at that
+    /// level is the caller's targeted-test runner widened by the escalation table, not a separate rung.
+    /// </summary>
+    public static readonly ValidationLevel MaxSupported = ValidationLevel.SolutionValidate;
 
     /// <summary>
     /// Runs the tests that semantically reference the changed symbols. Supplied by the caller because
@@ -75,6 +78,8 @@ public static class ValidationLadder
             ValidationLevel.SemanticBind => await SemanticBindAsync(forked, changedDocs),
             ValidationLevel.ProjectCompile => await CompileAsync(forked, ContainingProjects(forked, changedDocs)),
             ValidationLevel.DependentCompile => await CompileAsync(forked, DependentProjects(forked, changedDocs)),
+            // Level 6: every project in the solution, not just those reachable from the change.
+            ValidationLevel.SolutionValidate => await CompileAsync(forked, forked.ProjectIds),
             _ => [],
         };
     }

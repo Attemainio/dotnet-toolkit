@@ -27,6 +27,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public FeatureLogStore FeatureLog { get; private set; } = null!;
     public SymbolIndexBuilder Builder { get; private set; } = null!;
     public TargetedTests TargetedTests { get; private set; } = null!;
+    public CallSlice CallSlice { get; private set; } = null!;
     public TelemetryRecorder Telemetry { get; private set; } = null!;
 
     private KnowledgeStore _store = null!;
@@ -61,6 +62,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
         TargetedTests = new TargetedTests(Locator, NullLogger<TargetedTests>.Instance);
+        CallSlice = new CallSlice(Symbols);
     }
 
     public Task DisposeAsync()
@@ -224,6 +226,53 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal(before, _f.Symbols.SymbolCount());
         Assert.True(before > 0, "fixture should have indexed symbols");
     }
+
+    // get_call_slice: a multi-hop path (Start -> Middle -> Deep -> Widget.Spin) must be found without
+    // the caller walking the graph via repeated get_references calls.
+    [Fact]
+    public async Task GetCallSlice_FindsMultiHopPath()
+    {
+        var root = Root(await ContextToolsCallSlice("Sample.Lib.Pipeline.Start", "Sample.Lib.Widget.Spin"));
+
+        Assert.True(root.GetProperty("found").GetBoolean());
+        var path = root.GetProperty("path").EnumerateArray()
+            .Select(n => n.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.True(path.Count >= 2, $"expected a multi-node path, got: {string.Join(" -> ", path)}");
+        Assert.Contains(path, p => p.Contains("Start"));
+        Assert.Contains(path, p => p.Contains("Spin"));
+    }
+
+    // An unreachable pair still reports where each side ran out, rather than a bare "not found".
+    [Fact]
+    public async Task GetCallSlice_UnreachablePair_ReportsFrontier()
+    {
+        var root = Root(await ContextToolsCallSlice("Sample.Lib.Widget.Spin", "Sample.Lib.Pipeline.Start"));
+
+        Assert.False(root.GetProperty("found").GetBoolean());
+        Assert.True(root.TryGetProperty("forwardFrontier", out _));
+    }
+
+    // get_scope must surface an EXTENSION method on the receiver — the case grep structurally cannot
+    // answer, since the extension shares no text with the call site.
+    [Fact]
+    public async Task GetScope_SurfacesExtensionMethodsOnReceiver()
+    {
+        // Inside Pipeline.Deep, on the line that calls _widget.Spin(turns).
+        var sym = Root(await GetSymbol("Sample.Lib.Pipeline.Deep", "signature"));
+        var site = sym.GetProperty("content").GetProperty("declarationSites")[0];
+        var line = site.GetProperty("startLine").GetInt32();
+
+        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, Session, Task_,
+            file: "Lib/Pipeline.cs", line: line, column: 40, receiver: "_widget", filter: "methods"));
+
+        var items = root.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.Contains(items, i => i.Contains("Spin"));
+        Assert.Contains(items, i => i.Contains("SpinTwice"));  // the extension method
+    }
+
+    private Task<string> ContextToolsCallSlice(string from, string to) =>
+        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, Session, Task_, from, to);
 
     // Conformance C10: one partial-class part returns the unified type with all declaration sites.
     [Fact]

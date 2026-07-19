@@ -33,6 +33,7 @@ builder.Services.AddSingleton<AttributionJob>();
 builder.Services.AddSingleton<SymbolStore>();
 builder.Services.AddSingleton<FeatureLogStore>();
 builder.Services.AddSingleton<SymbolIndexBuilder>();
+builder.Services.AddSingleton<CallSlice>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.TargetedTests>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.GitAnalyzer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
