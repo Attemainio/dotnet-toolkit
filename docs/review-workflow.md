@@ -79,12 +79,15 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert.
-- **Zero callers is not proof of dead code.** `get_references` counts *static* call sites, so anything
-  invoked by a framework rather than by name reports zero: reflection-registered entry points, DI-resolved
-  implementations, serialization targets, `[Theory]` data, event handlers wired by attribute. Every MCP
-  tool method in this plugin reports zero callers and every one is live. Before claiming removal, check
-  whether something reaches it another way — `get_call_slice` from a plausible entry point, or a
-  registration attribute on the symbol — and if it is framework-invoked, say so and drop the finding.
+- **Zero callers is not proof of dead code.** The count is of *static call sites in the loaded solution*,
+  so anything a framework invokes reports only whatever happens to call it by name as well: reflection-
+  registered entry points, DI-resolved implementations, serialization targets, `[Theory]` data, event
+  handlers wired by attribute. The count is then incidental rather than meaningful — in this plugin,
+  `HistoryTools.SearchLog` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely because tests
+  invoke one directly and not the other. Both are equally live, and neither number says so. A registration
+  attribute on the symbol (or on its type) is the signal that the count is not the answer. Before claiming
+  removal, check whether something reaches it another way — `get_call_slice` from a plausible entry point,
+  or such an attribute — and if it is framework-invoked, say so and drop the finding.
 - **Stay in your one dimension.** Defer everything else per "Staying in your lane" above.
 - **Don't flag pure preference** outside what your dimension doc actually states.
 
