@@ -6,6 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code plugin for .NET repositories: a Roslyn-powered MCP server (`DotnetToolkit.McpServer`) exposing token-efficient code query, project navigation, and development-log tools, plus skills that teach Claude to prefer these tools over raw Read/Grep/`dotnet build`. This repo is both the plugin's implementation and (via `.mcp.json`) a live consumer of its own server.
 
+## Working in this repo: use the plugin's own tools
+
+This repo consumes its own MCP server (`.mcp.json`), so the tools it ships are available here and are the
+**default** way to explore and change C# — not Grep, Glob, `find`, `ls`, `cat`, or bare `Read` on `.cs`
+files. Dogfooding is the point: if a tool is awkward or wrong for a real task here, that's a bug report
+about the tool, not a reason to fall back to shell.
+
+| Instead of | Use |
+| --- | --- |
+| `grep`/Grep for a type or member name | `search_index` (FTS-ranked, many terms per call) |
+| `Read` on a `.cs` file to see a type or method | `get_symbol` (declaration/body layers, no whole-file read) |
+| `grep` for callers, or guessing who implements an interface | `get_references` (Roslyn semantic model — sees interface, virtual, and delegate dispatch) |
+| `find`/`ls`/Glob to map a subsystem | `get_scope` |
+| Manually tracing a call chain across files | `get_call_slice` |
+| `git diff` to judge what a change actually altered | `get_semantic_diff` |
+| Guessing why code looks the way it does | `search_log` (records the intent behind changes applied via `validate_patch`) |
+| `Edit` + `dotnet build` to check a C# edit | `validate_patch` (in-memory compile, reports whether validation was sufficient) |
+| Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
+
+The `dotnet-code-query` and `dotnet-change` skills carry the full protocols (session/task ids, expansion
+gating, leases, `baseVersions`, the sufficiency triple) — follow them here too.
+
+Shell and plain file tools stay appropriate for what the MCP surface does not cover: `dotnet build` /
+`dotnet test` / `./scripts/build-plugin.sh`, `git`, and reading or editing non-C# files (Markdown, JSON,
+`.sh`, `.csproj`, skill and agent definitions). `validate_patch` covers C# edits; everything else still
+goes through `Edit`/`Write`.
+
 ## Commands
 
 ```bash
@@ -38,7 +65,7 @@ Other subsystems:
 - `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from Roslyn symbols.
 - `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution), `ChangeClassifier.cs` (declaration delta → change kinds), `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4), `DiagnosticDistiller.cs` (root causes + suggested inspections).
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
-- `Tools/` — the MCP surface: `ContextTools.cs` (`get_symbol`, `get_references`, `search_index`), `PatchTools.cs` (`validate_patch`), `MetricsTools.cs` (`get_retrieval_metrics`), `ServerTools.cs` (`ping`, `workspace_status`, `reload_workspace`).
+- `Tools/` — the MCP surface: `ContextTools.cs` (`get_symbol`, `get_references`, `search_index`), `FlowTools.cs` (`get_scope`, `get_call_slice`), `HistoryTools.cs` (`get_semantic_diff`, `search_log`), `PatchTools.cs` (`validate_patch`), `MetricsTools.cs` (`get_retrieval_metrics`), `ServerTools.cs` (`ping`, `workspace_status`, `reload_workspace`).
 
 Change detection across both tiers is **mtime-polling**, not filesystem watchers — this is deliberate so it works on WSL `/mnt/*` drives where inotify doesn't fire.
 
