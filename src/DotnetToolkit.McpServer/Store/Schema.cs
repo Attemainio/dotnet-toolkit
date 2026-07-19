@@ -18,7 +18,32 @@ internal static class Schema
         new(5, "derived_attribution", DerivedAttribution),
         new(6, "symbol_fts", SymbolFts),
         new(7, "symbol_fts_explicit_writes", SymbolFtsExplicitWrites),
+        new(8, "test_flag_on_symbol", TestFlagOnSymbol),
     ];
+
+    // test_reference edges duplicated every call edge originating in a test project, and decided
+    // test-ness from Project.MetadataReferences — i.e. from how well MSBuild happened to load that
+    // project on that pass. A degraded load wrote unmarked edges, and nothing ever recomputed them:
+    // ApplyIncremental rewrites edges only where a CONTENT hash moved, and content cannot express
+    // "the environment that produced this row was wrong". Measured on this repo, 53 of 113 calling
+    // members carried no test attribution while a clean index of the same source attributed all of
+    // them — and the resulting tests:0 is read by the validation ladder as "no tests to run".
+    //
+    // The flag now lives on the symbol and is derived from its own attributes ([Fact], [Test], ...).
+    // That makes content-based invalidation correct rather than merely cheap: changing the attribute
+    // changes the declaration hash, so the row is rewritten exactly when the answer changes.
+    //
+    // The derived symbol index is dropped so the next pass rebuilds it from source with the flag set.
+    // Everything here is rebuildable by construction; the development log and telemetry are untouched.
+    private const string TestFlagOnSymbol = """
+        ALTER TABLE symbols ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;
+
+        DELETE FROM mechanical_facts;
+        DELETE FROM declaration_sites;
+        DELETE FROM reference_edges;
+        DELETE FROM symbols_fts;
+        DELETE FROM symbols;
+        """;
 
     // Migration 6 mirrored symbols into symbols_fts with triggers, on the stated assumption that
     // "INSERT OR REPLACE fires delete-then-insert". That is false by default: SQLite fires DELETE

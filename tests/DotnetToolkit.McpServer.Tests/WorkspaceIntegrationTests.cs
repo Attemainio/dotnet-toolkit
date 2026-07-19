@@ -297,6 +297,49 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
+    /// A test caller is identified by the attribute on its own declaration, not by living in a test
+    /// project. The previous project-level check read Project.MetadataReferences, so it depended on how
+    /// completely MSBuild had loaded that project — and nothing could ever recompute it, because the
+    /// incremental indexer only rewrites rows whose CONTENT moved. On this repo that left 53 of 113
+    /// calling members permanently unattributed while a clean index of the same source attributed all
+    /// of them, and the resulting tests:0 is what the validation ladder reads to decide escalation.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_MarksTestCallersFromTheirOwnAttribute()
+    {
+        var root = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
+        var items = root.GetProperty("items").EnumerateArray().ToList();
+
+        Assert.NotEmpty(items);
+        // isTest is emitted only when true, so absence is the "not a test" signal.
+        foreach (var item in items)
+        {
+            var isTest = item.TryGetProperty("isTest", out var flag) && flag.GetBoolean();
+            var name = item.GetProperty("displayString").GetString()!;
+            // Nothing in the sample solution is a test, so no caller may claim to be one.
+            Assert.False(isTest, $"{name} was marked as a test");
+        }
+    }
+
+    /// <summary>
+    /// tests is now a subset of callers computed from the caller's own flag, so the two cannot
+    /// disagree — previously they were separate edge sets written on the same pass and could.
+    /// </summary>
+    [Fact]
+    public async Task ReferenceCounts_TestsNeverExceedCallers()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Widget.Spin")).GetProperty("content");
+        var counts = content.GetProperty("referenceCounts");
+
+        if (counts.TryGetProperty("callers", out var callers) && callers.ValueKind == JsonValueKind.Number
+            && counts.TryGetProperty("tests", out var tests) && tests.ValueKind == JsonValueKind.Number)
+        {
+            Assert.True(tests.GetInt32() <= callers.GetInt32(),
+                $"tests={tests.GetInt32()} exceeded callers={callers.GetInt32()}");
+        }
+    }
+
+    /// <summary>
     /// Counts must be omitted, not reported as 0, for a project the edge cache never covered.
     /// A project that fails to load in MSBuild yields no edges, and reporting that absence as
     /// "0 callers" states something the store cannot know — observed live on a method with 5.

@@ -178,7 +178,7 @@ touched non-C# files. Defaults are `HEAD~1`..`HEAD`.
 
 ## Gate expansion on referenceCounts
 
-`get_symbol` returns `referenceCounts: { callers, implementations, overrides }`. Use it to
+`get_symbol` returns `referenceCounts: { callers, tests, implementations, overrides }`. Use it to
 decide whether an expansion is worth the tokens:
 
 - **0 callers** → usually nothing to find; skip `get_references`. **But not if the symbol can
@@ -254,3 +254,8 @@ Responses are JSON and deliberately terse: fields that are absent carry no infor
 `staleness` appears only when it is not `live`, `changed` only when `false`, `truncated`
 only when true. Absence of `tests` in `referenceCounts` means "not computed yet", **not**
 "no tests".
+
+`tests` is the subset of `callers` whose own declaration carries a test attribute (`[Fact]`,
+`[Theory]`, `[Test]`, `[TestCase]`, `[TestMethod]`), so it can never exceed `callers`. A helper
+that merely lives in a test project is not counted. `get_references` marks the same callers with
+`isTest: true`, emitted only on the ones that are tests — an absent flag means "not a test".

@@ -211,6 +211,9 @@ public static class ContextTools
                 displayString = i.DisplayString,
                 sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
                 dispatchKind = i.DispatchKind,
+                // Emitted only when true — a caller list is mostly non-tests, and false on every row
+                // would cost more than the flag is worth. Absent means "not a test".
+                isTest = i.IsTest ? true : (bool?)null,
                 content = i.Body,
             }),
             totalItems = ordered.Count,
@@ -473,7 +476,8 @@ public static class ContextTools
     // ---- reference directions -------------------------------------------------
 
     private sealed record RefItem(string SymbolId, string Version, string DisplayString,
-        IReadOnlyList<(string File, int Line, string Snippet)> Sites, string? DispatchKind, string? Body);
+        IReadOnlyList<(string File, int Line, string Snippet)> Sites, string? DispatchKind, string? Body,
+        bool IsTest = false);
 
     private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
     {
@@ -494,7 +498,8 @@ public static class ContextTools
                 caller.CallingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                 sites!,
                 dispatch,
-                includeBodies ? SourceOf(caller.CallingSymbol) : null));
+                includeBodies ? SourceOf(caller.CallingSymbol) : null,
+                TestAttributes.IsTestMethod(caller.CallingSymbol)));
         }
         return items;
     }

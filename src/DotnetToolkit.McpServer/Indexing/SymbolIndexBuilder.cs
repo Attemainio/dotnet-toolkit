@@ -63,10 +63,6 @@ public sealed class SymbolIndexBuilder
                 if (compilation is null)
                     continue;
 
-                // Calls originating in a test project are recorded as test_reference edges as well as
-                // ordinary calls, so referenceCounts.tests and ladder level 5 have real data.
-                var isTestProject = IsTestProject(project);
-
                 foreach (var document in project.Documents)
                 {
                     var tree = await document.GetSyntaxTreeAsync();
@@ -77,8 +73,8 @@ public sealed class SymbolIndexBuilder
                     var file = document.FilePath ?? tree.FilePath;
 
                     foreach (var node in root.DescendantNodes().Where(IsDeclaration))
-                        IndexDeclaration(node, model, project.Name, file, symbols, sites, edges, facts, isTestProject);
-                    IndexTopLevelStatements(root, model, edges, isTestProject);
+                        IndexDeclaration(node, model, project.Name, file, symbols, sites, edges, facts);
+                    IndexTopLevelStatements(root, model, edges);
                 }
             }
 
@@ -109,8 +105,7 @@ public sealed class SymbolIndexBuilder
         Dictionary<string, SymbolStore.SymbolRow> symbols,
         List<(string, string, int, int, string?)> sites,
         HashSet<SymbolStore.EdgeRow> edges,
-        List<SymbolStore.FactsRow> facts,
-        bool isTestProject)
+        List<SymbolStore.FactsRow> facts)
     {
         // A field declaration can introduce several symbols; every other kind introduces one.
         var declared = node is BaseFieldDeclarationSyntax field
@@ -141,7 +136,8 @@ public sealed class SymbolIndexBuilder
                     symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                     OutlineBuilder.SummaryFromXml(symbol.GetDocumentationCommentXml()),
                     RefsHash: SemanticFingerprint.ComputeRefs(ReferencedSymbolIds(node, model)),
-                    ApiHash: SemanticFingerprint.ComputeApi(symbol as INamedTypeSymbol ?? symbol.ContainingType, DeclHashOf));
+                    ApiHash: SemanticFingerprint.ComputeApi(symbol as INamedTypeSymbol ?? symbol.ContainingType, DeclHashOf),
+                    IsTest: TestAttributes.IsTestMethod(symbol));
             }
             sites.Add((id, file ?? "-", span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1, null));
         }
@@ -155,7 +151,7 @@ public sealed class SymbolIndexBuilder
         {
             var owner = declared[0];
             var ownerId = SymbolKey.IdOf(owner);
-            CollectCallEdges(node, owner, model, ownerId, edges, isTestProject);
+            CollectCallEdges(node, owner, model, ownerId, edges);
 
             if (body is not null && MechanicalFactsExtractor.Extract(node, owner, model) is { } extracted)
                 facts.Add(new SymbolStore.FactsRow(ownerId, JsonSerializer.Serialize(extracted), body));
@@ -188,17 +184,6 @@ public sealed class SymbolIndexBuilder
         return SyntaxFingerprint.Compute(node).Decl;
     }
 
-    /// <summary>
-    /// A project counts as a test project when it references a known test framework. This drives
-    /// test_reference edges, so it must not be a guess based on the project name alone.
-    /// </summary>
-    private static bool IsTestProject(Project project) =>
-        project.MetadataReferences.Any(r =>
-            r.Display is { } d &&
-            (d.Contains("xunit", StringComparison.OrdinalIgnoreCase)
-             || d.Contains("nunit", StringComparison.OrdinalIgnoreCase)
-             || d.Contains("Microsoft.VisualStudio.TestPlatform", StringComparison.OrdinalIgnoreCase)
-             || d.Contains("MSTest", StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// Top-level statements are <see cref="GlobalStatementSyntax"/>, not member declarations, so the
@@ -207,7 +192,7 @@ public sealed class SymbolIndexBuilder
     /// which matters because a false zero tells the agent to skip an expansion it needs (P1.4).
     /// </summary>
     private static void IndexTopLevelStatements(
-        SyntaxNode root, SemanticModel model, HashSet<SymbolStore.EdgeRow> edges, bool isTestProject)
+        SyntaxNode root, SemanticModel model, HashSet<SymbolStore.EdgeRow> edges)
     {
         if (root is not CompilationUnitSyntax unit)
             return;
@@ -221,13 +206,13 @@ public sealed class SymbolIndexBuilder
 
         var entryId = SymbolKey.IdOf(entry);
         foreach (var statement in statements)
-            CollectCallEdges(statement, entry, model, entryId, edges, isTestProject);
+            CollectCallEdges(statement, entry, model, entryId, edges);
     }
 
     /// <summary>Records call edges from a member body via the semantic model (spec §18 call edges).</summary>
     private static void CollectCallEdges(
         SyntaxNode member, ISymbol from, SemanticModel model, string fromId,
-        HashSet<SymbolStore.EdgeRow> edges, bool isTestProject)
+        HashSet<SymbolStore.EdgeRow> edges)
     {
         foreach (var expr in member.DescendantNodes().OfType<ExpressionSyntax>())
         {
@@ -247,8 +232,6 @@ public sealed class SymbolIndexBuilder
             var file = expr.SyntaxTree.FilePath;
             var toId = SymbolKey.IdOf(target.OriginalDefinition);
             edges.Add(new SymbolStore.EdgeRow(fromId, toId, "call", DispatchKind(target), file, line));
-            if (isTestProject)
-                edges.Add(new SymbolStore.EdgeRow(fromId, toId, "test_reference", null, file, line));
         }
     }
 

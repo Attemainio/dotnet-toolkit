@@ -17,7 +17,7 @@ public sealed class SymbolStore
     public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Accessibility, string Project,
         string DeclHash, string? BodyHash, string DisplayString, string? XmlDoc,
-        string? RefsHash = null, string? ApiHash = null);
+        string? RefsHash = null, string? ApiHash = null, bool IsTest = false);
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
@@ -25,8 +25,9 @@ public sealed class SymbolStore
     public sealed record EdgeRow(string From, string To, string EdgeKind, string? DispatchKind, string? File, int? Line);
 
     /// <summary>
-    /// callers / tests reference counts for a symbol, derived from cached edges. Tests come from
-    /// <c>test_reference</c> edges, so the count is real rather than assumed.
+    /// callers / tests reference counts for a symbol, derived from cached edges. Tests are the subset
+    /// of callers whose own declaration carries a test attribute, so the count is real rather than
+    /// assumed and cannot drift away from the caller count.
     /// </summary>
     public (int Callers, int Tests)? ReferenceCounts(string symbolId) => ReferenceCounts([symbolId]);
 
@@ -73,8 +74,12 @@ public sealed class SymbolStore
             SELECT
               (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
                  WHERE to_symbol IN ({list}) AND edge_kind = 'call'),
-              (SELECT COUNT(DISTINCT from_symbol) FROM reference_edges
-                 WHERE to_symbol IN ({list}) AND edge_kind = 'test_reference');
+              -- tests is a subset of callers, derived from the caller's own is_test flag rather than
+              -- from a parallel edge set. The two can no longer disagree, and tests <= callers holds
+              -- by construction instead of by both being written correctly on the same pass.
+              (SELECT COUNT(DISTINCT e.from_symbol) FROM reference_edges e
+                 JOIN symbols f ON f.symbol_id = e.from_symbol
+                 WHERE e.to_symbol IN ({list}) AND e.edge_kind = 'call' AND f.is_test = 1);
             """;
         var i = 0;
         foreach (var id in symbolIds)
@@ -545,8 +550,8 @@ public sealed class SymbolStore
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, accessibility, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, xml_doc, embedding, updated_at, search_text)
-            VALUES ($id, $fq, $kind, $acc, $proj, $decl, $body, $refs, $api, $disp, $doc, NULL, $ts, $search);
+                 refs_hash, api_hash, display_string, xml_doc, embedding, updated_at, search_text, is_test)
+            VALUES ($id, $fq, $kind, $acc, $proj, $decl, $body, $refs, $api, $disp, $doc, NULL, $ts, $search, $isTest);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -565,6 +570,7 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$doc", (object?)s.XmlDoc ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ts", now);
             cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
+            cmd.Parameters.AddWithValue("$isTest", s.IsTest ? 1 : 0);
             cmd.ExecuteNonQuery();
         }
 
