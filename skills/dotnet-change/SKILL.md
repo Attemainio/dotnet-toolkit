@@ -86,5 +86,5 @@ An applied patch appends one development-log entry: your `intent`, the symbols c
 their old and new versions, and the API impact of each. That is why `intent` is required —
 the diff records *what* changed; only you can record *why*.
 
-Note: the log is currently write-only — there is no search tool for it yet, so don't plan
-to read it back.
+Read it back with `search_log` — before proposing a design, to find out whether the
+approach was already tried and rejected, and why.

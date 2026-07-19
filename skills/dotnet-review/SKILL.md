@@ -16,9 +16,10 @@ All four have the plugin's read-side MCP toolset: `search_index` to locate symbo
 symbol's shape/members/source, and `get_references` to trace callers, implementations and overrides
 semantically. They have no `Edit`/`Write` and no `validate_patch`, so they cannot change code.
 
-Note: they can no longer consult the development log for prior recorded decisions — the log is currently
-write-only (entries are recorded by `validate_patch`, and no search tool exists yet). If a finding might
-be a deliberate past decision, that context has to come from you.
+Note: they can consult the development log with `search_log` before asserting a finding, so a pattern
+recorded as a deliberate past decision is cited rather than re-flagged. The log only covers changes
+applied through `validate_patch`, so decisions made outside that path leave no trace — if a finding
+might reflect one, that context still has to come from you.
 
 ## Which agent(s) to launch
 

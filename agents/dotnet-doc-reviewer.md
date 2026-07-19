@@ -7,8 +7,9 @@ description: >
   public API surface, or for "review the docs/comments on this" requests.
 tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
+  mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status
-skills: [dotnet-code-query, dotnet-navigation]
+skills: [dotnet-code-query]
 model: sonnet
 memory: project
 color: green

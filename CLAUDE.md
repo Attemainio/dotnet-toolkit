@@ -73,11 +73,11 @@ modes, output format, severity tags, boundaries, memory discipline) lives in one
 Agent files should only ever reference these docs, never restate their content — that's what keeps the
 docs as the single source of truth the main agent reads too, rather than four forks of the same rules.
 
-All four have the read-side MCP toolset — `search_index`, `get_symbol`, `get_references` — so they trace
-callers and implementations semantically rather than grepping. They can no longer check whether an apparent
-violation was a deliberately recorded decision: the development log is currently write-only (written by
-`validate_patch`, with no search tool until a later phase), so `docs/review-workflow.md` tells them to mark
-such findings lower-confidence instead of asserting a violation.
+All four have the read-side MCP toolset — `search_index`, `get_symbol`, `get_references`, `search_log` — so
+they trace callers and implementations semantically rather than grepping, and can check whether an apparent
+violation was a deliberately recorded decision before asserting it. The log only covers changes applied
+through `validate_patch`, so `docs/review-workflow.md` tells them an empty result is not proof of absence
+and to mark such findings lower-confidence rather than asserting a violation.
 
 A consuming repo can override any doc in this list by placing its own copy at
 `.claude/dotnet-toolkit/<name>.md` — every agent prefers that over the plugin's bundled default. The

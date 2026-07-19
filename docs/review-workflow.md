@@ -21,10 +21,13 @@ same files, so the main agent and every review agent are working from one shared
    `resolution: "full"`. Only `Read` a file in full when you're about to judge specific lines and
    `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
    rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
-3. **Assume you cannot see prior recorded decisions.** The development log is currently write-only (no
-   search tool yet), so a pattern that looks wrong may be a deliberate, previously-reasoned choice you
-   have no way to check. Where a finding plausibly reflects an intentional tradeoff, say so and mark it
-   lower-confidence rather than asserting a violation.
+3. **Check for a prior recorded decision before asserting a violation.** `search_log` queries the
+   development log — the intents recorded when past changes were applied. A pattern that looks wrong
+   may be a deliberate, previously-reasoned choice. Search it whenever a finding could plausibly be
+   an intentional tradeoff. If the log records the decision, cite it and drop the finding or reframe
+   it as a question. The log only covers changes applied through `validate_patch`, so an empty result
+   is not proof of absence: it means nothing was recorded, not that nothing was decided — mark such
+   findings lower-confidence rather than asserting a violation.
 
 ## Review modes
 
@@ -73,6 +76,6 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 
 Every agent has persistent, project-scoped memory (`memory: project` — one namespace per agent, per
 consuming repo). Record concise, factual notes on: project-specific conventions confirmed intentional
-(via a devlog entry or repeated deliberate pattern) so you stop re-flagging them, recurring finding
+(via a `search_log` hit or repeated deliberate pattern) so you stop re-flagging them, recurring finding
 classes, and anything your dimension doc doesn't cover that this project has clearly standardized on.
 Memory does not authorize editing anything in `docs/` — doc changes stay with the main agent and the user.
