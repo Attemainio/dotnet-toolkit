@@ -147,12 +147,30 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
     private Task<string> GetSymbol(string symbol, string resolution = "signature", string? knownVersion = null, bool refetch = false) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            Session, Task_, symbol, resolution, knownVersion, refetch);
+            symbol, resolution, knownVersion, refetch, Session, Task_);
 
     private Task<string> GetReferences(string symbol, string direction) =>
-        ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, Session, Task_, symbol, direction);
+        ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction, sessionId: Session, taskId: Task_);
 
     private static JsonElement Root(string json) => JsonDocument.Parse(json).RootElement;
+
+    /// <summary>
+    /// Retrieval must work for a caller that supplies no session/task ids. Attribution is
+    /// instrumentation and must never gate the tool it measures: when these were required, an agent
+    /// that had not read the retrieval skill saw two mandatory ids it could not produce and fell
+    /// back to grep — so the requirement meant to produce telemetry produced none at all.
+    /// </summary>
+    [Fact]
+    public async Task Retrieval_WorksWithoutSessionOrTaskIds()
+    {
+        var json = await ContextTools.GetSymbol(
+            _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
+            "Lib.TurboWidget");
+
+        var root = Root(json);
+        Assert.False(root.TryGetProperty("error", out _));
+        Assert.True(root.TryGetProperty("contentVersion", out _));
+    }
 
     [Fact]
     public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
@@ -184,7 +202,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, Session, Task_,
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry,
             "Widget", kinds: "class", limit: 10));
 
         var items = root.GetProperty("items").EnumerateArray().ToList();
@@ -262,7 +280,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var site = sym.GetProperty("content").GetProperty("declarationSites")[0];
         var line = site.GetProperty("startLine").GetInt32();
 
-        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, Session, Task_,
+        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator,
             file: "Lib/Pipeline.cs", line: line, column: 40, receiver: "_widget", filter: "methods"));
 
         var items = root.GetProperty("items").EnumerateArray()
@@ -272,7 +290,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     private Task<string> ContextToolsCallSlice(string from, string to) =>
-        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, Session, Task_, from, to);
+        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
 
     // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
     // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
@@ -428,8 +446,9 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
         var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            Session, applyTask, new Dictionary<string, string> { [symbolId] = version }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
+            new Dictionary<string, string> { [symbolId] = version }, edits,
+            requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null,
+            sessionId: Session, taskId: applyTask));
 
         Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean());
         Assert.True(root.GetProperty("applied").GetBoolean());
@@ -441,5 +460,5 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            Session, Task_, baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);
+            baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);
 }

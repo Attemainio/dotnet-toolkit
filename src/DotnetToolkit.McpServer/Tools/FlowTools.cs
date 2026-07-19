@@ -21,19 +21,19 @@ public static class FlowTools
     [Description("What is callable HERE — members, inherited members, locals, parameters and applicable "
         + "extension methods at a file/line/column, filtered to what is actually accessible from that position. "
         + "Grep cannot answer this: extension methods share no text with the call site. Use before writing a "
-        + "helper that may already exist. Requires sessionId and taskId.")]
+        + "helper that may already exist.")]
     public static async Task<string> GetScope(
         WorkspaceHost workspace,
         SolutionLocator locator,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Root-relative path of the .cs file.")] string file,
         [Description("1-based line number.")] int line,
         [Description("1-based column (default 1).")] int column = 1,
         [Description("Optional variable/expression name; results become what is callable ON it, incl. extension methods.")] string? receiver = null,
         [Description("all | methods | properties | locals | types (default all).")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
-        [Description("Max results (default 40).")] int limit = 40)
+        [Description("Max results (default 40).")] int limit = 40,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
@@ -100,17 +100,17 @@ public static class FlowTools
     [McpServerTool(Name = "get_call_slice")]
     [Description("The shortest call path between two symbols — how a value or control flow reaches its "
         + "destination. Use for 'how does X reach Y' instead of walking the graph with repeated get_references "
-        + "calls. A miss still reports the nearest reachable frontier from each end. Requires sessionId and taskId.")]
+        + "calls. A miss still reports the nearest reachable frontier from each end.")]
     public static async Task<string> GetCallSlice(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
         CallSlice slice,
         SymbolIndexBuilder indexBuilder,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Origin symbol: fully-qualified name, unique suffix, or sym_... id.")] string from,
         [Description("Destination symbol: fully-qualified name, unique suffix, or sym_... id.")] string to,
-        [Description("Maximum path length to search (default 8).")] int maxDepth = 8)
+        [Description("Maximum path length to search (default 8).")] int maxDepth = 8,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
         if (!indexBuilder.Ready)
             return Formats.ToJson(new { error = "index_building", message = "The edge cache is still being built." });

@@ -60,7 +60,7 @@ public sealed class StalenessTests : IDisposable
     {
         var root = Root(await ContextTools.GetSymbol(
             _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
-            "ses_a", "tsk_a", "Demo.Foo", "signature"));
+            "Demo.Foo", "signature", sessionId: "ses_a", taskId: "tsk_a"));
 
         Assert.Equal("index_only", root.GetProperty("staleness").GetString());
         Assert.True(root.TryGetProperty("content", out _));
@@ -72,7 +72,7 @@ public sealed class StalenessTests : IDisposable
     public async Task GetReferences_IsLiveOnlyAndRefuses_C11()
     {
         var root = Root(await ContextTools.GetReferences(
-            _workspace, _locator, _symbols, _telemetry, "ses_a", "tsk_a", "Demo.Foo", "callers"));
+            _workspace, _locator, _symbols, _telemetry, "Demo.Foo", "callers", sessionId: "ses_a", taskId: "tsk_a"));
 
         Assert.Equal("workspace_loading", root.GetProperty("error").GetString());
     }
@@ -85,7 +85,7 @@ public sealed class StalenessTests : IDisposable
         var root = Root(await PatchTools.ValidatePatch(
             _workspace, _locator, _symbols, _featureLog, _builder,
             new TargetedTests(_locator, NullLogger<TargetedTests>.Instance), _telemetry,
-            "ses_a", "tsk_a", new Dictionary<string, string>(), edits,
+            new Dictionary<string, string>(), edits, sessionId: "ses_a", taskId: "tsk_a",
             requestedLevel: null, applyOnSuccess: true, intent: null, tags: null));
 
         Assert.Equal("intent_required", root.GetProperty("error").GetString());

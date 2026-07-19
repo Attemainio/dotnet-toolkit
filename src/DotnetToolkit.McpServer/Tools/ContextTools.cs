@@ -27,9 +27,11 @@ public static class ContextTools
     private const int ReferenceCap = 50;
 
     [McpServerTool(Name = "get_symbol")]
-    [Description("Retrieve one logical symbol at the resolution you need (signature|outline|full) instead of "
-        + "reading files. Partial types are unified. Returns a version token for leasing; pass knownVersion to get "
-        + "changed:false when nothing moved, or refetch:true to force content. Requires sessionId and taskId.")]
+    [Description("Retrieve one C# symbol at the resolution you need (signature|outline|full). "
+        + "USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when it is split across "
+        + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
+        + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
+        + "changed:false when nothing moved, or refetch:true to force content.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -38,13 +40,15 @@ public static class ContextTools
         FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("signature | outline | full (default signature).")] string resolution = "signature",
         [Description("Held version token to lease against.")] string? knownVersion = null,
-        [Description("Force full content even if the version matches.")] bool refetch = false)
+        [Description("Force full content even if the version matches.")] bool refetch = false,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
+        sessionId ??= Ids.AmbientSession;
+        taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
@@ -121,20 +125,24 @@ public static class ContextTools
     }
 
     [McpServerTool(Name = "get_references")]
-    [Description("Semantic relationship traversal — callers (incl. interface/virtual/delegate dispatch), "
-        + "implementations, or overrides. Replaces grep for usages: comment/string text matches are never returned "
-        + "as items. Each item carries a version token. Requires sessionId and taskId.")]
+    [Description("Callers, implementations or overrides of a C# symbol, from the compiler's own model. "
+        + "USE THIS INSTEAD OF GREP — grep gives wrong caller lists: it cannot see interface, virtual or delegate "
+        + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
+        + "Returns every real call site, no false positives, and reports how many text-only matches it excluded. "
+        + "Each item carries a version token.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
         SymbolStore symbolStore,
         TelemetryRecorder telemetry,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("callers | implementations | overrides (default callers).")] string direction = "callers",
-        [Description("Include member bodies inline (default false).")] bool includeBodies = false)
+        [Description("Include member bodies inline (default false).")] bool includeBodies = false,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
+        sessionId ??= Ids.AmbientSession;
+        taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
@@ -194,18 +202,22 @@ public static class ContextTools
     }
 
     [McpServerTool(Name = "search_index")]
-    [Description("Ranked symbol discovery when you don't yet know the name — the one legitimate code-search job. "
-        + "Returns symbols (never raw lines); follow up with get_symbol. Requires sessionId and taskId.")]
+    [Description("Find a C# symbol when you don't know its exact name. "
+        + "USE THIS INSTEAD OF GREP/GLOB over .cs files — it returns ranked symbols with ids and locations, not "
+        + "raw text lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
+        + "Follow up with get_symbol on the one you want.")]
     public static string SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
         TelemetryRecorder telemetry,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Free-text query over symbol names.")] string query,
         [Description("Optional kind filter, e.g. Method,Type.")] string? kinds = null,
-        [Description("Max results (default 10, cap 50).")] int limit = 10)
+        [Description("Max results (default 10, cap 50).")] int limit = 10,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
+        sessionId ??= Ids.AmbientSession;
+        taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var kindList = string.IsNullOrWhiteSpace(kinds)

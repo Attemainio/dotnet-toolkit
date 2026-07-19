@@ -1,6 +1,6 @@
 ---
 name: dotnet-code-query
-description: Use when exploring, searching, inspecting or analyzing C# code in a .NET repo - orienting in the codebase, finding a class/method/symbol, callers or references, interface implementations, or type signatures/APIs. Prefer these MCP tools over Read/Grep/ls for .cs files; they answer from a Roslyn semantic model and return a fraction of the tokens.
+description: Use when exploring, searching, inspecting or analyzing C# code in a .NET repo - orienting in the codebase, finding a class/method/symbol, callers or references, interface implementations, or type signatures/APIs. Grep and Read give WRONG ANSWERS on C# - grep cannot see interface, virtual or delegate dispatch, counts comment and string matches as hits, and silently under-reports when output is truncated. Use the dotnet-toolkit MCP tools instead; they answer from a Roslyn semantic model, are complete, and cost a fraction of the tokens.
 ---
 
 # Retrieving C# code without reading files
@@ -11,10 +11,24 @@ interfaces, virtual dispatch and delegates that a text search cannot.
 
 Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 
-## Session and task ids (required on every call)
+## Never fall back to grep
 
-Every tool takes `sessionId` and `taskId`. The server never invents them, and they are
-what make the usage metrics meaningful.
+If you find yourself about to run Grep, Glob or Read against a `.cs` file, stop — that is
+the mistake this skill exists to prevent. Reach for the MCP tool instead, even when it
+costs an extra step to load the tool schema first. Measured on a real repo, `grep -rn` for
+a method name found **3 of 5** call sites (truncation dropped two) and would have returned
+**58** comment/XML-doc matches to hand-filter; `get_references` returned all 5, no false
+positives, fewer tokens. A wrong caller list produces a wrong answer, not a slower one.
+
+The only legitimate reasons to read a file directly: non-C# files (csproj, json, md), or
+lines you are about to edit that `get_symbol` did not return.
+
+## Session and task ids (optional)
+
+Every tool accepts `sessionId` and `taskId`. They are **optional** — omit them and the
+tools still work; the server auto-attributes the call. Supply them when you can, because
+they are what make the usage metrics meaningful, but never let a missing id stop you from
+using a tool.
 
 - **`sessionId`** — generate once at the start of the conversation, e.g. `ses_<8 random
   chars>`, and reuse it for **every** call thereafter.

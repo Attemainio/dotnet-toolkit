@@ -1,0 +1,13 @@
+{
+  "name": "dotnet-toolkit-local",
+  "owner": {
+    "name": "Atte Harrikari"
+  },
+  "plugins": [
+    {
+      "name": "dotnet-toolkit",
+      "source": "./",
+      "description": "Token-efficient Roslyn symbol retrieval with content-version leases, and compiler-validated edits, for .NET repos"
+    }
+  ]
+}

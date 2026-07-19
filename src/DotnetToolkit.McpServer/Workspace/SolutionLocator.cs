@@ -12,10 +12,12 @@ public sealed class SolutionLocator
 {
     private static readonly string[] SkipDirs = ["bin", "obj", "node_modules", ".git", ".vs", "dist"];
 
+    private readonly ILogger<SolutionLocator> _log;
+
     public string Root { get; }
-    public ToolkitConfig Config { get; }
-    public string? WorkspaceEntry { get; }
-    public IReadOnlyList<string> Candidates { get; }
+    public ToolkitConfig Config { get; private set; }
+    public string? WorkspaceEntry { get; private set; }
+    public IReadOnlyList<string> Candidates { get; private set; }
 
     public string ToolkitDir => Path.Combine(Root, ".claude", "dotnet-toolkit");
     public string CacheDir => Path.Combine(ToolkitDir, "cache");
@@ -29,9 +31,24 @@ public sealed class SolutionLocator
             ?? Environment.GetEnvironmentVariable("CLAUDE_PROJECT_DIR")
             ?? Directory.GetCurrentDirectory());
 
+        _log = log;
         Config = LoadConfig(log);
         (WorkspaceEntry, Candidates) = ResolveEntry(log);
         log.LogInformation("Root: {Root}; workspace entry: {Entry}", Root, WorkspaceEntry ?? "(none)");
+    }
+
+    /// <summary>
+    /// Re-reads <c>config.json</c> and re-resolves the workspace entry. Called by
+    /// <see cref="WorkspaceHost.TriggerReload"/> so that writing a <c>solution</c> override into an
+    /// ambiguous repo takes effect on reload rather than requiring a server restart — resolution
+    /// otherwise happens once in the constructor, and a singleton locator would stay stuck on the
+    /// original (null) entry forever.
+    /// </summary>
+    public void Rescan()
+    {
+        Config = LoadConfig(_log);
+        (WorkspaceEntry, Candidates) = ResolveEntry(_log);
+        _log.LogInformation("Re-resolved workspace entry: {Entry}", WorkspaceEntry ?? "(none)");
     }
 
     private ToolkitConfig LoadConfig(ILogger log)

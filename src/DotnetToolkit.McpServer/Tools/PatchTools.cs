@@ -30,7 +30,7 @@ public static class PatchTools
     [Description("Validate (and optionally apply) a code change against an in-memory compilation before it "
         + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
         + "dependent_compile) and reports honestly whether that was sufficient for the change. baseVersions is "
-        + "required (stale context is rejected); intent is required to apply. Requires sessionId and taskId.")]
+        + "required (stale context is rejected); intent is required to apply.")]
     public static async Task<string> ValidatePatch(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -39,15 +39,17 @@ public static class PatchTools
         SymbolIndexBuilder indexBuilder,
         TargetedTests targetedTests,
         TelemetryRecorder telemetry,
-        [Description("Agent conversation id (ses_...).")] string sessionId,
-        [Description("User task id (tsk_...).")] string taskId,
         [Description("Map of symbolId -> held contentVersion the patch was built against. Required.")] Dictionary<string, string> baseVersions,
         [Description("The edits to apply.")] PatchEditInput[] edits,
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
-        [Description("Optional tags.")] string[]? tags = null)
+        [Description("Optional tags.")] string[]? tags = null,
+        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
     {
+        sessionId ??= Ids.AmbientSession;
+        taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
         var patchId = Ids.Patch();
         var validationAttemptId = Ids.ValidationAttempt();

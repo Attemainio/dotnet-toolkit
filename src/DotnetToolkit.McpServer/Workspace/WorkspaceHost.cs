@@ -170,6 +170,8 @@ public sealed class WorkspaceHost : IDisposable
             {
                 lock (_gate)
                     _loadDiagnostics.Clear();
+                // Config may have gained a `solution` override since startup; re-resolve before loading.
+                _locator.Rescan();
                 await LoadAsync();
             }
             finally
