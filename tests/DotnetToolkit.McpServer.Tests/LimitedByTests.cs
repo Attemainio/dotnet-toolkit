@@ -18,7 +18,7 @@ namespace DotnetToolkit.McpServer.Tests;
 /// band, every project failed ResolvePackageAssets, and every response still reported the healthy
 /// case because the index builder had completed a pass over the broken model.
 /// </summary>
-public sealed class StalenessMarkerTests : IDisposable
+public sealed class LimitedByTests : IDisposable
 {
     private readonly string _root;
     private readonly SolutionLocator _locator;
@@ -28,9 +28,9 @@ public sealed class StalenessMarkerTests : IDisposable
     private readonly SymbolStore _symbols;
     private readonly TelemetryRecorder _telemetry;
 
-    public StalenessMarkerTests()
+    public LimitedByTests()
     {
-        _root = Directory.CreateTempSubdirectory("staleness-marker-").FullName;
+        _root = Directory.CreateTempSubdirectory("limited-by-").FullName;
         _locator = new SolutionLocator(NullLogger<SolutionLocator>.Instance, _root);
         _index = new ProjectIndex(_locator, NullLogger<ProjectIndex>.Instance);
         _workspace = new WorkspaceHost(_locator, _index, NullLogger<WorkspaceHost>.Instance);
@@ -69,6 +69,6 @@ public sealed class StalenessMarkerTests : IDisposable
         var json = ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, "Anything");
         var root = System.Text.Json.JsonDocument.Parse(json).RootElement;
 
-        Assert.Equal("index_only", root.GetProperty("staleness").GetString());
+        Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());
     }
 }

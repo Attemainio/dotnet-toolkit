@@ -21,6 +21,13 @@ public sealed record RetrievalEvent
     public string? ContentVersion { get; init; }
     public int ReturnedSymbols { get; init; }
     public int ReturnedTokens { get; init; }
+    /// <summary>
+    /// What limited the answer — the signal the response emits as <c>limitedBy</c> since
+    /// ctx-contract/3.0, recorded here under its pre-3.0 name because <c>retrieval_events</c> is
+    /// immutable raw history: existing rows cannot be rewritten (an UPDATE trigger aborts), so renaming
+    /// the column would split one signal across two names in the same table. <c>"live"</c> is the
+    /// sentinel for "nothing limited it", which the response expresses as absence.
+    /// </summary>
     public string Staleness { get; init; } = "live";
     public string? ErrorKind { get; init; }
 }

@@ -52,7 +52,7 @@ The server (`src/DotnetToolkit.McpServer/Program.cs`) starts over stdio (`WithSt
 
 Two independent knowledge tiers are built in the background so the MCP handshake completes within Claude Code's ~5s startup timeout — tool calls await readiness themselves rather than blocking startup:
 
-- **Syntax index** (`Index/ProjectIndex.cs`, started via `StartInitialization()`) — every `.cs` file parsed with Roslyn, no MSBuild needed. Lets `search_index` and `get_symbol` answer almost immediately (marked `staleness: "index_only"`).
+- **Syntax index** (`Index/ProjectIndex.cs`, started via `StartInitialization()`) — every `.cs` file parsed with Roslyn, no MSBuild needed. Lets `search_index` and `get_symbol` answer almost immediately (marked `limitedBy: "index_only"`).
 - **MSBuild workspace** (`Workspace/WorkspaceHost.cs`, started via `StartLoading()`) — full semantic model via `MSBuildWorkspace`. Powers `get_references` and `validate_patch`, and the live path of `get_symbol`. `Microsoft.Build.Locator.MSBuildLocator.RegisterDefaults()` must run before any `Microsoft.CodeAnalysis.Workspaces.MSBuild` code touches assemblies — this happens at the very top of `Program.cs`, before the host builder is even constructed.
 
 Other subsystems:

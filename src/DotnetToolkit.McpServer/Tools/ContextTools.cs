@@ -18,7 +18,7 @@ namespace DotnetToolkit.McpServer.Tools;
 
 /// <summary>
 /// The v2 read surface (spec §9, §10, §16): symbol retrieval, relationship traversal, and ranked
-/// discovery. All responses are ctx-contract/2.2 JSON envelopes carrying version tokens so the agent
+/// discovery. All responses are ctx-contract/3.0 JSON envelopes carrying version tokens so the agent
 /// can hold leases and avoid re-transmitting unchanged content.
 /// </summary>
 [McpServerToolType]
@@ -71,13 +71,13 @@ public static class ContextTools
                     ? new
                     {
                         contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = false, heldVersion = indexLease.HeldVersion, staleness = "index_only",
+                        changed = false, heldVersion = indexLease.HeldVersion, limitedBy = "index_only",
                         content = (object?)null, refetchHint = Lease.RefetchHint,
                     }
                     : new
                     {
                         contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = true, heldVersion = (string?)null, staleness = "index_only", content = fb.Content,
+                        changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
                     };
                 var indexJson = Formats.ToJson(indexEnvelope);
                 return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, resolution,
@@ -109,7 +109,7 @@ public static class ContextTools
         // The token describes only the layers this response's components were derived from, so a caller
         // that held it can never be told "unchanged" about content it was never sent.
         var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
-        var staleness = Staleness(workspace, indexBuilder);
+        var limitedBy = LimitedBy(workspace, indexBuilder);
         var lease = Lease.Evaluate(version, knownVersion, refetch, parts.RequiredLayers);
 
         object envelope;
@@ -123,7 +123,7 @@ public static class ContextTools
                 contentVersion = version.ToString(),
                 changed = false,
                 heldVersion = lease.HeldVersion,
-                staleness = staleness == "live" ? null : staleness,
+                limitedBy,
                 refetchHint = Lease.RefetchHint,
             };
         }
@@ -135,7 +135,7 @@ public static class ContextTools
             {
                 symbolId,
                 contentVersion = version.ToString(),
-                staleness = staleness == "live" ? null : staleness,
+                limitedBy,
                 // Echoed only when the caller narrowed the set: on a plain resolution it would repeat
                 // what the resolution name already said, on every single call.
                 components = include is null && exclude is null ? null : parts.Resolved,
@@ -145,7 +145,7 @@ public static class ContextTools
 
         var json = Formats.ToJson(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, resolution,
-            knownVersion, refetch, lease.OmitContent, version.ToString(), 1, staleness, null, json);
+            knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
     }
 
     [McpServerTool(Name = "get_references")]
@@ -168,7 +168,7 @@ public static class ContextTools
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
-        var refStaleness = workspace.IsDegraded ? "degraded" : "live";
+        var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
@@ -224,12 +224,12 @@ public static class ContextTools
             excludedTextMatches = excludedComments > 0 ? excludedComments : (int?)null,
             // A caller list from a degraded workspace is missing whatever the failed projects would
             // have contributed, and nothing in the list itself says so.
-            staleness = refStaleness == "live" ? null : refStaleness,
+            limitedBy = refLimitedBy,
         };
 
         var json = Formats.ToJson(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, SymbolKey.IdOf(sym), null,
-            null, false, false, null, shown.Count, refStaleness, null, json, normalized);
+            null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
 
     [McpServerTool(Name = "search_index")]
@@ -263,13 +263,13 @@ public static class ContextTools
         var hits = symbolStore.Search(query, NormalizeKinds(kindList), limit);
         // A populated store is necessary but not sufficient: a degraded workspace can fill it with
         // wrong data, which is exactly how a whole repo's test flags came back false.
-        var searchStaleness = workspace.IsDegraded ? "degraded"
-            : symbolStore.SymbolCount() > 0 ? "live"
+        var searchLimitedBy = workspace.IsDegraded ? "degraded"
+            : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
         object envelope = new
         {
-            // staleness is emitted only when it is NOT the default "live" — silence means live.
-            staleness = searchStaleness == "live" ? null : searchStaleness,
+            // Absent means nothing limited this answer — the healthy case costs no tokens.
+            limitedBy = searchLimitedBy,
             items = hits.Select(h => new
             {
                 symbolId = h.SymbolId,
@@ -285,7 +285,7 @@ public static class ContextTools
 
         var json = Formats.ToJson(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
-            null, false, false, null, hits.Count, searchStaleness, null, json);
+            null, false, false, null, hits.Count, searchLimitedBy, null, json);
     }
 
 
@@ -298,12 +298,12 @@ public static class ContextTools
     /// - <c>index_only</c>: answered from the syntax tier, or before the semantic index finished its
     ///   first pass. Reference counts and semantic resolution are unavailable, not zero.
     ///
-    /// Despite the field name this is not about content freshness: change detection is mtime-polling
-    /// and runs before every query. It is about which knowledge tier could answer.
+    /// This is not about content freshness: change detection is mtime-polling and runs before every
+    /// query. It reports what the answer could not draw on.
     /// </summary>
-    private static string Staleness(WorkspaceHost workspace, SymbolIndexBuilder indexBuilder) =>
+    private static string? LimitedBy(WorkspaceHost workspace, SymbolIndexBuilder indexBuilder) =>
         workspace.IsDegraded ? "degraded"
-        : indexBuilder.Ready ? "live"
+        : indexBuilder.Ready ? null
         : "index_only";
 
     // ---- content builder -----------------------------------------------------
@@ -779,7 +779,7 @@ public static class ContextTools
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,
         string requestedSymbol, string? symbolId, string? resolution, string? knownVersion, bool refetch,
-        bool leaseHit, string? contentVersion, int returnedSymbols, string staleness, string? errorKind, string result,
+        bool leaseHit, string? contentVersion, int returnedSymbols, string? limitedBy, string? errorKind, string result,
         string? direction = null)
     {
         telemetry.RecordRetrieval(new RetrievalEvent
@@ -798,7 +798,9 @@ public static class ContextTools
             ContentVersion = contentVersion,
             ReturnedSymbols = returnedSymbols,
             ReturnedTokens = TelemetryRecorder.EstimateTokens(result),
-            Staleness = staleness,
+            // Telemetry keeps the pre-3.0 column name: retrieval_events is immutable raw history and
+            // its rows cannot be rewritten, so renaming the column would split one signal across two.
+            Staleness = limitedBy ?? "live",
             ErrorKind = errorKind,
         });
         return result;

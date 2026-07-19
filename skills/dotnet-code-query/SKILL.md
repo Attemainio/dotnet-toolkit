@@ -242,8 +242,8 @@ content and correctly records the refetch as compaction-driven rather than waste
 
 ## Workspace readiness
 
-`staleness` says which tier answered — **not** whether content is fresh. Freshness is handled
-separately by mtime polling before every query, so answers are always current.
+`limitedBy` names what the answer could **not** draw on. It is not about content freshness —
+that is mtime-polled before every query, so answers are always current.
 
 - **absent** — fully informed. Silence is the healthy case.
 - **`index_only`** — answered from the syntax tier, or before the semantic index finished its
@@ -255,7 +255,7 @@ separately by mtime polling before every query, so answers are always current.
   `reload_workspace`. Do not report findings from a degraded workspace without saying so.
 
 `search_index` and `get_symbol` answer from the syntax index immediately; while the MSBuild
-workspace is still loading they return `staleness: "index_only"` (and `referenceCounts` may
+workspace is still loading they return `limitedBy: "index_only"` (and `referenceCounts` may
 be absent — do not read that as "no callers"). `get_references` needs live semantics and
 returns `error: "workspace_loading"` until it is ready — wait briefly and retry, or check
 `workspace_status`. After a large git operation, call `reload_workspace`.
@@ -263,7 +263,7 @@ returns `error: "workspace_loading"` until it is ready — wait briefly and retr
 ## Reading responses
 
 Responses are JSON and deliberately terse: fields that are absent carry no information.
-`staleness` appears only when it is not `live`, `changed` only when `false`, `truncated`
+`limitedBy` appears only when something limited the answer, `changed` only when `false`, `truncated`
 only when true. Absence of `tests` in `referenceCounts` means "not computed yet", **not**
 "no tests".
 

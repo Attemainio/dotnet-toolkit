@@ -13,7 +13,7 @@ namespace DotnetToolkit.McpServer.Tests;
 
 /// <summary>
 /// Conformance C11 without MSBuild: with no solution to load, the workspace never becomes ready, so
-/// index-backed responses must carry <c>staleness: index_only</c> while live-only tools refuse with
+/// index-backed responses must carry <c>limitedBy: index_only</c> while live-only tools refuse with
 /// <c>workspace_loading</c>.
 /// </summary>
 public sealed class StalenessTests : IDisposable
@@ -62,7 +62,7 @@ public sealed class StalenessTests : IDisposable
             _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
             "Demo.Foo", "signature", sessionId: "ses_a", taskId: "tsk_a"));
 
-        Assert.Equal("index_only", root.GetProperty("staleness").GetString());
+        Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());
         Assert.True(root.TryGetProperty("content", out _));
         Assert.Equal("Type", root.GetProperty("content").GetProperty("kind").GetString());
         Assert.StartsWith("decl:", root.GetProperty("contentVersion").GetString());
