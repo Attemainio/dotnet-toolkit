@@ -127,9 +127,12 @@ modes, output format, severity tags, boundaries, memory discipline) lives in one
 Agent files should only ever reference these docs, never restate their content — that's what keeps the
 docs as the single source of truth the main agent reads too, rather than four forks of the same rules.
 
-All four have the read-side MCP toolset — `search_index`, `get_symbol`, `get_references`, `search_log` — so
-they trace callers and implementations semantically rather than grepping, and can check whether an apparent
-violation was a deliberately recorded decision before asserting it. The log only covers changes applied
+All four have the read-side MCP toolset — `search_index`, `get_symbol`, `get_references`, `search_log`,
+`get_scope`, `get_call_slice`, `get_semantic_diff` — kept deliberately uniform across the four, so the
+shared `docs/review-workflow.md` can reference any of them without per-agent conditionals. The point is
+that they trace callers and implementations semantically rather than grepping, establish reachability
+instead of assuming it, and can check whether an apparent violation was a deliberately recorded decision
+before asserting it. The log only covers changes applied
 through `validate_patch`, so `docs/review-workflow.md` tells them an empty result is not proof of absence
 and to mark such findings lower-confidence rather than asserting a violation.
 

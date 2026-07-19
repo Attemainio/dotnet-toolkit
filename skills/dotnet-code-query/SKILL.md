@@ -46,6 +46,10 @@ Do not invent a fresh id per call; that destroys the grouping.
 | A type's member list | `get_symbol` with `resolution: "outline"` | Read the file |
 | Callers / usages | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
+| What is callable at a point in a file | `get_scope` | Guess, or grep for a helper that may not apply here |
+| How one symbol reaches another | `get_call_slice` | Walk the graph with repeated `get_references` |
+| What a commit or branch actually changed | `get_semantic_diff` | Read `git diff` and infer |
+| Why past code looks the way it does | `search_log` | Guess from the code |
 | Whether a change is safe | `validate_patch` (see the dotnet-change skill) | `dotnet build` |
 
 Read a .cs file only when you are about to edit lines that `get_symbol` did not give you,
@@ -100,6 +104,78 @@ That is deliberate: escalating later (`signature` → `full`) with that token re
 content rather than a false `changed: false`. It also means you cannot lease a wide request
 against a narrow token — hold the token from a fetch of the same shape.
 
+## Questions symbol lookup cannot answer
+
+Three tools answer questions that no amount of `get_symbol` will. Every example below is a
+real call against this plugin's own repo, with its real response.
+
+### `get_scope` — what is callable *here*
+
+Members, inherited members, locals, parameters and **applicable extension methods** at a
+file/line, filtered to what is actually accessible from that position. Grep cannot answer
+this: an extension method shares no text with its call site.
+
+Use it before writing a helper that may already exist, and to find out what a variable
+actually offers instead of guessing at a method name.
+
+```
+get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
+          line: 185, receiver: "featureLog", filter: "methods")
+```
+
+```json
+{"receiverType": "FeatureLogStore",
+ "items": [{"displayString": "string FeatureLogStore.Append(LogEntry entry)",
+            "kind": "Method", "origin": "member", "definedIn": "FeatureLogStore"},
+           {"displayString": "int FeatureLogStore.EntryCount()", "origin": "member"},
+           {"displayString": "bool object.Equals(object? obj)", "origin": "inherited"}]}
+```
+
+`origin` separates what the type itself declares from what it inherits — usually the first
+thing you want to know. Drop `receiver` to ask what is in scope at that line generally
+rather than on one expression.
+
+### `get_call_slice` — how does X reach Y
+
+The shortest call path between two symbols. Use it for "how does this value get there"
+instead of walking outwards with repeated `get_references` calls, which costs a round trip
+per hop and leaves you assembling the chain yourself.
+
+```
+get_call_slice(from: "PatchTools.ValidatePatch", to: "FeatureLogStore.Append")
+```
+
+```json
+{"found": true, "depth": 2, "nodesExplored": 69,
+ "path": [{"displayString": "Task<string> PatchTools.ValidatePatch(...)"},
+          {"displayString": "void PatchTools.AppendLog(...)"},
+          {"displayString": "string FeatureLogStore.Append(LogEntry entry)"}]}
+```
+
+A miss is still informative: it reports the nearest reachable frontier from each end, which
+tells you where the chain actually breaks. `found: false` means no path within `maxDepth`
+(default 8) — not necessarily no relationship.
+
+### `get_semantic_diff` — what changed, semantically
+
+Symbols added, removed and changed between two git refs, with which version layers moved and
+the API impact. Use it instead of reading a textual diff to judge a commit or a branch.
+
+```
+get_semantic_diff(fromRef: "9f20936~1", toRef: "9f20936")
+```
+
+```json
+{"symbolsAdded": ["...Store.SearchText::method ForIndex/1", "..."],
+ "symbolsChanged": [{"displayString": "...Store.SymbolStore::method Search/3",
+                     "layersChanged": ["body"], "apiImpact": "non-breaking"}],
+ "apiImpactSummary": {"breaking": 0, "nonBreaking": 3, "added": 16, "removed": 0}}
+```
+
+It is trivia-blind, so a formatting- or comment-only commit correctly reports **no change**.
+Read an all-empty result as "nothing semantic moved" — which also covers a commit that only
+touched non-C# files. Defaults are `HEAD~1`..`HEAD`.
+
 ## Gate expansion on referenceCounts
 
 `get_symbol` returns `referenceCounts: { callers, implementations, overrides }`. Use it to
@@ -133,9 +209,12 @@ lease: hold it, and pass it back later as `knownVersion`.
 - All supplied layers still match → `changed: false` and **no content is sent**. Your copy
   is current; carry on using it.
 - Something moved → you get fresh content.
-- **Only pass `knownVersion` when you actually still hold the content.** If you need a body
-  you never fetched, just request it — leasing against a `decl`-only token returns
-  `changed:false` with no body and costs you a second round trip.
+- **Only pass `knownVersion` when you actually still hold the content.** If you never held
+  it, you are asking whether something you do not have has changed.
+- Escalating is safe: a request needing layers your token does not carry returns content
+  rather than `changed: false`, so `signature` → `full` against a signature token gives you
+  the source. You still get a wasted round trip if you lease for content you never held —
+  the lease just will not silently hand you nothing.
 
 The layers are meaningful: same `decl` with a different `body` means the API is unchanged
 and only the implementation moved.

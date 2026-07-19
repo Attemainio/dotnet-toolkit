@@ -13,8 +13,15 @@ Route review requests to them instead of reviewing inline yourself; they read th
 (or a consuming repo's overrides under `.claude/dotnet-toolkit/`) that you only have a summary of.
 
 All four have the plugin's read-side MCP toolset: `search_index` to locate symbols, `get_symbol` for a
-symbol's shape/members/source, and `get_references` to trace callers, implementations and overrides
-semantically. They have no `Edit`/`Write` and no `validate_patch`, so they cannot change code.
+symbol's shape/members/source, `get_references` to trace callers, implementations and overrides
+semantically, `get_scope` for what is callable at a point (including extension methods), `get_call_slice`
+for the shortest path between two symbols, and `get_semantic_diff` for what a commit range actually
+changed and whether any of it is breaking. They have no `Edit`/`Write` and no `validate_patch`, so they
+cannot change code.
+
+Because they have `get_semantic_diff`, a review scoped to committed refs is worth stating as such — the
+agent can then skip files a formatting-only commit merely touched. It reads git refs, so it cannot see
+uncommitted work; for a working-tree review, state the file list instead.
 
 Note: they can consult the development log with `search_log` before asserting a finding, so a pattern
 recorded as a deliberate past decision is cited rather than re-flagged. The log only covers changes

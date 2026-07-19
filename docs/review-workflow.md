@@ -21,6 +21,12 @@ same files, so the main agent and every review agent are working from one shared
    `resolution: "full"`. Only `Read` a file in full when you're about to judge specific lines and
    `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
    rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
+   Three more tools answer questions symbol lookup cannot, and each replaces a guess with a fact:
+   `get_scope` (what is actually callable at a line, including extension methods — use it before
+   claiming a helper doesn't exist or that one should be added), `get_call_slice` (the shortest call
+   path between two symbols — use it to establish whether something is reachable, or how a value gets
+   somewhere, instead of walking outwards with repeated `get_references`), and `get_semantic_diff`
+   (what a range of commits changed semantically, with API impact per symbol).
 3. **Check for a prior recorded decision before asserting a violation.** `search_log` queries the
    development log — the intents recorded when past changes were applied. A pattern that looks wrong
    may be a deliberate, previously-reasoned choice. Search it whenever a finding could plausibly be
@@ -35,8 +41,12 @@ The invoking agent states your mode and scope. If neither is stated, default to 
 working tree's uncommitted changes.
 
 - **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
-  working tree). Use `get_references` on every changed public symbol to find callers, and check those
-  call sites too — a change is only correct relative to how it's actually used.
+  working tree). Start with `get_semantic_diff` against that baseline: it reports exactly which symbols
+  moved and which are breaking, and it is trivia-blind, so a formatting- or comment-only commit reports
+  no change and needs no correctness review at all. Then use `get_references` on every changed public
+  symbol to find callers, and check those call sites too — a change is only correct relative to how it's
+  actually used. `get_semantic_diff` works from git refs, so it cannot see uncommitted work; fall back
+  to the stated file list when the baseline is the working tree.
 - **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
   Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
   `dotnet-refactor-cleaner` defaults to scope mode when unstated (dead code needs a wide view); the other
@@ -69,6 +79,12 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert.
+- **Zero callers is not proof of dead code.** `get_references` counts *static* call sites, so anything
+  invoked by a framework rather than by name reports zero: reflection-registered entry points, DI-resolved
+  implementations, serialization targets, `[Theory]` data, event handlers wired by attribute. Every MCP
+  tool method in this plugin reports zero callers and every one is live. Before claiming removal, check
+  whether something reaches it another way — `get_call_slice` from a plausible entry point, or a
+  registration attribute on the symbol — and if it is framework-invoked, say so and drop the finding.
 - **Stay in your one dimension.** Defer everything else per "Staying in your lane" above.
 - **Don't flag pure preference** outside what your dimension doc actually states.
 

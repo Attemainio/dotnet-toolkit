@@ -8,6 +8,9 @@ description: >
 tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
+  mcp__plugin_dotnet-toolkit_dotnet__get_scope,
+  mcp__plugin_dotnet-toolkit_dotnet__get_call_slice,
+  mcp__plugin_dotnet-toolkit_dotnet__get_semantic_diff,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status
 skills: [dotnet-code-query]
 model: sonnet
