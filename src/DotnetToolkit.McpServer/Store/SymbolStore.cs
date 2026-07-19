@@ -410,7 +410,7 @@ public sealed class SymbolStore
     }
 
     /// <summary>The version layers already recorded for a symbol — the gate for incremental updates.</summary>
-    public sealed record ExistingSymbol(string DeclHash, string? BodyHash, string? RefsHash, string? ApiHash);
+    public sealed record ExistingSymbol(string DeclHash, string? BodyHash, string? RefsHash, string? ApiHash, bool IsTest);
 
     /// <summary>Outcome of an incremental pass, so the caller can report how much work was skipped.</summary>
     public sealed record UpdateStats(int Updated, int Removed, int Unchanged);
@@ -422,7 +422,7 @@ public sealed class SymbolStore
             return existing;
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT symbol_id, decl_hash, body_hash, refs_hash, api_hash FROM symbols;";
+        cmd.CommandText = "SELECT symbol_id, decl_hash, body_hash, refs_hash, api_hash, is_test FROM symbols;";
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -430,7 +430,8 @@ public sealed class SymbolStore
                 reader.GetString(1),
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4));
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                !reader.IsDBNull(5) && reader.GetInt32(5) == 1);
         }
         return existing;
     }
@@ -488,11 +489,27 @@ public sealed class SymbolStore
         return new UpdateStats(changed.Count, removed.Count, existing.Count - changed.Count - removed.Count);
     }
 
+    /// <summary>
+    /// Whether a stored row disagrees with what this pass computed. The version layers are the usual
+    /// answer, but IsTest is compared directly, because it is the one stored value whose input is not
+    /// the declaration text.
+    ///
+    /// It is read from the attributes on the declaration, and an attribute only binds when the
+    /// compilation resolved the framework that defines it. A workspace that failed to load — a broken
+    /// restore, an SDK mismatch, a blocked package — yields a compilation where [Fact] is an error
+    /// symbol, so the pass computes false for every test in the repo. The declaration text is
+    /// unchanged, so no layer moves, so without this comparison the wrong value is written once and
+    /// never revisited. Observed exactly that way: a degraded load flagged 0 of 105 test methods, and
+    /// a healthy reload afterwards did not correct a single one.
+    ///
+    /// Comparing the value itself is what makes the pass self-correcting rather than merely cheap.
+    /// </summary>
     private static bool Moved(ExistingSymbol prior, SymbolRow next) =>
         prior.DeclHash != next.DeclHash
         || prior.BodyHash != next.BodyHash
         || prior.RefsHash != next.RefsHash
-        || prior.ApiHash != next.ApiHash;
+        || prior.ApiHash != next.ApiHash
+        || prior.IsTest != next.IsTest;
 
     private static void DeleteSymbol(SqliteConnection connection, SqliteTransaction tx, string id)
     {

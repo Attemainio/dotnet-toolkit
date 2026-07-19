@@ -108,6 +108,54 @@ public sealed class SymbolSearchTests : IDisposable
         Assert.Single(_symbols.Search("Bravo", null, 10));
     }
 
+    /// <summary>
+    /// A degraded workspace computes is_test as false for every test in the repo: an attribute only
+    /// binds when the compilation resolved the framework defining it, so a broken restore or an SDK
+    /// mismatch turns [Fact] into an error symbol. The declaration text is identical either way, so no
+    /// version layer moves — and a gate that compares only layers would write the wrong value once and
+    /// never revisit it.
+    ///
+    /// Observed live: a degraded load flagged 0 of 105 test methods, and a healthy reload afterwards
+    /// corrected none of them. The pass must self-correct when the value it computes disagrees with
+    /// what is stored, regardless of whether any hash moved.
+    /// </summary>
+    [Fact]
+    public void RecomputedTestFlagIsCorrectedEvenThoughNoHashMoved()
+    {
+        // The degraded pass: same declaration, attribute did not bind.
+        _symbols.ReplaceAll([Row("sym_t", "Demo.Tests.ItWorks") with { IsTest = false }], []);
+        Assert.Equal(0, IsTestFlag("sym_t"));
+
+        // The healthy pass: identical hashes, correct flag.
+        var stats = _symbols.ApplyIncremental(
+            [Row("sym_t", "Demo.Tests.ItWorks") with { IsTest = true }], [], []);
+
+        Assert.Equal(1, IsTestFlag("sym_t"));
+        Assert.Equal(1, stats.Updated);
+    }
+
+    /// <summary>And the converse: a row already agreeing with the pass is still left untouched.</summary>
+    [Fact]
+    public void MatchingTestFlagDoesNotForceARewrite()
+    {
+        _symbols.ReplaceAll([Row("sym_t", "Demo.Tests.ItWorks") with { IsTest = true }], []);
+
+        var stats = _symbols.ApplyIncremental(
+            [Row("sym_t", "Demo.Tests.ItWorks") with { IsTest = true }], [], []);
+
+        Assert.Equal(0, stats.Updated);
+        Assert.Equal(1, IsTestFlag("sym_t"));
+    }
+
+    private int IsTestFlag(string symbolId)
+    {
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT is_test FROM symbols WHERE symbol_id = $id;";
+        cmd.Parameters.AddWithValue("$id", symbolId);
+        return Convert.ToInt32(cmd.ExecuteScalar() ?? -1);
+    }
+
     /// <summary>A mirror that is already correct is left alone, so startup pays nothing in the normal case.</summary>
     [Fact]
     public void RepairSearchIndexIsANoOpWhenTheMirrorIsConsistent()
