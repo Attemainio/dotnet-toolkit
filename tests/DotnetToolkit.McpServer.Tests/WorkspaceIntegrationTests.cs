@@ -172,6 +172,19 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.True(root.TryGetProperty("contentVersion", out _));
     }
 
+    /// <summary>
+    /// A project count is not actionable when one project of a solution fails to load: the caller
+    /// cannot tell which results are degraded. Status must name the projects it actually loaded.
+    /// </summary>
+    [Fact]
+    public void WorkspaceStatus_NamesLoadedProjects()
+    {
+        var status = ServerTools.WorkspaceStatus(_f.Locator, _f.Index, _f.Workspace);
+
+        Assert.Contains("loaded:", status);
+        Assert.Contains("Lib", status);
+    }
+
     [Fact]
     public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
     {

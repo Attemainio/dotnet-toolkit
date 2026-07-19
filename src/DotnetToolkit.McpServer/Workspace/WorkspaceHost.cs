@@ -50,6 +50,20 @@ public sealed class WorkspaceHost : IDisposable
         get { lock (_gate) return _solution?.ProjectIds.Count ?? 0; }
     }
 
+    /// <summary>
+    /// Names of the projects actually in the loaded solution. A count alone cannot be acted on: when
+    /// one project of a solution fails to load, the caller needs to know *which*, because semantic
+    /// results for that project are silently degraded while the rest are sound.
+    /// </summary>
+    public IReadOnlyList<string> ProjectNames
+    {
+        get
+        {
+            lock (_gate)
+                return _solution is null ? [] : [.. _solution.Projects.Select(p => p.Name).Order(StringComparer.Ordinal)];
+        }
+    }
+
     public WorkspaceHost(SolutionLocator locator, ProjectIndex index, ILogger<WorkspaceHost> log)
     {
         _locator = locator;
