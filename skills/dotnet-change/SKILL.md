@@ -31,6 +31,13 @@ Reuse the same `sessionId`/`taskId` you established in the dotnet-code-query ski
   changing, using the versions you hold. This is what proves your patch was built against
   current content. A mismatch returns `error: "stale_base"` with the current versions;
   refetch those symbols, rebuild the edit, resubmit.
+
+  `baseVersions` covers the symbols you are changing, **not the rest of the file**. An apply
+  writes the whole document text back, so a file that moved on disk since the workspace read
+  it is refused outright with `error: "stale_workspace"` — otherwise the patch would revert
+  every other change in that file while reporting success. Recover with `reload_workspace`,
+  then re-read the symbol (its line spans will have moved) and rebuild the patch. Expect this
+  after a `git checkout`, a `git pull`, a rebase, or any `.cs` edit made with `Edit`.
 - **`edits`** — `{ file, startLine, endLine, newText }`. The line span comes straight from
   `declarationSites` in the `get_symbol` response.
 - **`intent`** — REQUIRED when `applyOnSuccess: true`. One sentence of *why*, in user

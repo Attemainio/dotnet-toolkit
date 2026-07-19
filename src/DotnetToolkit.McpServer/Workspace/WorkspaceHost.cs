@@ -153,6 +153,28 @@ public sealed class WorkspaceHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes the text of documents just written to disk by an applied patch into the live solution.
+    ///
+    /// Without this the workspace still holds the pre-patch text of a file it just changed, so the very
+    /// next patch to that file reads as drifted against disk and is refused. Waiting for the mtime poll
+    /// to notice would leave that window open for however long the sweep interval is, and make the
+    /// outcome depend on timing.
+    /// </summary>
+    public void AdoptAppliedText(Solution applied, IReadOnlyList<DocumentId> documents)
+    {
+        lock (_gate)
+        {
+            if (_solution is null)
+                return;
+            foreach (var id in documents)
+            {
+                if (applied.GetDocument(id) is { } document && document.TryGetText(out var text))
+                    _solution = _solution.WithDocumentText(id, text);
+            }
+        }
+    }
+
     /// <summary>Returns the current solution, or null if loading exceeds the timeout.</summary>
     public async Task<Solution?> GetSolutionAsync(TimeSpan? timeout = null)
     {

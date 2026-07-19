@@ -270,15 +270,12 @@ public sealed class SymbolStore
                 cmd.Parameters.AddWithValue("$k" + i++, k);
         }
 
-        try
-        {
-            return ReadHits(cmd);
-        }
-        catch (SqliteException)
-        {
-            // A malformed MATCH expression must degrade to the substring matcher, never fail the call.
-            return [];
-        }
+        // No catch here on purpose. ForQuery quotes and escapes every term it emits, so a malformed
+        // MATCH expression is unreachable — the only SqliteException this can raise is a bug in the
+        // statement above, and swallowing it returns an empty result that reads as "nothing matched".
+        // That masked a real one once: bm25() under a GROUP BY throws, and the empty list looked like
+        // a miss rather than a hard failure.
+        return ReadHits(cmd);
     }
 
     private IReadOnlyList<SearchHit> SearchLike(string query, IReadOnlyCollection<string>? kinds, int limit)

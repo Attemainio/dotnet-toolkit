@@ -10,6 +10,12 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.1</b> — validate_patch gained the <c>stale_workspace</c> error. Additive: it occupies a case
+    /// that previously produced a silent, successful, wrong apply. An apply writes the whole document
+    /// text, so a patch built on a workspace copy behind disk reverted everything else in that file;
+    /// <c>baseVersions</c> never covered it, guarding only the symbols detected as changed.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.0</b> — the per-response tier marker is renamed <c>staleness</c> to <c>limitedBy</c>.
     /// BREAKING: a consumer reading <c>staleness</c> sees nothing. The old name claimed the field was
     /// about content freshness, which it never was — freshness is mtime-polled before every query.
@@ -30,5 +36,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.0";
+    public const string Id = "ctx-contract/3.1";
 }

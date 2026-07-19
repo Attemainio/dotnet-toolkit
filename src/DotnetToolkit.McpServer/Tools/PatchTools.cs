@@ -75,7 +75,8 @@ public static class PatchTools
         var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
         var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
         if (sandbox.Error is not null)
-            return Error(toolCallId, patchId, validationAttemptId, "invalid_edit", sandbox.Error);
+            return Error(toolCallId, patchId, validationAttemptId,
+                sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
 
         var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
 
@@ -120,6 +121,9 @@ public static class PatchTools
             applied = await CommitAsync(sandbox.Forked, sandbox.ChangedDocuments, locator);
             if (applied)
             {
+                // Both tiers have to move with the disk write, or the next patch to this file reads as
+                // drifted against its own predecessor.
+                workspace.AdoptAppliedText(sandbox.Forked, sandbox.ChangedDocuments);
                 AppendLog(featureLog, taskId, patchId, intent!, tags, detected, ladder, required);
                 indexBuilder.Start(); // refresh the symbol index against the new on-disk content
             }

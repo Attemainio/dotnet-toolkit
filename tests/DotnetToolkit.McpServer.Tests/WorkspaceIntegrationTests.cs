@@ -666,6 +666,44 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal(before.Symbols + 1, after.Symbols);   // one per changed symbol (Widget.Spin)
     }
 
+    /// <summary>
+    /// An apply writes the whole document text back, so a patch built on a workspace copy that has
+    /// fallen behind disk reverts every other change made to that file in the meantime — silently, with
+    /// a success verdict. baseVersions cannot catch it: it guards the symbols the classifier saw
+    /// change, and the damage is to the part of the file nobody touched.
+    ///
+    /// Observed live in this repo before the guard existed: the workspace had missed a commit, a
+    /// one-method patch reported applied:true, and that commit's other edits to the same file were gone.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_RefusesToApplyOverAFileThatMovedUnderTheWorkspace()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        var path = _f.Locator.AbsPath("Lib/Widget.cs");
+        var original = await File.ReadAllTextAsync(path);
+        // An out-of-band edit the workspace never saw — as a git checkout or a plain Edit would leave it.
+        var outOfBand = original + Environment.NewLine + "// touched on disk, behind the workspace's back";
+        await File.WriteAllTextAsync(path, outOfBand);
+        try
+        {
+            var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 9;") };
+            var root = Root(await ContextToolsValidate(
+                new Dictionary<string, string> { [symbolId] = version }, edits,
+                applyOnSuccess: true, intent: "should never be applied"));
+
+            Assert.Equal("stale_workspace", root.GetProperty("error").GetString());
+            // The out-of-band content is still intact: the patch reverted nothing.
+            Assert.Equal(outOfBand, await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(path, original);
+        }
+    }
+
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);

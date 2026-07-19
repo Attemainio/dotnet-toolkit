@@ -18,7 +18,7 @@ namespace DotnetToolkit.McpServer.Tools;
 
 /// <summary>
 /// The v2 read surface (spec §9, §10, §16): symbol retrieval, relationship traversal, and ranked
-/// discovery. All responses are ctx-contract/3.0 JSON envelopes carrying version tokens so the agent
+/// discovery. All responses are <see cref="Contract.Id"/> JSON envelopes carrying version tokens so the agent
 /// can hold leases and avoid re-transmitting unchanged content.
 /// </summary>
 [McpServerToolType]

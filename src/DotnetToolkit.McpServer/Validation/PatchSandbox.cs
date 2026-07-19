@@ -15,7 +15,13 @@ public sealed record PatchEdit(string File, int StartLine, int EndLine, string N
 /// </summary>
 public static class PatchSandbox
 {
-    public sealed record Result(Solution Forked, IReadOnlyList<DocumentId> ChangedDocuments, string? Error);
+    /// <summary>
+    /// The outcome of forking. <paramref name="Stale"/> distinguishes the one failure the caller can
+    /// actually act on — the workspace's copy of a file no longer matches disk — from an edit that was
+    /// simply malformed.
+    /// </summary>
+    public sealed record Result(
+        Solution Forked, IReadOnlyList<DocumentId> ChangedDocuments, string? Error, bool Stale = false);
 
     public static async Task<Result> ApplyAsync(Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits)
     {
@@ -32,6 +38,19 @@ public static class PatchSandbox
             var document = forked.GetDocument(docId)!;
             var text = await document.GetTextAsync();
 
+            // Refuse to fork from a copy that no longer matches disk. An apply writes the *whole*
+            // document text back, not just the edited span, so a patch built on a lagging copy silently
+            // reverts every change made to the rest of that file since the workspace last read it.
+            // baseVersions does not cover this: it guards the symbols the classifier saw change, while
+            // the untouched remainder of the file is what gets clobbered.
+            //
+            // Observed exactly that way in this repo: the workspace had missed a commit, a one-method
+            // patch applied cleanly, and the commit's other edits to the same file were reverted with
+            // no diagnostic. Line endings are normalised first so a CRLF checkout is not read as drift.
+            if (await DriftedFromDiskAsync(group.Key, text))
+                return new Result(solution, [], $"the workspace's copy of {group.First().File} is behind "
+                    + "disk; reload_workspace, re-read the symbol, and rebuild the patch", Stale: true);
+
             var newText = ApplyToText(text, group.OrderByDescending(e => e.StartLine).ToList(), out var error);
             if (error is not null)
                 return new Result(solution, [], error);
@@ -42,6 +61,20 @@ public static class PatchSandbox
 
         return new Result(forked, changed, null);
     }
+
+    /// <summary>
+    /// Whether the file on disk differs from the workspace's in-memory copy. A file that has vanished
+    /// counts as drift: the fork would be built on content that no longer exists anywhere.
+    /// </summary>
+    private static async Task<bool> DriftedFromDiskAsync(string absPath, SourceText inMemory)
+    {
+        if (!File.Exists(absPath))
+            return true;
+        var onDisk = await File.ReadAllTextAsync(absPath);
+        return !string.Equals(Normalize(onDisk), Normalize(inMemory.ToString()), StringComparison.Ordinal);
+    }
+
+    private static string Normalize(string text) => text.Replace("\r\n", "\n");
 
     private static SourceText? ApplyToText(SourceText text, IReadOnlyList<PatchEdit> descendingEdits, out string? error)
     {

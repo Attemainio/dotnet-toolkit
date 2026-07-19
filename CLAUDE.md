@@ -21,17 +21,37 @@ about the tool, not a reason to fall back to shell.
 | `find`/`ls`/Glob to map a subsystem | `get_scope` |
 | Manually tracing a call chain across files | `get_call_slice` |
 | `git diff` to judge what a change actually altered | `get_semantic_diff` |
-| Guessing why code looks the way it does | `search_log` (records the intent behind changes applied via `validate_patch`) |
-| `Edit` + `dotnet build` to check a C# edit | `validate_patch` (in-memory compile, reports whether validation was sufficient) |
+| Guessing why code looks the way it does | `search_log` (the intent behind past changes) |
 | Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
 
-The `dotnet-code-query` and `dotnet-change` skills carry the full protocols (session/task ids, expansion
-gating, leases, `baseVersions`, the sufficiency triple) — follow them here too.
+### C# edits go through `validate_patch`
+
+**`validate_patch` is the write path for `.cs` files, not a faster `dotnet build`.** `Edit`/`Write` on a
+`.cs` file is the exception, and taking it should be a deliberate, stated choice — not the default because
+it is fewer keystrokes.
+
+This is the one rule in this file that is routinely broken, so it is worth stating why it matters. Applying
+through `validate_patch` with an `intent` is the **only** thing that appends to the development log —
+there is no other writer. Every edit made with `Edit` instead is a change whose reasoning is gone the
+moment the conversation ends: `search_log` cannot recover it, and the next session re-derives or silently
+contradicts it. The compile check is the cheap half of what the tool does; the log entry is the half that
+is unrecoverable later.
+
+A worked call, start to finish:
+
+1. `get_symbol` on the target — keep its `contentVersion` and `declarationSites` line span.
+2. `validate_patch` with `baseVersions: {symbolId: contentVersion}` and line-span `edits`, first with
+   `applyOnSuccess: false` to see the ladder verdict without touching disk.
+3. Re-send with `applyOnSuccess: true` and an `intent` in user terms once it reports
+   `isSufficient: true`. Disk is written and the log entry appended in the same step.
+
+Read `skills/dotnet-change/SKILL.md` before the first C# edit of a session for `baseVersions`, the
+sufficiency triple, and how to batch from `suggestedInspection`. The `dotnet-code-query` skill carries the
+read protocol (session/task ids, expansion gating, leases) — follow it here too.
 
 Shell and plain file tools stay appropriate for what the MCP surface does not cover: `dotnet build` /
 `dotnet test` / `./scripts/build-plugin.sh`, `git`, and reading or editing non-C# files (Markdown, JSON,
-`.sh`, `.csproj`, skill and agent definitions). `validate_patch` covers C# edits; everything else still
-goes through `Edit`/`Write`.
+`.sh`, `.csproj`, skill and agent definitions).
 
 ## Commands
 
