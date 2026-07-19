@@ -242,6 +242,18 @@ content and correctly records the refetch as compaction-driven rather than waste
 
 ## Workspace readiness
 
+`staleness` says which tier answered — **not** whether content is fresh. Freshness is handled
+separately by mtime polling before every query, so answers are always current.
+
+- **absent** — fully informed. Silence is the healthy case.
+- **`index_only`** — answered from the syntax tier, or before the semantic index finished its
+  first pass. Reference counts and semantic resolution are unavailable, **not zero**.
+- **`degraded`** — the workspace loaded but one or more projects failed (commonly a restore done
+  by a different SDK than the server runs on). Results may be silently **wrong**, not just thin:
+  symbols from failed projects are missing, and attribute-derived facts like `tests` can be
+  false across the board. Call `workspace_status` for the diagnostics, fix the build, then
+  `reload_workspace`. Do not report findings from a degraded workspace without saying so.
+
 `search_index` and `get_symbol` answer from the syntax index immediately; while the MSBuild
 workspace is still loading they return `staleness: "index_only"` (and `referenceCounts` may
 be absent — do not read that as "no callers"). `get_references` needs live semantics and

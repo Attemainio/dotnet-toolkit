@@ -18,7 +18,7 @@ namespace DotnetToolkit.McpServer.Tools;
 
 /// <summary>
 /// The v2 read surface (spec §9, §10, §16): symbol retrieval, relationship traversal, and ranked
-/// discovery. All responses are ctx-contract/2.1 JSON envelopes carrying version tokens so the agent
+/// discovery. All responses are ctx-contract/2.2 JSON envelopes carrying version tokens so the agent
 /// can hold leases and avoid re-transmitting unchanged content.
 /// </summary>
 [McpServerToolType]
@@ -109,7 +109,7 @@ public static class ContextTools
         // The token describes only the layers this response's components were derived from, so a caller
         // that held it can never be told "unchanged" about content it was never sent.
         var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
-        var staleness = indexBuilder.Ready ? "live" : "index_only";
+        var staleness = Staleness(workspace, indexBuilder);
         var lease = Lease.Evaluate(version, knownVersion, refetch, parts.RequiredLayers);
 
         object envelope;
@@ -168,6 +168,7 @@ public static class ContextTools
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
+        var refStaleness = workspace.IsDegraded ? "degraded" : "live";
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
@@ -221,11 +222,14 @@ public static class ContextTools
             // Reported only when text-only matches actually existed; generatedCode is omitted until it
             // is genuinely computed rather than hardcoded to zero.
             excludedTextMatches = excludedComments > 0 ? excludedComments : (int?)null,
+            // A caller list from a degraded workspace is missing whatever the failed projects would
+            // have contributed, and nothing in the list itself says so.
+            staleness = refStaleness == "live" ? null : refStaleness,
         };
 
         var json = Formats.ToJson(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, SymbolKey.IdOf(sym), null,
-            null, false, false, null, shown.Count, "live", null, json, normalized);
+            null, false, false, null, shown.Count, refStaleness, null, json, normalized);
     }
 
     [McpServerTool(Name = "search_index")]
@@ -240,6 +244,7 @@ public static class ContextTools
     public static string SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
+        WorkspaceHost workspace,
         TelemetryRecorder telemetry,
         [Description("Free-text query over symbol names.")] string query,
         [Description("Optional kind filter, e.g. Method,Type.")] string? kinds = null,
@@ -256,7 +261,11 @@ public static class ContextTools
             : kinds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var hits = symbolStore.Search(query, NormalizeKinds(kindList), limit);
-        var searchStaleness = symbolStore.SymbolCount() > 0 ? "live" : "index_only";
+        // A populated store is necessary but not sufficient: a degraded workspace can fill it with
+        // wrong data, which is exactly how a whole repo's test flags came back false.
+        var searchStaleness = workspace.IsDegraded ? "degraded"
+            : symbolStore.SymbolCount() > 0 ? "live"
+            : "index_only";
         object envelope = new
         {
             // staleness is emitted only when it is NOT the default "live" — silence means live.
@@ -278,6 +287,24 @@ public static class ContextTools
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
             null, false, false, null, hits.Count, searchStaleness, null, json);
     }
+
+
+    /// <summary>
+    /// Which tier answered, and therefore what the answer cannot be trusted to know. Emitted only when
+    /// it is NOT the healthy case, so silence means "fully informed" and costs nothing.
+    ///
+    /// - <c>degraded</c>: the workspace loaded but projects failed, so results may be silently WRONG,
+    ///   not merely thin. It outranks index_only because a missing answer is safer than a false one.
+    /// - <c>index_only</c>: answered from the syntax tier, or before the semantic index finished its
+    ///   first pass. Reference counts and semantic resolution are unavailable, not zero.
+    ///
+    /// Despite the field name this is not about content freshness: change detection is mtime-polling
+    /// and runs before every query. It is about which knowledge tier could answer.
+    /// </summary>
+    private static string Staleness(WorkspaceHost workspace, SymbolIndexBuilder indexBuilder) =>
+        workspace.IsDegraded ? "degraded"
+        : indexBuilder.Ready ? "live"
+        : "index_only";
 
     // ---- content builder -----------------------------------------------------
 

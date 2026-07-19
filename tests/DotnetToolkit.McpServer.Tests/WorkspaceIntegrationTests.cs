@@ -195,7 +195,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public void SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
     {
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "Widget Gadget"));
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
 
         var names = root.GetProperty("items").EnumerateArray()
             .Select(i => i.GetProperty("name").GetString()!).ToList();
@@ -212,7 +212,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
-        var hit = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "SpinTwice"))
+        var hit = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
             .GetProperty("items").EnumerateArray().First();
         var name = hit.GetProperty("name").GetString()!;
 
@@ -351,7 +351,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
 
         // The fixture's own project does have edges, so real symbols stay measurable.
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "Spin", kinds: "Method"));
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
         var id = root.GetProperty("items").EnumerateArray().First().GetProperty("symbolId").GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
@@ -386,7 +386,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry,
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
             "Widget", kinds: "class", limit: 10));
 
         var items = root.GetProperty("items").EnumerateArray().ToList();

@@ -45,6 +45,22 @@ public sealed class WorkspaceHost : IDisposable
         get { lock (_gate) return [.. _loadDiagnostics]; }
     }
 
+    /// <summary>
+    /// Loaded, but at least one project failed — so the semantic model is missing whatever those
+    /// projects contribute, and any answer derived from it may be quietly wrong rather than merely
+    /// absent. Distinct from <see cref="WorkspaceState.Failed"/>, which is an honest total failure.
+    ///
+    /// This is a routine condition for a plugin that loads someone else's build: the MSBuild it
+    /// registers comes from the server's own SDK, so a repo whose obj/ was restored by a different one
+    /// fails ResolvePackageAssets and lands here. Observed on this repo when the launcher's
+    /// ~/.dotnet SDK and the SDK on PATH differed by a feature band — every project failed, and every
+    /// tool answered as if nothing were wrong.
+    /// </summary>
+    public bool IsDegraded
+    {
+        get { lock (_gate) return State == WorkspaceState.Loaded && _loadDiagnostics.Count > 0; }
+    }
+
     public int ProjectCount
     {
         get { lock (_gate) return _solution?.ProjectIds.Count ?? 0; }
