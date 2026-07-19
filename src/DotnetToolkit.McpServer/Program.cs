@@ -1,5 +1,7 @@
 using DotnetToolkit.McpServer.Devlog;
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Store;
+using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Build.Locator;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +24,15 @@ builder.Services.AddSingleton<ProjectIndex>();
 builder.Services.AddSingleton<WorkspaceHost>();
 builder.Services.AddSingleton<DevlogStore>();
 
+// v2 knowledge store + telemetry (spec Part IV). The store is rebuildable; if it fails to
+// open, KnowledgeStore.Available stays false and telemetry degrades to no-ops.
+builder.Services.AddSingleton<KnowledgeStore>();
+builder.Services.AddSingleton<TelemetryRecorder>();
+builder.Services.AddSingleton<MetricsReader>();
+builder.Services.AddSingleton<SymbolStore>();
+builder.Services.AddSingleton<FeatureLogStore>();
+builder.Services.AddSingleton<SymbolIndexBuilder>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
@@ -33,5 +44,13 @@ var app = builder.Build();
 // well inside Claude Code's ~5s startup timeout; tools await readiness themselves.
 app.Services.GetRequiredService<ProjectIndex>().StartInitialization();
 app.Services.GetRequiredService<WorkspaceHost>().StartLoading();
+// Populate the SQLite symbol index + edge cache once the workspace is ready (it self-awaits).
+app.Services.GetRequiredService<SymbolIndexBuilder>().Start();
+
+// One-time import of the legacy markdown devlog into feature_log (no-op once the log has entries).
+DevlogMigration.Run(
+    app.Services.GetRequiredService<DevlogStore>(),
+    app.Services.GetRequiredService<FeatureLogStore>(),
+    app.Services.GetRequiredService<ILogger<Program>>());
 
 await app.RunAsync();

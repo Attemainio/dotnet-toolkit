@@ -1,0 +1,168 @@
+namespace DotnetToolkit.McpServer.Store;
+
+/// <summary>
+/// Ordered, append-only list of schema migrations. Each entry is applied once, in order,
+/// inside a transaction; the applied version is recorded in <c>schema_migrations</c>.
+/// Never edit or reorder a shipped migration — add a new one. Phases 1–7 append here.
+/// </summary>
+internal static class Schema
+{
+    public sealed record Migration(int Version, string Name, string Sql);
+
+    public static readonly IReadOnlyList<Migration> Migrations =
+    [
+        new(1, "raw_telemetry", RawTelemetry),
+        new(2, "symbol_index", SymbolIndex),
+        new(3, "feature_log", FeatureLog),
+    ];
+
+    // Spec §18 — development log (append-only, a source of truth; never rebuilt from source).
+    private const string FeatureLog = """
+        CREATE TABLE feature_log (
+            log_id          TEXT PRIMARY KEY,
+            task_id         TEXT NOT NULL,
+            patch_id        TEXT,
+            commit_sha      TEXT,
+            intent          TEXT NOT NULL,
+            tags            TEXT NOT NULL,
+            validation_json TEXT,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE feature_log_symbols (
+            log_id       TEXT NOT NULL REFERENCES feature_log(log_id),
+            symbol_id    TEXT NOT NULL,
+            change_kinds TEXT NOT NULL,
+            detail       TEXT,
+            old_version  TEXT,
+            new_version  TEXT,
+            api_impact   TEXT,
+            PRIMARY KEY (log_id, symbol_id)
+        );
+        CREATE INDEX ix_logsym_symbol ON feature_log_symbols(symbol_id);
+        """;
+
+    // Spec §18 — symbol index + reference edge cache. Rebuildable from source at any time;
+    // refs_hash/api_hash stay NULL until Phase 3 materializes the semantic layers.
+    private const string SymbolIndex = """
+        CREATE TABLE symbols (
+            symbol_id       TEXT PRIMARY KEY,
+            fq_name         TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            accessibility   TEXT NOT NULL,
+            project         TEXT NOT NULL,
+            decl_hash       TEXT NOT NULL,
+            body_hash       TEXT,
+            refs_hash       TEXT,
+            api_hash        TEXT,
+            display_string  TEXT NOT NULL,
+            xml_doc         TEXT,
+            embedding       BLOB,
+            updated_at      TEXT NOT NULL
+        );
+        CREATE INDEX ix_symbols_fq ON symbols(fq_name);
+
+        CREATE TABLE declaration_sites (
+            symbol_id  TEXT NOT NULL REFERENCES symbols(symbol_id),
+            file       TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line   INTEGER NOT NULL,
+            region     TEXT
+        );
+        CREATE INDEX ix_declsites_symbol ON declaration_sites(symbol_id);
+
+        CREATE TABLE reference_edges (
+            from_symbol   TEXT NOT NULL,
+            to_symbol     TEXT NOT NULL,
+            edge_kind     TEXT NOT NULL,
+            dispatch_kind TEXT,
+            file          TEXT,
+            line          INTEGER,
+            PRIMARY KEY (from_symbol, to_symbol, edge_kind, file, line)
+        );
+        CREATE INDEX ix_edges_to   ON reference_edges(to_symbol, edge_kind);
+        CREATE INDEX ix_edges_from ON reference_edges(from_symbol, edge_kind);
+        """;
+
+    // Spec §19.1 — raw events. Only call-time facts; append-only and immutable.
+    // Retroactive judgments live in the derived attribution stratum (Phase 5), never here.
+    private const string RawTelemetry = """
+        CREATE TABLE retrieval_events (
+            event_id         TEXT PRIMARY KEY,
+            tool_call_id     TEXT NOT NULL UNIQUE,
+            session_id       TEXT NOT NULL,
+            task_id          TEXT NOT NULL,
+            tool_name        TEXT NOT NULL,
+            requested_symbol TEXT,
+            symbol_id        TEXT,
+            resolution       TEXT,
+            direction        TEXT,
+            known_version    TEXT,
+            refetch          INTEGER NOT NULL DEFAULT 0,
+            lease_hit        INTEGER NOT NULL DEFAULT 0,
+            content_version  TEXT,
+            returned_symbols INTEGER NOT NULL DEFAULT 0,
+            returned_tokens  INTEGER NOT NULL,
+            staleness        TEXT NOT NULL DEFAULT 'live',
+            error_kind       TEXT,
+            created_at       TEXT NOT NULL
+        );
+        CREATE INDEX ix_re_session ON retrieval_events(session_id, created_at);
+        CREATE INDEX ix_re_symbol  ON retrieval_events(symbol_id, created_at);
+
+        CREATE TABLE patch_events (
+            event_id              TEXT PRIMARY KEY,
+            tool_call_id          TEXT NOT NULL UNIQUE,
+            patch_id              TEXT NOT NULL,
+            validation_attempt_id TEXT NOT NULL UNIQUE,
+            session_id            TEXT NOT NULL,
+            task_id               TEXT NOT NULL,
+            attempt_ordinal       INTEGER NOT NULL,
+            changed_symbol_ids    TEXT NOT NULL,
+            change_kinds          TEXT NOT NULL,
+            base_versions         TEXT NOT NULL,
+            completed_level       TEXT NOT NULL,
+            required_level        TEXT NOT NULL,
+            is_sufficient         INTEGER NOT NULL,
+            succeeded             INTEGER NOT NULL,
+            applied               INTEGER NOT NULL,
+            intent                TEXT,
+            raw_diagnostics       INTEGER NOT NULL,
+            distilled_diagnostics INTEGER NOT NULL,
+            returned_tokens       INTEGER NOT NULL,
+            duration_ms           INTEGER NOT NULL,
+            created_at            TEXT NOT NULL
+        );
+
+        CREATE TABLE surfaced_symbols (
+            event_id        TEXT NOT NULL REFERENCES retrieval_events(event_id),
+            symbol_id       TEXT NOT NULL,
+            content_version TEXT,
+            surface_kind    TEXT NOT NULL,
+            PRIMARY KEY (event_id, symbol_id, surface_kind)
+        );
+
+        CREATE TABLE session_events (
+            event_id   TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            task_id    TEXT,
+            kind       TEXT NOT NULL,
+            detail     TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        -- Immutability: UPDATE on any raw telemetry table raises; append succeeds (Conformance C6).
+        CREATE TRIGGER trg_re_immutable BEFORE UPDATE ON retrieval_events BEGIN
+            SELECT RAISE(ABORT, 'raw telemetry is immutable');
+        END;
+        CREATE TRIGGER trg_pe_immutable BEFORE UPDATE ON patch_events BEGIN
+            SELECT RAISE(ABORT, 'raw telemetry is immutable');
+        END;
+        CREATE TRIGGER trg_ss_immutable BEFORE UPDATE ON surfaced_symbols BEGIN
+            SELECT RAISE(ABORT, 'raw telemetry is immutable');
+        END;
+        CREATE TRIGGER trg_se_immutable BEFORE UPDATE ON session_events BEGIN
+            SELECT RAISE(ABORT, 'raw telemetry is immutable');
+        END;
+        """;
+}
