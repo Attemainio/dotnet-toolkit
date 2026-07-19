@@ -21,6 +21,12 @@ public sealed record MemberFacts
     [JsonPropertyName("writes")] public IReadOnlyList<string> Writes { get; init; } = [];
     [JsonPropertyName("locks")] public IReadOnlyList<string> Locks { get; init; } = [];
 
+    /// <summary>
+    /// Internal guard used to decide whether facts are worth persisting at all. Explicitly not
+    /// serialized: it is a property of the record, not a fact about the code, and it would otherwise
+    /// ride along in every get_symbol response as pure noise.
+    /// </summary>
+    [JsonIgnore]
     public bool IsEmpty =>
         ImplementsMembers.Count == 0 && Overrides is null && Throws.Count == 0 && Awaits.Count == 0
         && Reads.Count == 0 && Writes.Count == 0 && Locks.Count == 0;

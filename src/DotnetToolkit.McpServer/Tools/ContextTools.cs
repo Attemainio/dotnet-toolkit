@@ -373,11 +373,24 @@ public static class ContextTools
         // recorded against the interface member, and get_references cascades to implementations.
         var equivalentIds = new List<string> { SymbolKey.IdOf(sym) };
         equivalentIds.AddRange(ImplementedInterfaceMembers(sym).Select(SymbolKey.IdOf));
-        var counts = symbolStore.ReferenceCounts(equivalentIds);
         var implementations = await CountImplementations(sym, solution);
         var overrides = await CountOverrides(sym, solution);
-        // tests is now backed by real test_reference edges rather than a fabricated zero.
-        return new { callers = counts?.Callers ?? 0, implementations, overrides, tests = counts?.Tests ?? 0 };
+
+        // Call edges are recorded against MEMBERS, never against named types, so a type's caller count
+        // would structurally always be 0 — which reads as "nothing uses this" when the truth is "not
+        // measured at this level". Omit those fields for types; implementations/overrides are the
+        // meaningful relationships for a type anyway.
+        if (sym is INamedTypeSymbol)
+            return new { callers = (int?)null, implementations, overrides, tests = (int?)null };
+
+        var counts = symbolStore.ReferenceCounts(equivalentIds);
+        return new
+        {
+            callers = (int?)(counts?.Callers ?? 0),
+            implementations,
+            overrides,
+            tests = (int?)(counts?.Tests ?? 0),
+        };
     }
 
     /// <summary>Interface members this symbol implements, so counts can span the interface boundary.</summary>

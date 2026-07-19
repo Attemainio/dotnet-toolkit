@@ -274,6 +274,34 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     private Task<string> ContextToolsCallSlice(string from, string to) =>
         FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, Session, Task_, from, to);
 
+    // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
+    // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
+    // members still report it.
+    [Fact]
+    public async Task ReferenceCounts_OmitsCallersForTypes_ButReportsThemForMembers()
+    {
+        var type = Root(await GetSymbol("Sample.Lib.Widget", "signature"));
+        var typeCounts = type.GetProperty("content").GetProperty("referenceCounts");
+        Assert.False(typeCounts.TryGetProperty("callers", out _), "a type must not claim a caller count");
+        Assert.True(typeCounts.TryGetProperty("implementations", out _), "implementations is meaningful for a type");
+
+        var member = Root(await GetSymbol("Sample.Lib.Widget.Spin", "signature"));
+        var memberCounts = member.GetProperty("content").GetProperty("referenceCounts");
+        Assert.True(memberCounts.GetProperty("callers").GetInt32() >= 1);
+    }
+
+    // Internal helper properties must not ride along in the wire payload.
+    [Fact]
+    public async Task MechanicalFacts_DoNotLeakInternalProperties()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Pipeline.Deep", "full"));
+        if (root.GetProperty("content").TryGetProperty("mechanicalFacts", out var facts)
+            && facts.ValueKind == JsonValueKind.Object)
+        {
+            Assert.False(facts.TryGetProperty("IsEmpty", out _), "IsEmpty is an internal guard, not a fact");
+        }
+    }
+
     // Conformance C10: one partial-class part returns the unified type with all declaration sites.
     [Fact]
     public async Task GetSymbol_UnifiesPartialClass_C10()
