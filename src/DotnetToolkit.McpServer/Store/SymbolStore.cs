@@ -215,7 +215,16 @@ public sealed class SymbolStore
             return [];
 
         var fts = SearchFts(query, kinds, limit);
-        return fts.Count > 0 ? fts : SearchLike(query, kinds, limit);
+        if (fts.Count >= limit)
+            return fts;
+
+        // A short FTS result is topped up from the substring matcher rather than replaced by it. The
+        // two answer different questions: FTS matches whole tokens, so "ormat" cannot reach OutputFormat,
+        // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
+        // meant a single weak token match suppressed the substring index entirely.
+        var seen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
+        var topUp = SearchLike(query, kinds, limit).Where(h => seen.Add(h.SymbolId));
+        return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
     private IReadOnlyList<SearchHit> SearchFts(string query, IReadOnlyCollection<string>? kinds, int limit)
@@ -302,14 +311,25 @@ public sealed class SymbolStore
         return ReadHits(cmd);
     }
 
+    /// <summary>
+    /// Reads hits in rank order, keeping the first row per symbol. The dedupe lives here rather than as
+    /// a GROUP BY because FTS5 refuses bm25() in an aggregate context ("unable to use function bm25 in
+    /// the requested context") — and that error is swallowed by the degradation catch below, so the
+    /// query would have failed to nothing instead of loudly. Writes are the real guarantee of one row
+    /// per symbol; this is the cheap backstop that keeps a duplicate from ever reaching a caller.
+    /// </summary>
     private static IReadOnlyList<SearchHit> ReadHits(SqliteCommand cmd)
     {
         var hits = new List<SearchHit>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
+            var symbolId = reader.GetString(0);
+            if (!seen.Add(symbolId))
+                continue;
             hits.Add(new SearchHit(
-                reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                symbolId, reader.GetString(1), reader.GetString(2),
                 reader.GetString(3), reader.GetString(4), reader.GetInt32(5)));
         }
         return hits;
@@ -324,6 +344,65 @@ public sealed class SymbolStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM symbols;";
         return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
+    }
+
+    /// <summary>
+    /// Rebuilds the FTS mirror from <c>symbols</c> when it has drifted — a row per symbol, no duplicates.
+    /// The mirror is pure derived data, so a rebuild is always safe; this is what lets a cache written by
+    /// an older build recover on the next start instead of needing the cache directory deleted.
+    /// Returns the number of rows written, or 0 when the mirror was already correct.
+    /// </summary>
+    public int RepairSearchIndex()
+    {
+        if (!_store.Available)
+            return 0;
+
+        using var connection = _store.Connect();
+        using (var check = connection.CreateCommand())
+        {
+            // Drift is either a count mismatch (missing or duplicated rows) — one query covers both,
+            // since a correct mirror has exactly as many rows as there are symbols and no repeats.
+            check.CommandText = """
+                SELECT (SELECT COUNT(*) FROM symbols),
+                       (SELECT COUNT(*) FROM symbols_fts),
+                       (SELECT COUNT(*) FROM (SELECT symbol_id FROM symbols_fts GROUP BY symbol_id));
+                """;
+            using var reader = check.ExecuteReader();
+            if (!reader.Read())
+                return 0;
+            var (symbols, ftsRows, ftsDistinct) = (reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
+            if (symbols == ftsRows && ftsRows == ftsDistinct)
+                return 0;
+        }
+
+        var rows = new List<(string Id, string Fq)>();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT symbol_id, fq_name FROM symbols;";
+            using var reader = read.ExecuteReader();
+            while (reader.Read())
+                rows.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        using var tx = connection.BeginTransaction();
+        Exec(connection, tx, "DELETE FROM symbols_fts;");
+        using (var ins = connection.CreateCommand())
+        {
+            ins.Transaction = tx;
+            ins.CommandText = """
+                UPDATE symbols SET search_text = $search WHERE symbol_id = $id;
+                INSERT INTO symbols_fts(symbol_id, search_text) VALUES ($id, $search);
+                """;
+            foreach (var (id, fq) in rows)
+            {
+                ins.Parameters.Clear();
+                ins.Parameters.AddWithValue("$id", id);
+                ins.Parameters.AddWithValue("$search", SearchText.ForIndex(fq));
+                ins.ExecuteNonQuery();
+            }
+        }
+        tx.Commit();
+        return rows.Count;
     }
 
     /// <summary>The version layers already recorded for a symbol — the gate for incremental updates.</summary>
@@ -419,6 +498,7 @@ public sealed class SymbolStore
         ExecParam(connection, tx, "DELETE FROM mechanical_facts WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM declaration_sites WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id OR to_symbol = $id;", id);
+        ExecParam(connection, tx, "DELETE FROM symbols_fts WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM symbols WHERE symbol_id = $id;", id);
     }
 
@@ -443,7 +523,8 @@ public sealed class SymbolStore
         using var tx = connection.BeginTransaction();
 
         Exec(connection, tx,
-            "DELETE FROM mechanical_facts; DELETE FROM reference_edges; DELETE FROM declaration_sites; DELETE FROM symbols;");
+            "DELETE FROM mechanical_facts; DELETE FROM reference_edges; DELETE FROM declaration_sites; "
+            + "DELETE FROM symbols_fts; DELETE FROM symbols;");
 
         WriteSymbols(connection, tx, symbols);
         WriteSites(connection, tx, sites);
@@ -485,6 +566,35 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$ts", now);
             cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
             cmd.ExecuteNonQuery();
+        }
+
+        WriteFts(connection, tx, symbols);
+    }
+
+    /// <summary>
+    /// Mirrors symbols into the FTS table. Delete-then-insert per symbol, because the caller's
+    /// INSERT OR REPLACE cannot be relied on to clear the old row (see Schema migration 7) and a
+    /// stale row surfaces as a duplicate search hit.
+    /// </summary>
+    private static void WriteFts(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
+    {
+        using var del = connection.CreateCommand();
+        del.Transaction = tx;
+        del.CommandText = "DELETE FROM symbols_fts WHERE symbol_id = $id;";
+        using var ins = connection.CreateCommand();
+        ins.Transaction = tx;
+        ins.CommandText = "INSERT INTO symbols_fts(symbol_id, search_text) VALUES ($id, $search);";
+
+        foreach (var s in symbols)
+        {
+            del.Parameters.Clear();
+            del.Parameters.AddWithValue("$id", s.SymbolId);
+            del.ExecuteNonQuery();
+
+            ins.Parameters.Clear();
+            ins.Parameters.AddWithValue("$id", s.SymbolId);
+            ins.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
+            ins.ExecuteNonQuery();
         }
     }
 

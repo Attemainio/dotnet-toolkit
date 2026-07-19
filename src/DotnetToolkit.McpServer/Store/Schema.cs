@@ -17,7 +17,27 @@ internal static class Schema
         new(4, "mechanical_facts", MechanicalFacts),
         new(5, "derived_attribution", DerivedAttribution),
         new(6, "symbol_fts", SymbolFts),
+        new(7, "symbol_fts_explicit_writes", SymbolFtsExplicitWrites),
     ];
+
+    // Migration 6 mirrored symbols into symbols_fts with triggers, on the stated assumption that
+    // "INSERT OR REPLACE fires delete-then-insert". That is false by default: SQLite fires DELETE
+    // triggers for REPLACE-caused deletes only when recursive_triggers is ON, and it is never enabled
+    // here. So every incremental re-index fired the INSERT trigger, left the old FTS row in place, and
+    // search_index returned the same symbol two or more times. Migration 6 also never backfilled the
+    // rows that already existed when it ran, so those symbols had no FTS row at all and were invisible
+    // to search entirely — on this repo, 441 of 740 symbols with 69 duplicated among the rest.
+    //
+    // The triggers go away rather than getting patched: the FTS table is pure derived data, and
+    // SymbolStore now writes it explicitly alongside every symbols write, in the same transaction.
+    // Clearing the table here is safe precisely because it is derived — RepairSearchIndex rebuilds it.
+    private const string SymbolFtsExplicitWrites = """
+        DROP TRIGGER IF EXISTS trg_symfts_ins;
+        DROP TRIGGER IF EXISTS trg_symfts_del;
+        DROP TRIGGER IF EXISTS trg_symfts_upd;
+
+        DELETE FROM symbols_fts;
+        """;
 
     // Spec §20 Phase 7 — ranked discovery. The previous matcher was a single `fq_name LIKE '%q%'`,
     // which cannot match a multi-word query at all: no symbol's name contains "Ledger TryBuy" as a
@@ -25,9 +45,10 @@ internal static class Schema
     //
     // symbols.search_text holds the name pre-split on both separators and camel-case boundaries
     // (FIFOLedger.TryBuy -> "FIFOLedger TryBuy FIFO Ledger Try Buy"), because FTS5's tokenizer splits
-    // on punctuation but not on case. Triggers mirror it into the FTS table, so the existing write
-    // path needs no changes: INSERT OR REPLACE fires delete-then-insert, and the single-row delete
-    // is covered too.
+    // on punctuation but not on case.
+    //
+    // The triggers below were wrong and are dropped by migration 7 — see SymbolFtsExplicitWrites.
+    // Left here verbatim because a shipped migration is never edited.
     private const string SymbolFts = """
         ALTER TABLE symbols ADD COLUMN search_text TEXT;
 

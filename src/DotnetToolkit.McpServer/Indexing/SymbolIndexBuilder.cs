@@ -41,6 +41,13 @@ public sealed class SymbolIndexBuilder
             return;
         try
         {
+            // Before anything else: heal an FTS mirror left inconsistent by an older build. This runs
+            // ahead of the workspace wait because it needs no semantic model, and search_index answers
+            // from the store long before MSBuild finishes.
+            var repaired = _symbols.RepairSearchIndex();
+            if (repaired > 0)
+                _log.LogInformation("Search index mirror rebuilt: {Rows} symbols", repaired);
+
             var solution = await _workspace.GetSolutionAsync(TimeSpan.FromMinutes(5));
             if (solution is null)
                 return;
