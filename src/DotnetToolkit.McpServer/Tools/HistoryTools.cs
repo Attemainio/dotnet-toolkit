@@ -21,9 +21,7 @@ public static class HistoryTools
         GitAnalyzer git,
         SemanticDiff diff,
         [Description("Base ref (branch, tag or sha). Default: HEAD~1.")] string fromRef = "HEAD~1",
-        [Description("Target ref. Default: HEAD.")] string toRef = "HEAD",
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Target ref. Default: HEAD.")] string toRef = "HEAD")
     {
         if (!await git.IsRepositoryAsync())
             return Formats.ToJson(new { error = "not_a_git_repository" });
@@ -63,14 +61,11 @@ public static class HistoryTools
 
     [McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
-        + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
-        + "")]
+        + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach.")]
     public static string SearchLog(
         FeatureLogStore featureLog,
         [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
-        [Description("Max entries (default 10).")] int limit = 10,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Max entries (default 10).")] int limit = 10)
     {
         var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
         return Formats.ToJson(new

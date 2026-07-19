@@ -31,9 +31,7 @@ public static class FlowTools
         [Description("Optional variable/expression name; results become what is callable ON it, incl. extension methods.")] string? receiver = null,
         [Description("all | methods | properties | locals | types (default all).")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
-        [Description("Max results (default 40).")] int limit = 40,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Max results (default 40).")] int limit = 40)
     {
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
@@ -108,9 +106,7 @@ public static class FlowTools
         SymbolIndexBuilder indexBuilder,
         [Description("Origin symbol: fully-qualified name, unique suffix, or sym_... id.")] string from,
         [Description("Destination symbol: fully-qualified name, unique suffix, or sym_... id.")] string to,
-        [Description("Maximum path length to search (default 8).")] int maxDepth = 8,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Maximum path length to search (default 8).")] int maxDepth = 8)
     {
         if (!indexBuilder.Ready)
             return Formats.ToJson(new { error = "index_building", message = "The edge cache is still being built." });
