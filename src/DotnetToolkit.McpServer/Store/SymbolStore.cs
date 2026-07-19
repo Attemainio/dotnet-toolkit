@@ -178,10 +178,72 @@ public sealed class SymbolStore
     /// fully-qualified name, ranked exact &gt; prefix &gt; contains. The FTS5 upgrade is Phase 7;
     /// the response schema is already final so callers do not change when the backend does.
     /// </summary>
+    /// <summary>
+    /// Ranked symbol lookup. Tries FTS first so multi-word and camel-case-interior queries work
+    /// ("Ledger TryBuy TrySell" finds both methods on FIFOLedger); falls back to the substring
+    /// matcher when FTS finds nothing, which keeps single-token and partial-identifier queries
+    /// working on an index written before the FTS migration ran.
+    /// </summary>
     public IReadOnlyList<SearchHit> Search(string query, IReadOnlyCollection<string>? kinds, int limit)
     {
         if (!_store.Available || string.IsNullOrWhiteSpace(query))
             return [];
+
+        var fts = SearchFts(query, kinds, limit);
+        return fts.Count > 0 ? fts : SearchLike(query, kinds, limit);
+    }
+
+    private IReadOnlyList<SearchHit> SearchFts(string query, IReadOnlyCollection<string>? kinds, int limit)
+    {
+        var match = SearchText.ForQuery(query);
+        if (match is null)
+            return [];
+
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var kindFilter = kinds is { Count: > 0 }
+            ? " AND s.kind COLLATE NOCASE IN (" + string.Join(',', kinds.Select((_, i) => "$k" + i)) + ")"
+            : "";
+        // bm25 is negated by convention (more negative = better), so ordering ascending puts the
+        // rows matching more of the query's terms first. The exact/prefix cases are still promoted
+        // ahead of it so an exact name never loses to a better-scoring partial.
+        cmd.CommandText = $"""
+            SELECT s.symbol_id, s.display_string, s.kind, s.fq_name, s.decl_hash,
+                   CASE
+                     WHEN s.fq_name = $q THEN 0
+                     WHEN s.fq_name LIKE $prefix THEN 1
+                     ELSE 2
+                   END AS rank
+            FROM symbols_fts f
+            JOIN symbols s ON s.symbol_id = f.symbol_id
+            WHERE symbols_fts MATCH $match{kindFilter}
+            ORDER BY rank, bm25(symbols_fts), length(s.fq_name), s.fq_name
+            LIMIT $limit;
+            """;
+        cmd.Parameters.AddWithValue("$match", match);
+        cmd.Parameters.AddWithValue("$q", query);
+        cmd.Parameters.AddWithValue("$prefix", query + "%");
+        cmd.Parameters.AddWithValue("$limit", limit);
+        if (kinds is { Count: > 0 })
+        {
+            var i = 0;
+            foreach (var k in kinds)
+                cmd.Parameters.AddWithValue("$k" + i++, k);
+        }
+
+        try
+        {
+            return ReadHits(cmd);
+        }
+        catch (SqliteException)
+        {
+            // A malformed MATCH expression must degrade to the substring matcher, never fail the call.
+            return [];
+        }
+    }
+
+    private IReadOnlyList<SearchHit> SearchLike(string query, IReadOnlyCollection<string>? kinds, int limit)
+    {
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
         // COLLATE NOCASE so callers are not silently punished for "method" vs "Method".
@@ -212,6 +274,11 @@ public sealed class SymbolStore
                 cmd.Parameters.AddWithValue("$k" + i++, k);
         }
 
+        return ReadHits(cmd);
+    }
+
+    private static IReadOnlyList<SearchHit> ReadHits(SqliteCommand cmd)
+    {
         var hits = new List<SearchHit>();
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -372,8 +439,8 @@ public sealed class SymbolStore
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, accessibility, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, xml_doc, embedding, updated_at)
-            VALUES ($id, $fq, $kind, $acc, $proj, $decl, $body, $refs, $api, $disp, $doc, NULL, $ts);
+                 refs_hash, api_hash, display_string, xml_doc, embedding, updated_at, search_text)
+            VALUES ($id, $fq, $kind, $acc, $proj, $decl, $body, $refs, $api, $disp, $doc, NULL, $ts, $search);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -391,6 +458,7 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$disp", s.DisplayString);
             cmd.Parameters.AddWithValue("$doc", (object?)s.XmlDoc ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ts", now);
+            cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
             cmd.ExecuteNonQuery();
         }
     }

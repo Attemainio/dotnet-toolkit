@@ -16,7 +16,42 @@ internal static class Schema
         new(3, "feature_log", FeatureLog),
         new(4, "mechanical_facts", MechanicalFacts),
         new(5, "derived_attribution", DerivedAttribution),
+        new(6, "symbol_fts", SymbolFts),
     ];
+
+    // Spec §20 Phase 7 — ranked discovery. The previous matcher was a single `fq_name LIKE '%q%'`,
+    // which cannot match a multi-word query at all: no symbol's name contains "Ledger TryBuy" as a
+    // contiguous substring, so such a query returned zero rows rather than the two symbols meant.
+    //
+    // symbols.search_text holds the name pre-split on both separators and camel-case boundaries
+    // (FIFOLedger.TryBuy -> "FIFOLedger TryBuy FIFO Ledger Try Buy"), because FTS5's tokenizer splits
+    // on punctuation but not on case. Triggers mirror it into the FTS table, so the existing write
+    // path needs no changes: INSERT OR REPLACE fires delete-then-insert, and the single-row delete
+    // is covered too.
+    private const string SymbolFts = """
+        ALTER TABLE symbols ADD COLUMN search_text TEXT;
+
+        CREATE VIRTUAL TABLE symbols_fts USING fts5(
+            symbol_id UNINDEXED,
+            search_text,
+            tokenize = 'unicode61'
+        );
+
+        CREATE TRIGGER trg_symfts_ins AFTER INSERT ON symbols BEGIN
+            INSERT INTO symbols_fts(symbol_id, search_text)
+            VALUES (new.symbol_id, COALESCE(new.search_text, new.fq_name));
+        END;
+
+        CREATE TRIGGER trg_symfts_del AFTER DELETE ON symbols BEGIN
+            DELETE FROM symbols_fts WHERE symbol_id = old.symbol_id;
+        END;
+
+        CREATE TRIGGER trg_symfts_upd AFTER UPDATE ON symbols BEGIN
+            DELETE FROM symbols_fts WHERE symbol_id = old.symbol_id;
+            INSERT INTO symbols_fts(symbol_id, search_text)
+            VALUES (new.symbol_id, COALESCE(new.search_text, new.fq_name));
+        END;
+        """;
 
     // Spec §19.2 — derived attribution. Unlike raw telemetry this stratum is DROPPED AND REBUILT, and
     // every row records the ruleset version that produced it, so heuristics can evolve without

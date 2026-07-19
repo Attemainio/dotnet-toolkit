@@ -185,6 +185,23 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains("Lib", status);
     }
 
+    /// <summary>
+    /// A multi-word query must return the union of what its terms name. Observed on a real repo:
+    /// the substring matcher forced 19 separate single-word search_index calls for one question,
+    /// because any query with a space in it matched nothing at all.
+    /// </summary>
+    [Fact]
+    public void SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
+    {
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "Widget Gadget"));
+
+        var names = root.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("name").GetString()!).ToList();
+
+        Assert.Contains(names, n => n.Contains("Widget", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("Gadget", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
     {
