@@ -202,6 +202,23 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains(names, n => n.Contains("Gadget", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Counts must be omitted, not reported as 0, for a project the edge cache never covered.
+    /// A project that fails to load in MSBuild yields no edges, and reporting that absence as
+    /// "0 callers" states something the store cannot know — observed live on a method with 5.
+    /// </summary>
+    [Fact]
+    public void ReferenceCounts_OmittedWhenProjectHasNoEdgeCoverage()
+    {
+        // A symbol id from no indexed project at all: coverage cannot be established for it.
+        Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
+
+        // The fixture's own project does have edges, so real symbols stay measurable.
+        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Telemetry, "Spin", kinds: "Method"));
+        var id = root.GetProperty("items").EnumerateArray().First().GetProperty("symbolId").GetString()!;
+        Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
+    }
+
     [Fact]
     public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
     {

@@ -56,7 +56,14 @@ public static class ServerTools
                     sb.Append(" — DEGRADED: ").Append(diags.Count)
                       .Append(diags.Count == 1 ? " project failed to load" : " projects failed to load")
                       .Append("; semantic results for those are incomplete");
-                sb.Append("\n  loaded: ").Append(string.Join(", ", workspace.ProjectNames));
+                // Naming a project in the loaded list AND in a failure leaves the caller unable to tell
+                // which one is broken. Mark the ones a diagnostic mentions. This is a name-containment
+                // check, not a parse of MSBuild's message format: a miss simply leaves the name
+                // unmarked, so a format change degrades to the previous behaviour rather than lying.
+                sb.Append("\n  loaded: ").Append(string.Join(", ", workspace.ProjectNames.Select(name =>
+                    diags.Any(d => d.Contains(name, StringComparison.OrdinalIgnoreCase))
+                        ? name + " (FAILED — results incomplete)"
+                        : name)));
                 break;
 
             case WorkspaceState.NoSolution when ambiguous:

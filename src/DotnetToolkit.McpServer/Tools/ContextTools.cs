@@ -396,12 +396,17 @@ public static class ContextTools
             return new { callers = (int?)null, implementations, overrides, tests = (int?)null };
 
         var counts = symbolStore.ReferenceCounts(equivalentIds);
+
+        // A zero from the edge cache is only a fact if the cache covers this symbol's project at all.
+        // When the project contributed no edges — typically because it failed to load in MSBuild —
+        // omit the counts rather than assert a 0 that get_references will immediately contradict.
+        var measured = counts is not null && symbolStore.HasEdgeCoverageFor(SymbolKey.IdOf(sym));
         return new
         {
-            callers = (int?)(counts?.Callers ?? 0),
+            callers = measured ? counts!.Value.Callers : (int?)null,
             implementations,
             overrides,
-            tests = (int?)(counts?.Tests ?? 0),
+            tests = measured ? counts!.Value.Tests : (int?)null,
         };
     }
 

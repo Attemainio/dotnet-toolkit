@@ -31,6 +31,31 @@ public sealed class SymbolStore
     public (int Callers, int Tests)? ReferenceCounts(string symbolId) => ReferenceCounts([symbolId]);
 
     /// <summary>
+    /// Whether the edge cache actually covers the project a symbol lives in. Edges come from the
+    /// semantic model, so a project that failed to load in MSBuild contributes none — and a caller
+    /// count read from the cache would then report 0 for every symbol in it. That zero is
+    /// indistinguishable from "genuinely uncalled" without this check, and reads as a fact the
+    /// store does not possess: observed on a repo where a NuGet advisory blocked one project's
+    /// load, reporting 0 callers for a method that had 5.
+    /// </summary>
+    public bool HasEdgeCoverageFor(string symbolId)
+    {
+        if (!_store.Available)
+            return false;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM reference_edges e
+                JOIN symbols f ON f.symbol_id = e.from_symbol
+                WHERE f.project = (SELECT project FROM symbols WHERE symbol_id = $id)
+                LIMIT 1);
+            """;
+        cmd.Parameters.AddWithValue("$id", symbolId);
+        return cmd.ExecuteScalar() is long and not 0;
+    }
+
+    /// <summary>
     /// Counts across a set of equivalent ids. A call made through an interface is recorded against the
     /// INTERFACE member, but Roslyn's caller search cascades to implementations — so counting only the
     /// implementation's own id under-reports exactly the callers get_references would show. Passing the
