@@ -75,7 +75,34 @@ Caches for a target repo live in `.claude/dotnet-toolkit/cache/` under that repo
 
 `.claude-plugin/plugin.json` is the plugin manifest; `.mcp.json` registers the MCP server, launching it via `scripts/run-server.sh`, which prefers a user-local `~/.dotnet` install (needed on systems where the system-wide `dotnet` predates net10.0) over falling back to `dotnet` on `PATH`. The published server in `dist/` is what actually runs — after editing anything under `src/`, re-run `./scripts/build-plugin.sh` for a `claude --plugin-dir` session to see the change.
 
-`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`) are the plugin's own skills, shipped to consumers. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`); `dotnet-review` says when to delegate to the review agents below. Keep them in sync with actual tool behavior when tool signatures or output format change.
+`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`) are the plugin's own skills, shipped to consumers. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`); `dotnet-review` says when to delegate to the review agents below.
+
+## Changing the tool surface: update the docs that teach it
+
+**Whenever you add, remove, or change an MCP tool — its name, its arguments, its return shape, its defaults, or the behaviour a caller can override — update the files that describe it in the same change.** They are the only thing that tells a consuming agent the tool exists and how to call it; a tool nothing points at is a tool nobody uses.
+
+This repo is its own consumer, so drift is self-inflicting: Claude working *in* this repo is taught by these same files, and a stale one degrades the next session here before it ever reaches a consumer.
+
+The surface that has to move with the code:
+
+| File | Carries |
+| --- | --- |
+| `skills/dotnet-code-query/SKILL.md` | the read protocol — every read tool, when to reach for it, escalation, leases, worked examples |
+| `skills/dotnet-change/SKILL.md` | the write protocol — `validate_patch` arguments and the sufficiency rules |
+| `skills/dotnet-review/SKILL.md` | which agent to delegate to, and the tools they rely on |
+| `agents/*.md` (4 files) | each agent's `tools:` frontmatter list — a tool absent here is unavailable to that agent |
+| `docs/review-workflow.md` | how the review agents are told to use the read tools |
+| the `[Description]` attributes in `Tools/*.cs` | what the model sees before it has read any skill — the first and often only description it gets |
+
+For each change, make sure the docs still carry:
+
+- **the tool list** — every shipped tool appears somewhere a caller will look, and nothing appears that no longer exists;
+- **usage** — what question the tool answers and when to prefer it over the alternative;
+- **examples** — at least one real invocation with realistic arguments. Run it and use what it actually returned; an invented example that does not match the current signature is worse than none.
+
+A concrete instance of this going wrong: `get_scope`, `get_call_slice`, and `get_semantic_diff` shipped in `FlowTools.cs`/`HistoryTools.cs` and are named in **none** of the files above, so no skill or agent has ever told anyone they exist.
+
+Tool signature changes are also breaking for in-process callers (the tests call these methods positionally), and any change to response shape or lease behaviour needs `Contracts/Contract.cs` bumped. After editing anything under `src/`, re-run `./scripts/build-plugin.sh` or `dist/` still serves the old surface.
 
 ## Code review
 
