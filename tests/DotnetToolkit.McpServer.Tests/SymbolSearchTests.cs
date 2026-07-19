@@ -34,7 +34,7 @@ public sealed class SymbolSearchTests : IDisposable
     }
 
     private static SymbolStore.SymbolRow Row(string id, string fqName, string declHash = "d1") =>
-        new(id, fqName, "Method", "public", "Proj", declHash, null, fqName, null);
+        new(id, fqName, "Method", "Proj", declHash, null, fqName);
 
     private int FtsRowCount(string symbolId)
     {
@@ -53,9 +53,9 @@ public sealed class SymbolSearchTests : IDisposable
     public void ReindexingAChangedSymbolDoesNotDuplicateItsSearchRow()
     {
         var id = "sym_reindex";
-        _symbols.ReplaceAll([Row(id, "Demo.Store.OutputFormat", "d1")], [], []);
-        _symbols.ApplyIncremental([Row(id, "Demo.Store.OutputFormat", "d2")], [], [], []);
-        _symbols.ApplyIncremental([Row(id, "Demo.Store.OutputFormat", "d3")], [], [], []);
+        _symbols.ReplaceAll([Row(id, "Demo.Store.OutputFormat", "d1")], []);
+        _symbols.ApplyIncremental([Row(id, "Demo.Store.OutputFormat", "d2")], [], []);
+        _symbols.ApplyIncremental([Row(id, "Demo.Store.OutputFormat", "d3")], [], []);
 
         Assert.Equal(1, FtsRowCount(id));
 
@@ -67,8 +67,8 @@ public sealed class SymbolSearchTests : IDisposable
     [Fact]
     public void RemovingASymbolClearsItsSearchRow()
     {
-        _symbols.ReplaceAll([Row("sym_a", "Demo.Keep"), Row("sym_b", "Demo.Drop")], [], []);
-        _symbols.ApplyIncremental([Row("sym_a", "Demo.Keep")], [], [], []);
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Keep"), Row("sym_b", "Demo.Drop")], []);
+        _symbols.ApplyIncremental([Row("sym_a", "Demo.Keep")], [], []);
 
         Assert.Equal(0, FtsRowCount("sym_b"));
         Assert.Empty(_symbols.Search("Drop", null, 10));
@@ -81,7 +81,7 @@ public sealed class SymbolSearchTests : IDisposable
     [Fact]
     public void RepairSearchIndexBackfillsMissingRowsAndDropsDuplicates()
     {
-        _symbols.ReplaceAll([Row("sym_a", "Demo.Alpha"), Row("sym_b", "Demo.Bravo")], [], []);
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Alpha"), Row("sym_b", "Demo.Bravo")], []);
 
         // Reproduce the drift the old triggers produced.
         using (var connection = _store.Connect())
@@ -112,7 +112,7 @@ public sealed class SymbolSearchTests : IDisposable
     [Fact]
     public void RepairSearchIndexIsANoOpWhenTheMirrorIsConsistent()
     {
-        _symbols.ReplaceAll([Row("sym_a", "Demo.Alpha")], [], []);
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Alpha")], []);
 
         Assert.Equal(0, _symbols.RepairSearchIndex());
     }
@@ -128,7 +128,7 @@ public sealed class SymbolSearchTests : IDisposable
         // "Format" is a whole token of Demo.Format, so FTS reaches it. Demo.Reformat has no interior
         // capital, so its only token is "Reformat" and FTS cannot reach it for this query — but LIKE
         // '%Format%' can. The old code returned FTS's single hit and never consulted LIKE at all.
-        _symbols.ReplaceAll([Row("sym_a", "Demo.Format"), Row("sym_b", "Demo.Reformat")], [], []);
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Format"), Row("sym_b", "Demo.Reformat")], []);
 
         var hits = _symbols.Search("Format", null, 10);
 

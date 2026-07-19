@@ -53,7 +53,6 @@ public sealed class SymbolIndexBuilder
                 return;
 
             var symbols = new Dictionary<string, SymbolStore.SymbolRow>(StringComparer.Ordinal);
-            var sites = new List<(string, string, int, int, string?)>();
             var edges = new HashSet<SymbolStore.EdgeRow>();
             var facts = new List<SymbolStore.FactsRow>();
 
@@ -73,14 +72,14 @@ public sealed class SymbolIndexBuilder
                     var file = document.FilePath ?? tree.FilePath;
 
                     foreach (var node in root.DescendantNodes().Where(IsDeclaration))
-                        IndexDeclaration(node, model, project.Name, file, symbols, sites, edges, facts);
+                        IndexDeclaration(node, model, project.Name, symbols, edges, facts);
                     IndexTopLevelStatements(root, model, edges);
                 }
             }
 
             // Fingerprint-gated: only rows whose version layers actually moved are rewritten, so a
             // formatting-only sweep costs a comparison pass and no semantic writes at all.
-            var stats = _symbols.ApplyIncremental([.. symbols.Values], sites, [.. edges], facts);
+            var stats = _symbols.ApplyIncremental([.. symbols.Values], [.. edges], facts);
             Ready = true;
             _log.LogInformation(
                 "Symbol index updated: {Updated} changed, {Removed} removed, {Unchanged} untouched ({Symbols} symbols, {Edges} edges)",
@@ -101,9 +100,8 @@ public sealed class SymbolIndexBuilder
         or PropertyDeclarationSyntax or EventDeclarationSyntax or BaseFieldDeclarationSyntax;
 
     private void IndexDeclaration(
-        SyntaxNode node, SemanticModel model, string project, string? file,
+        SyntaxNode node, SemanticModel model, string project,
         Dictionary<string, SymbolStore.SymbolRow> symbols,
-        List<(string, string, int, int, string?)> sites,
         HashSet<SymbolStore.EdgeRow> edges,
         List<SymbolStore.FactsRow> facts)
     {
@@ -116,7 +114,6 @@ public sealed class SymbolIndexBuilder
             return;
 
         var (decl, body) = SyntaxFingerprint.Compute(node);
-        var span = node.SyntaxTree.GetLineSpan(node.Span);
 
         foreach (var symbol in declared)
         {
@@ -129,17 +126,14 @@ public sealed class SymbolIndexBuilder
                     // is both compact and directly resolvable by SymbolResolver.
                     symbol.ToDisplayString(),
                     SymbolKey.KindOf(symbol),
-                    symbol.DeclaredAccessibility.ToString().ToLowerInvariant(),
                     project,
                     decl,
                     body,
                     symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                    OutlineBuilder.SummaryFromXml(symbol.GetDocumentationCommentXml()),
                     RefsHash: SemanticFingerprint.ComputeRefs(ReferencedSymbolIds(node, model)),
                     ApiHash: SemanticFingerprint.ComputeApi(symbol as INamedTypeSymbol ?? symbol.ContainingType, DeclHashOf),
                     IsTest: TestAttributes.IsTestMethod(symbol));
             }
-            sites.Add((id, file ?? "-", span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1, null));
         }
 
         // Call edges are collected per DECLARATION, not per declared symbol: a multi-variable field
@@ -231,18 +225,8 @@ public sealed class SymbolIndexBuilder
             var line = expr.SyntaxTree.GetLineSpan(expr.Span).StartLinePosition.Line + 1;
             var file = expr.SyntaxTree.FilePath;
             var toId = SymbolKey.IdOf(target.OriginalDefinition);
-            edges.Add(new SymbolStore.EdgeRow(fromId, toId, "call", DispatchKind(target), file, line));
+            edges.Add(new SymbolStore.EdgeRow(fromId, toId, "call", file, line));
         }
     }
 
-    private static string DispatchKind(ISymbol target)
-    {
-        if (target.ContainingType?.TypeKind == TypeKind.Interface)
-            return "interface";
-        if (target is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke })
-            return "delegate";
-        if (target.IsVirtual || target.IsAbstract || target.IsOverride)
-            return "virtual";
-        return "direct";
-    }
 }

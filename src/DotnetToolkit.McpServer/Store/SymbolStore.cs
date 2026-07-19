@@ -15,14 +15,14 @@ public sealed class SymbolStore
     public bool Available => _store.Available;
 
     public sealed record SymbolRow(
-        string SymbolId, string FqName, string Kind, string Accessibility, string Project,
-        string DeclHash, string? BodyHash, string DisplayString, string? XmlDoc,
+        string SymbolId, string FqName, string Kind, string Project,
+        string DeclHash, string? BodyHash, string DisplayString,
         string? RefsHash = null, string? ApiHash = null, bool IsTest = false);
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
 
-    public sealed record EdgeRow(string From, string To, string EdgeKind, string? DispatchKind, string? File, int? Line);
+    public sealed record EdgeRow(string From, string To, string EdgeKind, string? File, int? Line);
 
     /// <summary>
     /// callers / tests reference counts for a symbol, derived from cached edges. Tests are the subset
@@ -395,7 +395,6 @@ public sealed class SymbolStore
         {
             ins.Transaction = tx;
             ins.CommandText = """
-                UPDATE symbols SET search_text = $search WHERE symbol_id = $id;
                 INSERT INTO symbols_fts(symbol_id, search_text) VALUES ($id, $search);
                 """;
             foreach (var (id, fq) in rows)
@@ -444,7 +443,6 @@ public sealed class SymbolStore
     /// </summary>
     public UpdateStats ApplyIncremental(
         IReadOnlyList<SymbolRow> symbols,
-        IReadOnlyList<(string SymbolId, string File, int StartLine, int EndLine, string? Region)> sites,
         IReadOnlyList<EdgeRow> edges,
         IReadOnlyList<FactsRow> facts)
     {
@@ -477,14 +475,12 @@ public sealed class SymbolStore
 
         foreach (var id in changed)
         {
-            ExecParam(connection, tx, "DELETE FROM declaration_sites WHERE symbol_id = $id;", id);
             ExecParam(connection, tx, "DELETE FROM mechanical_facts WHERE symbol_id = $id;", id);
         }
         foreach (var owner in edgeOwners)
             ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id;", owner);
 
         WriteSymbols(connection, tx, symbols.Where(s => changed.Contains(s.SymbolId)).ToList());
-        WriteSites(connection, tx, sites.Where(s => changed.Contains(s.SymbolId)).ToList());
         WriteEdges(connection, tx, edges.Where(e => edgeOwners.Contains(e.From)).ToList());
         WriteFacts(connection, tx, facts.Where(f => changed.Contains(f.SymbolId)).ToList());
 
@@ -501,7 +497,6 @@ public sealed class SymbolStore
     private static void DeleteSymbol(SqliteConnection connection, SqliteTransaction tx, string id)
     {
         ExecParam(connection, tx, "DELETE FROM mechanical_facts WHERE symbol_id = $id;", id);
-        ExecParam(connection, tx, "DELETE FROM declaration_sites WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id OR to_symbol = $id;", id);
         ExecParam(connection, tx, "DELETE FROM symbols_fts WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM symbols WHERE symbol_id = $id;", id);
@@ -518,7 +513,6 @@ public sealed class SymbolStore
 
     /// <summary>Replaces the entire index in one transaction (full rebuild).</summary>
     public void ReplaceAll(IReadOnlyList<SymbolRow> symbols,
-        IReadOnlyList<(string SymbolId, string File, int StartLine, int EndLine, string? Region)> sites,
         IReadOnlyList<EdgeRow> edges,
         IReadOnlyList<FactsRow>? facts = null)
     {
@@ -528,11 +522,10 @@ public sealed class SymbolStore
         using var tx = connection.BeginTransaction();
 
         Exec(connection, tx,
-            "DELETE FROM mechanical_facts; DELETE FROM reference_edges; DELETE FROM declaration_sites; "
+            "DELETE FROM mechanical_facts; DELETE FROM reference_edges; "
             + "DELETE FROM symbols_fts; DELETE FROM symbols;");
 
         WriteSymbols(connection, tx, symbols);
-        WriteSites(connection, tx, sites);
         WriteEdges(connection, tx, edges);
         WriteFacts(connection, tx, facts ?? []);
 
@@ -549,9 +542,9 @@ public sealed class SymbolStore
         cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
-                (symbol_id, fq_name, kind, accessibility, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, xml_doc, embedding, updated_at, search_text, is_test)
-            VALUES ($id, $fq, $kind, $acc, $proj, $decl, $body, $refs, $api, $disp, $doc, NULL, $ts, $search, $isTest);
+                (symbol_id, fq_name, kind, project, decl_hash, body_hash,
+                 refs_hash, api_hash, display_string, embedding, is_test)
+            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -560,14 +553,12 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$id", s.SymbolId);
             cmd.Parameters.AddWithValue("$fq", s.FqName);
             cmd.Parameters.AddWithValue("$kind", s.Kind);
-            cmd.Parameters.AddWithValue("$acc", s.Accessibility);
             cmd.Parameters.AddWithValue("$proj", s.Project);
             cmd.Parameters.AddWithValue("$decl", s.DeclHash);
             cmd.Parameters.AddWithValue("$body", (object?)s.BodyHash ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$refs", (object?)s.RefsHash ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$api", (object?)s.ApiHash ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$disp", s.DisplayString);
-            cmd.Parameters.AddWithValue("$doc", (object?)s.XmlDoc ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ts", now);
             cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
             cmd.Parameters.AddWithValue("$isTest", s.IsTest ? 1 : 0);
@@ -604,28 +595,6 @@ public sealed class SymbolStore
         }
     }
 
-    private static void WriteSites(SqliteConnection connection, SqliteTransaction tx,
-        IReadOnlyList<(string SymbolId, string File, int StartLine, int EndLine, string? Region)> sites)
-    {
-        if (sites.Count == 0)
-            return;
-        using var cmd = connection.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = """
-            INSERT INTO declaration_sites (symbol_id, file, start_line, end_line, region)
-            VALUES ($id, $file, $start, $end, $region);
-            """;
-        foreach (var site in sites)
-        {
-            cmd.Parameters.Clear();
-            cmd.Parameters.AddWithValue("$id", site.SymbolId);
-            cmd.Parameters.AddWithValue("$file", site.File);
-            cmd.Parameters.AddWithValue("$start", site.StartLine);
-            cmd.Parameters.AddWithValue("$end", site.EndLine);
-            cmd.Parameters.AddWithValue("$region", (object?)site.Region ?? DBNull.Value);
-            cmd.ExecuteNonQuery();
-        }
-    }
 
     private static void WriteEdges(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<EdgeRow> edges)
     {
@@ -634,8 +603,8 @@ public sealed class SymbolStore
         using var cmd = connection.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = """
-            INSERT OR IGNORE INTO reference_edges (from_symbol, to_symbol, edge_kind, dispatch_kind, file, line)
-            VALUES ($from, $to, $kind, $dispatch, $file, $line);
+            INSERT OR IGNORE INTO reference_edges (from_symbol, to_symbol, edge_kind, file, line)
+            VALUES ($from, $to, $kind, $file, $line);
             """;
         foreach (var e in edges)
         {
@@ -643,7 +612,6 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$from", e.From);
             cmd.Parameters.AddWithValue("$to", e.To);
             cmd.Parameters.AddWithValue("$kind", e.EdgeKind);
-            cmd.Parameters.AddWithValue("$dispatch", (object?)e.DispatchKind ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$file", (object?)e.File ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$line", (object?)e.Line ?? DBNull.Value);
             cmd.ExecuteNonQuery();

@@ -19,7 +19,38 @@ internal static class Schema
         new(6, "symbol_fts", SymbolFts),
         new(7, "symbol_fts_explicit_writes", SymbolFtsExplicitWrites),
         new(8, "test_flag_on_symbol", TestFlagOnSymbol),
+        new(9, "drop_unread_derived_columns", DropUnreadDerivedColumns),
     ];
+
+    // Derived data that was written on every index pass and read by nothing. Each of these was a second
+    // copy of something the read path recomputes live from Roslyn, so none could ever be consulted
+    // without risking the answer the live path already gives correctly:
+    //
+    //   declaration_sites        — every FROM was a DELETE; reads use sym.DeclaringSyntaxReferences
+    //   symbols.search_text      — the FTS table holds the copy that MATCH actually queries
+    //   symbols.xml_doc          — reads use sym.GetDocumentationCommentXml(), or ProjectIndex when
+    //                              the workspace is not loaded
+    //   symbols.accessibility    — reads use sym.DeclaredAccessibility
+    //   symbols.updated_at       — never read at all
+    //   reference_edges.dispatch_kind — reads compute DispatchKindOf(sym) at the call site
+    //
+    // xml_doc is the instructive one: a doc comment is trivia, and SyntaxFingerprint is trivia-blind by
+    // design, so editing only a doc comment moves no version layer and the incremental pass rewrites
+    // nothing. The stored copy would have gone stale and stayed stale — the same shape of defect as the
+    // test attribution in migration 8, where a value's real dependency was not what invalidation keyed on.
+    //
+    // symbols.embedding is deliberately kept: it is an unfilled placeholder for planned vector search,
+    // not a duplicate of anything.
+    private const string DropUnreadDerivedColumns = """
+        DROP TABLE declaration_sites;
+
+        ALTER TABLE symbols DROP COLUMN search_text;
+        ALTER TABLE symbols DROP COLUMN xml_doc;
+        ALTER TABLE symbols DROP COLUMN accessibility;
+        ALTER TABLE symbols DROP COLUMN updated_at;
+
+        ALTER TABLE reference_edges DROP COLUMN dispatch_kind;
+        """;
 
     // test_reference edges duplicated every call edge originating in a test project, and decided
     // test-ness from Project.MetadataReferences — i.e. from how well MSBuild happened to load that
