@@ -12,10 +12,13 @@ senior developer seeing the codebase for the first time — and reports findings
 Route review requests to them instead of reviewing inline yourself; they read the actual reference docs
 (or a consuming repo's overrides under `.claude/dotnet-toolkit/`) that you only have a summary of.
 
-All four have the plugin's full read-side MCP toolset: Roslyn queries (`find_symbol`, `find_references`,
-`find_implementations`, `get_symbol`, `diagnostics`), structure queries (`project_tree`, `list_folder`,
-`outline`), and **read-only** devlog access (`devlog_search`, `devlog_get` — never `devlog_add`; they check
-prior recorded decisions for context, they don't record new ones).
+All four have the plugin's read-side MCP toolset: `search_index` to locate symbols, `get_symbol` for a
+symbol's shape/members/source, and `get_references` to trace callers, implementations and overrides
+semantically. They have no `Edit`/`Write` and no `validate_patch`, so they cannot change code.
+
+Note: they can no longer consult the development log for prior recorded decisions — the log is currently
+write-only (entries are recorded by `validate_patch`, and no search tool exists yet). If a finding might
+be a deliberate past decision, that context has to come from you.
 
 ## Which agent(s) to launch
 
@@ -53,6 +56,7 @@ defined once in `docs/review-workflow.md`). When more than one ran:
 
 ## What these agents will never do
 
-None of the four have `Edit`/`Write` tool access, and none call `devlog_add` — they cannot modify code or
-record devlog entries even if asked to. If the user wants findings actually applied or a devlog entry
-recorded, that's your job after reviewing what they reported.
+None of the four have `Edit`/`Write` or `validate_patch` access — they cannot modify code even if asked
+to, and they cannot record log entries. If the user wants findings actually applied, that's your job after
+reviewing what they reported: apply them through `validate_patch` with an `intent`, which both validates
+the change and records why it was made.

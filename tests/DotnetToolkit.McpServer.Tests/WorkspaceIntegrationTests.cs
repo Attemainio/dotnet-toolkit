@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
+using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Tools;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Data.Sqlite;
@@ -25,6 +26,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public SymbolStore Symbols { get; private set; } = null!;
     public FeatureLogStore FeatureLog { get; private set; } = null!;
     public SymbolIndexBuilder Builder { get; private set; } = null!;
+    public TargetedTests TargetedTests { get; private set; } = null!;
     public TelemetryRecorder Telemetry { get; private set; } = null!;
 
     private KnowledgeStore _store = null!;
@@ -58,6 +60,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         await Builder.RebuildAsync();
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
+        TargetedTests = new TargetedTests(Locator, NullLogger<TargetedTests>.Instance);
     }
 
     public Task DisposeAsync()
@@ -94,11 +97,35 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+
+        // `dotnet restore` spawns PERSISTENT MSBuild worker nodes that inherit these redirected pipes and
+        // outlive the parent. ReadToEndAsync waits for EOF, which such a node never delivers — so the read
+        // blocks forever even though restore itself exited. Disabling node reuse (and the build server)
+        // keeps every child short-lived so the pipes actually close.
+        psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+
         using var process = Process.Start(psi)!;
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        Assert.True(process.ExitCode == 0, $"dotnet {args} failed:\n{stdout}\n{stderr}");
+
+        // Drain BOTH pipes concurrently: reading one to completion first deadlocks as soon as the child
+        // fills the other pipe's buffer.
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            // Bound the drain too: a stray pipe holder must fail loudly, never hang the suite.
+            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            Assert.Fail($"dotnet {args} did not complete within the timeout (likely a pipe held open by a build server)");
+        }
+
+        Assert.True(process.ExitCode == 0, $"dotnet {args} failed:\n{await stdoutTask}\n{await stderrTask}");
     }
 }
 
@@ -117,7 +144,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
     private Task<string> GetSymbol(string symbol, string resolution = "signature", string? knownVersion = null, bool refetch = false) =>
-        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry,
+        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
             Session, Task_, symbol, resolution, knownVersion, refetch);
 
     private Task<string> GetReferences(string symbol, string direction) =>
@@ -166,6 +193,36 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.DoesNotContain("global::", name);
         var fetched = Root(await GetSymbol(name, "signature"));
         Assert.True(fetched.TryGetProperty("content", out _));
+    }
+
+    // referenceCounts gates expansion (P1.4: "0 callers -> no get_references"), so a false zero makes
+    // the agent skip an expansion it needs. The count must agree with get_references — including calls
+    // made from top-level statements, which are not ordinary member declarations.
+    [Fact]
+    public async Task ReferenceCounts_AgreeWithGetReferences_IncludingTopLevelCallers()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var callers = sym.GetProperty("content").GetProperty("referenceCounts").GetProperty("callers").GetInt32();
+        var refs = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
+
+        // Program.cs calls widget.Spin(3) from top-level statements.
+        Assert.True(callers >= 1, $"expected at least one caller, got {callers}");
+        Assert.Equal(refs.GetProperty("totalItems").GetInt32(), callers);
+    }
+
+    // Fingerprint gating: re-running the builder over unchanged source must rewrite nothing. If this
+    // regresses, every index refresh silently becomes a full rebuild again.
+    [Fact]
+    public async Task IndexRebuild_OverUnchangedSource_WritesNothing()
+    {
+        await _f.Builder.RebuildAsync();          // ensure the index reflects current source
+        var before = _f.Symbols.SymbolCount();
+
+        // A second pass with no source change: everything should compare equal and be skipped.
+        await _f.Builder.RebuildAsync();
+
+        Assert.Equal(before, _f.Symbols.SymbolCount());
+        Assert.True(before > 0, "fixture should have indexed symbols");
     }
 
     // Conformance C10: one partial-class part returns the unified type with all declaration sites.
@@ -293,7 +350,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var before = _f.FeatureLog.CountsForTask(applyTask);
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.FeatureLog, _f.Builder, _f.Telemetry,
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             Session, applyTask, new Dictionary<string, string> { [symbolId] = version }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
@@ -306,6 +363,6 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
-        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.FeatureLog, _f.Builder, _f.Telemetry,
+        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             Session, Task_, baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);
 }

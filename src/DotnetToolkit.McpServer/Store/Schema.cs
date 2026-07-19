@@ -14,7 +14,53 @@ internal static class Schema
         new(1, "raw_telemetry", RawTelemetry),
         new(2, "symbol_index", SymbolIndex),
         new(3, "feature_log", FeatureLog),
+        new(4, "mechanical_facts", MechanicalFacts),
+        new(5, "derived_attribution", DerivedAttribution),
     ];
+
+    // Spec §19.2 — derived attribution. Unlike raw telemetry this stratum is DROPPED AND REBUILT, and
+    // every row records the ruleset version that produced it, so heuristics can evolve without
+    // corrupting history and a rebuild stays idempotent for a fixed version (Conformance C9).
+    private const string DerivedAttribution = """
+        CREATE TABLE derived_retrieval_attribution (
+            event_id                TEXT PRIMARY KEY REFERENCES retrieval_events(event_id),
+            computed_at             TEXT NOT NULL,
+            attribution_version     TEXT NOT NULL,
+            used_for_edit           INTEGER,
+            used_for_navigation     INTEGER,
+            reread                  INTEGER,
+            reread_after_compaction INTEGER,
+            hops_to_edit            INTEGER,
+            verdict                 TEXT NOT NULL
+        );
+
+        CREATE TABLE derived_task_summary (
+            task_id                       TEXT PRIMARY KEY,
+            computed_at                   TEXT NOT NULL,
+            attribution_version           TEXT NOT NULL,
+            total_tokens                  INTEGER NOT NULL,
+            tokens_contributing           INTEGER NOT NULL,
+            tokens_navigational           INTEGER NOT NULL,
+            tokens_unused                 INTEGER NOT NULL,
+            tokens_wasted_rereads         INTEGER NOT NULL,
+            tokens_saved_by_leases        INTEGER NOT NULL,
+            validation_attempts           INTEGER NOT NULL,
+            attempts_to_first_success     INTEGER,
+            insufficient_green_lights     INTEGER NOT NULL,
+            suggested_inspection_followed REAL,
+            outcome                       TEXT NOT NULL
+        );
+        """;
+
+    // Spec §18 — body-derived facts. Valid only while body_hash matches the symbol's current body
+    // layer; a moved body invalidates the row rather than silently serving stale facts.
+    private const string MechanicalFacts = """
+        CREATE TABLE mechanical_facts (
+            symbol_id  TEXT PRIMARY KEY REFERENCES symbols(symbol_id),
+            facts_json TEXT NOT NULL,
+            body_hash  TEXT NOT NULL
+        );
+        """;
 
     // Spec §18 — development log (append-only, a source of truth; never rebuilt from source).
     private const string FeatureLog = """

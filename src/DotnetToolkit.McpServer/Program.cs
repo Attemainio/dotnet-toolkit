@@ -29,9 +29,13 @@ builder.Services.AddSingleton<DevlogStore>();
 builder.Services.AddSingleton<KnowledgeStore>();
 builder.Services.AddSingleton<TelemetryRecorder>();
 builder.Services.AddSingleton<MetricsReader>();
+builder.Services.AddSingleton<AttributionJob>();
 builder.Services.AddSingleton<SymbolStore>();
 builder.Services.AddSingleton<FeatureLogStore>();
 builder.Services.AddSingleton<SymbolIndexBuilder>();
+builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.TargetedTests>();
+builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.GitAnalyzer>();
+builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
 
 builder.Services
     .AddMcpServer()

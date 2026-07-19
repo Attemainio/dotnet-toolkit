@@ -1,9 +1,10 @@
 # dotnet-toolkit
 
 A [Claude Code plugin](https://code.claude.com/docs/en/plugins) for .NET repositories
-that cuts token usage with a C# MCP server: Roslyn-powered code queries, an
-always-fresh project structure index, and a structured development log — plus skills
-that teach Claude to use them instead of reading whole files.
+that cuts token usage with a C# MCP server: Roslyn-powered symbol retrieval with
+content-version leases, and a write path that validates edits against an in-memory
+compilation before they touch disk — plus skills that teach Claude to use them
+instead of reading whole files.
 
 It is an **add-in** for existing projects: it never replaces a repo's own CLAUDE.md
 or conventions.
@@ -12,18 +13,19 @@ or conventions.
 
 | Domain | Tools | What it replaces |
 |---|---|---|
-| Code queries (Roslyn) | `find_symbol`, `get_symbol`, `find_references`, `find_implementations`, `diagnostics` | Read/Grep over .cs files, `dotnet build` output dumps |
-| Structure index | `project_tree`, `list_folder`, `outline` | ls/Glob + reading files to learn a codebase |
-| Development log | `devlog_add`, `devlog_search`, `devlog_get` | Re-discovering past decisions and rejected approaches |
+| Symbol retrieval | `get_symbol`, `get_references`, `search_index` | Read/Grep over .cs files, ls/Glob to learn a codebase |
+| Validated edits | `validate_patch` | Editing blind, then `dotnet build` output dumps |
+| Self-observation | `get_retrieval_metrics` | Guessing where tokens went |
 | Server | `ping`, `workspace_status`, `reload_workspace` | — |
 
-All read tools default to a compact pipe-delimited format (an `outline` is typically
-~10–20% of the tokens of the file it describes); pass `format: "json"` for structured
-output.
+Responses are JSON, deliberately terse: absent fields carry no information, and every
+content response carries a layered `contentVersion` you can pass back as `knownVersion`
+so unchanged content is never re-sent. Edits go through `validate_patch`, which reports
+honestly whether the validation it ran was sufficient for the kind of change made.
 
 Four read-only review agents (`dotnet-reviewer`, `dotnet-performance`, `dotnet-refactor-cleaner`,
 `dotnet-doc-reviewer`) ship alongside the tools — each starts with no prior project context, has
-the full read-side MCP toolset (including read-only devlog access), reads bundled reference docs
+the read-side MCP toolset (`search_index`, `get_symbol`, `get_references`), reads bundled reference docs
 (`docs/*.md`, overridable per-repo under `.claude/dotnet-toolkit/`), and reports findings without
 editing code. See `CLAUDE.md`'s Code review section for details.
 
@@ -52,10 +54,13 @@ or add it to a plugin marketplace for a permanent install.
 ## How it works
 
 - The MCP server starts instantly and builds two knowledge tiers in the background:
-  a **syntax index** (every .cs file parsed with Roslyn, no MSBuild needed — powers
-  structure tools within seconds) and an **MSBuild workspace** (full semantic model —
-  powers references/implementations/diagnostics once loaded; check
-  `workspace_status`).
+  a **syntax index** (every .cs file parsed with Roslyn, no MSBuild needed — lets
+  `search_index`/`get_symbol` answer within seconds, marked `staleness: "index_only"`)
+  and an **MSBuild workspace** (full semantic model — powers `get_references` and
+  `validate_patch` once loaded; check `workspace_status`).
+- A SQLite knowledge store under the target repo holds the symbol index, reference-edge
+  cache, an append-only development log, and immutable usage telemetry. It is always
+  rebuildable from source; deleting it just forces a rebuild.
 - The target repo root comes from `CLAUDE_PROJECT_DIR` (set by Claude Code). The
   solution is auto-discovered (`*.slnx` > `*.sln` > `*.csproj`, root + one level deep).
 - Caches live in `.claude/dotnet-toolkit/cache/` in the target repo (self-gitignored).

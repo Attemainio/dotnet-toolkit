@@ -58,7 +58,7 @@ vocabulary without three divergent definitions of the same issue.
 - **Copy-pasted logic** — the same (or near-same, with minor variable renames) block of logic appearing in
   two or more places instead of a shared method. Flag once per duplicated shape, listing every occurrence.
 - **Dead code** — a type, method, field, or property with zero references anywhere in the solution
-  (verified via `find_references`, never guessed from a text search). Includes commented-out code blocks
+  (verified via `get_references`, never guessed from a text search). Includes commented-out code blocks
   left in place "just in case."
 - **Orphaned single-caller abstraction** — an interface or abstract base class with exactly one
   implementer and one caller, added for a flexibility need that never materialized. Not every

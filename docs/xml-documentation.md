@@ -9,7 +9,7 @@ Default reference for `dotnet-doc-reviewer`. Overridable per-repo via
 infer behavior from its name alone — wrong documentation is worse than none, and a `<summary>` that just
 restates the method name adds nothing. For a method that calls others whose behavior affects what the docs
 should say, read those too. For a property, read the getter/setter logic (or how an auto-property is set in
-constructors/callers). For a class, read enough of it to state its real role, then use `find_references` to
+constructors/callers). For a class, read enough of it to state its real role, then use `get_references` to
 see how it's actually used elsewhere — a summary must reflect real behavior, not an assumption from the
 name. If the real behavior can't be determined (an external dependency, generated code), say so explicitly
 rather than guessing.

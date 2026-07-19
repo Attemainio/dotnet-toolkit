@@ -5,12 +5,9 @@ description: >
   <returns>/<exception>/<typeparam> tags on public API surface, <summary> vs <remarks> content
   separation, <inheritdoc/> opportunities, and inline-comment quality. Use after new/changed
   public API surface, or for "review the docs/comments on this" requests.
-tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__find_symbol, mcp__plugin_dotnet-toolkit_dotnet__outline,
-  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__find_references,
-  mcp__plugin_dotnet-toolkit_dotnet__find_implementations, mcp__plugin_dotnet-toolkit_dotnet__diagnostics,
-  mcp__plugin_dotnet-toolkit_dotnet__project_tree, mcp__plugin_dotnet-toolkit_dotnet__list_folder,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, mcp__plugin_dotnet-toolkit_dotnet__devlog_search,
-  mcp__plugin_dotnet-toolkit_dotnet__devlog_get
+tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
+  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status
 skills: [dotnet-code-query, dotnet-navigation]
 model: sonnet
 memory: project

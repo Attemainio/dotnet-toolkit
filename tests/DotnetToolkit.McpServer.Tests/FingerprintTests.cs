@@ -69,6 +69,25 @@ public sealed class FingerprintTests
         Assert.Equal(before.Decl, after.Decl); // member set is the api layer's concern (Phase 3), not decl
     }
 
+    // Tokens from different tiers carry different layer sets: the agent holds decl|body|refs|api from
+    // get_symbol, while the patch classifier computes only the syntax layers. Comparison must be per
+    // shared layer — string equality would reject every validly-based patch as stale.
+    [Fact]
+    public void AgreesWithComparesOnlySharedLayers()
+    {
+        var syntaxOnly = ContentVersion.Parse("decl:aaaa|body:bbbb");
+        var fourLayer = ContentVersion.Parse("decl:aaaa|body:bbbb|refs:cccc|api:dddd");
+
+        Assert.True(syntaxOnly.AgreesWith(fourLayer));   // refs/api simply weren't computed here
+        Assert.True(fourLayer.AgreesWith(syntaxOnly));
+        Assert.NotEqual(syntaxOnly.ToString(), fourLayer.ToString()); // ...yet they are not equal strings
+
+        // A shared layer that actually moved is still a disagreement.
+        Assert.False(syntaxOnly.AgreesWith(ContentVersion.Parse("decl:aaaa|body:ZZZZ")));
+        // No overlap at all verifies nothing.
+        Assert.False(syntaxOnly.AgreesWith(ContentVersion.Parse("api:dddd")));
+    }
+
     [Fact]
     public void ContentVersionRoundTripsAndComparesPerLayer()
     {

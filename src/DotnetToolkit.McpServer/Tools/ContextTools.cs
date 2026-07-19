@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using DotnetToolkit.McpServer.Contracts;
 using DotnetToolkit.McpServer.Fingerprint;
 using DotnetToolkit.McpServer.Identity;
@@ -34,6 +35,7 @@ public static class ContextTools
         SolutionLocator locator,
         ProjectIndex index,
         SymbolStore symbolStore,
+        FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
         [Description("Agent conversation id (ses_...).")] string sessionId,
@@ -81,7 +83,7 @@ public static class ContextTools
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
 
         var symbolId = SymbolKey.IdOf(sym);
-        var version = VersionOf(sym);
+        var version = FullVersionOf(sym, symbolStore);
         var staleness = indexBuilder.Ready ? "live" : "index_only";
         var lease = Lease.Evaluate(version, knownVersion, refetch);
 
@@ -102,7 +104,7 @@ public static class ContextTools
         }
         else
         {
-            var content = await BuildContent(sym, resolution, solution, locator, symbolStore, indexBuilder);
+            var content = await BuildContent(sym, resolution, solution, locator, symbolStore, indexBuilder, featureLog);
             // "changed" is omitted here: content being present already says it.
             envelope = new
             {
@@ -235,7 +237,7 @@ public static class ContextTools
 
     private static async Task<object> BuildContent(
         ISymbol sym, string resolution, Solution solution, SolutionLocator locator,
-        SymbolStore symbolStore, SymbolIndexBuilder indexBuilder)
+        SymbolStore symbolStore, SymbolIndexBuilder indexBuilder, FeatureLogStore featureLog)
     {
         var res = resolution.Trim().ToLowerInvariant();
         var sites = DeclarationSites(sym, locator);
@@ -266,8 +268,8 @@ public static class ContextTools
         if (res == "full")
             source = SourceOf(sym);
 
-        // mechanicalFacts (P3), attachedContracts (P4) and recentLog (P5) are deliberately absent rather
-        // than emitted as null/empty — an unpopulated field is pure overhead until it carries data.
+        // attachedContracts (P4) and recentLog (P5) are deliberately absent rather than emitted as
+        // null/empty — an unpopulated field is pure overhead until it carries data.
         return new
         {
             kind = SymbolKey.KindOf(sym),
@@ -277,8 +279,57 @@ public static class ContextTools
             declarationSites = sites,
             source,
             xmlDoc = OutlineBuilder.SummaryFromXml(sym.GetDocumentationCommentXml()),
+            // Body-derived facts, served only while the body hash they were computed from still holds.
+            mechanicalFacts = res == "signature" ? null : MechanicalFactsFor(sym, symbolStore),
             referenceCounts = counts,
+            // Why this code is the way it is. Entries describing a superseded body are flagged rather
+            // than presented as current truth.
+            recentLog = RecentLogFor(sym, featureLog),
         };
+    }
+
+    /// <summary>
+    /// The last few development-log entries touching this symbol (spec §9). An entry whose recorded
+    /// new version no longer matches the symbol's current body layer is marked <c>current: false</c> —
+    /// stale history is surfaced as stale, never silently as fact.
+    /// </summary>
+    private static object? RecentLogFor(ISymbol sym, FeatureLogStore featureLog)
+    {
+        var entries = featureLog.RecentForSymbol([SymbolKey.IdOf(sym)]);
+        if (entries.Count == 0)
+            return null;
+
+        var currentBody = VersionOf(sym).Get("body");
+        return entries.Select(e => new
+        {
+            logId = e.LogId,
+            date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
+            intent = e.Intent,
+            detail = e.Detail,
+            apiImpact = e.ApiImpact,
+            current = currentBody is null || e.NewVersion is null
+                || ContentVersion.Parse(e.NewVersion).Get("body") == currentBody,
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Facts are stored as JSON; returning the parsed element keeps them structured in the response
+    /// without re-modelling every field here. Null when the body moved since they were computed.
+    /// </summary>
+    private static object? MechanicalFactsFor(ISymbol sym, SymbolStore symbolStore)
+    {
+        var version = VersionOf(sym);
+        var json = symbolStore.FactsFor(SymbolKey.IdOf(sym), version.Get("body"));
+        if (json is null)
+            return null;
+        try
+        {
+            return JsonDocument.Parse(json).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static object? ContainingType(ISymbol sym)
@@ -318,12 +369,11 @@ public static class ContextTools
 
     private static async Task<object> ReferenceCounts(ISymbol sym, Solution solution, SymbolStore symbolStore)
     {
-        var callers = symbolStore.ReferenceCounts(SymbolKey.IdOf(sym), new HashSet<string>())?.Callers ?? 0;
+        var counts = symbolStore.ReferenceCounts(SymbolKey.IdOf(sym));
         var implementations = await CountImplementations(sym, solution);
         var overrides = await CountOverrides(sym, solution);
-        // "tests" is omitted rather than reported as 0: test_reference edges arrive in Phase 3, and a
-        // fabricated zero would read as "no tests cover this" — worse than saying nothing.
-        return new { callers, implementations, overrides };
+        // tests is now backed by real test_reference edges rather than a fabricated zero.
+        return new { callers = counts?.Callers ?? 0, implementations, overrides, tests = counts?.Tests ?? 0 };
     }
 
     private static async Task<int> CountImplementations(ISymbol sym, Solution solution) => sym switch
@@ -563,6 +613,18 @@ public static class ContextTools
             return ContentVersion.Of(decl: "external");
         var (decl, body) = SyntaxFingerprint.Compute(NormalizeDeclNode(reference.GetSyntax()));
         return ContentVersion.Of(decl, body);
+    }
+
+    /// <summary>
+    /// The full four-layer token: syntax layers computed on demand, plus the semantic refs/api layers
+    /// from the index when it has them. Comparison is per supplied layer, so a caller holding only
+    /// decl+body still leases correctly against this.
+    /// </summary>
+    private static ContentVersion FullVersionOf(ISymbol symbol, SymbolStore symbolStore)
+    {
+        var syntax = VersionOf(symbol);
+        var (refs, api) = symbolStore.LayersFor(SymbolKey.IdOf(symbol));
+        return ContentVersion.Of(syntax.Get("decl"), syntax.Get("body"), refs, api);
     }
 
     private static SyntaxNode NormalizeDeclNode(SyntaxNode node) =>

@@ -5,12 +5,9 @@ description: >
   reference-verified analysis. Reports removal/consolidation candidates only — never removes
   code itself. Use for cleanup passes, tech-debt review, or "find dead code" / "find
   duplication" requests.
-tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__find_symbol, mcp__plugin_dotnet-toolkit_dotnet__outline,
-  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__find_references,
-  mcp__plugin_dotnet-toolkit_dotnet__find_implementations, mcp__plugin_dotnet-toolkit_dotnet__diagnostics,
-  mcp__plugin_dotnet-toolkit_dotnet__project_tree, mcp__plugin_dotnet-toolkit_dotnet__list_folder,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, mcp__plugin_dotnet-toolkit_dotnet__devlog_search,
-  mcp__plugin_dotnet-toolkit_dotnet__devlog_get
+tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
+  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status
 skills: [dotnet-code-query, dotnet-navigation]
 model: sonnet
 memory: project
@@ -33,7 +30,8 @@ documentation (`dotnet-doc-reviewer`'s lane).
    cleanup section — what to check.
 
 **Verification discipline, beyond what `review-workflow.md` states generally**: every dead-code claim must
-cite a stated `find_references` result showing zero hits — never a `Grep` hit count alone (misses
+cite a stated `get_references` (`direction: "callers"`) result showing zero items — never a `Grep` hit
+count alone, and never `referenceCounts` alone (misses
 reflection-based access, string-keyed DI resolution, generated code). If you can't verify confidently,
 mark the finding lower-confidence and say why, rather than asserting it's dead. Never flag an
 `[Obsolete]`-marked member that still has a future removal date — that's an intentional, in-progress

@@ -59,6 +59,31 @@ public readonly struct ContentVersion
         return true;
     }
 
+    /// <summary>
+    /// True when no layer present in BOTH tokens disagrees. Unlike <see cref="Satisfies"/> this does not
+    /// require the other token's layers to all be present here: a layer one side never computed is not
+    /// evidence of a change. This is the correct test when comparing tokens produced by different tiers
+    /// (e.g. a four-layer token held by the agent against a two-layer syntax-only token), where raw
+    /// string equality would report a spurious mismatch.
+    /// </summary>
+    public bool AgreesWith(ContentVersion other)
+    {
+        if (IsEmpty || other.IsEmpty)
+            return false;
+        var shared = 0;
+        foreach (var (layer, hash) in other._layers)
+        {
+            var mine = Get(layer);
+            if (mine is null)
+                continue;
+            if (mine != hash)
+                return false;
+            shared++;
+        }
+        // No overlapping layer at all means nothing was actually verified.
+        return shared > 0;
+    }
+
     public override string ToString()
     {
         if (IsEmpty)

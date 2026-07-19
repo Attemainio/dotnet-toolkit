@@ -3,6 +3,7 @@ using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Tools;
+using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -58,7 +59,7 @@ public sealed class StalenessTests : IDisposable
     public async Task GetSymbol_IsIndexBackedWhenWorkspaceUnavailable_C11()
     {
         var root = Root(await ContextTools.GetSymbol(
-            _workspace, _locator, _index, _symbols, _builder, _telemetry,
+            _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
             "ses_a", "tsk_a", "Demo.Foo", "signature"));
 
         Assert.Equal("index_only", root.GetProperty("staleness").GetString());
@@ -82,7 +83,8 @@ public sealed class StalenessTests : IDisposable
     {
         var edits = new[] { new PatchEditInput("Foo.cs", 4, 6, "public class Foo { }") };
         var root = Root(await PatchTools.ValidatePatch(
-            _workspace, _locator, _featureLog, _builder, _telemetry,
+            _workspace, _locator, _symbols, _featureLog, _builder,
+            new TargetedTests(_locator, NullLogger<TargetedTests>.Instance), _telemetry,
             "ses_a", "tsk_a", new Dictionary<string, string>(), edits,
             requestedLevel: null, applyOnSuccess: true, intent: null, tags: null));
 

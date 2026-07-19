@@ -77,6 +77,74 @@ public sealed class FeatureLogStore
         return logId;
     }
 
+    /// <summary>
+    /// One development-log entry as attached to a symbol (spec §9 <c>recentLog</c>). <paramref name="NewVersion"/>
+    /// is carried so the caller can mark an entry stale rather than presenting superseded history as truth.
+    /// </summary>
+    public sealed record SymbolLogEntry(
+        string LogId, string CreatedAt, string Intent, string? Detail, string? NewVersion, string? ApiImpact);
+
+    /// <summary>
+    /// The most recent log entries touching a symbol, newest first. Accepts several ids because a
+    /// rename/arity change gives the same logical member a new symbolId, and its history lives under
+    /// the old one.
+    /// </summary>
+    public IReadOnlyList<SymbolLogEntry> RecentForSymbol(IReadOnlyCollection<string> symbolIds, int limit = 3)
+    {
+        if (!_store.Available || symbolIds.Count == 0)
+            return [];
+
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var names = symbolIds.Select((_, i) => "$s" + i).ToList();
+        cmd.CommandText = $"""
+            SELECT l.log_id, l.created_at, l.intent, s.detail, s.new_version, s.api_impact
+            FROM feature_log_symbols s
+            JOIN feature_log l ON l.log_id = s.log_id
+            WHERE s.symbol_id IN ({string.Join(',', names)})
+            ORDER BY l.created_at DESC
+            LIMIT $limit;
+            """;
+        var i = 0;
+        foreach (var id in symbolIds)
+            cmd.Parameters.AddWithValue("$s" + i++, id);
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var entries = new List<SymbolLogEntry>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            entries.Add(new SymbolLogEntry(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        }
+        return entries;
+    }
+
+    /// <summary>Free-text search over recorded intents — the read path for "why is this like this".</summary>
+    public IReadOnlyList<(string LogId, string CreatedAt, string Intent, string Tags)> SearchIntents(string? query, int limit = 10)
+    {
+        if (!_store.Available)
+            return [];
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var filter = string.IsNullOrWhiteSpace(query) ? "" : " WHERE intent LIKE $q";
+        cmd.CommandText = $"SELECT log_id, created_at, intent, tags FROM feature_log{filter} ORDER BY created_at DESC LIMIT $limit;";
+        if (!string.IsNullOrWhiteSpace(query))
+            cmd.Parameters.AddWithValue("$q", "%" + query + "%");
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var rows = new List<(string, string, string, string)>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        return rows;
+    }
+
     public int EntryCount()
     {
         if (!_store.Available)

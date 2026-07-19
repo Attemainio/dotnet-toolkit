@@ -5,12 +5,9 @@ description: >
   practices. Use for PR-style reviews, "review this code" requests, or before merging changes in
   a .NET repo. Starts with no prior context of the project and judges it as a senior developer
   encountering it for the first time.
-tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__find_symbol, mcp__plugin_dotnet-toolkit_dotnet__outline,
-  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__find_references,
-  mcp__plugin_dotnet-toolkit_dotnet__find_implementations, mcp__plugin_dotnet-toolkit_dotnet__diagnostics,
-  mcp__plugin_dotnet-toolkit_dotnet__project_tree, mcp__plugin_dotnet-toolkit_dotnet__list_folder,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, mcp__plugin_dotnet-toolkit_dotnet__devlog_search,
-  mcp__plugin_dotnet-toolkit_dotnet__devlog_get
+tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
+  mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status
 skills: [dotnet-code-query, dotnet-navigation]
 model: sonnet
 memory: project

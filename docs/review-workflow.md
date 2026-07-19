@@ -16,15 +16,15 @@ same files, so the main agent and every review agent are working from one shared
    `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
    `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md`. A repo-local file fully replaces the bundled default for that
    doc — don't blend the two.
-2. **Check devlog for prior decisions on this area**, via `devlog_search` scoped to the file(s)/class(es)
-   you're about to review (query by class name, or `affected_class`). If an entry explains why a pattern
-   that looks like a violation was deliberately chosen — a rejected alternative, a documented tradeoff —
-   don't flag it as a violation; note in your finding that it's a recorded, intentional decision instead
-   (cite the devlog entry id). This is a read-only check: `devlog_search`/`devlog_get` only. You never call
-   `devlog_add` — recording review outcomes is the main agent's call, not yours.
-3. **Orient using `project_tree`/`list_folder`/`outline`/`find_symbol`** before reading full files. Only
-   `Read` a file in full when you're about to judge specific lines or an outline is insufficient. Use
-   `find_references`/`find_implementations` to trace callers/implementers rather than grepping for them.
+2. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
+   members with `get_symbol` (`resolution: "outline"`) and a specific symbol's source with
+   `resolution: "full"`. Only `Read` a file in full when you're about to judge specific lines and
+   `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
+   rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
+3. **Assume you cannot see prior recorded decisions.** The development log is currently write-only (no
+   search tool yet), so a pattern that looks wrong may be a deliberate, previously-reasoned choice you
+   have no way to check. Where a finding plausibly reflects an intentional tradeoff, say so and mark it
+   lower-confidence rather than asserting a violation.
 
 ## Review modes
 
@@ -32,7 +32,7 @@ The invoking agent states your mode and scope. If neither is stated, default to 
 working tree's uncommitted changes.
 
 - **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
-  working tree). Use `find_references` on every changed public symbol to find callers, and check those
+  working tree). Use `get_references` on every changed public symbol to find callers, and check those
   call sites too — a change is only correct relative to how it's actually used.
 - **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
   Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
@@ -63,8 +63,7 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 
 - **Never modify code.** None of the four have `Edit`/`Write` tool access — this is enforced structurally,
   not just by instruction. Report findings for the main agent (or the user) to act on.
-- **Never call `devlog_add`.** Read devlog for context; recording outcomes is the main agent's job.
-- **Never guess at something checkable.** A dead-code claim needs a stated `find_references` result, not a
+- **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert.
 - **Stay in your one dimension.** Defer everything else per "Staying in your lane" above.

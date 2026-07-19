@@ -11,24 +11,48 @@ namespace DotnetToolkit.McpServer.Validation;
 /// </summary>
 public static class ValidationLadder
 {
-    /// <summary>Highest level this phase can actually execute.</summary>
-    public static readonly ValidationLevel MaxSupported = ValidationLevel.DependentCompile;
+    /// <summary>Highest level this build can actually execute.</summary>
+    public static readonly ValidationLevel MaxSupported = ValidationLevel.TargetedTests;
+
+    /// <summary>
+    /// Runs the tests that semantically reference the changed symbols. Supplied by the caller because
+    /// resolving "which tests" needs the edge cache, and executing them needs a process runner — neither
+    /// belongs in the ladder itself. Returns the failure output, or null when the run passed.
+    /// </summary>
+    public delegate Task<string?> TargetedTestRunner(CancellationToken cancellationToken);
 
     public sealed record LevelResult(ValidationLevel Level, bool Succeeded, long DurationMs);
 
     public sealed record LadderResult(
         ValidationLevel Completed, bool Succeeded, IReadOnlyList<LevelResult> Levels,
-        IReadOnlyList<Diagnostic> FailingDiagnostics);
+        IReadOnlyList<Diagnostic> FailingDiagnostics, string? TestFailureOutput = null);
 
-    public static async Task<LadderResult> RunAsync(Solution forked, IReadOnlyList<DocumentId> changedDocs, ValidationLevel target)
+    public static async Task<LadderResult> RunAsync(
+        Solution forked, IReadOnlyList<DocumentId> changedDocs, ValidationLevel target,
+        TargetedTestRunner? testRunner = null, CancellationToken cancellationToken = default)
     {
-        var capped = (ValidationLevel)Math.Min((int)target, (int)MaxSupported);
+        // Level 5 needs a runner; without one the ladder cannot honestly claim to have run tests, so it
+        // stops at level 4 and the caller reports the shortfall through isSufficient.
+        var ceiling = testRunner is null ? ValidationLevel.DependentCompile : MaxSupported;
+        var capped = (ValidationLevel)Math.Min((int)target, (int)ceiling);
         var results = new List<LevelResult>();
         var completed = ValidationLevel.Parse;
 
         for (var level = ValidationLevel.Parse; level <= capped; level++)
         {
             var sw = Stopwatch.StartNew();
+
+            if (level == ValidationLevel.TargetedTests)
+            {
+                var failure = await testRunner!(cancellationToken);
+                sw.Stop();
+                results.Add(new LevelResult(level, failure is null, sw.ElapsedMilliseconds));
+                completed = level;
+                if (failure is not null)
+                    return new LadderResult(completed, false, results, [], failure);
+                continue;
+            }
+
             var errors = await RunLevelAsync(level, forked, changedDocs);
             sw.Stop();
 

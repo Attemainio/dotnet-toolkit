@@ -34,8 +34,10 @@ public static class PatchTools
     public static async Task<string> ValidatePatch(
         WorkspaceHost workspace,
         SolutionLocator locator,
+        SymbolStore symbolStore,
         FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
+        TargetedTests targetedTests,
         TelemetryRecorder telemetry,
         [Description("Agent conversation id (ses_...).")] string sessionId,
         [Description("User task id (tsk_...).")] string taskId,
@@ -78,17 +80,30 @@ public static class PatchTools
         // stale_base: every changed symbol's current (old) version must match what the caller held.
         // Keyed on the old symbol id — an arity/rename change gives the result a new id the agent
         // never held, so matching the new id would spuriously reject a validly-based patch.
+        // Compared per layer, not by string equality: the caller may hold a four-layer token while the
+        // classifier computes only the syntax layers, and a layer one side never computed is not
+        // evidence that the base moved.
         var stale = detected
-            .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held) || held != c.OldVersion)
+            .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
+                        || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
             .ToList();
         if (stale.Count > 0)
             return StaleBase(toolCallId, patchId, validationAttemptId, stale);
 
+        // Which changed symbols are covered by tests decides whether the ladder must reach level 5.
+        var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
+        var affectedTests = symbolStore.TestsReferencing(changedIds);
+        var testedIds = affectedTests.Count > 0
+            ? changedIds.Where(id => symbolStore.ReferenceCounts(id)?.Tests > 0).ToHashSet(StringComparer.Ordinal)
+            : [];
+
         var computedRequired = EscalationTable.RequiredForPatch(
-            detected.Select(c => ((IReadOnlyCollection<ChangeKind>)c.Kinds, false)));
+            detected.Select(c => ((IReadOnlyCollection<ChangeKind>)c.Kinds, testedIds.Contains(c.OldSymbolId))));
         var required = Raise(computedRequired, requestedLevel);
 
-        var ladder = await ValidationLadder.RunAsync(sandbox.Forked, sandbox.ChangedDocuments, required);
+        var ladder = await ValidationLadder.RunAsync(
+            sandbox.Forked, sandbox.ChangedDocuments, required,
+            testRunner: ct => targetedTests.RunAsync(affectedTests, ct));
         var isSufficient = ladder.Succeeded && (int)ladder.Completed >= (int)required;
 
         var distillation = ladder.Succeeded
@@ -205,6 +220,8 @@ public static class PatchTools
             },
             succeeded = ladder.Succeeded,
             applied,
+            // Present only when level 5 actually ran and failed; compiler diagnostics live below.
+            testFailures = ladder.TestFailureOutput,
             diagnostics = distillation.RootCauses.Count == 0 ? null : new
             {
                 rootCauses = distillation.RootCauses.Select(rc => new
