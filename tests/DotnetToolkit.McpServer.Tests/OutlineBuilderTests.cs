@@ -111,6 +111,25 @@ public class OutlineBuilderTests
         Assert.Equal("Uses Decimal math end-to-end.", entry.Types.Single().Doc);
     }
 
+    /// <summary>
+    /// ISymbol.GetDocumentationCommentXml (unlike the raw source trivia the other cref test exercises)
+    /// compiles a generic method's cref into its full metadata name: arity marker, and every parameter
+    /// type's own dotted namespace packed into the same attribute value. Splitting that whole string on
+    /// '.' and taking the last piece lands inside the parameter list rather than on the member name —
+    /// this is the shape that actually shipped garbled ("...Object}});" instead of "Of").
+    /// </summary>
+    [Fact]
+    public void SummaryFromXmlResolvesAGenericMethodCrefToItsMemberNameNotAFragmentOfItsParameterList()
+    {
+        var xml = """
+            <summary>
+            See <see cref="M:DotnetToolkit.McpServer.Output.CompactTable.Of``1(System.Collections.Generic.IReadOnlyList{System.String},System.Collections.Generic.IEnumerable{``0},System.Func{``0,System.Collections.Generic.IReadOnlyList{System.Object}})"/> for details.
+            </summary>
+            """;
+
+        Assert.Equal("See Of for details.", OutlineBuilder.SummaryFromXml(xml));
+    }
+
     [Fact]
     public void FileScopedAndBlockNamespacesBothIndex()
     {

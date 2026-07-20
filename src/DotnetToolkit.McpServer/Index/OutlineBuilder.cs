@@ -215,10 +215,27 @@ public static partial class OutlineBuilder
 
         var text = match.Groups[1].Value;
         text = text.Replace("///", " ");
-        text = CrefRegex().Replace(text, m => m.Groups[1].Value.Split('.').Last());
+        text = CrefRegex().Replace(text, m => MemberNameFromCref(m.Groups[1].Value));
         text = TagRegex().Replace(text, "");
         text = WhitespaceRegex().Replace(text, " ").Trim();
         return text.Length == 0 ? null : text;
+    }
+
+    /// <summary>
+    /// The last dotted segment of a cref's member name — but a Roslyn-compiled cref (from
+    /// ISymbol.GetDocumentationCommentXml, not the raw source trivia) packs a generic method's arity
+    /// and a parameterized member's whole encoded parameter list into the same attribute value, e.g.
+    /// <c>Of``1(System.Collections.Generic.IEnumerable{``0},System.Func{``0,System.Collections.Generic.
+    /// IReadOnlyList{System.Object}})</c>. Splitting that whole string on '.' lands inside the parameter
+    /// list's own dots instead of on the member name, so the arity marker (`` ` ``) or parameter list
+    /// (<c>(</c>) is truncated off first.
+    /// </summary>
+    private static string MemberNameFromCref(string raw)
+    {
+        var cut = raw.IndexOfAny(['`', '(']);
+        if (cut >= 0)
+            raw = raw[..cut];
+        return raw.Split('.').Last();
     }
 
     [GeneratedRegex(@"<summary>([\s\S]*?)</summary>")]
