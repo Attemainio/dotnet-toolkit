@@ -180,16 +180,28 @@ public sealed class WorkspaceHost : IDisposable
             : "dotnet";
         try
         {
-            using var proc = Process.Start(new ProcessStartInfo(dotnet, ["restore", entry])
+            var psi = new ProcessStartInfo(dotnet, ["restore", entry])
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-            })!;
-            // Both streams must be drained concurrently, not just read after the fact: `dotnet restore`
-            // writes enough to stdout to fill the pipe buffer, and an unread redirected stream blocks the
-            // child from writing to it — so reading only stderr deadlocks the restore (and, upstream,
-            // the whole load) rather than merely losing stdout's content.
+            };
+            // `dotnet restore` spawns PERSISTENT MSBuild worker nodes that inherit these redirected pipes
+            // and outlive the parent restore process. Draining both streams concurrently (below) is not
+            // enough on its own: WaitForExitAsync returns once the direct child exits, but a lingering
+            // node still holds the write end open, so ReadToEndAsync on that pipe never sees EOF and hangs
+            // past the drain. Disabling node reuse and the build server keeps every child short-lived so
+            // the pipes actually close. (Observed here as WorkspaceHost.LoadAsync hanging for the full
+            // GetSolutionAsync timeout inside SampleSolutionFixture, which runs this same restore step
+            // through a real WorkspaceHost.)
+            psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+            psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+
+            using var proc = Process.Start(psi)!;
+            // Both streams must still be drained concurrently, not just read after the fact: `dotnet
+            // restore` writes enough to stdout to fill the pipe buffer, and an unread redirected stream
+            // blocks the child from writing to it — so reading only stderr would deadlock the restore
+            // (and, upstream, the whole load) even with node reuse disabled.
             var stdout = proc.StandardOutput.ReadToEndAsync();
             var stderr = proc.StandardError.ReadToEndAsync();
             await Task.WhenAll(stdout, stderr);
