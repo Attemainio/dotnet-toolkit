@@ -667,6 +667,33 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
+    /// The tier markers (degraded / index_only) describe the workspace, not the answer. A fully loaded,
+    /// undegraded workspace can still hold a file that moved underneath it, and a response that says
+    /// nothing then asserts content which no longer exists on disk while looking perfectly healthy.
+    ///
+    /// Observed live: get_symbol served a method body from before a commit, with no marker at all, and
+    /// the only way to notice was to read the file by hand.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_MarksTheAnswerStaleWhenItsFileMovedUnderTheWorkspace()
+    {
+        var path = _f.Locator.AbsPath("Lib/Widget.cs");
+        var original = await File.ReadAllTextAsync(path);
+        Assert.Null(Root(await GetSymbol("Sample.Lib.Widget.Spin", "full")).TryGetProperty("limitedBy", out var before) ? before.GetString() : null);
+
+        await File.WriteAllTextAsync(path, original + Environment.NewLine + "// moved on disk");
+        try
+        {
+            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+            Assert.Equal("stale", root.GetProperty("limitedBy").GetString());
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(path, original);
+        }
+    }
+
+    /// <summary>
     /// An apply writes the whole document text back, so a patch built on a workspace copy that has
     /// fallen behind disk reverts every other change made to that file in the meantime — silently, with
     /// a success verdict. baseVersions cannot catch it: it guards the symbols the classifier saw

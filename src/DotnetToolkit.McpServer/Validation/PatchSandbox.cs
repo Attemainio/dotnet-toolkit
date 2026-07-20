@@ -47,7 +47,7 @@ public static class PatchSandbox
             // Observed exactly that way in this repo: the workspace had missed a commit, a one-method
             // patch applied cleanly, and the commit's other edits to the same file were reverted with
             // no diagnostic. Line endings are normalised first so a CRLF checkout is not read as drift.
-            if (await DriftedFromDiskAsync(group.Key, text))
+            if (await DiskDrift.DriftedAsync(group.Key, text))
                 return new Result(solution, [], $"the workspace's copy of {group.First().File} is behind "
                     + "disk; reload_workspace, re-read the symbol, and rebuild the patch", Stale: true);
 
@@ -61,20 +61,6 @@ public static class PatchSandbox
 
         return new Result(forked, changed, null);
     }
-
-    /// <summary>
-    /// Whether the file on disk differs from the workspace's in-memory copy. A file that has vanished
-    /// counts as drift: the fork would be built on content that no longer exists anywhere.
-    /// </summary>
-    private static async Task<bool> DriftedFromDiskAsync(string absPath, SourceText inMemory)
-    {
-        if (!File.Exists(absPath))
-            return true;
-        var onDisk = await File.ReadAllTextAsync(absPath);
-        return !string.Equals(Normalize(onDisk), Normalize(inMemory.ToString()), StringComparison.Ordinal);
-    }
-
-    private static string Normalize(string text) => text.Replace("\r\n", "\n");
 
     private static SourceText? ApplyToText(SourceText text, IReadOnlyList<PatchEdit> descendingEdits, out string? error)
     {

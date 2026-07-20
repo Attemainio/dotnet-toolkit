@@ -32,10 +32,14 @@ public static class ContextTools
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
         + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
         + "changed:false when nothing moved, or refetch:true to force content. "
-        + "For a targeted fetch, adjust the resolution's default set with include/exclude, naming components "
-        + "exactly as they appear in the response: source, xmlDoc, mechanicalFacts, referenceCounts, "
-        + "recentLog, members. e.g. resolution:\"full\" exclude:\"source\" for everything known about a symbol "
-        + "except its text, or resolution:\"signature\" include:\"members\" to list a type's API without bodies.")]
+        + "Always returns declarationSites (file + startLine/endLine) at every resolution, so locating a "
+        + "symbol never needs an extra argument or a second call — those line spans feed straight into a "
+        + "validate_patch edit. "
+        + "Prefer a bare resolution: include/exclude are for when the default set is wrong, and every "
+        + "added component costs tokens. When you do adjust it, name components exactly as they appear in "
+        + "the response: source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members. e.g. "
+        + "resolution:\"full\" exclude:\"source\" for everything known about a symbol except its text, or "
+        + "resolution:\"signature\" include:\"members\" to list a type's API without bodies.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -109,7 +113,7 @@ public static class ContextTools
         // The token describes only the layers this response's components were derived from, so a caller
         // that held it can never be told "unchanged" about content it was never sent.
         var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
-        var limitedBy = LimitedBy(workspace, indexBuilder);
+        var limitedBy = await LimitedByAsync(workspace, indexBuilder, SourceFilesOf(sym));
         var lease = Lease.Evaluate(version, knownVersion, refetch, parts.RequiredLayers);
 
         object envelope;
@@ -305,6 +309,32 @@ public static class ContextTools
         workspace.IsDegraded ? "degraded"
         : indexBuilder.Ready ? null
         : "index_only";
+
+    /// <summary>
+    /// As <see cref="LimitedBy(WorkspaceHost, SymbolIndexBuilder)"/>, plus the check that the files this
+    /// answer was actually served from still match disk.
+    ///
+    /// The cheap markers describe the tier; this one describes the answer. A workspace can be fully
+    /// loaded, undegraded and still holding a file that moved underneath it, and without this the
+    /// response asserts content that no longer exists on disk while looking perfectly healthy.
+    ///
+    /// Checked after the tier markers because they subsume it: content from the syntax index is
+    /// mtime-swept before every query, so <c>index_only</c> is already fresh by construction.
+    /// </summary>
+    private static async Task<string?> LimitedByAsync(
+        WorkspaceHost workspace, SymbolIndexBuilder indexBuilder, IEnumerable<string> servedFromAbsPaths)
+    {
+        var tier = LimitedBy(workspace, indexBuilder);
+        if (tier is not null)
+            return tier;
+        return await workspace.IsBehindDiskAsync(servedFromAbsPaths) ? "stale" : null;
+    }
+
+    /// <summary>Absolute paths of the source files a symbol was read from.</summary>
+    private static IEnumerable<string> SourceFilesOf(ISymbol sym) =>
+        sym.DeclaringSyntaxReferences
+            .Select(r => r.SyntaxTree.FilePath)
+            .Where(p => !string.IsNullOrEmpty(p));
 
     // ---- content builder -----------------------------------------------------
 

@@ -10,6 +10,12 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.2</b> — <c>limitedBy</c> gained the value <c>stale</c>: the files an answer was served from
+    /// have moved on disk since the workspace read them. The previous markers described the tier, which
+    /// a loaded, undegraded workspace holding a file that changed underneath it satisfies while still
+    /// serving content that no longer exists.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.1</b> — validate_patch gained the <c>stale_workspace</c> error. Additive: it occupies a case
     /// that previously produced a silent, successful, wrong apply. An apply writes the whole document
     /// text, so a patch built on a workspace copy behind disk reverted everything else in that file;
@@ -36,5 +42,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.1";
+    public const string Id = "ctx-contract/3.2";
 }

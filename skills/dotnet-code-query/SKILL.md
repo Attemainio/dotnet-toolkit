@@ -84,11 +84,24 @@ Only split into separate calls when you need different `kinds` filters.
 3. **`full`** — adds `source`. Request this directly **only** when you already intend to
    edit that symbol.
 
+### Location is always there
+
+Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` — at
+every resolution, including the leanest. It is part of the skeleton, so no argument turns it on
+and none turns it off, and the spans are computed live rather than read from a cache, so they
+are correct even for a symbol split across partial-class files.
+
+That means **"where does this live?" never costs a second call or an extra component**, and those
+spans are exactly what a `validate_patch` edit takes. Do not reach for `resolution: "full"` just
+to find a line number.
+
 ### Narrowing with include/exclude
 
-When a resolution is close but not right, adjust it instead of picking a wider one. Component
-names are exactly the response fields they control: `source`, `xmlDoc`, `mechanicalFacts`,
-`referenceCounts`, `recentLog`, `members`.
+Reach for these only when the default set is genuinely wrong — a bare `resolution` is the common
+case, and every component you add is tokens you pay for on every call. When a resolution is close
+but not right, adjust it instead of picking a wider one. Component names are exactly the response
+fields they control: `source`, `xmlDoc`, `mechanicalFacts`, `referenceCounts`, `recentLog`,
+`members`.
 
 - `resolution: "full", exclude: "source"` — everything known about a symbol except its text.
   Use when you want facts and history but are not going to edit it.
@@ -242,12 +255,17 @@ content and correctly records the refetch as compaction-driven rather than waste
 
 ## Workspace readiness
 
-`limitedBy` names what the answer could **not** draw on. It is not about content freshness —
-that is mtime-polled before every query, so answers are always current.
+`limitedBy` names what the answer could **not** draw on — the tier it came from, or the content
+it was built on.
 
 - **absent** — fully informed. Silence is the healthy case.
 - **`index_only`** — answered from the syntax tier, or before the semantic index finished its
   first pass. Reference counts and semantic resolution are unavailable, **not zero**.
+- **`stale`** — the file this symbol was served from has changed on disk since the workspace read
+  it, so the content is behind what is actually there. Call `reload_workspace`, then re-read: line
+  spans will have moved. Do not build a patch on a `stale` response — `validate_patch` refuses it
+  with `stale_workspace` anyway, because applying it would revert whatever else changed in that
+  file.
 - **`degraded`** — the workspace loaded but one or more projects failed (commonly a restore done
   by a different SDK than the server runs on). Results may be silently **wrong**, not just thin:
   symbols from failed projects are missing, and attribute-derived facts like `tests` can be

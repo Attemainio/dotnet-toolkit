@@ -29,6 +29,10 @@ public sealed class WorkspaceHost : IDisposable
     private readonly ILogger<WorkspaceHost> _log;
     private readonly object _gate = new();
     private readonly List<string> _loadDiagnostics = [];
+
+    /// <summary>Paths that changed while the workspace could not take them, applied once it can.</summary>
+    private readonly HashSet<string> _pendingChanges = new(StringComparer.Ordinal);
+
     private readonly Stopwatch _loadWatch = new();
 
     private MSBuildWorkspace? _workspace;
@@ -137,6 +141,7 @@ public sealed class WorkspaceHost : IDisposable
                 _solution = workspace.CurrentSolution;
             }
             State = WorkspaceState.Loaded;
+            DrainPendingChanges(); // edits that landed while this load was in flight
             _log.LogInformation("Workspace loaded: {Projects} projects in {Elapsed:F1}s",
                 ProjectCount, _loadWatch.Elapsed.TotalSeconds);
         }
@@ -175,6 +180,28 @@ public sealed class WorkspaceHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether the live solution's copy of any of these files is behind disk — the backstop that keeps a
+    /// read from presenting drifted content as current. Files the solution does not contain are ignored:
+    /// nothing was served from them.
+    /// </summary>
+    public async Task<bool> IsBehindDiskAsync(IEnumerable<string> absPaths)
+    {
+        foreach (var abs in absPaths.Distinct(StringComparer.Ordinal))
+        {
+            SourceText? text = null;
+            lock (_gate)
+            {
+                var ids = _solution?.GetDocumentIdsWithFilePath(abs) ?? [];
+                if (!ids.IsEmpty && _solution!.GetDocument(ids[0]) is { } document)
+                    document.TryGetText(out text);
+            }
+            if (text is not null && await DiskDrift.DriftedAsync(abs, text))
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>Returns the current solution, or null if loading exceeds the timeout.</summary>
     public async Task<Solution?> GetSolutionAsync(TimeSpan? timeout = null)
     {
@@ -187,8 +214,20 @@ public sealed class WorkspaceHost : IDisposable
 
     private void OnFilesChanged(IReadOnlyList<string> changedRelPaths, bool structural)
     {
+        // A change arriving mid-load cannot be applied yet, but dropping it loses it for good: the index
+        // has already recorded the file's new mtime, so it will never report that path as changed again
+        // and the workspace stays behind disk until something forces a full reload. Hold it instead.
+        //
+        // This is how a whole commit went missing here: the workspace was reloading after an SDK fix
+        // when the edits landed, the events were discarded, and every later read served pre-commit text
+        // while reporting itself healthy.
         if (State != WorkspaceState.Loaded)
+        {
+            lock (_gate)
+                foreach (var rel in changedRelPaths)
+                    _pendingChanges.Add(rel);
             return;
+        }
 
         if (structural)
         {
@@ -197,17 +236,37 @@ public sealed class WorkspaceHost : IDisposable
         }
 
         lock (_gate)
+            ApplyChangedPaths(changedRelPaths);
+    }
+
+    /// <summary>Re-reads the given paths into the live solution. Caller holds <c>_gate</c>.</summary>
+    private void ApplyChangedPaths(IReadOnlyCollection<string> relPaths)
+    {
+        if (_solution is null)
+            return;
+        foreach (var rel in relPaths)
         {
-            if (_solution is null)
+            var abs = _locator.AbsPath(rel);
+            if (!File.Exists(abs))
+                continue;
+            foreach (var id in _solution.GetDocumentIdsWithFilePath(abs))
+                _solution = _solution.WithDocumentText(id, SourceText.From(File.ReadAllText(abs)));
+        }
+    }
+
+    /// <summary>
+    /// Applies changes that arrived while the workspace was not in a state to take them. A fresh load
+    /// already reads current disk content, so this only matters for paths that changed between that read
+    /// and the load completing — a window a reload after an out-of-band edit lands in easily.
+    /// </summary>
+    private void DrainPendingChanges()
+    {
+        lock (_gate)
+        {
+            if (_pendingChanges.Count == 0)
                 return;
-            foreach (var rel in changedRelPaths)
-            {
-                var abs = _locator.AbsPath(rel);
-                if (!File.Exists(abs))
-                    continue;
-                foreach (var id in _solution.GetDocumentIdsWithFilePath(abs))
-                    _solution = _solution.WithDocumentText(id, SourceText.From(File.ReadAllText(abs)));
-            }
+            ApplyChangedPaths(_pendingChanges);
+            _pendingChanges.Clear();
         }
     }
 
