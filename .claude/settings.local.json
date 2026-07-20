@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./scripts/build-plugin.sh:*)",
+      "Bash(./scripts/run-server.sh:*)",
+      "mcp__plugin_dotnet-toolkit_dotnet__validate_patch",
+      "Bash(/usr/bin/dotnet build *)",
+      "Bash(sed -i 's#<TargetFramework>net10.0</TargetFramework>#<TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings>#' wsrepro.csproj)",
+      "Bash(DOTNET_ROOT=/home/atte/.dotnet ~/.dotnet/dotnet run)",
+      "Bash(mkdir -p /tmp/claude-1000/-mnt-c-Users-atte9-source-repos-dotnet-toolkit/cf590ea5-d6ea-486f-b07b-d8255d43282c/scratchpad/docrepro)",
+      "Bash(cp /mnt/c/Users/atte9/source/repos/dotnet-toolkit/src/DotnetToolkit.McpServer/Output/CompactTable.cs .)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "Bash(export DOTNET_ROOT=/home/atte/.dotnet)",
+      "Bash(curl -s \"https://api.github.com/repos/codewithmukesh/dotnet-claude-kit/git/trees/main?recursive=1\")",
+      "WebSearch"
+    ]
+  },
+  "disabledMcpjsonServers": [
+    "dotnet"
+  ]
+}

@@ -40,11 +40,16 @@ public sealed class WorkspaceHost : IDisposable
     private Task _loadTask = Task.CompletedTask;
     private int _reloading;
 
-    // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk. Without
-    // it, two concurrent applies can each fetch the same pre-commit Solution, both pass their staleness
-    // checks against it, and then both write -- the second silently clobbering the first, since the
-    // staleness check only compares against state read at the start of each call, not state held
-    // continuously across the whole sequence.
+    // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk, AND the
+    // brief swap-in-new-generation step of LoadAsync (used by both the initial load and TriggerReload).
+    // Without the first half, two concurrent applies can each fetch the same pre-commit Solution, both
+    // pass their staleness checks against it, and then both write -- the second silently clobbering the
+    // first, since the staleness check only compares against state read at the start of each call, not
+    // state held continuously across the whole sequence. Without the second half, a reload racing an
+    // in-flight apply can swap _solution/_workspace to a new generation between that apply's commit and
+    // its AdoptAppliedText, which then applies stale DocumentIds (minted by the now-disposed generation)
+    // against the new one -- Roslyn Solution.WithDocumentText requires the id to already belong to the
+    // solution it is called on.
     private readonly SemaphoreSlim _applyGate = new(1, 1);
 
     // Set when a project-file change arrives while State != Loaded. OnProjectFilesChanged used to call
@@ -157,11 +162,31 @@ public sealed class WorkspaceHost : IDisposable
                 }
             }
 
-            lock (_gate)
+            // Swapping in the new workspace/solution must not happen while validate_patch's
+            // fetch-validate-commit-adopt sequence (RunExclusiveApplyAsync) is mid-flight against the
+            // CURRENT generation: AdoptAppliedText applies WithDocumentText against DocumentIds that are
+            // only meaningful for the _solution/_workspace generation an apply read them from, and those
+            // ids are not portable to a freshly reloaded generation (MSBuildWorkspace mints new
+            // Project/DocumentIds on every open). Sharing _applyGate with the apply path means a reload
+            // triggered mid-apply (e.g. by the very file the apply just wrote) waits for that apply's
+            // commit+adopt to finish before swapping the generation out from under it, and an apply that
+            // starts while a reload is mid-swap waits for the swap to finish and reads the new generation
+            // fresh rather than racing a half-adopted one. Only this brief swap is gated, not the
+            // preceding restore/OpenSolutionAsync above -- that is the slow part (15-60s) and does not
+            // touch shared state, so it stays fully concurrent with an in-flight apply as before.
+            await _applyGate.WaitAsync();
+            try
             {
-                _workspace?.Dispose();
-                _workspace = workspace;
-                _solution = workspace.CurrentSolution;
+                lock (_gate)
+                {
+                    _workspace?.Dispose();
+                    _workspace = workspace;
+                    _solution = workspace.CurrentSolution;
+                }
+            }
+            finally
+            {
+                _applyGate.Release();
             }
             State = WorkspaceState.Loaded;
             DrainPendingChanges(); // edits that landed while this load was in flight

@@ -31,6 +31,8 @@ public sealed class LimitedByTests : IDisposable
     public LimitedByTests()
     {
         _root = Directory.CreateTempSubdirectory("limited-by-").FullName;
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "dotnet-toolkit"));
+        File.WriteAllText(Path.Combine(_root, ".claude", "dotnet-toolkit", "config.json"), "{\"defaultFormat\":\"compact\"}");
         _locator = new SolutionLocator(NullLogger<SolutionLocator>.Instance, _root);
         _index = new ProjectIndex(_locator, NullLogger<ProjectIndex>.Instance);
         _workspace = new WorkspaceHost(_locator, _index, NullLogger<WorkspaceHost>.Instance);
@@ -66,7 +68,7 @@ public sealed class LimitedByTests : IDisposable
     [Fact]
     public async Task SearchIndexReportsIndexOnlyWhileTheStoreIsEmpty()
     {
-        var json = await ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, "Anything");
+        var json = await ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, _locator, "Anything");
         var root = System.Text.Json.JsonDocument.Parse(json).RootElement;
 
         Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());

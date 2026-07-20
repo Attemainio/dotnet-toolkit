@@ -228,7 +228,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
     {
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Widget Gadget"));
 
         var names = TableRows(root.GetProperty("items"))
             .Select(i => i["name"].GetString()!).ToList();
@@ -246,7 +246,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "SpinTwice")).GetProperty("items")).First();
         var name = hit["name"].GetString()!;
 
         // Fully qualified up to the member, but the parameter's namespace is gone.
@@ -479,7 +479,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
 
         // The fixture's own project does have edges, so real symbols stay measurable.
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Spin", kinds: "Method"));
         var id = TableRows(root.GetProperty("items")).First()["symbolId"].GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
@@ -514,7 +514,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator,
             "Widget", kinds: "class", limit: 10));
 
         var items = TableRows(root.GetProperty("items"));
@@ -602,7 +602,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     private Task<string> ContextToolsCallSlice(string from, string to) =>
-        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
+        FlowTools.GetCallSlice(_f.Workspace, _f.Locator, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
 
     // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
     // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
@@ -764,10 +764,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean());
         Assert.False(root.GetProperty("applied").GetBoolean()); // C3: applied never co-occurs with insufficient
 
-        var rootCauses = root.GetProperty("diagnostics").GetProperty("rootCauses");
-        Assert.True(rootCauses.GetArrayLength() > 0);
-        foreach (var rc in rootCauses.EnumerateArray())
-            Assert.True(rc.GetProperty("suggestedInspection").GetArrayLength() > 0); // C5
+        var rootCauses = TableRows(root.GetProperty("diagnostics").GetProperty("rootCauses"));
+        Assert.True(rootCauses.Count > 0);
+        foreach (var rc in rootCauses)
+            Assert.True(rc["suggestedInspection"].GetArrayLength() > 0); // C5
     }
 
     // Conformance C12 (+ C3 positive): a sufficient, successful, applied patch appends exactly one
@@ -805,7 +805,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "SpinTwice")).GetProperty("items")).First();
 
         var file = hit["file"].GetString()!;
         var line = hit["line"].GetInt32();
@@ -823,7 +823,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Ambiguous")).GetProperty("items")).First();
 
         Assert.Equal(JsonValueKind.Null, hit["file"].ValueKind);
         Assert.Equal(JsonValueKind.Null, hit["line"].ValueKind);

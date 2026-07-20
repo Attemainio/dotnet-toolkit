@@ -335,10 +335,15 @@ returns `error: "workspace_loading"` until it is ready — wait briefly and retr
 
 ## Reading responses
 
-Responses are JSON and deliberately terse: fields that are absent carry no information.
+Responses are deliberately terse: fields that are absent carry no information.
 `limitedBy` appears only when something limited the answer, `changed` only when `false`, `truncated`
 only when true. Absence of `tests` in `referenceCounts` means "not computed yet", **not**
 "no tests".
+
+By default responses are rendered as **TOON** (Token-Oriented Object Notation) rather than JSON text —
+still the same field names and shapes described throughout this skill, just a more compact encoding of
+them. A repo can set `defaultFormat: "compact"` (minified JSON) or `"json"` (pretty-printed JSON) in
+`.claude/dotnet-toolkit/config.json` to get JSON text back instead.
 
 `tests` is the subset of `callers` whose own declaration carries a test attribute (`[Fact]`,
 `[Theory]`, `[Test]`, `[TestCase]`, `[TestMethod]`), so it can never exceed `callers`. A helper

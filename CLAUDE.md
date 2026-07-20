@@ -93,7 +93,7 @@ Two independent knowledge tiers are built in the background so the MCP handshake
 Other subsystems:
 
 - `Workspace/SolutionLocator.cs` — auto-discovers the target solution (`*.slnx` > `*.sln` > `*.csproj`, root + one level deep) under `CLAUDE_PROJECT_DIR` (the target repo, set by Claude Code — not this repo, when installed as a plugin). `SlnxParser.cs` handles the newer `.slnx` format.
-- `Workspace/ToolkitConfig.cs` — reads optional per-repo `.claude/dotnet-toolkit/config.json` (solution override, `devlogDir` — legacy, used only by the devlog import — and `excludeGlobs`; `defaultFormat` is vestigial now that responses are JSON-only).
+- `Workspace/ToolkitConfig.cs` — reads optional per-repo `.claude/dotnet-toolkit/config.json` (solution override, `devlogDir` — legacy, used only by the devlog import — and `excludeGlobs`; `defaultFormat` selects the response wire format via `Output/Formats.Render` — `toon` (default), `compact` (minified JSON), or `json` (pretty-printed JSON); see `Contracts/Contract.cs`'s 3.9 entry).
 - `Devlog/` — **legacy, retained only for migration.** The markdown devlog (`devlog/<year>-W<week>.md`) is no longer written or queried by any tool; `DevlogMigration.cs` imports existing entries into the SQLite `feature_log` once at startup, and the parser/store remain solely to read that legacy format.
 - `Store/` — the SQLite knowledge store (`KnowledgeStore.cs`, WAL + migration runner in `Schema.cs`): symbol index and reference edges (`SymbolStore.cs`), append-only development log (`FeatureLogStore.cs`), and immutable raw telemetry. Always rebuildable from source.
 - `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` computes the `decl`/`body` version layers from token text (trivia-blind, so comments and formatting move nothing); `ContentVersion.cs`/`Lease.cs` implement the layered lease protocol.
@@ -116,6 +116,22 @@ enforcement from installation alone — `dotnet-toolkit-init` neither installs n
 setup step. The script reads its JSON payload through whichever of `node`, `python3`, or `jq` is present
 (none is guaranteed: `jq` is absent on this repo's own dev box, and Claude Code's native installer means
 `node` cannot be assumed either) and allows the edit if none is.
+
+The same file also ships a `PostToolUse` hook on `Write`, `scripts/hint-reload-new-cs-file.sh`. A `Write`
+that creates a brand-new `.cs` file (the one case the `PreToolUse` guard above lets through) leaves the
+syntax index and MSBuild workspace unaware of it — both are mtime-polling, not filesystem watchers, and a
+new file is invisible until a full sweep runs and a subsequent workspace reload completes (see
+`Index/ProjectIndex.cs`'s `EnsureFreshAsync`/`SweepAsync` and `Workspace/WorkspaceHost.cs`'s
+`TriggerReload`). A `validate_patch`/`get_symbol` call against the new file before that finishes fails
+deterministically with `invalid_edit: file is not part of the loaded solution` — there is no on-demand
+fallback that opens an arbitrary path from disk. The hook cannot fix this itself (a hook is a separate
+process with no access to the MCP stdio pipe, so it cannot call `reload_workspace` directly); it injects an
+`additionalContext` reminder via `hookSpecificOutput` telling Claude to call `reload_workspace(scope: "all")`
+itself before the next call touches the new file, so the reminder lands at file-creation time rather than
+after a confusing failure. Same JSON-payload-reading fallback chain and fail-open behavior as the
+`PreToolUse` guard, plus the JSON *reply* is built by that same interpreter rather than hand-interpolated,
+since `file_path` is caller-controlled text (a Windows path's backslashes) that has no business near manual
+JSON string escaping.
 
 `.claude/rules/csharp-tools.md` is the reinforcement half, path-scoped to `**/*.cs` so it loads when a C#
 file is touched rather than only at launch. Keep it short and keep it non-overlapping with the tool table

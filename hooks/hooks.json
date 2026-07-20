@@ -1,5 +1,5 @@
 {
-  "description": "Keeps C# edits on the validate_patch write path, so every change lands in the development log",
+  "description": "Keeps C# edits on the validate_patch write path, and reminds Claude to refresh the workspace after creating a new .cs file",
   "hooks": {
     "PreToolUse": [
       {
@@ -10,6 +10,19 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-edit.sh",
             "timeout": 10,
             "statusMessage": "Checking C# write path..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hint-reload-new-cs-file.sh",
+            "timeout": 10,
+            "statusMessage": "Checking whether the workspace needs a reload..."
           }
         ]
       }

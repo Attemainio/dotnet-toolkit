@@ -83,14 +83,15 @@ public static class ContextTools
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
+        var format = Formats.Parse(locator.Config.DefaultFormat);
 
         var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
         if (targets is not { Length: > 0 })
-            return Formats.ToJson(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." });
+            return Formats.Render(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." }, format);
 
         if (targets is [var only] && symbols is null)
             return await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
-                toolCallId, sessionId, taskId, only, include, knownVersion, refetch);
+                toolCallId, sessionId, taskId, only, include, knownVersion, refetch, format);
 
         // Batch: each entry is a full, independent fetch (see the knownVersion/refetch note above) sharing
         // one toolCallId, so the telemetry rows this produces read as one tool call over several symbols
@@ -109,7 +110,7 @@ public static class ContextTools
         {
             var itemJson = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
                 telemetry, toolCallId, sessionId, taskId, target, include,
-                knownVersion: null, refetch: false);
+                knownVersion: null, refetch: false, format);
             var item = JsonSerializer.Deserialize<JsonElement>(itemJson);
 
             if (item.TryGetProperty("error", out var errorEl))
@@ -145,14 +146,14 @@ public static class ContextTools
         }
 
         var results = new CompactTable(columns, rows);
-        return Formats.ToJson(new { results });
+        return Formats.Render(new { results }, format);
     }
 
 private static async Task<string> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
         FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder, TelemetryRecorder telemetry,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include, string? knownVersion, bool refetch)
+        string symbol, string? include, string? knownVersion, bool refetch, OutputFormat format)
     {
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
@@ -175,17 +176,17 @@ private static async Task<string> GetSymbolOne(
                         contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
                         changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
                     };
-                var indexJson = Formats.ToJson(indexEnvelope);
+                var indexJson = Formats.Render(indexEnvelope, format);
                 return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
                     knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
             }
 
-            var loading = Error(toolCallId, workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace");
+            var loading = Error(toolCallId, format, workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace");
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "index_only", "workspace_loading", loading);
         }
 
-        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId);
+        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, format);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
@@ -195,7 +196,7 @@ private static async Task<string> GetSymbolOne(
         var components = SymbolComponents.Resolve(include, out var invalidComponent);
         if (components is not { } parts)
         {
-            var badComponent = Error(toolCallId, "invalid_component",
+            var badComponent = Error(toolCallId, format, "invalid_component",
                 $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.");
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "invalid_component", badComponent);
@@ -238,7 +239,7 @@ private static async Task<string> GetSymbolOne(
             };
         }
 
-        var json = Formats.ToJson(envelope);
+        var json = Formats.Render(envelope, format);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
             knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
     }
@@ -274,16 +275,17 @@ private static async Task<string> GetSymbolOne(
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
+        var format = Formats.Parse(locator.Config.DefaultFormat);
         var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
-            var loading = Error(toolCallId, "workspace_loading");
+            var loading = Error(toolCallId, format, "workspace_loading");
             return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
                 null, false, false, null, 0, "index_only", "workspace_loading", loading, direction);
         }
 
-        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId);
+        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, format);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
                 null, false, false, null, 0, "live", "unresolved", error!, direction);
@@ -344,7 +346,7 @@ private static async Task<string> GetSymbolOne(
             limitedBy = refLimitedBy,
         };
 
-        var json = Formats.ToJson(envelope);
+        var json = Formats.Render(envelope, format);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, SymbolKey.IdOf(sym), null,
             null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
@@ -370,6 +372,7 @@ private static async Task<string> GetSymbolOne(
         ProjectIndex index,
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
+        SolutionLocator locator,
         [Description("Free-text query over symbol names.")] string query,
         [Description("Optional comma-separated kind filter, case-insensitive. Valid values: class (alias for "
             + "type), interface, struct, record, enum, delegate, method, property, field, event. e.g. "
@@ -382,6 +385,7 @@ private static async Task<string> GetSymbolOne(
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
+        var format = Formats.Parse(locator.Config.DefaultFormat);
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var kindList = string.IsNullOrWhiteSpace(kinds)
             ? null
@@ -434,7 +438,7 @@ private static async Task<string> GetSymbolOne(
                 }),
         };
 
-        var json = Formats.ToJson(envelope);
+        var json = Formats.Render(envelope, format);
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
             null, false, false, null, hits.Count, searchLimitedBy, null, json);
     }
@@ -933,14 +937,14 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
         return member.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.Internal;
     }
 
-    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(Solution solution, string symbol, string toolCallId)
+    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(Solution solution, string symbol, string toolCallId, OutputFormat format)
     {
         var resolution = await SymbolResolver.ResolveAsync(solution, symbol);
         if (resolution.Symbol is not null)
             return (resolution.Symbol, null);
         if (resolution.Candidates.Count == 0)
-            return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
-        return (null, Formats.ToJson(new
+            return (null, Formats.Render(new { error = "symbol_not_found", symbol }, format));
+        return (null, Formats.Render(new
         {
             error = "ambiguous_symbol",
             candidates = resolution.Candidates.Take(10).Select(c => new
@@ -948,12 +952,12 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 symbolId = SymbolKey.IdOf(c),
                 displayString = c.ToDisplayString(),
             }),
-        }));
+        }, format));
     }
 
     // detail carries what the caller needs to correct the call — omitted when the kind says it all.
-    private static string Error(string toolCallId, string kind, string? detail = null) =>
-        Formats.ToJson(new { error = kind, detail });
+    private static string Error(string toolCallId, OutputFormat format, string kind, string? detail = null) =>
+        Formats.Render(new { error = kind, detail }, format);
 
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,

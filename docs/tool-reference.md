@@ -10,9 +10,14 @@ Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__` when called.
 optional `sessionId`/`taskId` for telemetry grouping (omitted below for brevity) — see
 `skills/dotnet-code-query/SKILL.md` for the convention.
 
-Responses are JSON, deliberately terse: a field that is absent carries no information and costs no
-tokens. `limitedBy` appears only when something limited the answer (`index_only`, `stale`, `degraded`)
-— see "Workspace readiness" at the end of this file.
+Responses are deliberately terse: a field that is absent carries no information and costs no tokens.
+`limitedBy` appears only when something limited the answer (`index_only`, `stale`, `degraded`) — see
+"Workspace readiness" at the end of this file. By default every response is rendered as **TOON**
+(Token-Oriented Object Notation), a compact JSON-equivalent text format — not JSON text. Set
+`defaultFormat` in `.claude/dotnet-toolkit/config.json` to `"compact"` for minified JSON or `"json"` for
+pretty-printed JSON if something in your workflow needs to parse responses as JSON directly; the field
+names and shapes documented below are identical in all three, only the wire encoding changes (see
+`Contracts/Contract.cs`'s 3.9 entry).
 
 ## Retrieval
 
@@ -287,7 +292,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 |---|---|
 | `baseVersions` | Required. `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A mismatch is `error: "stale_base"` with current versions — refetch and rebuild. |
 | `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. |
-| `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile`. Raises, never lowers, the level the ladder runs to. |
+| `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
 | `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — this is the only thing that writes to the development log. |
 
@@ -297,10 +302,39 @@ apply). `succeeded: true` with `isSufficient: false` is a **partial** green — 
 to `completedLevel`, and `nextAction` says what to do next (usually resubmit with `requestedLevel`
 raised). Never report a partial as done.
 
-On failure, `diagnostics.rootCauses` is pre-distilled — one entry per root cause, not one per compiler
-error — each carrying `suggestedInspection` (symbol ids to fetch before revising), `suppressedDiagnostics`
+`detectedChanges` and, on failure, `diagnostics.rootCauses` are both `CompactTable`s (`{columns, rows}`),
+the same convention as `search_index`/`get_references` — read `rows[i][columns.indexOf("symbolId")]`, not
+`rows[i].symbolId`. Each root cause is pre-distilled — one entry per root cause, not one per compiler
+error — carrying `suggestedInspection` (symbol ids to fetch before revising, a nested array of
+`{symbolId, displayString}` objects within that row, not further hoisted), `suppressedDiagnostics`
 (downstream errors that vanish once the root cause is fixed, so don't chase them), and `fixHint`. Fetch
 everything suggested and submit one revised patch; never resubmit unchanged or fix causes one at a time.
+
+Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
+
+```
+validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 15, endLine: 15,
+           newText: "    public static string Ping() => ThisTypeDoesNotExist.Value;"}])
+```
+
+```json
+{"detectedChanges":{"columns":["symbolId","changeKinds","oldVersion","newVersion","apiImpact"],
+ "rows":[["sym_7a9d...",["body"],"decl:7c76e9eba9da|body:2bac28c29969",null,"non-breaking"]]},
+ "ladder":{"completedLevel":"semantic_bind","requiredLevel":"project_compile","isSufficient":false,
+   "reason":"Validation failed at semantic_bind.",
+   "nextAction":"Fetch the suggested symbols, revise the patch, and resubmit."},
+ "succeeded":false,"applied":false,
+ "diagnostics":{"rootCauses":{
+   "columns":["diagnostic","summary","affectedSymbolId","fixHint","suggestedInspection","suppressedDiagnostics"],
+   "rows":[["CS0103","CS0103: 1 occurrence(s) — The name 'ThisTypeDoesNotExist' does not exist in the current context",
+            "sym_7a9d...","A name is not in scope here; check the identifier or add the missing member.",
+            [{"symbolId":"sym_7a9d...","displayString":"string ServerTools.Ping()"}],0]]},
+   "totalRaw":1,"totalSuppressed":0}}
+```
+
+`newVersion` is `null` here because nothing was applied — it only describes reality once the patch is
+actually on disk.
 
 See `skills/dotnet-change/SKILL.md` for the full write loop.
 

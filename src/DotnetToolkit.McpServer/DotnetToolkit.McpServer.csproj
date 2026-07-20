@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="ToonEncoder" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <!-- Pin patched SQLitePCLRaw over Microsoft.Data.Sqlite's transitive 2.1.11 (NU1903). -->

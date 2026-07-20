@@ -3,6 +3,7 @@ using DotnetToolkit.McpServer.Contracts;
 using DotnetToolkit.McpServer.Identity;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Telemetry;
+using DotnetToolkit.McpServer.Workspace;
 using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
@@ -16,13 +17,15 @@ public static class MetricsTools
         + "events only. scope: session|task|global; groupBy: tool|symbol|level|none.")]
     public static string GetRetrievalMetrics(
         MetricsReader metrics,
+        SolutionLocator locator,
         [Description("session | task | global (default global).")] string scope = "global",
         [Description("Required for scope=session.")] string? sessionId = null,
         [Description("Required for scope=task.")] string? taskId = null,
         [Description("tool | symbol | level | none (default tool).")] string groupBy = "tool")
     {
+        var format = Formats.Parse(locator.Config.DefaultFormat);
         var result = metrics.Read(scope, sessionId, taskId, groupBy);
-        return Formats.ToJson(new
+        return Formats.Render(new
         {
             totals = new
             {
@@ -37,6 +40,6 @@ public static class MetricsTools
             },
             groups = result.Groups.Select(g => new { key = g.Key, calls = g.Calls, tokensReturned = g.TokensReturned }),
             flags = result.Flags.Select(f => new { kind = f.Kind, symbolId = f.SymbolId, count = f.Count, hint = f.Hint }),
-        });
+        }, format);
     }
 }

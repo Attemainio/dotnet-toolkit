@@ -2,6 +2,7 @@ using System.ComponentModel;
 using DotnetToolkit.McpServer.Git;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
+using DotnetToolkit.McpServer.Workspace;
 using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
@@ -19,26 +20,28 @@ public static class HistoryTools
         + "Use this instead of reading a textual diff.")]
     public static async Task<string> GetSemanticDiff(
         GitAnalyzer git,
+        SolutionLocator locator,
         SemanticDiff diff,
         [Description("Base ref (branch, tag or sha). Default: HEAD~1.")] string fromRef = "HEAD~1",
         [Description("Target ref. Default: HEAD.")] string toRef = "HEAD")
     {
+        var format = Formats.Parse(locator.Config.DefaultFormat);
         if (!await git.IsRepositoryAsync())
-            return Formats.ToJson(new { error = "not_a_git_repository" });
+            return Formats.Render(new { error = "not_a_git_repository" }, format);
 
         var from = await git.ResolveRefAsync(fromRef);
         var to = await git.ResolveRefAsync(toRef);
         if (from is null || to is null)
-            return Formats.ToJson(new
+            return Formats.Render(new
             {
                 error = "unresolved_ref",
                 message = from is null ? $"cannot resolve '{fromRef}'" : $"cannot resolve '{toRef}'",
-            });
+            }, format);
 
         var result = await diff.CompareAsync(from, to);
         var breaking = result.Changed.Count(c => c.ApiImpact.StartsWith("breaking", StringComparison.Ordinal));
 
-        return Formats.ToJson(new
+        return Formats.Render(new
         {
             range = new { from = fromRef, to = toRef, commits = result.Commits },
             symbolsAdded = result.Added,
@@ -56,7 +59,7 @@ public static class HistoryTools
                 added = result.Added.Count,
                 removed = result.Removed.Count,
             },
-        });
+        }, format);
     }
 
 [McpServerTool(Name = "search_log")]
@@ -66,9 +69,11 @@ public static class HistoryTools
         + "— read rows[i][3] for tags (a real JSON array), not rows[i].tags.")]
     public static string SearchLog(
         FeatureLogStore featureLog,
+        SolutionLocator locator,
         [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
         [Description("Max entries (default 10).")] int limit = 10)
     {
+        var format = Formats.Parse(locator.Config.DefaultFormat);
         var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
         var items = CompactTable.Of(
             ["logId", "date", "intent", "tags"],
@@ -80,6 +85,6 @@ public static class HistoryTools
                 e.Intent,
                 e.Tags,
             ]);
-        return Formats.ToJson(new { items });
+        return Formats.Render(new { items }, format);
     }
 }

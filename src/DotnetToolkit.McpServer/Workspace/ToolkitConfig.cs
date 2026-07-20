@@ -15,5 +15,5 @@ public sealed class ToolkitConfig
     public string[] ExcludeGlobs { get; set; } = [];
 
     [JsonPropertyName("defaultFormat")]
-    public string DefaultFormat { get; set; } = "compact";
+    public string DefaultFormat { get; set; } = "toon";
 }

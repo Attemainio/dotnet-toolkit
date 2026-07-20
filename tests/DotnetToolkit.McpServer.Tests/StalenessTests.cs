@@ -34,6 +34,8 @@ public sealed class StalenessTests : IDisposable
         _root = Directory.CreateTempSubdirectory("staleness-tests-").FullName;
         File.WriteAllText(Path.Combine(_root, "Foo.cs"),
             "namespace Demo;\n\n/// <summary>A demo type.</summary>\npublic class Foo\n{\n    public int Bar() => 1;\n}\n");
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "dotnet-toolkit"));
+        File.WriteAllText(Path.Combine(_root, ".claude", "dotnet-toolkit", "config.json"), "{\"defaultFormat\":\"compact\"}");
 
         _locator = new SolutionLocator(NullLogger<SolutionLocator>.Instance, _root);
         _index = new ProjectIndex(_locator, NullLogger<ProjectIndex>.Instance);

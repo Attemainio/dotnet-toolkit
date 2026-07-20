@@ -10,6 +10,28 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.9</b> — every tool response is now rendered through one of three <c>OutputFormat</c>s
+    /// instead of always being plain JSON: <c>toon</c> (TOON — Token-Oriented Object Notation, the new
+    /// default), <c>compact</c> (the exact minified JSON every tool already produced through 3.8), or
+    /// <c>json</c> (the same data, pretty-printed for a human reader). Selected per repo via
+    /// <c>defaultFormat</c> in <c>.claude/dotnet-toolkit/config.json</c> — not a per-call argument. This
+    /// is additive to the response CONTRACT documented by every other entry in this list: the JSON shape
+    /// versioned here (the field names, the <see cref="Output.CompactTable"/>/<see cref="Output.JsonHoist"/>
+    /// layouts) is unchanged in all three formats — only how that same structure is spelled on the wire
+    /// changes. A consumer parsing every response as JSON breaks under the new default; set
+    /// <c>defaultFormat: "compact"</c> to keep the pre-3.9 wire format exactly.
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.8</b> — validate_patch's <c>detectedChanges</c> and <c>diagnostics.rootCauses</c> become
+    /// <see cref="Output.CompactTable"/>s, the same treatment as search_index/get_references/get_symbol's
+    /// batch mode/search_log — the last multi-item response still using a plain array. BREAKING: a
+    /// consumer reading <c>detectedChanges[i].symbolId</c> sees nothing; it now reads
+    /// <c>detectedChanges.columns.IndexOf("symbolId")</c> and <c>detectedChanges.rows[i][that]</c>, same
+    /// for <c>rootCauses</c>. <c>rootCauses</c>' <c>suggestedInspection</c> stays a nested array of
+    /// <c>{symbolId, displayString}</c> objects inside its row, not hoisted further — the same pattern
+    /// get_references already uses for <c>sites</c>.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.7</b> — get_symbol drops <c>resolution</c> and <c>exclude</c>. <c>include</c> is now the sole
     /// selector, with three forms: omitted/<c>"standard"</c> (default) for <c>xmlDoc, referenceCounts,
     /// recentLog</c> — the set meaningful on nearly every call; <c>"all"</c> for every component
@@ -100,5 +122,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.7";
+    public const string Id = "ctx-contract/3.9";
 }
