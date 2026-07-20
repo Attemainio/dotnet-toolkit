@@ -1,6 +1,6 @@
 # C# naming conventions
 
-Default naming reference for `dotnet-reviewer`. Overridable per-repo via
+Default naming reference for `dotnet-code-review`'s `correctness` dimension. Overridable per-repo via
 `.claude/dotnet-toolkit/naming-conventions.md` (see `CLAUDE.md`).
 
 ## Casing

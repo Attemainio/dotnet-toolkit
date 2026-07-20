@@ -1,6 +1,6 @@
 # XML documentation guide
 
-Default reference for `dotnet-doc-reviewer`. Overridable per-repo via
+Default reference for `dotnet-code-review`'s `docs` dimension. Overridable per-repo via
 `.claude/dotnet-toolkit/xml-documentation.md` (see `docs/review-workflow.md` for the override mechanism).
 
 ## Read before judging

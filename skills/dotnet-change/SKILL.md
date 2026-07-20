@@ -17,7 +17,7 @@ Reuse the same `sessionId`/`taskId` you established in the dotnet-code-query ski
 ## The loop
 
 1. **Hold current content.** Fetch what you are about to change with `get_symbol`
-   (`resolution: "full"`) and keep its `contentVersion`.
+   (`include: "all"`) and keep its `contentVersion`.
 2. **Know the blast radius.** If you are changing a signature, accessibility, base type or
    interface, call `get_references` first — dependent-compile failures across
    implementations are otherwise guaranteed.

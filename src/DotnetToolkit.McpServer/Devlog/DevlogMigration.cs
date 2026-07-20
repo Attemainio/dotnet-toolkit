@@ -24,7 +24,7 @@ public static class DevlogMigration
         {
             var tags = entry.Tags.Concat(entry.Domain is null ? [] : [entry.Domain]).ToList();
             var symbols = entry.Classes
-                .Select(c => new FeatureLogStore.LogSymbol(c, ["legacy"], "migrated from devlog", null, null, null))
+                .Select(c => new FeatureLogStore.LogSymbol(c, null, ["legacy"], "migrated from devlog", null, null, null))
                 .ToList();
             log.Append(new FeatureLogStore.LogEntry(
                 "tsk_devlog_import", null, null, entry.Title, tags, null, symbols));

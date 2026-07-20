@@ -20,7 +20,17 @@ internal static class Schema
         new(7, "symbol_fts_explicit_writes", SymbolFtsExplicitWrites),
         new(8, "test_flag_on_symbol", TestFlagOnSymbol),
         new(9, "drop_unread_derived_columns", DropUnreadDerivedColumns),
+        new(10, "rename_chain_on_feature_log_symbols", RenameChainOnFeatureLogSymbols),
     ];
+
+    // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
+    // fully-qualified name), so a log entry recorded under the pre-rename id was orphaned: nothing
+    // linked it to the id the symbol carries after the rename, and get_symbol's recentLog only ever
+    // queried the current id. old_symbol_id lets a query walk backward through however many renames a
+    // symbol has been through -- see FeatureLogStore.ResolveIdChain.
+    private const string RenameChainOnFeatureLogSymbols = """
+        ALTER TABLE feature_log_symbols ADD COLUMN old_symbol_id TEXT;
+        """;
 
     // Derived data that was written on every index pass and read by nothing. Each of these was a second
     // copy of something the read path recomputes live from Roslyn, so none could ever be consulted

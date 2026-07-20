@@ -16,13 +16,14 @@ public sealed class FeatureLogStore
     public bool Available => _store.Available;
 
     public sealed record LogSymbol(
-        string SymbolId, IReadOnlyList<string> ChangeKinds, string? Detail,
+        string SymbolId, string? OldSymbolId, IReadOnlyList<string> ChangeKinds, string? Detail,
         string? OldVersion, string? NewVersion, string? ApiImpact);
 
     public sealed record LogEntry(
         string TaskId, string? PatchId, string? CommitSha, string Intent,
         IReadOnlyList<string> Tags, string? ValidationJson, IReadOnlyList<LogSymbol> Symbols);
 
+    /// <summary>Appends one log record and its per-symbol rows in a single transaction. Returns the log id.</summary>
     /// <summary>Appends one log record and its per-symbol rows in a single transaction. Returns the log id.</summary>
     public string Append(LogEntry entry)
     {
@@ -56,14 +57,15 @@ public sealed class FeatureLogStore
             cmd.Transaction = tx;
             cmd.CommandText = """
                 INSERT OR REPLACE INTO feature_log_symbols
-                    (log_id, symbol_id, change_kinds, detail, old_version, new_version, api_impact)
-                VALUES ($log, $symbol, $kinds, $detail, $old, $new, $impact);
+                    (log_id, symbol_id, old_symbol_id, change_kinds, detail, old_version, new_version, api_impact)
+                VALUES ($log, $symbol, $oldsymbol, $kinds, $detail, $old, $new, $impact);
                 """;
             foreach (var symbol in entry.Symbols)
             {
                 cmd.Parameters.Clear();
                 cmd.Parameters.AddWithValue("$log", logId);
                 cmd.Parameters.AddWithValue("$symbol", symbol.SymbolId);
+                cmd.Parameters.AddWithValue("$oldsymbol", (object?)symbol.OldSymbolId ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$kinds", System.Text.Json.JsonSerializer.Serialize(symbol.ChangeKinds));
                 cmd.Parameters.AddWithValue("$detail", (object?)symbol.Detail ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$old", (object?)symbol.OldVersion ?? DBNull.Value);
@@ -75,6 +77,39 @@ public sealed class FeatureLogStore
 
         tx.Commit();
         return logId;
+    }
+
+    /// <summary>
+    /// Every prior symbolId a rename/arity change chain has passed through, including <paramref
+    /// name="symbolId"/> itself. A rename gives the same logical member a new symbolId (its content-
+    /// derived hash is over the fully-qualified name), so log entries recorded before the rename stay
+    /// filed under the old id -- this walks feature_log_symbols.old_symbol_id backward to recover them.
+    /// </summary>
+    public IReadOnlyList<string> ResolveIdChain(string symbolId)
+    {
+        if (!_store.Available)
+            return [symbolId];
+
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            WITH RECURSIVE chain(id) AS (
+                SELECT $start
+                UNION
+                SELECT s.old_symbol_id
+                FROM feature_log_symbols s
+                JOIN chain c ON s.symbol_id = c.id
+                WHERE s.old_symbol_id IS NOT NULL AND s.old_symbol_id != s.symbol_id
+            )
+            SELECT id FROM chain;
+            """;
+        cmd.Parameters.AddWithValue("$start", symbolId);
+
+        var ids = new List<string>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            ids.Add(reader.GetString(0));
+        return ids;
     }
 
     /// <summary>
@@ -126,7 +161,7 @@ public sealed class FeatureLogStore
     }
 
     /// <summary>Free-text search over recorded intents — the read path for "why is this like this".</summary>
-    public IReadOnlyList<(string LogId, string CreatedAt, string Intent, string Tags)> SearchIntents(string? query, int limit = 10)
+public IReadOnlyList<(string LogId, string CreatedAt, string Intent, IReadOnlyList<string> Tags)> SearchIntents(string? query, int limit = 10)
     {
         if (!_store.Available)
             return [];
@@ -138,10 +173,11 @@ public sealed class FeatureLogStore
             cmd.Parameters.AddWithValue("$q", "%" + query + "%");
         cmd.Parameters.AddWithValue("$limit", limit);
 
-        var rows = new List<(string, string, string, string)>();
+        var rows = new List<(string, string, string, IReadOnlyList<string>)>();
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
-            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString(3)) ?? []));
         return rows;
     }
 

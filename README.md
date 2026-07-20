@@ -43,11 +43,22 @@ whether that level was sufficient for the kind of change made.
 `query: "fee ledger TryBuy TrySell"` returns the symbols for all four. Names are indexed
 split on both separators and camel-case boundaries, so `Ledger` finds `FIFOLedger`.
 
-Four read-only review agents (`dotnet-reviewer`, `dotnet-performance`, `dotnet-refactor-cleaner`,
-`dotnet-doc-reviewer`) ship alongside the tools — each starts with no prior project context, has
-the read-side MCP toolset, reads bundled reference docs (`docs/*.md`, overridable per-repo under
-`.claude/dotnet-toolkit/`), and reports findings without editing code. See `CLAUDE.md`'s Code
-review section for details.
+One read-only review agent (`dotnet-code-review`) ships alongside the tools, reviewing one stated
+dimension per invocation — `correctness`, `performance`, `cleanup`, `docs`, `testing`, or `security` —
+launched once per dimension needed. It starts with no prior project context, has the read-side MCP
+toolset, reads bundled reference docs (`docs/*.md`, overridable per-repo under
+`.claude/dotnet-toolkit/`), and reports findings without editing code. See `CLAUDE.md`'s Code review
+section for details.
+
+## Making Claude actually prefer these tools
+
+Installing the plugin makes the tools *available*; it doesn't make a fresh session in your repo
+*prefer* them over Grep/Read/`dotnet build`. Run `/dotnet-toolkit-init` once per repo to fix that: it
+reads your existing `CLAUDE.md`, drafts an additive "use these tools for C#" section (backing off if
+another plugin already governs code search there), shows you the exact diff, and writes it only after
+you approve — backing up the original first so it's fully reversible. See
+`skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
+per-tool reference it points your `CLAUDE.md` at.
 
 ## Requirements
 
@@ -85,7 +96,7 @@ claude --plugin-dir /path/to/dotnet-toolkit
 
 - The MCP server starts instantly and builds two knowledge tiers in the background:
   a **syntax index** (every .cs file parsed with Roslyn, no MSBuild needed — lets
-  `search_index`/`get_symbol` answer within seconds, marked `staleness: "index_only"`)
+  `search_index`/`get_symbol` answer within seconds, marked `limitedBy: "index_only"`)
   and an **MSBuild workspace** (full semantic model — powers `get_references` and
   `validate_patch` once loaded; check `workspace_status`).
 - A SQLite knowledge store under the target repo holds the symbol index, an FTS index for
@@ -152,5 +163,6 @@ solution discovery, `Index/` + `Indexing/` the syntax index and edge builder, `S
 SQLite, `Fingerprint/` + `Contracts/` version layers and leases, `Validation/` the write
 path, `Telemetry/`, `Git/`, `Identity/`, `Devlog/` legacy), `tests/` (xunit +
 `fixtures/SampleSolution`), `skills/` (plugin skills), `agents/` (review subagents),
-`docs/*.md` (review reference docs), `.claude-plugin/` (plugin + marketplace manifests),
+`docs/*.md` (review reference docs, plus `tool-reference.md` — the complete per-tool catalog),
+`.claude-plugin/` (plugin + marketplace manifests),
 `.mcp.json` (MCP registration).

@@ -93,4 +93,66 @@ public sealed class ProjectIndexTests : IDisposable
         var (hits, _) = second.FindSymbol("Gadget", null, 10);
         Assert.Single(hits);
     }
+
+    [Fact]
+    public async Task FirstSweepEstablishesProjectFileBaselineWithoutSignalling()
+    {
+        File.WriteAllText(Path.Combine(_root, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        var index = await CreateReadyIndexAsync();
+        var reloads = 0;
+        index.ProjectFilesChanged += () => reloads++;
+
+        await index.ForceRescanAsync();
+
+        // The baseline is taken during initialization, so a sweep that finds nothing moved must stay
+        // silent — otherwise every server start would pay for an immediate redundant reload.
+        Assert.Equal(0, reloads);
+    }
+
+    [Fact]
+    public async Task EditedProjectFileSignalsReload()
+    {
+        var csproj = Path.Combine(_root, "App.csproj");
+        File.WriteAllText(csproj, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        var index = await CreateReadyIndexAsync();
+        var reloads = 0;
+        index.ProjectFilesChanged += () => reloads++;
+
+        File.WriteAllText(csproj, "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup /></Project>");
+        File.SetLastWriteTimeUtc(csproj, DateTime.UtcNow.AddMinutes(1));
+
+        await index.ForceRescanAsync();
+        Assert.Equal(1, reloads);
+    }
+
+    [Fact]
+    public async Task AddedProjectFileSignalsReload()
+    {
+        var index = await CreateReadyIndexAsync();
+        var reloads = 0;
+        index.ProjectFilesChanged += () => reloads++;
+
+        File.WriteAllText(Path.Combine(_root, "Directory.Build.props"), "<Project />");
+
+        await index.ForceRescanAsync();
+        Assert.Equal(1, reloads);
+    }
+
+    [Fact]
+    public async Task GeneratedFilesUnderObjDoNotSignalReload()
+    {
+        var index = await CreateReadyIndexAsync();
+        var reloads = 0;
+        index.ProjectFilesChanged += () => reloads++;
+
+        // restore rewrites these on every run. Watching them would make each reload's own restore trip
+        // the next reload, indefinitely.
+        Directory.CreateDirectory(Path.Combine(_root, "obj"));
+        File.WriteAllText(Path.Combine(_root, "obj", "App.csproj.nuget.g.props"), "<Project />");
+
+        await index.ForceRescanAsync();
+        Assert.Equal(0, reloads);
+    }
 }

@@ -1,0 +1,18 @@
+{
+  "description": "Keeps C# edits on the validate_patch write path, so every change lands in the development log",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-edit.sh",
+            "timeout": 10,
+            "statusMessage": "Checking C# write path..."
+          }
+        ]
+      }
+    ]
+  }
+}

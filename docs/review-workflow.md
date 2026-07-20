@@ -1,24 +1,26 @@
 # Review agent workflow
 
-Shared process for every `dotnet-*` review agent in this plugin (`dotnet-reviewer`,
-`dotnet-performance`, `dotnet-refactor-cleaner`, `dotnet-doc-reviewer`). Each agent's own file states
-**which** dimension it owns and **which** dimension-specific doc(s) to apply; this doc states **how** any
-of them operates — read once, referenced by all four, so the process stays in one place instead of being
-restated (and drifting) four times.
+Shared process for `dotnet-code-review`, this plugin's single review subagent. It is launched once per
+dimension (`correctness`, `performance`, `cleanup`, `docs`, `testing`, `security` — see the table in
+`agents/dotnet-code-review.md`), in parallel when more than one dimension applies to a request. That agent
+file states **which** dimension maps to **which** doc(s); this doc states **how** any invocation operates,
+regardless of dimension — read once, referenced by every invocation, so the process stays in one place
+instead of drifting per dimension.
 
-These agents are a **validation layer**: they check that code follows the standards recorded in this
-`docs/` folder. They do not own the standards themselves — this folder does, and the main agent reads the
-same files, so the main agent and every review agent are working from one shared source of truth.
+Each invocation is a **validation layer**: it checks that code follows the standards recorded in this
+`docs/` folder. It does not own the standards themselves — this folder does, and the main agent reads the
+same files, so the main agent and every review invocation are working from one shared source of truth.
 
 ## Setup — before reviewing anything
 
-1. **Read your dimension doc(s)**, named in your own agent file, checking for a repo-local override first:
+1. **Read the doc(s) for your stated `dimension`**, per the table in `agents/dotnet-code-review.md`,
+   checking for a repo-local override first:
    `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
    `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md`. A repo-local file fully replaces the bundled default for that
    doc — don't blend the two.
 2. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
-   members with `get_symbol` (`resolution: "outline"`) and a specific symbol's source with
-   `resolution: "full"`. Only `Read` a file in full when you're about to judge specific lines and
+   members with `get_symbol` (`include: "members"`) and a specific symbol's source with
+   `include: "all"`. Only `Read` a file in full when you're about to judge specific lines and
    `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
    rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
    Three more tools answer questions symbol lookup cannot, and each replaces a guess with a fact:
@@ -37,8 +39,10 @@ same files, so the main agent and every review agent are working from one shared
 
 ## Review modes
 
-The invoking agent states your mode and scope. If neither is stated, default to diff mode against the
-working tree's uncommitted changes.
+`mode` (diff/scope) is independent of `dimension` (correctness/performance/cleanup/docs/testing/security)
+— the invoking agent states both. If mode isn't stated, default to your dimension's default mode from the
+table in `agents/dotnet-code-review.md` (diff for every dimension except `cleanup`, which defaults to
+scope).
 
 - **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
   working tree). Start with `get_semantic_diff` against that baseline: it reports exactly which symbols
@@ -49,15 +53,14 @@ working tree's uncommitted changes.
   to the stated file list when the baseline is the working tree.
 - **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
   Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
-  `dotnet-refactor-cleaner` defaults to scope mode when unstated (dead code needs a wide view); the other
-  three default to diff mode when unstated.
+  `cleanup` defaults to scope mode when unstated (dead code needs a wide view).
 
 ## Staying in your lane
 
-Each agent owns exactly one dimension (stated in its own file). When you notice something squarely in a
-sibling agent's lane, name it in one line and tag it `[see: dotnet-<agent-name>]` rather than reviewing it
-yourself — this keeps four agents from producing four overlapping opinions about the same line, and keeps
-each one's output genuinely focused.
+Each invocation owns exactly the one dimension stated in its prompt. When you notice something squarely
+in a different dimension, name it in one line and tag it `[see: dimension:<name>]` rather than reviewing
+it yourself — this is what keeps several parallel invocations, one per dimension, from producing
+overlapping opinions about the same line, and keeps each one's output genuinely focused.
 
 ## Output format
 
@@ -72,10 +75,10 @@ For each finding:
 Group findings by file, ordered 🔴 → 🟡 → 🔵. End with a totals line. If a scope is clean, say so in one
 sentence — don't pad with praise, and don't manufacture findings to justify having run.
 
-## Boundaries — every agent
+## Boundaries — every invocation
 
-- **Never modify code.** None of the four have `Edit`/`Write` tool access — this is enforced structurally,
-  not just by instruction. Report findings for the main agent (or the user) to act on.
+- **Never modify code.** `dotnet-code-review` has no `Edit`/`Write` tool access — this is enforced
+  structurally, not just by instruction. Report findings for the main agent (or the user) to act on.
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert.
@@ -93,8 +96,11 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 
 ## Memory
 
-Every agent has persistent, project-scoped memory (`memory: project` — one namespace per agent, per
-consuming repo). Record concise, factual notes on: project-specific conventions confirmed intentional
-(via a `search_log` hit or repeated deliberate pattern) so you stop re-flagging them, recurring finding
-classes, and anything your dimension doc doesn't cover that this project has clearly standardized on.
-Memory does not authorize editing anything in `docs/` — doc changes stay with the main agent and the user.
+`dotnet-code-review` has persistent, project-scoped memory (`memory: project` — one namespace per
+consuming repo, **shared across all dimensions** since every invocation is the same agent). Prefix every
+note with the dimension it applies to (e.g. `[performance] ...`) — an invocation reading memory written
+under a different dimension should skip notes not tagged for its own. Record concise, factual notes on:
+project-specific conventions confirmed intentional (via a `search_log` hit or repeated deliberate pattern)
+so you stop re-flagging them, recurring finding classes, and anything your dimension doc doesn't cover
+that this project has clearly standardized on. Memory does not authorize editing anything in `docs/` —
+doc changes stay with the main agent and the user.

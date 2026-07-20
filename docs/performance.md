@@ -1,6 +1,6 @@
 # .NET performance guide
 
-Default reference for `dotnet-performance`. Overridable per-repo via
+Default reference for `dotnet-code-review`'s `performance` dimension. Overridable per-repo via
 `.claude/dotnet-toolkit/performance.md` (see `CLAUDE.md`).
 
 ## Hot/cold-path classification (apply in this order)

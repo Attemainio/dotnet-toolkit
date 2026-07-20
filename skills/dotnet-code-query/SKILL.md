@@ -43,7 +43,7 @@ Do not invent a fresh id per call; that destroys the grouping.
 |---|---|---|
 | Find symbols when you don't know the exact names | `search_index`, **all terms in one call** | Grep/Glob over .cs files; one call per word |
 | A type or member's shape, docs, location | `get_symbol` | Read the .cs file |
-| A type's member list | `get_symbol` with `resolution: "outline"` | Read the file |
+| A type's member list | `get_symbol` with `include: "members"` | Read the file |
 | Callers / usages | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
 | What is callable at a point in a file | `get_scope` | Guess, or grep for a helper that may not apply here |
@@ -90,56 +90,60 @@ separates overloads by parameter list and always returns exact spans.
 
 Only split into separate calls when you need different `kinds` filters.
 
-## Escalate resolution, don't over-fetch
+## Choose exactly what you need with include
 
-`get_symbol` has three resolutions. Start cheap:
+`get_symbol` takes one selector, `include`, instead of a resolution ladder. It has three forms:
 
-1. **`signature`** (default) — shape, accessibility, declaration sites, `referenceCounts`.
-2. **`outline`** (types only) — the member list, each with its own id and version.
-3. **`full`** — adds `source`. Request this directly **only** when you already intend to
-   edit that symbol.
+1. **omitted, or `include: "standard"`** (default) — `xmlDoc`, `referenceCounts`, `recentLog`.
+   The set meaningful on nearly every call. Start here.
+2. **`include: "all"`** — every component below. Reach for this **only** when you already
+   intend to edit the symbol, or genuinely want everything about it at once.
+3. **an explicit comma list of component names** — e.g. `include: "source,members"`. This
+   REPLACES the default set rather than adding to it: it is a literal query of exactly the
+   columns you want, nothing implied. Use it whenever `standard`/`all` is close but not right.
+
+Component names are exactly the response fields they control:
+
+| Component | Returns |
+|---|---|
+| `source` | Full declaration source text |
+| `xmlDoc` | The `<summary>` only, XML-stripped to plain text (not `<remarks>`/`<param>`/etc.) |
+| `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
+| `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
+| `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
+| `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
+
+Examples:
+
+- `include: "all"` minus the body — spell out the rest instead of subtracting:
+  `include: "xmlDoc,mechanicalFacts,referenceCounts,recentLog"`. Use when you want facts and
+  history but are not going to edit the symbol.
+- `include: "members"` — a type's API surface with no bodies and none of the standard extras.
+- `include: "xmlDoc"` — the leanest non-default fetch: just the skeleton plus the doc summary,
+  no `referenceCounts` latency cost (it waits on the semantic model) and no history lookup.
+
+An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
+misspelled name is an `invalid_component` error rather than being silently dropped.
 
 ### Location is always there
 
-Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` — at
-every resolution, including the leanest. It is part of the skeleton, so no argument turns it on
-and none turns it off, and the spans are computed live rather than read from a cache, so they
-are correct even for a symbol split across partial-class files.
+Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` —
+regardless of `include`. It is part of the unconditional skeleton (`kind`, `displayString`,
+`accessibility`, `containingType`, `declarationSites`), and the spans are computed live rather
+than read from a cache, so they are correct even for a symbol split across partial-class files.
 
 That means **"where does this live?" never costs a second call or an extra component**, and those
-spans are exactly what a `validate_patch` edit takes. Do not reach for `resolution: "full"` just
-to find a line number.
-
-### Narrowing with include/exclude
-
-Reach for these only when the default set is genuinely wrong — a bare `resolution` is the common
-case, and every component you add is tokens you pay for on every call. When a resolution is close
-but not right, adjust it instead of picking a wider one. Component names are exactly the response
-fields they control: `source`, `xmlDoc`, `mechanicalFacts`, `referenceCounts`, `recentLog`,
-`members`.
-
-- `resolution: "full", exclude: "source"` — everything known about a symbol except its text.
-  Use when you want facts and history but are not going to edit it.
-- `resolution: "signature", include: "members"` — a type's API surface with no bodies.
-- `exclude: "referenceCounts"` — the one component with a real latency cost (it waits on the
-  semantic model). Drop it when you already know you are not expanding.
-- `exclude: "xmlDoc,referenceCounts,recentLog"` (on the default `signature` resolution) — strips
-  every optional component, leaving just the skeleton: `kind`, `displayString`, `accessibility`,
-  `containingType`, `declarationSites`. Use this when the only thing you actually need is where a
-  symbol lives — cheaper than reaching for a wider resolution and reading past what you asked for.
-
-An excluded component is absent from the JSON, not null, so it costs nothing. A misspelled
-name is an `invalid_component` error rather than being silently ignored.
+spans are exactly what a `validate_patch` edit takes. Do not reach for `include: "all"` just to
+find a line number — the default `standard` call already carries `declarationSites`.
 
 **A narrowed response returns a narrowed version token**, covering only the layers it served.
-That is deliberate: escalating later (`signature` → `full`) with that token returns the new
-content rather than a false `changed: false`. It also means you cannot lease a wide request
-against a narrow token — hold the token from a fetch of the same shape.
+That is deliberate: escalating later (a `standard` fetch → `include: "all"`) with that token
+returns the new content rather than a false `changed: false`. It also means you cannot lease a
+wide request against a narrow token — hold the token from a fetch of the same shape.
 
 ### Several symbols in one call
 
-`symbols` fetches a list instead of `symbol` fetching one — same `resolution`/`include`/`exclude`
-applied to every entry:
+`symbols` fetches a list instead of `symbol` fetching one — same `include` applied to every entry:
 
 ```
 get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"])

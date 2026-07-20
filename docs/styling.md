@@ -1,6 +1,6 @@
 # C# styling guide
 
-Default styling reference for `dotnet-reviewer`. Targets modern C# (net8.0+) with nullable reference types
+Default styling reference for `dotnet-code-review`'s `correctness` dimension. Targets modern C# (net8.0+) with nullable reference types
 enabled. A consuming repo can override this wholesale by placing its own
 `.claude/dotnet-toolkit/styling.md` — see the override note in `docs/common-antipatterns.md`'s sibling
 docs and `CLAUDE.md`.

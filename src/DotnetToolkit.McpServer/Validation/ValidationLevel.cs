@@ -30,6 +30,12 @@ public enum ChangeKind
     Attribute,
     GenericConstraint,
     Nullability,
+
+    /// <summary>A new declaration with no prior counterpart in the base — a pure addition.</summary>
+    Added,
+
+    /// <summary>An old declaration with no counterpart in the new tree — a pure removal.</summary>
+    Removed,
 }
 
 public static class ValidationLevelExtensions

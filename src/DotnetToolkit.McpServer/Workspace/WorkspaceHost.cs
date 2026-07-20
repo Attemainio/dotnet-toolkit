@@ -40,6 +40,13 @@ public sealed class WorkspaceHost : IDisposable
     private Task _loadTask = Task.CompletedTask;
     private int _reloading;
 
+    // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk. Without
+    // it, two concurrent applies can each fetch the same pre-commit Solution, both pass their staleness
+    // checks against it, and then both write -- the second silently clobbering the first, since the
+    // staleness check only compares against state read at the start of each call, not state held
+    // continuously across the whole sequence.
+    private readonly SemaphoreSlim _applyGate = new(1, 1);
+
     public WorkspaceState State { get; private set; }
 
     public TimeSpan LoadElapsed => _loadWatch.Elapsed;
@@ -92,6 +99,7 @@ public sealed class WorkspaceHost : IDisposable
         _locator = locator;
         _log = log;
         index.FilesChanged += OnFilesChanged;
+        index.ProjectFilesChanged += OnProjectFilesChanged;
     }
 
     public void StartLoading() => _loadTask = Task.Run(LoadAsync);
@@ -240,6 +248,25 @@ public sealed class WorkspaceHost : IDisposable
     }
 
     /// <summary>
+    /// Runs <paramref name="action"/> exclusively against this workspace's apply gate (see
+    /// <see cref="_applyGate"/>). Only calls that write to disk need this -- read-only validation sees a
+    /// consistent snapshot from <see cref="GetSolutionAsync"/> regardless, and serializing those too would
+    /// cost latency for no correctness gain.
+    /// </summary>
+    public async Task<T> RunExclusiveApplyAsync<T>(Func<Task<T>> action)
+    {
+        await _applyGate.WaitAsync();
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            _applyGate.Release();
+        }
+    }
+
+    /// <summary>
     /// Whether the live solution's copy of any of these files is behind disk — the backstop that keeps a
     /// read from presenting drifted content as current. Files the solution does not contain are ignored:
     /// nothing was served from them.
@@ -304,6 +331,18 @@ public sealed class WorkspaceHost : IDisposable
 
         lock (_gate)
             ApplyChangedPaths(changedRelPaths);
+    }
+
+    /// <summary>
+    /// A project file changed, so the compilation's inputs changed — package references, target
+    /// framework, analyzers, project-to-project edges. None of that is document text, so there is
+    /// nothing <see cref="ApplyChangedPaths"/> could swap in: the old compilation would keep answering,
+    /// and confidently. This is one of the few paths that genuinely needs the full reload.
+    /// </summary>
+    private void OnProjectFilesChanged()
+    {
+        _log.LogInformation("Project file changed; reloading workspace");
+        TriggerReload();
     }
 
     /// <summary>Re-reads the given paths into the live solution. Caller holds <c>_gate</c>.</summary>

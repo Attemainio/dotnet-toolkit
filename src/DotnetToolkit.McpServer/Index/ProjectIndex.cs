@@ -27,12 +27,25 @@ public sealed class ProjectIndex
     private DateTime _lastQuickSweepUtc = DateTime.MinValue;
     private DateTime _lastFullSweepUtc = DateTime.MinValue;
 
+    /// <summary>
+    /// Project-file mtimes as of the last full sweep, or null before the first one has run. Null is
+    /// meaningfully distinct from empty here — it means "no baseline yet", which is what suppresses a
+    /// redundant reload on startup.
+    /// </summary>
+    private Dictionary<string, long>? _projectFiles;
+
     public string State { get; private set; } = "not-started";
     public int FileCount => _files.Count;
     public int TypeCount => _files.Values.Sum(f => CountTypes(f.Types));
 
     /// <summary>Raised after a sweep: (changed rel paths, any files added/removed).</summary>
     public event Action<IReadOnlyList<string>, bool>? FilesChanged;
+
+    /// <summary>
+    /// Raised when a .csproj, .props, .targets, or solution file changed. Carries no payload: the only
+    /// sound response is a full workspace reload, so which file moved does not change what happens.
+    /// </summary>
+    public event Action? ProjectFilesChanged;
 
     public ProjectIndex(SolutionLocator locator, ILogger<ProjectIndex> log)
     {
@@ -141,12 +154,19 @@ public sealed class ProjectIndex
             if (full)
                 _lastFullSweepUtc = _lastQuickSweepUtc;
 
+            // Only on the full sweep, and read before the .cs notifications go out so a project-file
+            // reload is not raced by the per-document patch it would discard anyway.
+            var projectFilesMoved = full && SweepProjectFiles();
+
             if (changed.Count > 0 || structural)
             {
                 _files = next;
                 SaveCache(next);
                 FilesChanged?.Invoke(changed, structural);
             }
+
+            if (projectFilesMoved)
+                ProjectFilesChanged?.Invoke();
         }
         finally
         {
@@ -183,6 +203,85 @@ public sealed class ProjectIndex
                     stack.Push(d);
             }
         }
+    }
+
+    /// <summary>
+    /// Files whose content feeds the design-time build: each project, the MSBuild files that flow into
+    /// it by convention (Directory.Build.props and friends), and the solution. None of these are parsed
+    /// into the syntax index — they are not this tier's subject — but they are the inputs whose change
+    /// makes the *semantic* tier wrong, and this class already owns the only mtime poll in the server.
+    ///
+    /// <see cref="SolutionLocator.ShouldSkipDir"/> excluding obj/ is load-bearing rather than incidental
+    /// here: restore writes .nuget.g.props and .nuget.g.targets into obj/ on every run, so descending
+    /// into it would make each reload's own restore trip the next reload, indefinitely.
+    /// </summary>
+    private IEnumerable<string> EnumerateProjectFiles()
+    {
+        var stack = new Stack<string>();
+        stack.Push(_locator.Root);
+        while (stack.Count > 0)
+        {
+            var dir = stack.Pop();
+            string[] files, subdirs;
+            try
+            {
+                files = Directory.GetFiles(dir);
+                subdirs = Directory.GetDirectories(dir);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+            foreach (var f in files)
+            {
+                if (IsProjectFile(f))
+                    yield return f;
+            }
+            foreach (var d in subdirs)
+            {
+                if (!SolutionLocator.ShouldSkipDir(Path.GetFileName(d)))
+                    stack.Push(d);
+            }
+        }
+    }
+
+    private static bool IsProjectFile(string path) =>
+        Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".csproj" or ".props" or ".targets" or ".sln" or ".slnx" => true,
+            _ => false,
+        };
+
+    /// <summary>
+    /// Re-stats the project files and reports whether any moved since the last full sweep.
+    ///
+    /// Deliberately not run on the quick sweep: a reload costs a full <c>dotnet restore</c>, which is
+    /// slow on /mnt/*, and project files change a few times a day rather than a few times a minute — the
+    /// full-sweep cadence is the right granularity. The first call returns false however much it finds,
+    /// because it is establishing the baseline: startup already loads the workspace, and reporting change
+    /// there would make every server start pay for an immediate redundant reload.
+    /// </summary>
+    private bool SweepProjectFiles()
+    {
+        var next = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var abs in EnumerateProjectFiles())
+        {
+            var info = new FileInfo(abs);
+            if (info.Exists)
+                next[_locator.RelPath(abs)] = info.LastWriteTimeUtc.Ticks;
+        }
+
+        var previous = _projectFiles;
+        _projectFiles = next;
+        if (previous is null || previous.Count != next.Count)
+            return previous is not null;
+
+        foreach (var (rel, mtime) in next)
+        {
+            if (!previous.TryGetValue(rel, out var was) || was != mtime)
+                return true;
+        }
+        return false;
     }
 
     private bool IsExcluded(string relPath) => _excludes.Any(r => r.IsMatch(relPath));

@@ -1,10 +1,10 @@
 # Common .NET anti-patterns
 
-Shared catalog read by `dotnet-reviewer`, `dotnet-performance`, and `dotnet-refactor-cleaner`. Each entry
-names the pattern, why it's a problem, and which agent owns flagging it — so all three recognize the same
-vocabulary without three divergent definitions of the same issue.
+Shared catalog read by `dotnet-code-review`'s `correctness`, `performance`, `cleanup`, and `security`
+dimensions. Each entry names the pattern, why it's a problem, and which dimension owns flagging it — so
+all four recognize the same vocabulary without divergent definitions of the same issue.
 
-## Correctness & design (dotnet-reviewer)
+## Correctness & design (correctness)
 
 - **Swallowed exceptions** — `catch { }` or `catch (Exception) { /* nothing */ }` that discards the
   failure. The caller proceeds as if the operation succeeded. Logging without rethrowing is only correct
@@ -29,7 +29,7 @@ vocabulary without three divergent definitions of the same issue.
 - **Optional-parameter creep** — a method with five or more optional parameters, usually a sign it's doing
   too many variations of one job and should be split or given a request/options object.
 
-## Performance & hot paths (dotnet-performance)
+## Performance & hot paths (performance)
 
 - **N+1 query/call shape** — a loop that issues one query/request/allocation per iteration where a single
   batched call would do (classic with EF Core lazy-loaded navigation properties inside a `foreach`, but the
@@ -53,7 +53,7 @@ vocabulary without three divergent definitions of the same issue.
   non-generic collection, or `IComparable`/`IFormattable` call site inside a loop that runs per-request or
   per-tick.
 
-## Cleanup & duplication (dotnet-refactor-cleaner)
+## Cleanup & duplication (cleanup)
 
 - **Copy-pasted logic** — the same (or near-same, with minor variable renames) block of logic appearing in
   two or more places instead of a shared method. Flag once per duplicated shape, listing every occurrence.
@@ -69,6 +69,16 @@ vocabulary without three divergent definitions of the same issue.
   and never finished. Flag the split itself, not just one side of it.
 - **Unused `using` directives and unused parameters** — routine noise, but real: report them, note that
   `dotnet format` can auto-fix the `using` case specifically.
+
+## Security (security)
+
+- **Hardcoded credential-shaped literal** — a connection string, API key, or token as a string literal in
+  source, regardless of whether it happens to be a placeholder value. See `docs/security.md` for the full
+  secrets-management standard.
+- **String-built SQL** — raw SQL assembled via concatenation/interpolation instead of parameterization. See
+  `docs/security.md`'s injection section.
+- **Ambiguous endpoint auth** — a controller/endpoint with neither `[Authorize]` nor `[AllowAnonymous]`
+  stated explicitly. See `docs/security.md`'s auth section.
 
 ## Applying this catalog
 

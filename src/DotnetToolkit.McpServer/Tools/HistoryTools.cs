@@ -59,24 +59,27 @@ public static class HistoryTools
         });
     }
 
-    [McpServerTool(Name = "search_log")]
+[McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
-        + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach.")]
+        + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
+        + "Response shape: {items:{columns,rows}}, a TABLE with fixed columns [\"logId\",\"date\",\"intent\",\"tags\"] "
+        + "— read rows[i][3] for tags (a real JSON array), not rows[i].tags.")]
     public static string SearchLog(
         FeatureLogStore featureLog,
         [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
         [Description("Max entries (default 10).")] int limit = 10)
     {
         var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
-        return Formats.ToJson(new
-        {
-            items = entries.Select(e => new
-            {
-                logId = e.LogId,
-                date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
-                intent = e.Intent,
-                tags = e.Tags,
-            }),
-        });
+        var items = CompactTable.Of(
+            ["logId", "date", "intent", "tags"],
+            entries,
+            e => (IReadOnlyList<object?>)
+            [
+                e.LogId,
+                e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
+                e.Intent,
+                e.Tags,
+            ]);
+        return Formats.ToJson(new { items });
     }
 }

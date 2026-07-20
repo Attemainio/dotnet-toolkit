@@ -67,95 +67,107 @@ public static class PatchTools
             return Error(toolCallId, patchId, validationAttemptId, "missing_base_versions",
                 "baseVersions is required so patches from stale context are rejected.");
 
-        var solution = await workspace.GetSolutionAsync();
-        if (solution is null)
-            return Error(toolCallId, patchId, validationAttemptId, "workspace_loading",
-                "The semantic workspace is not ready; retry shortly.");
-
-        var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
-        var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
-        if (sandbox.Error is not null)
-            return Error(toolCallId, patchId, validationAttemptId,
-                sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
-
-        var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
-
-        // stale_base: every changed symbol's current (old) version must match what the caller held.
-        // Keyed on the old symbol id — an arity/rename change gives the result a new id the agent
-        // never held, so matching the new id would spuriously reject a validly-based patch.
-        // Compared per layer, not by string equality: the caller may hold a four-layer token while the
-        // classifier computes only the syntax layers, and a layer one side never computed is not
-        // evidence that the base moved.
-        var stale = detected
-            .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
-                        || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
-            .ToList();
-        if (stale.Count > 0)
-            return StaleBase(toolCallId, patchId, validationAttemptId, stale);
-
-        // Which changed symbols are covered by tests decides whether the ladder must reach level 5.
-        var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
-        var affectedTests = symbolStore.TestsReferencing(changedIds);
-        var testedIds = affectedTests.Count > 0
-            ? changedIds.Where(id => symbolStore.ReferenceCounts(id)?.Tests > 0).ToHashSet(StringComparer.Ordinal)
-            : [];
-
-        var computedRequired = EscalationTable.RequiredForPatch(
-            detected.Select(c => ((IReadOnlyCollection<ChangeKind>)c.Kinds, testedIds.Contains(c.OldSymbolId))));
-        var required = Raise(computedRequired, requestedLevel);
-
-        var ladder = await ValidationLadder.RunAsync(
-            sandbox.Forked, sandbox.ChangedDocuments, required,
-            testRunner: ct => targetedTests.RunAsync(affectedTests, ct));
-        var isSufficient = ladder.Succeeded && (int)ladder.Completed >= (int)required;
-
-        var distillation = ladder.Succeeded
-            ? new DiagnosticDistiller.Distillation([], 0, 0)
-            : await DiagnosticDistiller.DistillAsync(sandbox.Forked, ladder.FailingDiagnostics,
-                detected.Select(c => (c.SymbolId, c.DisplayString)).ToList());
-
-        // C3: never apply unless the result is both sufficient and successful.
-        var applied = false;
-        if (applyOnSuccess && isSufficient && ladder.Succeeded)
+        // The fetch-validate-commit-adopt sequence below is wrapped in a local function so an apply can
+        // run it under workspace.RunExclusiveApplyAsync -- otherwise two concurrent applies could each
+        // fetch this same pre-commit solution, both pass their staleness checks against it, and both
+        // write, the second silently clobbering the first. Read-only calls (applyOnSuccess: false) skip
+        // the gate: they never touch disk, so there is nothing to race.
+        async Task<string> RunAsync()
         {
-            applied = await CommitAsync(sandbox.Forked, sandbox.ChangedDocuments, locator);
-            if (applied)
+            var solution = await workspace.GetSolutionAsync();
+            if (solution is null)
+                return Error(toolCallId, patchId, validationAttemptId, "workspace_loading",
+                    "The semantic workspace is not ready; retry shortly.");
+
+            var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
+            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
+            if (sandbox.Error is not null)
+                return Error(toolCallId, patchId, validationAttemptId,
+                    sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
+
+            var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
+
+            // stale_base: every changed symbol's current (old) version must match what the caller held.
+            // Keyed on the old symbol id — an arity/rename change gives the result a new id the agent
+            // never held, so matching the new id would spuriously reject a validly-based patch.
+            // Compared per layer, not by string equality: the caller may hold a four-layer token while the
+            // classifier computes only the syntax layers, and a layer one side never computed is not
+            // evidence that the base moved.
+            var stale = detected
+                .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
+                            || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
+                .ToList();
+            if (stale.Count > 0)
+                return StaleBase(toolCallId, patchId, validationAttemptId, stale);
+
+            // Which changed symbols are covered by tests decides whether the ladder must reach level 5.
+            var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
+            var affectedTests = symbolStore.TestsReferencing(changedIds);
+            var testedIds = affectedTests.Count > 0
+                ? changedIds.Where(id => symbolStore.ReferenceCounts(id)?.Tests > 0).ToHashSet(StringComparer.Ordinal)
+                : [];
+
+            var computedRequired = EscalationTable.RequiredForPatch(
+                detected.Select(c => ((IReadOnlyCollection<ChangeKind>)c.Kinds, testedIds.Contains(c.OldSymbolId))));
+            var required = Raise(computedRequired, requestedLevel);
+
+            var ladder = await ValidationLadder.RunAsync(
+                sandbox.Forked, sandbox.ChangedDocuments, required,
+                testRunner: ct => targetedTests.RunAsync(affectedTests, ct));
+            var isSufficient = ladder.Succeeded && (int)ladder.Completed >= (int)required;
+
+            var distillation = ladder.Succeeded
+                ? new DiagnosticDistiller.Distillation([], 0, 0)
+                : await DiagnosticDistiller.DistillAsync(sandbox.Forked, ladder.FailingDiagnostics,
+                    detected.Select(c => (c.SymbolId, c.DisplayString)).ToList());
+
+            // C3: never apply unless the result is both sufficient and successful.
+            var applied = false;
+            if (applyOnSuccess && isSufficient && ladder.Succeeded)
             {
-                // Both tiers have to move with the disk write, or the next patch to this file reads as
-                // drifted against its own predecessor.
-                workspace.AdoptAppliedText(sandbox.Forked, sandbox.ChangedDocuments);
-                AppendLog(featureLog, taskId, patchId, intent!, tags, detected, ladder, required);
-                indexBuilder.Start(); // refresh the symbol index against the new on-disk content
+                applied = await CommitAsync(sandbox.Forked, sandbox.ChangedDocuments, locator);
+                if (applied)
+                {
+                    // Both tiers have to move with the disk write, or the next patch to this file reads as
+                    // drifted against its own predecessor.
+                    workspace.AdoptAppliedText(sandbox.Forked, sandbox.ChangedDocuments);
+                    AppendLog(featureLog, taskId, patchId, intent!, tags, detected, ladder, required);
+                    indexBuilder.Start(); // refresh the symbol index against the new on-disk content
+                }
             }
+
+            var response = BuildResponse(toolCallId, patchId, validationAttemptId, detected, ladder, required,
+                isSufficient, applied, distillation);
+            var json = Formats.ToJson(response);
+
+            telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
+            {
+                ToolCallId = toolCallId,
+                PatchId = patchId,
+                ValidationAttemptId = validationAttemptId,
+                SessionId = sessionId,
+                TaskId = taskId,
+                ChangedSymbolIdsJson = JsonSerializer.Serialize(detected.Select(c => c.SymbolId)),
+                ChangeKindsJson = JsonSerializer.Serialize(detected.SelectMany(c => c.Kinds.Select(k => k.Wire())).Distinct()),
+                BaseVersionsJson = JsonSerializer.Serialize(baseVersions),
+                CompletedLevel = ladder.Completed.Wire(),
+                RequiredLevel = required.Wire(),
+                IsSufficient = isSufficient,
+                Succeeded = ladder.Succeeded,
+                Applied = applied,
+                Intent = intent,
+                RawDiagnostics = distillation.TotalRaw,
+                DistilledDiagnostics = distillation.RootCauses.Count,
+                ReturnedTokens = TelemetryRecorder.EstimateTokens(json),
+                DurationMs = stopwatch.ElapsedMilliseconds,
+            });
+
+            return json;
         }
 
-        var response = BuildResponse(toolCallId, patchId, validationAttemptId, detected, ladder, required,
-            isSufficient, applied, distillation);
-        var json = Formats.ToJson(response);
-
-        telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
-        {
-            ToolCallId = toolCallId,
-            PatchId = patchId,
-            ValidationAttemptId = validationAttemptId,
-            SessionId = sessionId,
-            TaskId = taskId,
-            ChangedSymbolIdsJson = JsonSerializer.Serialize(detected.Select(c => c.SymbolId)),
-            ChangeKindsJson = JsonSerializer.Serialize(detected.SelectMany(c => c.Kinds.Select(k => k.Wire())).Distinct()),
-            BaseVersionsJson = JsonSerializer.Serialize(baseVersions),
-            CompletedLevel = ladder.Completed.Wire(),
-            RequiredLevel = required.Wire(),
-            IsSufficient = isSufficient,
-            Succeeded = ladder.Succeeded,
-            Applied = applied,
-            Intent = intent,
-            RawDiagnostics = distillation.TotalRaw,
-            DistilledDiagnostics = distillation.RootCauses.Count,
-            ReturnedTokens = TelemetryRecorder.EstimateTokens(json),
-            DurationMs = stopwatch.ElapsedMilliseconds,
-        });
-
-        return json;
+        return applyOnSuccess
+            ? await workspace.RunExclusiveApplyAsync(RunAsync)
+            : await RunAsync();
     }
 
     private static async Task<bool> CommitAsync(Solution forked, IReadOnlyList<DocumentId> changedDocs, SolutionLocator locator)
@@ -190,7 +202,8 @@ public static class PatchTools
         featureLog.Append(new FeatureLogStore.LogEntry(
             taskId, patchId, null, intent, tags ?? [], validationJson,
             detected.Select(c => new FeatureLogStore.LogSymbol(
-                c.SymbolId, c.Kinds.Select(k => k.Wire()).ToList(), c.Detail,
+                c.SymbolId, c.OldSymbolId == c.SymbolId ? null : c.OldSymbolId,
+                c.Kinds.Select(k => k.Wire()).ToList(), c.Detail,
                 c.OldVersion, c.NewVersion, c.ApiImpact)).ToList()));
     }
 

@@ -1,9 +1,10 @@
 namespace DotnetToolkit.McpServer.Contracts;
 
 /// <summary>
-/// Which parts of a symbol response the caller asked for. <c>resolution</c> stays the coarse default —
-/// one word covers the common case — and <c>include</c>/<c>exclude</c> adjust it for the targeted case,
-/// e.g. "full but without the source" or "signature plus members".
+/// Which parts of a symbol response the caller asked for, via the single <c>include</c> argument:
+/// <c>"standard"</c> (default) for <see cref="Standard"/>, <c>"all"</c> for every component, or a comma
+/// list of component names that IS the requested set — a literal query of exactly the columns wanted,
+/// not an adjustment to a default.
 ///
 /// Component names are exactly the response field names they control, so there is no second vocabulary
 /// to learn: what you ask for is what appears in the JSON.
@@ -55,55 +56,39 @@ public readonly record struct SymbolComponents
         }
     }
 
+    /// <summary>The default set: whichever components are meaningful on essentially every call.</summary>
+    public static readonly IReadOnlyList<string> Standard = [XmlDoc, ReferenceCounts, RecentLog];
+
     /// <summary>
-    /// Resolves <c>resolution</c> into a base set, then applies include/exclude. Returns null and sets
+    /// Resolves <c>include</c> into an exact component set — <c>"standard"</c> (default, same as
+    /// <c>null</c>/empty) for <see cref="Standard"/>, <c>"all"</c> for every component, or a comma list
+    /// naming the set precisely. A comma list REPLACES the default rather than adding to it: it is a
+    /// literal query of exactly the columns wanted, not a delta. Returns null and sets
     /// <paramref name="invalid"/> when a name is not a component — a typo silently ignored would leave
     /// the caller believing it dropped a field it is still paying for.
     /// </summary>
-    public static SymbolComponents? Resolve(
-        string resolution, string? include, string? exclude, bool isType, out string? invalid)
+    public static SymbolComponents? Resolve(string? include, out string? invalid)
     {
         invalid = null;
-        var res = resolution.Trim().ToLowerInvariant();
+        var trimmed = include?.Trim();
 
-        // Preset contents match what each resolution has always returned, so an existing caller that
-        // passes no include/exclude sees no change — with one exception: outline used to return early
-        // and drop containingType and recentLog, which was an inconsistency rather than a decision.
-        var set = res switch
-        {
-            "full" => new HashSet<string>(StringComparer.Ordinal)
-                { Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog },
-            "outline" when isType => new HashSet<string>(StringComparer.Ordinal)
-                { XmlDoc, ReferenceCounts, RecentLog, Members },
-            // outline on a non-type has no member list to give, so it degrades to signature rather
-            // than pretending; the caller still gets a usable answer.
-            _ => new HashSet<string>(StringComparer.Ordinal) { XmlDoc, ReferenceCounts, RecentLog },
-        };
+        if (string.IsNullOrEmpty(trimmed) || string.Equals(trimmed, "standard", StringComparison.OrdinalIgnoreCase))
+            return new SymbolComponents(new HashSet<string>(Standard, StringComparer.Ordinal));
 
-        if (!Apply(include, set, add: true, ref invalid) || !Apply(exclude, set, add: false, ref invalid))
-            return null;
+        if (string.Equals(trimmed, "all", StringComparison.OrdinalIgnoreCase))
+            return new SymbolComponents(new HashSet<string>(All, StringComparer.Ordinal));
 
-        return new SymbolComponents(set);
-    }
-
-    private static bool Apply(string? names, HashSet<string> set, bool add, ref string? invalid)
-    {
-        if (string.IsNullOrWhiteSpace(names))
-            return true;
-
-        foreach (var raw in names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var raw in trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var match = All.FirstOrDefault(c => string.Equals(c, raw, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
                 invalid = raw;
-                return false;
+                return null;
             }
-            if (add)
-                set.Add(match);
-            else
-                set.Remove(match);
+            set.Add(match);
         }
-        return true;
+        return new SymbolComponents(set);
     }
 }

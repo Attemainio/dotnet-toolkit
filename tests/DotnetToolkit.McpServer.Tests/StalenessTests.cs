@@ -60,7 +60,7 @@ public sealed class StalenessTests : IDisposable
     {
         var root = Root(await ContextTools.GetSymbol(
             _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
-            "Demo.Foo", "signature", sessionId: "ses_a", taskId: "tsk_a"));
+            "Demo.Foo", sessionId: "ses_a", taskId: "tsk_a"));
 
         Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());
         Assert.True(root.TryGetProperty("content", out _));

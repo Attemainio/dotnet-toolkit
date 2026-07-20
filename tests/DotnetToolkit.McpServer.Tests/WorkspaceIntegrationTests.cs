@@ -146,14 +146,13 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
     private Task<string> GetSymbol(
-        string symbol, string resolution = "signature", string? knownVersion = null, bool refetch = false,
-        string? include = null, string? exclude = null) =>
+        string symbol, string? include = null, string? knownVersion = null, bool refetch = false) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, resolution, include, exclude, knownVersion, refetch, Session, Task_);
+            symbol, include, knownVersion, refetch, Session, Task_);
 
-    private Task<string> GetSymbols(string[] symbols, string resolution = "signature") =>
+    private Task<string> GetSymbols(string[] symbols, string? include = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol: null, resolution, include: null, exclude: null, knownVersion: null, refetch: false,
+            symbol: null, include, knownVersion: null, refetch: false,
             sessionId: Session, taskId: Task_, symbols: symbols);
 
     private Task<string> GetReferences(string symbol, string direction) =>
@@ -262,25 +261,25 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
-    /// include/exclude adjust the resolution's default set. The point is a targeted fetch: everything
-    /// known about a symbol except the expensive part, in one call rather than a resolution that is
-    /// either too thin or drags the whole body along.
+    /// An explicit include list is an exact query of the columns wanted — everything known about a
+    /// symbol except the expensive part, spelled out directly, rather than reaching for "all" and
+    /// dragging the whole body along.
     /// </summary>
     [Fact]
-    public async Task GetSymbol_ExcludeDropsAComponentFromTheResolutionDefault()
+    public async Task GetSymbol_ExplicitIncludeListIsExactlyTheNamedComponents()
     {
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         Assert.False(string.IsNullOrEmpty(full.GetProperty("content").GetProperty("source").GetString()));
 
-        var trimmed = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full", exclude: "source"));
+        var trimmed = Root(await GetSymbol("Sample.Lib.Widget.Spin", "xmlDoc,mechanicalFacts,referenceCounts,recentLog"));
         var content = trimmed.GetProperty("content");
 
-        // Absent entirely, not present-and-null: an excluded component costs no tokens at all.
+        // Absent entirely, not present-and-null: an unrequested component costs no tokens at all.
         Assert.False(content.TryGetProperty("source", out _));
-        // ...while the rest of "full" is untouched.
+        // ...while everything named in the list is present.
         Assert.True(content.TryGetProperty("referenceCounts", out _));
         Assert.Equal("Method", content.GetProperty("kind").GetString());
-        // The resolved set is echoed only when the caller narrowed it, so it can see what it got.
+        // The resolved set is echoed only when the caller passed a non-default include.
         Assert.DoesNotContain("source", trimmed.GetProperty("components").EnumerateArray()
             .Select(c => c.GetString()));
     }
@@ -372,17 +371,25 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal("missing_symbol", result.GetProperty("error").GetString());
     }
 
+    /// <summary>
+    /// An explicit include list REPLACES the default set rather than adding to it: it is a literal query
+    /// of exactly the columns wanted, so include:"members" alone drops the standard xmlDoc/referenceCounts/
+    /// recentLog that a plain call would carry.
+    /// </summary>
     [Fact]
-    public async Task GetSymbol_IncludeAddsAComponentToTheResolutionDefault()
+    public async Task GetSymbol_IncludeReplacesTheDefaultSetWithExactlyWhatWasAsked()
     {
         var plain = Root(await GetSymbol("Sample.Lib.Widget"));
         Assert.False(plain.GetProperty("content").TryGetProperty("members", out _));
+        Assert.True(plain.GetProperty("content").TryGetProperty("xmlDoc", out _));
 
         var withMembers = Root(await GetSymbol("Sample.Lib.Widget", include: "members"));
         var members = withMembers.GetProperty("content").GetProperty("members");
 
         Assert.NotEmpty(members.EnumerateArray());
-        // Still no source: include adds one component, it does not escalate to full.
+        // The standard default is gone: an explicit list is exactly what was asked for, nothing implied.
+        Assert.False(withMembers.GetProperty("content").TryGetProperty("xmlDoc", out _));
+        Assert.False(withMembers.GetProperty("content").TryGetProperty("referenceCounts", out _));
         Assert.False(withMembers.GetProperty("content").TryGetProperty("source", out _));
     }
 
@@ -393,7 +400,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_UnknownComponentIsRejectedRatherThanIgnored()
     {
-        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", exclude: "sourceCode"));
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", include: "sourceCode"));
 
         Assert.Equal("invalid_component", root.GetProperty("error").GetString());
         Assert.Contains("sourceCode", root.GetProperty("detail").GetString());
@@ -401,14 +408,14 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
-    /// outline used to be built by an early return from its own object literal, which silently omitted
-    /// containingType and recentLog. One build path means a component appears whenever it is asked for,
-    /// regardless of which resolution named it.
+    /// An outline-equivalent include list used to be built by an early return from its own object
+    /// literal, which silently omitted containingType and recentLog. One build path means a component
+    /// appears whenever it is asked for, regardless of which other components were requested alongside it.
     /// </summary>
     [Fact]
-    public async Task GetSymbol_OutlineCarriesTheSameSkeletonAsEveryOtherResolution()
+    public async Task GetSymbol_MembersRequestCarriesTheSameSkeletonAsEveryOtherRequest()
     {
-        var outline = Root(await GetSymbol("Sample.Lib.Widget", "outline"));
+        var outline = Root(await GetSymbol("Sample.Lib.Widget", "xmlDoc,referenceCounts,recentLog,members"));
         var content = outline.GetProperty("content");
 
         Assert.NotEmpty(content.GetProperty("members").EnumerateArray());
@@ -480,7 +487,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
     {
-        var root = Root(await GetSymbol("Sample.Lib.IWidget", "full"));
+        var root = Root(await GetSymbol("Sample.Lib.IWidget", "all"));
 
         // "changed" is omitted when content is present — its presence is the signal.
         Assert.False(root.TryGetProperty("changed", out _));
@@ -495,10 +502,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_AcceptsSymbolIdHandle()
     {
-        var byName = Root(await GetSymbol("Sample.Lib.Widget", "signature"));
+        var byName = Root(await GetSymbol("Sample.Lib.Widget"));
         var symbolId = byName.GetProperty("symbolId").GetString()!;
 
-        var byId = Root(await GetSymbol(symbolId, "signature"));
+        var byId = Root(await GetSymbol(symbolId));
 
         Assert.Equal(symbolId, byId.GetProperty("symbolId").GetString());
         Assert.Equal(byName.GetProperty("contentVersion").GetString(), byId.GetProperty("contentVersion").GetString());
@@ -516,7 +523,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         // The returned name is directly usable as a get_symbol target (no global:: prefix).
         var name = items[0]["name"].GetString()!;
         Assert.DoesNotContain("global::", name);
-        var fetched = Root(await GetSymbol(name, "signature"));
+        var fetched = Root(await GetSymbol(name));
         Assert.True(fetched.TryGetProperty("content", out _));
     }
 
@@ -526,7 +533,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task ReferenceCounts_AgreeWithGetReferences_IncludingTopLevelCallers()
     {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var callers = sym.GetProperty("content").GetProperty("referenceCounts").GetProperty("callers").GetInt32();
         var refs = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
 
@@ -581,7 +588,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetScope_SurfacesExtensionMethodsOnReceiver()
     {
         // Inside Pipeline.Deep, on the line that calls _widget.Spin(turns).
-        var sym = Root(await GetSymbol("Sample.Lib.Pipeline.Deep", "signature"));
+        var sym = Root(await GetSymbol("Sample.Lib.Pipeline.Deep"));
         var site = sym.GetProperty("content").GetProperty("declarationSites")[0];
         var line = site.GetProperty("startLine").GetInt32();
 
@@ -603,12 +610,12 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task ReferenceCounts_OmitsCallersForTypes_ButReportsThemForMembers()
     {
-        var type = Root(await GetSymbol("Sample.Lib.Widget", "signature"));
+        var type = Root(await GetSymbol("Sample.Lib.Widget"));
         var typeCounts = type.GetProperty("content").GetProperty("referenceCounts");
         Assert.False(typeCounts.TryGetProperty("callers", out _), "a type must not claim a caller count");
         Assert.True(typeCounts.TryGetProperty("implementations", out _), "implementations is meaningful for a type");
 
-        var member = Root(await GetSymbol("Sample.Lib.Widget.Spin", "signature"));
+        var member = Root(await GetSymbol("Sample.Lib.Widget.Spin"));
         var memberCounts = member.GetProperty("content").GetProperty("referenceCounts");
         Assert.True(memberCounts.GetProperty("callers").GetInt32() >= 1);
     }
@@ -617,7 +624,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task MechanicalFacts_DoNotLeakInternalProperties()
     {
-        var root = Root(await GetSymbol("Sample.Lib.Pipeline.Deep", "full"));
+        var root = Root(await GetSymbol("Sample.Lib.Pipeline.Deep", "all"));
         if (root.GetProperty("content").TryGetProperty("mechanicalFacts", out var facts)
             && facts.ValueKind == JsonValueKind.Object)
         {
@@ -629,7 +636,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_UnifiesPartialClass_C10()
     {
-        var root = Root(await GetSymbol("Sample.Lib.Gadget", "signature"));
+        var root = Root(await GetSymbol("Sample.Lib.Gadget"));
         var sites = root.GetProperty("content").GetProperty("declarationSites");
         Assert.Equal(2, sites.GetArrayLength());
     }
@@ -662,15 +669,15 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     {
         // A component set derived from decl alone gets a decl-only token back — the response must not
         // claim layers whose content it never sent.
-        const string DeclOnlySet = "referenceCounts,recentLog";
-        var first = Root(await GetSymbol("Sample.Lib.Widget.Spin", exclude: DeclOnlySet));
+        const string DeclOnlySet = "xmlDoc";
+        var first = Root(await GetSymbol("Sample.Lib.Widget.Spin", DeclOnlySet));
         var declOnly = first.GetProperty("contentVersion").GetString()!;
         Assert.DoesNotContain("|", declOnly);
         Assert.StartsWith("decl:", declOnly);
 
         // Holding exactly what that response covered leases cleanly.
         var leased = Root(await GetSymbol(
-            "Sample.Lib.Widget.Spin", knownVersion: declOnly, exclude: DeclOnlySet));
+            "Sample.Lib.Widget.Spin", DeclOnlySet, knownVersion: declOnly));
 
         Assert.False(leased.GetProperty("changed").GetBoolean());
         Assert.Equal(declOnly, leased.GetProperty("heldVersion").GetString());
@@ -690,7 +697,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var signatureToken = signature.GetProperty("contentVersion").GetString()!;
         Assert.False(signature.GetProperty("content").TryGetProperty("source", out _));
 
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full", knownVersion: signatureToken));
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all", knownVersion: signatureToken));
 
         Assert.False(full.TryGetProperty("changed", out _));
         Assert.False(string.IsNullOrEmpty(
@@ -746,7 +753,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task ValidatePatch_BreakingChange_NotAppliedWithRootCauses_C3_C5()
     {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
         var version = sym.GetProperty("contentVersion").GetString()!;
 
@@ -770,7 +777,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     {
         // The fixture runs on a throwaway temp copy, so this apply's disk write is discarded on dispose.
         var applyTask = "tsk_apply_" + Guid.NewGuid().ToString("N")[..8];
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
         var version = sym.GetProperty("contentVersion").GetString()!;
         var before = _f.FeatureLog.CountsForTask(applyTask);
@@ -846,7 +853,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         await File.WriteAllTextAsync(path, original + Environment.NewLine + "// moved on disk");
         try
         {
-            var root = Root(await GetSymbol("Sample.Lib.Gadget.Left", "full"));
+            var root = Root(await GetSymbol("Sample.Lib.Gadget.Left", "all"));
             Assert.Equal("stale", root.GetProperty("limitedBy").GetString());
         }
         finally
@@ -867,7 +874,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task ValidatePatch_RefusesToApplyOverAFileThatMovedUnderTheWorkspace()
     {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
         var version = sym.GetProperty("contentVersion").GetString()!;
 

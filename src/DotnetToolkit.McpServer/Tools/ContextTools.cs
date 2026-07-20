@@ -26,26 +26,35 @@ public static class ContextTools
 {
     private const int ReferenceCap = 50;
 
-    [McpServerTool(Name = "get_symbol")]
-    [Description("Retrieve one or more C# symbols at the resolution you need (signature|outline|full). "
+[McpServerTool(Name = "get_symbol")]
+    [Description("Retrieve one or more C# symbols, choosing exactly which fields you get back via include. "
         + "USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when it is split across "
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
         + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
         + "changed:false when nothing moved, or refetch:true to force content. "
-        + "Always returns declarationSites (file + startLine/endLine) at every resolution, so locating a "
-        + "symbol never needs an extra argument or a second call — those line spans feed straight into a "
-        + "validate_patch edit. To get ONLY declarationSites (e.g. just where to point a patch), leave "
-        + "resolution at its default and exclude everything else: exclude:\"xmlDoc,referenceCounts,recentLog\" — "
-        + "what remains is the skeleton (kind, displayString, accessibility, containingType, declarationSites), "
-        + "which is never itself removable since a response without it is not interpretable. "
-        + "Prefer a bare resolution: include/exclude are for when the default set is wrong, and every "
-        + "added component costs tokens. When you do adjust it, name components exactly as they appear in "
-        + "the response: source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members. e.g. "
-        + "resolution:\"full\" exclude:\"source\" for everything known about a symbol except its text, or "
-        + "resolution:\"signature\" include:\"members\" to list a type's API without bodies. "
-        + "For several symbols in one call, use symbols instead of symbol — one resolution/include/exclude "
-        + "applies to all of them, and the response becomes {\"results\":[...]}, one envelope per symbol in "
-        + "request order, instead of issuing several times the calls for the same total answer.")]
+        + "The response always carries a fixed skeleton — kind, displayString, accessibility, containingType, "
+        + "declarationSites (file + startLine/endLine) — regardless of include, so locating a symbol never "
+        + "needs an extra argument or a second call, and those line spans feed straight into a validate_patch "
+        + "edit. Everything past the skeleton is opt-in and controlled by include:\n"
+        + "  source — full declaration source text.\n"
+        + "  xmlDoc — the <summary> only, XML-stripped to plain text (no <remarks>/<param>/etc).\n"
+        + "  mechanicalFacts — server-computed structural facts as opaque JSON; null if the body changed "
+        + "since they were computed.\n"
+        + "  referenceCounts — {implementations, overrides} always; adds {callers, tests} for a member "
+        + "(never present for a type, since call edges are recorded against members only).\n"
+        + "  recentLog — the last few development-log entries touching this symbol, each carrying "
+        + "current:true/false against the live body so stale history reads as stale, not as fact.\n"
+        + "  members — for a type only: [{symbolId, displayString, kind, contentVersion}] per member, "
+        + "each independently leasable without fetching its body; null for a non-type symbol.\n"
+        + "include takes exactly one of: omitted or \"standard\" (default) for xmlDoc+referenceCounts+recentLog, "
+        + "the set meaningful on nearly every call; \"all\" for every component above; or a comma-separated "
+        + "list of component names, which REPLACES the default rather than adding to it — a literal query of "
+        + "exactly the columns you want, e.g. include:\"source\" for just the text, or "
+        + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. A "
+        + "misspelled name is an invalid_component error, not silently dropped. "
+        + "For several symbols in one call, use symbols instead of symbol — one include applies to all of "
+        + "them, and the response becomes {\"results\":[...]}, one envelope per symbol in request order, "
+        + "instead of issuing several times the calls for the same total answer.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -55,19 +64,17 @@ public static class ContextTools
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
-        [Description("signature | outline | full (default signature).")] string resolution = "signature",
-        [Description("Comma-separated components to ADD to the resolution's default set: "
-            + "source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members.")] string? include = null,
-        [Description("Comma-separated components to REMOVE from the resolution's default set. "
-            + "Same names as include.")] string? exclude = null,
+        [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
+            + "names that replaces the default set exactly: source, xmlDoc, mechanicalFacts, "
+            + "referenceCounts, recentLog, members. See the tool description for what each returns.")] string? include = null,
         [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
             + "see symbols.")] string? knownVersion = null,
         [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
         [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
         [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null,
-        [Description("Fetch several symbols in one call instead of symbol. The same resolution/include/exclude "
-            + "is applied to every entry. knownVersion/refetch are ignored here — leasing needs one token per "
-            + "symbol, which a single knownVersion cannot express, so every batch result carries full content "
+        [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
+            + "every entry. knownVersion/refetch are ignored here — leasing needs one token per symbol, "
+            + "which a single knownVersion cannot express, so every batch result carries full content "
             + "regardless of what the caller already holds. Exactly one of symbol or symbols is required.")]
             string[]? symbols = null)
     {
@@ -81,7 +88,7 @@ public static class ContextTools
 
         if (targets is [var only] && symbols is null)
             return await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
-                toolCallId, sessionId, taskId, only, resolution, include, exclude, knownVersion, refetch);
+                toolCallId, sessionId, taskId, only, include, knownVersion, refetch);
 
         // Batch: each entry is a full, independent fetch (see the knownVersion/refetch note above) sharing
         // one toolCallId, so the telemetry rows this produces read as one tool call over several symbols
@@ -99,7 +106,7 @@ public static class ContextTools
         foreach (var target in targets)
         {
             var itemJson = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                telemetry, toolCallId, sessionId, taskId, target, resolution, include, exclude,
+                telemetry, toolCallId, sessionId, taskId, target, include,
                 knownVersion: null, refetch: false);
             var item = JsonSerializer.Deserialize<JsonElement>(itemJson);
 
@@ -139,18 +146,18 @@ public static class ContextTools
         return Formats.ToJson(new { results });
     }
 
-    private static async Task<string> GetSymbolOne(
+private static async Task<string> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
         FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder, TelemetryRecorder telemetry,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string resolution, string? include, string? exclude, string? knownVersion, bool refetch)
+        string symbol, string? include, string? knownVersion, bool refetch)
     {
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
             // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
             await index.EnsureFreshAsync();
-            var fallback = IndexSymbol(index, locator, symbol, resolution);
+            var fallback = IndexSymbol(index, locator, symbol, include);
             if (fallback is { } fb)
             {
                 var indexLease = Lease.Evaluate(ContentVersion.Parse(fb.Version), knownVersion, refetch);
@@ -167,29 +174,28 @@ public static class ContextTools
                         changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
                     };
                 var indexJson = Formats.ToJson(indexEnvelope);
-                return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, resolution,
+                return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
                     knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
             }
 
             var loading = Error(toolCallId, workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace");
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, resolution,
+            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "index_only", "workspace_loading", loading);
         }
 
         var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId);
         if (sym is null)
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, resolution,
+            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
 
         var symbolId = SymbolKey.IdOf(sym);
 
-        var components = SymbolComponents.Resolve(
-            resolution, include, exclude, sym is INamedTypeSymbol, out var invalidComponent);
+        var components = SymbolComponents.Resolve(include, out var invalidComponent);
         if (components is not { } parts)
         {
             var badComponent = Error(toolCallId, "invalid_component",
                 $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.");
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, resolution,
+            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "invalid_component", badComponent);
         }
 
@@ -223,15 +229,15 @@ public static class ContextTools
                 symbolId,
                 contentVersion = version.ToString(),
                 limitedBy,
-                // Echoed only when the caller narrowed the set: on a plain resolution it would repeat
-                // what the resolution name already said, on every single call.
-                components = include is null && exclude is null ? null : parts.Resolved,
+                // Echoed only when the caller passed a non-default include: on the plain standard set it
+                // would repeat what the default already said, on every single call.
+                components = include is null ? null : parts.Resolved,
                 content,
             };
         }
 
         var json = Formats.ToJson(envelope);
-        return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, resolution,
+        return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
             knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
     }
 
@@ -239,10 +245,19 @@ public static class ContextTools
     [Description("Callers, implementations or overrides of a C# symbol, from the compiler's own model. "
         + "USE THIS INSTEAD OF GREP — grep gives wrong caller lists: it cannot see interface, virtual or delegate "
         + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
-        + "Returns every real call site, no false positives, and reports how many text-only matches it excluded. "
-        + "Each item carries a version token. items is a table whose columns are whatever fields this call's "
-        + "results actually share (same convention as search_index/get_symbol) plus a trailing rest column for "
-        + "whatever was not common — isTest and content are the fields most likely to end up there.")]
+        + "Returns every real call site, no false positives, and reports how many text-only matches it excluded "
+        + "as excludedTextMatches (callers direction only). "
+        + "Response shape: {targetSymbolId, items:{columns,rows}, totalItems, truncated, excludedTextMatches, "
+        + "limitedBy}. items is a TABLE, not one object per hit: columns lists field names once, each row is a "
+        + "parallel array — read items.rows[i][items.columns.IndexOf(\"displayString\")], not items[i].displayString. "
+        + "columns is NOT fixed — it is whatever fields every item in THIS call's result set actually shares "
+        + "(same convention as search_index/get_symbol's batch results), plus a trailing rest column holding "
+        + "whatever was not common. symbolId, contentVersion, displayString, sites, dispatchKind are common on "
+        + "nearly every call and usually land in columns; isTest (emitted only when true) and content (the "
+        + "inline body, present only with includeBodies:true) are the fields most likely to end up in rest "
+        + "instead, since neither is present on every item. sites is itself a list: "
+        + "[{file, line, snippet}, ...], one entry per call site for that symbol. Each item also carries its own "
+        + "contentVersion for leasing, independent of the target symbol's version.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -332,7 +347,7 @@ public static class ContextTools
             null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
 
-    [McpServerTool(Name = "search_index")]
+[McpServerTool(Name = "search_index")]
     [Description("Find C# symbols when you don't know their exact names. "
         + "USE THIS INSTEAD OF GREP/GLOB over .cs files — it returns ranked symbols with ids and locations, not "
         + "raw text lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
@@ -340,16 +355,24 @@ public static class ContextTools
         + "query:\"fee ledger TryBuy TrySell\" returns the symbols for all four in a single response. Do NOT "
         + "issue one call per word — that is several times the tokens for a worse-ranked result. Partial and "
         + "camel-case-interior terms work too: \"Ledger\" finds FIFOLedger. "
-        + "Each hit carries the file and line it was found at, so going straight there needs no second "
-        + "call; a hit whose name maps to several declarations (overloads) omits them rather than "
-        + "pointing at the wrong one. Follow up with get_symbol when you want the content itself.")]
+        + "Response shape: {items:{columns,rows}}. items is a TABLE, not one object per hit: "
+        + "columns is always exactly [\"symbolId\",\"name\",\"kind\",\"file\",\"line\"], and each entry in rows "
+        + "is a parallel array in that column order — read rows[i][2] for kind, not rows[i].kind. name is the "
+        + "fully-qualified name, directly usable as get_symbol's symbol argument. Each hit carries the file and "
+        + "line it was found at, so going straight there needs no second call; a hit whose name maps to several "
+        + "declarations (overloads) has file and line as null rather than pointing at the wrong one — follow up "
+        + "with get_symbol, which separates overloads by parameter list. "
+        + "Follow up with get_symbol when you want the content itself.")]
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
         [Description("Free-text query over symbol names.")] string query,
-        [Description("Optional kind filter, e.g. Method,Type.")] string? kinds = null,
+        [Description("Optional comma-separated kind filter, case-insensitive. Valid values: class (alias for "
+            + "type), interface, struct, record, enum, delegate, method, property, field, event. e.g. "
+            + "\"method,property\". An unrecognized value is passed through as-is rather than rejected, so a "
+            + "typo silently matches nothing instead of erroring. Omit to search every kind.")] string? kinds = null,
         [Description("Max results (default 10, cap 50).")] int limit = 10,
         [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
         [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
@@ -461,12 +484,13 @@ public static class ContextTools
     // ---- content builder -----------------------------------------------------
 
     /// <summary>
-    /// Builds the response body for exactly the requested components. One path for every resolution:
-    /// the outline case used to return early from its own object literal, which is why an outline
-    /// silently lacked containingType and recentLog — a divergence, not a decision.
+    /// Builds the response body for exactly the requested components. One path regardless of how
+    /// <c>include</c> resolved: an earlier version special-cased outline with an early return from its
+    /// own object literal, which is why it silently lacked containingType and recentLog — a divergence,
+    /// not a decision.
     ///
     /// Every optional field is null when not requested, and <c>WhenWritingNull</c> drops it from the
-    /// JSON — so an excluded component costs nothing, not even an empty key.
+    /// JSON — so an unrequested component costs nothing, not even an empty key.
     /// </summary>
     private static async Task<object> BuildContent(
         ISymbol sym, SymbolComponents components, Solution solution, SolutionLocator locator,
@@ -521,7 +545,9 @@ public static class ContextTools
     /// </summary>
     private static object? RecentLogFor(ISymbol sym, FeatureLogStore featureLog)
     {
-        var entries = featureLog.RecentForSymbol([SymbolKey.IdOf(sym)]);
+        var currentId = SymbolKey.IdOf(sym);
+        var chain = featureLog.ResolveIdChain(currentId);
+        var entries = featureLog.RecentForSymbol(chain);
         if (entries.Count == 0)
             return null;
 
@@ -802,8 +828,8 @@ public static class ContextTools
     /// declaring file, so leases remain valid across the index_only → live transition for unchanged
     /// declarations. referenceCounts is null here — counts require the edge cache.
     /// </summary>
-    private static (object Content, string Version, string SymbolId)? IndexSymbol(
-        ProjectIndex index, SolutionLocator locator, string symbol, string resolution)
+private static (object Content, string Version, string SymbolId)? IndexSymbol(
+        ProjectIndex index, SolutionLocator locator, string symbol, string? include)
     {
         var namePart = symbol;
         var paren = namePart.IndexOf('(');
@@ -837,7 +863,7 @@ public static class ContextTools
             {
                 var (decl, body) = SyntaxFingerprint.Compute(NormalizeDeclNode(node));
                 version = ContentVersion.Of(decl, body).ToString();
-                if (resolution.Trim().Equals("full", StringComparison.OrdinalIgnoreCase))
+                if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
                     source = node.ToString();
             }
         }

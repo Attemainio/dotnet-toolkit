@@ -12,6 +12,14 @@ public static class EscalationTable
     {
         ChangeKind.Trivia => ValidationLevel.Parse,
         ChangeKind.Body => ValidationLevel.ProjectCompile,
+        // A pure addition is new code that has to be proven to actually compile, but — unlike a
+        // signature/accessibility/etc. change to an EXISTING contract — nothing already depended on
+        // it, so it does not need dependent_compile the way those do.
+        ChangeKind.Added => ValidationLevel.ProjectCompile,
+        // A pure removal can break any existing caller anywhere in the solution — at least as
+        // conservative as a signature change, so it gets the dependent_compile floor explicitly
+        // rather than relying on the default arm below.
+        ChangeKind.Removed => ValidationLevel.DependentCompile,
         // Signature, accessibility, inheritance, interface, attribute, generic-constraint and public
         // nullability changes are all breaking to dependents → dependent_compile.
         _ => ValidationLevel.DependentCompile,

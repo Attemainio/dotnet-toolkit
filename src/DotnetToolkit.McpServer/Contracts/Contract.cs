@@ -10,6 +10,19 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.7</b> — get_symbol drops <c>resolution</c> and <c>exclude</c>. <c>include</c> is now the sole
+    /// selector, with three forms: omitted/<c>"standard"</c> (default) for <c>xmlDoc, referenceCounts,
+    /// recentLog</c> — the set meaningful on nearly every call; <c>"all"</c> for every component
+    /// (<c>source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members</c>); or a comma list of
+    /// component names, which now REPLACES the default set rather than adding to it — a literal query of
+    /// exactly the columns wanted. BREAKING: <c>resolution:"full"</c> becomes <c>include:"all"</c>;
+    /// <c>resolution:"full", exclude:"source"</c> becomes spelling out the remaining names explicitly,
+    /// e.g. <c>include:"xmlDoc,mechanicalFacts,referenceCounts,recentLog"</c>; a bare
+    /// <c>include:"members"</c> that previously ADDED members to the signature default now returns ONLY
+    /// members (plus the unconditional skeleton) — callers relying on the old additive behavior must
+    /// list every component they still want.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.6</b> — get_references' <c>items</c> becomes a <see cref="Output.CompactTable"/> combined with
     /// <see cref="Output.JsonHoist"/>, the same treatment as get_symbol's batch <c>results</c>: whatever
     /// fields this call's actual items share (typically <c>symbolId, contentVersion, displayString, sites,
@@ -87,5 +100,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.6";
+    public const string Id = "ctx-contract/3.7";
 }

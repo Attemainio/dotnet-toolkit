@@ -1,7 +1,7 @@
 # C# best practices
 
-Default idiomatic-C# reference for `dotnet-reviewer` (all points) and `dotnet-refactor-cleaner` (the
-duplication/abstraction points specifically). Overridable per-repo via
+Default idiomatic-C# reference for `dotnet-code-review`'s `correctness` dimension (all points) and its
+`cleanup` dimension (the duplication/abstraction points specifically). Overridable per-repo via
 `.claude/dotnet-toolkit/best-practices.md` (see `CLAUDE.md`).
 
 ## Correctness
@@ -37,8 +37,8 @@ duplication/abstraction points specifically). Overridable per-repo via
 ## LINQ vs. loops
 
 - LINQ (`Where`/`Select`/`OrderBy`/etc.) is the default for readability in ordinary (non-hot-path) code —
-  don't flag idiomatic LINQ as a style problem outside a proven hot path. `dotnet-performance` owns the
-  hot-path exception to this; `dotnet-reviewer` should not duplicate that judgment.
+  don't flag idiomatic LINQ as a style problem outside a proven hot path. The `performance` dimension owns
+  the hot-path exception to this; `correctness` should not duplicate that judgment.
 - Materializing a LINQ query multiple times (`.Where(...)` reused across several `.Count()`/`.Any()`/
   `.ToList()` calls without an intermediate `.ToList()`) re-runs the whole pipeline each time — flag when
   the source is expensive to enumerate (a database-backed `IQueryable`, a large in-memory sequence built
@@ -50,17 +50,17 @@ duplication/abstraction points specifically). Overridable per-repo via
 - A constructor's parameter list is the honest list of a class's dependencies — a class reaching for a
   static/ambient singleton it doesn't declare as a dependency is hiding a real coupling.
 - Interfaces exist for a reason (multiple implementations, test doubles, a real seam) — an interface with
-  exactly one implementation and no test-double usage is a `dotnet-refactor-cleaner` finding
+  exactly one implementation and no test-double usage is a `cleanup`-dimension finding
   (orphaned abstraction), not automatically wrong, but worth questioning.
 
 ## Records, structs, and value semantics
 
 - Prefer `record`/`record struct` for data that's compared by value and doesn't mutate after construction.
 - A `struct` larger than roughly 16 bytes, or one that's frequently boxed/passed by value in a hot path,
-  should be reconsidered as a `class` or passed by `in`/`ref` — but this is `dotnet-performance`'s call in
-  a proven hot path, not a blanket rule for every struct.
+  should be reconsidered as a `class` or passed by `in`/`ref` — but this is the `performance` dimension's
+  call in a proven hot path, not a blanket rule for every struct.
 
-## Duplication & abstraction cost (shared with dotnet-refactor-cleaner)
+## Duplication & abstraction cost (shared with the cleanup dimension)
 
 - Three or more near-identical blocks of logic should become one shared method/type. Two occurrences are a
   judgment call — duplication is often cheaper than a premature abstraction that guesses wrong about the
