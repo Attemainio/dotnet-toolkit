@@ -174,6 +174,8 @@ public sealed class WorkspaceHost : IDisposable
                 return;
             foreach (var id in documents)
             {
+                // TryGetText is sound here, unlike in the drift check: these documents were just built
+                // by WithDocumentText on the fork, so their text is materialised by construction.
                 if (applied.GetDocument(id) is { } document && document.TryGetText(out var text))
                     _solution = _solution.WithDocumentText(id, text);
             }
@@ -189,14 +191,22 @@ public sealed class WorkspaceHost : IDisposable
     {
         foreach (var abs in absPaths.Distinct(StringComparer.Ordinal))
         {
-            SourceText? text = null;
+            Document? document;
             lock (_gate)
             {
                 var ids = _solution?.GetDocumentIdsWithFilePath(abs) ?? [];
-                if (!ids.IsEmpty && _solution!.GetDocument(ids[0]) is { } document)
-                    document.TryGetText(out text);
+                document = ids.IsEmpty ? null : _solution!.GetDocument(ids[0]);
             }
-            if (text is not null && await DiskDrift.DriftedAsync(abs, text))
+            if (document is null)
+                continue;
+
+            // GetTextAsync rather than TryGetText. TryGetText returns false when the text is not already
+            // materialised, and this is a safety check: a false there is indistinguishable from "matches
+            // disk", so the failure mode is silently reporting a drifted file as healthy. MSBuildWorkspace
+            // does appear to materialise document text on load, so TryGetText works in practice today —
+            // this does not depend on that continuing to hold.
+            // A Document is an immutable snapshot, so awaiting outside the lock is safe.
+            if (await DiskDrift.DriftedAsync(abs, await document.GetTextAsync()))
                 return true;
         }
         return false;

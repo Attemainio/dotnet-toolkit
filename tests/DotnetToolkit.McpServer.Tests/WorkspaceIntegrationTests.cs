@@ -712,14 +712,18 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetSymbol_MarksTheAnswerStaleWhenItsFileMovedUnderTheWorkspace()
     {
-        var path = _f.Locator.AbsPath("Lib/Widget.cs");
+        // Deliberately does not read the symbol first, so the check is not handed a document whose text
+        // this test itself materialised. That does not currently change the outcome — the fixture's
+        // workspace has the text either way — so this is cheap insurance rather than the thing under
+        // test, and it is not a substitute for a genuinely cold workspace, which the shared fixture
+        // cannot offer.
+        var path = _f.Locator.AbsPath("Lib/Gadget.cs");
         var original = await File.ReadAllTextAsync(path);
-        Assert.Null(Root(await GetSymbol("Sample.Lib.Widget.Spin", "full")).TryGetProperty("limitedBy", out var before) ? before.GetString() : null);
 
         await File.WriteAllTextAsync(path, original + Environment.NewLine + "// moved on disk");
         try
         {
-            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "full"));
+            var root = Root(await GetSymbol("Sample.Lib.Gadget.Left", "full"));
             Assert.Equal("stale", root.GetProperty("limitedBy").GetString());
         }
         finally
