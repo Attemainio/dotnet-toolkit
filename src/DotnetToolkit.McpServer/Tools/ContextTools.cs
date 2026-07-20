@@ -244,8 +244,10 @@ public static class ContextTools
         + "query:\"fee ledger TryBuy TrySell\" returns the symbols for all four in a single response. Do NOT "
         + "issue one call per word — that is several times the tokens for a worse-ranked result. Partial and "
         + "camel-case-interior terms work too: \"Ledger\" finds FIFOLedger. "
-        + "Follow up with get_symbol on the ones you want.")]
-    public static string SearchIndex(
+        + "Each hit carries the file and line it was found at, so going straight there needs no second "
+        + "call; a hit whose name maps to several declarations (overloads) omits them rather than "
+        + "pointing at the wrong one. Follow up with get_symbol when you want the content itself.")]
+    public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
         WorkspaceHost workspace,
@@ -270,6 +272,14 @@ public static class ContextTools
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
+
+        // Locations come from the syntax index, swept for staleness first, so a hit points at where the
+        // declaration is now rather than where it was when the row was written.
+        await index.EnsureFreshAsync();
+        var sites = index.Locate(hits
+            .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
+            .ToHashSet(StringComparer.Ordinal));
+
         object envelope = new
         {
             // Absent means nothing limited this answer — the healthy case costs no tokens.
@@ -284,6 +294,14 @@ public static class ContextTools
                 // Rank/score and matchedOn are omitted — the list is already ordered.
                 name = SymbolResolver.CompactName(h.FqName),
                 kind = h.Kind,
+                // Where to look, so the common "search then go there" pass costs one call instead of
+                // two. Omitted — rather than guessed — when the name maps to more than one declaration,
+                // since the index keys members without their parameter lists and cannot separate
+                // overloads. Absent means "call get_symbol", which was the only option before.
+                file = sites.TryGetValue(SymbolResolver.NameWithoutParameters(h.FqName), out var site)
+                    ? site.File
+                    : null,
+                line = site?.Line,
             }),
         };
 

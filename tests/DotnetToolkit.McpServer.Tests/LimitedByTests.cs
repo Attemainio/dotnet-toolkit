@@ -64,9 +64,9 @@ public sealed class LimitedByTests : IDisposable
     /// populated store is necessary but not sufficient for the healthy marker.
     /// </summary>
     [Fact]
-    public void SearchIndexReportsIndexOnlyWhileTheStoreIsEmpty()
+    public async Task SearchIndexReportsIndexOnlyWhileTheStoreIsEmpty()
     {
-        var json = ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, "Anything");
+        var json = await ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, "Anything");
         var root = System.Text.Json.JsonDocument.Parse(json).RootElement;
 
         Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());

@@ -76,6 +76,16 @@ public static partial class SymbolResolver
         return paren < 0 ? fqName : fqName[..paren] + ShortParams(fqName[paren..]);
     }
 
+    /// <summary>
+    /// The name with any parameter list dropped entirely — the form the syntax index keys declarations
+    /// by, so a stored name can be matched against it.
+    /// </summary>
+    public static string NameWithoutParameters(string fqName)
+    {
+        var paren = fqName.IndexOf('(');
+        return paren < 0 ? fqName : fqName[..paren];
+    }
+
     /// <summary>Reduces a parenthesized parameter list to short type names without whitespace.</summary>
     private static string ShortParams(string parenList) =>
         NamespacePrefixRegex().Replace(parenList, "").Replace(" ", "");

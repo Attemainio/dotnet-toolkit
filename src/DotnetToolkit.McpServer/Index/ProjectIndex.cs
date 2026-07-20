@@ -239,6 +239,57 @@ public sealed class ProjectIndex
     public FileEntry? GetFile(string relPath) =>
         _files.TryGetValue(relPath.Replace('\\', '/'), out var entry) ? entry : null;
 
+    /// <summary>Where a declaration sits: the file it is in and the line it starts on.</summary>
+    public sealed record Site(string File, int Line);
+
+    /// <summary>
+    /// Resolves fully-qualified names — without parameter lists — to their declaration site, in one pass
+    /// over the index.
+    ///
+    /// Read from the syntax index rather than stored alongside the symbol row on purpose. A line number
+    /// stored next to a symbol would be invalidated by that symbol's own hashes, and editing *above* a
+    /// declaration moves its line without changing a single one of them: the row would not be rewritten
+    /// and the stored line would rot silently. The index is mtime-swept per file, so it moves whenever
+    /// the file does, which is exactly what a line number depends on.
+    ///
+    /// A name that resolves to more than one distinct site — overloads, or a partial declared twice — is
+    /// omitted rather than guessed at. The names here carry no parameter list, so the two cannot be told
+    /// apart, and pointing at the wrong overload is worse than saying nothing: absent already means
+    /// "look it up".
+    /// </summary>
+    public IReadOnlyDictionary<string, Site> Locate(IReadOnlySet<string> fqNamesWithoutParameters)
+    {
+        var found = new Dictionary<string, Site>(StringComparer.Ordinal);
+        var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+
+        void Offer(string fqName, Site site)
+        {
+            if (!fqNamesWithoutParameters.Contains(fqName) || ambiguous.Contains(fqName))
+                return;
+            if (found.TryGetValue(fqName, out var existing))
+            {
+                if (existing != site)
+                {
+                    found.Remove(fqName);
+                    ambiguous.Add(fqName);
+                }
+                return;
+            }
+            found[fqName] = site;
+        }
+
+        foreach (var (file, entry) in _files)
+        {
+            foreach (var type in Flatten(entry.Types))
+            {
+                Offer(type.FqName, new Site(file, type.Line));
+                foreach (var member in type.Members)
+                    Offer($"{type.FqName}.{member.Name}", new Site(file, member.Line));
+            }
+        }
+        return found;
+    }
+
     public (List<SymbolHit> Hits, int Total) FindSymbol(string query, string? kind, int limit)
     {
         var kindCode = MapKind(kind);

@@ -193,9 +193,9 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     /// because any query with a space in it matched nothing at all.
     /// </summary>
     [Fact]
-    public void SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
+    public async Task SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
     {
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
 
         var names = root.GetProperty("items").EnumerateArray()
             .Select(i => i.GetProperty("name").GetString()!).ToList();
@@ -212,7 +212,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
-        var hit = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
+        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
             .GetProperty("items").EnumerateArray().First();
         var name = hit.GetProperty("name").GetString()!;
 
@@ -345,13 +345,13 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     /// "0 callers" states something the store cannot know — observed live on a method with 5.
     /// </summary>
     [Fact]
-    public void ReferenceCounts_OmittedWhenProjectHasNoEdgeCoverage()
+    public async Task ReferenceCounts_OmittedWhenProjectHasNoEdgeCoverage()
     {
         // A symbol id from no indexed project at all: coverage cannot be established for it.
         Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
 
         // The fixture's own project does have edges, so real symbols stay measurable.
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
         var id = root.GetProperty("items").EnumerateArray().First().GetProperty("symbolId").GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
@@ -386,7 +386,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
-        var root = Root(ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
             "Widget", kinds: "class", limit: 10));
 
         var items = root.GetProperty("items").EnumerateArray().ToList();
@@ -664,6 +664,41 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var after = _f.FeatureLog.CountsForTask(applyTask);
         Assert.Equal(before.Entries + 1, after.Entries);   // exactly one feature_log row
         Assert.Equal(before.Symbols + 1, after.Symbols);   // one per changed symbol (Widget.Spin)
+    }
+
+    /// <summary>
+    /// A search hit carries where it was found, so "search, then go there" is one call rather than two.
+    /// The line is checked against the file's actual content, not just asserted non-null — a location
+    /// that points at the wrong line is worse than none, since a caller has no reason to doubt it.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
+    {
+        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
+            .GetProperty("items").EnumerateArray().First();
+
+        var file = hit.GetProperty("file").GetString()!;
+        var line = hit.GetProperty("line").GetInt32();
+
+        var text = await File.ReadAllLinesAsync(_f.Locator.AbsPath(file));
+        Assert.Contains("SpinTwice", text[line - 1]);
+    }
+
+    /// <summary>
+    /// The index keys members without their parameter lists, so overloads collapse to one name and the
+    /// site cannot be resolved. Omit it: absent already means "call get_symbol", which is what a caller
+    /// did before locations existed, whereas a confidently wrong line is a new failure mode.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
+    {
+        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous"))
+            .GetProperty("items").EnumerateArray().First();
+
+        Assert.False(hit.TryGetProperty("file", out _));
+        Assert.False(hit.TryGetProperty("line", out _));
+        // The hit itself is still useful — it just costs a get_symbol to locate.
+        Assert.Contains("Ambiguous", hit.GetProperty("name").GetString());
     }
 
     /// <summary>

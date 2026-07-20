@@ -10,6 +10,14 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.3</b> — search_index hits carry <c>file</c> and <c>line</c>. Additive, and both are absent
+    /// when the name maps to several declarations: the syntax index they are resolved from keys members
+    /// without parameter lists, so overloads cannot be separated, and absent is what a caller already
+    /// handled. Resolved per response rather than stored beside the symbol row, because a stored line is
+    /// invalidated by that symbol's own hashes and an edit *above* a declaration moves its line without
+    /// touching one of them.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.2</b> — <c>limitedBy</c> gained the value <c>stale</c>: the files an answer was served from
     /// have moved on disk since the workspace read them. The previous markers described the tier, which
     /// a loaded, undegraded workspace holding a file that changed underneath it satisfies while still
@@ -42,5 +50,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.2";
+    public const string Id = "ctx-contract/3.3";
 }
