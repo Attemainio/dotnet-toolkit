@@ -73,18 +73,20 @@ Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` 
 `TryBuy`. When a question spans two subsystems, name both in the same query — the ranking
 puts the symbols matching more of your terms first, which is exactly the overlap you want.
 
-Each hit carries where it was found, so going straight there costs no second call:
+Each hit carries where it was found, so going straight there costs no second call. `items` is a
+table — `columns` once, then one array per hit in that order — not one object per hit, so the
+field names aren't repeated on every row:
 
 ```json
-{"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)",
- "kind":"Method","file":"Lib/Pipeline.cs","line":6}
+{"items":{"columns":["symbolId","name","kind","file","line"],
+ "rows":[["sym_...","Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)","Method","Lib/Pipeline.cs",6]]}}
 ```
 
 `file`/`line` are resolved from the syntax index at response time — swept for staleness on the
 way — so they point at where the declaration is *now*, not where it was when the row was
-written. **A name that maps to several declarations (overloads) omits them** rather than
-pointing at the wrong one; that hit still resolves through `get_symbol`, which separates
-overloads by parameter list and always returns exact spans.
+written. **A name that maps to several declarations (overloads) omits both** (`null` in the row)
+rather than pointing at the wrong one; that hit still resolves through `get_symbol`, which
+separates overloads by parameter list and always returns exact spans.
 
 Only split into separate calls when you need different `kinds` filters.
 

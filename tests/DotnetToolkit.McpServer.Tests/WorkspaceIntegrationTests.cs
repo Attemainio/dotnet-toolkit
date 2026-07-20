@@ -157,6 +157,20 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     private static JsonElement Root(string json) => JsonDocument.Parse(json).RootElement;
 
     /// <summary>
+    /// search_index's items is a <c>{columns, rows}</c> table (ctx-contract/3.4), not one object per hit.
+    /// Rehydrates it into the per-row lookup the rest of these tests were already written against, so a
+    /// wire-format change here doesn't force every assertion below to learn column indices.
+    /// </summary>
+    private static List<Dictionary<string, JsonElement>> TableRows(JsonElement table)
+    {
+        var columns = table.GetProperty("columns").EnumerateArray().Select(c => c.GetString()!).ToList();
+        return table.GetProperty("rows").EnumerateArray()
+            .Select(row => columns.Zip(row.EnumerateArray(), (c, v) => (c, v))
+                .ToDictionary(x => x.c, x => x.v))
+            .ToList();
+    }
+
+    /// <summary>
     /// Retrieval must work for a caller that supplies no session/task ids. Attribution is
     /// instrumentation and must never gate the tool it measures: when these were required, an agent
     /// that had not read the retrieval skill saw two mandatory ids it could not produce and fell
@@ -197,8 +211,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
 
-        var names = root.GetProperty("items").EnumerateArray()
-            .Select(i => i.GetProperty("name").GetString()!).ToList();
+        var names = TableRows(root.GetProperty("items"))
+            .Select(i => i["name"].GetString()!).ToList();
 
         Assert.Contains(names, n => n.Contains("Widget", StringComparison.Ordinal));
         Assert.Contains(names, n => n.Contains("Gadget", StringComparison.Ordinal));
@@ -212,9 +226,9 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
-        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
-            .GetProperty("items").EnumerateArray().First();
-        var name = hit.GetProperty("name").GetString()!;
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+        var name = hit["name"].GetString()!;
 
         // Fully qualified up to the member, but the parameter's namespace is gone.
         Assert.StartsWith("Sample.Lib.WidgetExtensions.SpinTwice(", name);
@@ -224,7 +238,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var resolved = Root(await GetSymbol(name));
 
         Assert.False(resolved.TryGetProperty("error", out _));
-        Assert.Equal(hit.GetProperty("symbolId").GetString(), resolved.GetProperty("symbolId").GetString());
+        Assert.Equal(hit["symbolId"].GetString(), resolved.GetProperty("symbolId").GetString());
     }
 
     /// <summary>
@@ -352,7 +366,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         // The fixture's own project does have edges, so real symbols stay measurable.
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
-        var id = root.GetProperty("items").EnumerateArray().First().GetProperty("symbolId").GetString()!;
+        var id = TableRows(root.GetProperty("items")).First()["symbolId"].GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
 
@@ -389,11 +403,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
             "Widget", kinds: "class", limit: 10));
 
-        var items = root.GetProperty("items").EnumerateArray().ToList();
+        var items = TableRows(root.GetProperty("items"));
         Assert.NotEmpty(items); // "class" must alias to the stored "Type" kind, case-insensitively
 
         // The returned name is directly usable as a get_symbol target (no global:: prefix).
-        var name = items[0].GetProperty("name").GetString()!;
+        var name = items[0]["name"].GetString()!;
         Assert.DoesNotContain("global::", name);
         var fetched = Root(await GetSymbol(name, "signature"));
         Assert.True(fetched.TryGetProperty("content", out _));
@@ -674,11 +688,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
     {
-        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice"))
-            .GetProperty("items").EnumerateArray().First();
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
 
-        var file = hit.GetProperty("file").GetString()!;
-        var line = hit.GetProperty("line").GetInt32();
+        var file = hit["file"].GetString()!;
+        var line = hit["line"].GetInt32();
 
         var text = await File.ReadAllLinesAsync(_f.Locator.AbsPath(file));
         Assert.Contains("SpinTwice", text[line - 1]);
@@ -692,13 +706,13 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
     {
-        var hit = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous"))
-            .GetProperty("items").EnumerateArray().First();
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous")).GetProperty("items")).First();
 
-        Assert.False(hit.TryGetProperty("file", out _));
-        Assert.False(hit.TryGetProperty("line", out _));
+        Assert.Equal(JsonValueKind.Null, hit["file"].ValueKind);
+        Assert.Equal(JsonValueKind.Null, hit["line"].ValueKind);
         // The hit itself is still useful — it just costs a get_symbol to locate.
-        Assert.Contains("Ambiguous", hit.GetProperty("name").GetString());
+        Assert.Contains("Ambiguous", hit["name"].GetString());
     }
 
     /// <summary>

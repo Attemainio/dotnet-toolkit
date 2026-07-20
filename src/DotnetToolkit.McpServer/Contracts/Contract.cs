@@ -10,6 +10,13 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.4</b> — search_index's <c>items</c> becomes a <see cref="Output.CompactTable"/>:
+    /// <c>{"columns":[...],"rows":[[...],...]}</c> instead of one object per hit. BREAKING: a consumer
+    /// reading <c>items[i].name</c> sees nothing; it now reads <c>items.columns.IndexOf("name")</c> and
+    /// <c>items.rows[i][that]</c>. Still plain JSON arrays, so no delimiter or escaping rule was
+    /// introduced — the saving is only that column names are no longer repeated once per row.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.3</b> — search_index hits carry <c>file</c> and <c>line</c>. Additive, and both are absent
     /// when the name maps to several declarations: the syntax index they are resolved from keys members
     /// without parameter lists, so overloads cannot be separated, and absent is what a caller already
@@ -50,5 +57,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.3";
+    public const string Id = "ctx-contract/3.4";
 }

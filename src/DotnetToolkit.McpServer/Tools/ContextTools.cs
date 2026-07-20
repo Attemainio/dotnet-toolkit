@@ -280,29 +280,37 @@ public static class ContextTools
             .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
             .ToHashSet(StringComparer.Ordinal));
 
+        // A table instead of one object per hit: the field names (symbolId, name, kind, file, line) are
+        // stated once instead of once per row, which is most of what a hit list costs at limit:50.
         object envelope = new
         {
             // Absent means nothing limited this answer — the healthy case costs no tokens.
             limitedBy = searchLimitedBy,
-            items = hits.Select(h => new
-            {
-                symbolId = h.SymbolId,
-                // Fully qualified up to the member — unambiguous across namespaces and directly usable
-                // as a retrieval target — but with parameter types shortened. A 15-parameter method spent
-                // ~500 characters here repeating the same namespace once per parameter, and the resolver
-                // strips those prefixes before matching anyway, so the long form bought nothing.
-                // Rank/score and matchedOn are omitted — the list is already ordered.
-                name = SymbolResolver.CompactName(h.FqName),
-                kind = h.Kind,
-                // Where to look, so the common "search then go there" pass costs one call instead of
-                // two. Omitted — rather than guessed — when the name maps to more than one declaration,
-                // since the index keys members without their parameter lists and cannot separate
-                // overloads. Absent means "call get_symbol", which was the only option before.
-                file = sites.TryGetValue(SymbolResolver.NameWithoutParameters(h.FqName), out var site)
-                    ? site.File
-                    : null,
-                line = site?.Line,
-            }),
+            items = CompactTable.Of(
+                ["symbolId", "name", "kind", "file", "line"],
+                hits,
+                h =>
+                {
+                    // Where to look, so the common "search then go there" pass costs one call instead of
+                    // two. Omitted — rather than guessed — when the name maps to more than one
+                    // declaration, since the index keys members without their parameter lists and cannot
+                    // separate overloads. Null means "call get_symbol", which was the only option before.
+                    var site = sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName));
+                    return (IReadOnlyList<object?>)
+                    [
+                        h.SymbolId,
+                        // Fully qualified up to the member — unambiguous across namespaces and directly
+                        // usable as a retrieval target — but with parameter types shortened. A
+                        // 15-parameter method spent ~500 characters here repeating the same namespace
+                        // once per parameter, and the resolver strips those prefixes before matching
+                        // anyway, so the long form bought nothing.
+                        // Rank/score and matchedOn are omitted — the list is already ordered.
+                        SymbolResolver.CompactName(h.FqName),
+                        h.Kind,
+                        site?.File,
+                        site?.Line,
+                    ];
+                }),
         };
 
         var json = Formats.ToJson(envelope);
