@@ -17,7 +17,10 @@
     <PackageReference Include="Microsoft.Build.Locator" />
     <!-- Transitive via Workspaces.MSBuild; MSBuildLocator requires the runtime copy excluded
          so MSBuild assemblies load from the located SDK instead of NuGet. -->
-    <PackageReference Include="Microsoft.Build.Framework" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Framework" ExcludeAssets="runtime" PrivateAssets="all">
+      <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

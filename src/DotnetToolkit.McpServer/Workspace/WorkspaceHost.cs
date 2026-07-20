@@ -56,9 +56,12 @@ public sealed class WorkspaceHost : IDisposable
     ///
     /// This is a routine condition for a plugin that loads someone else's build: the MSBuild it
     /// registers comes from the server's own SDK, so a repo whose obj/ was restored by a different one
-    /// fails ResolvePackageAssets and lands here. Observed on this repo when the launcher's
-    /// ~/.dotnet SDK and the SDK on PATH differed by a feature band — every project failed, and every
-    /// tool answered as if nothing were wrong.
+    /// fails ResolvePackageAssets and lands here. Observed on this repo both when the launcher's
+    /// ~/.dotnet SDK and the SDK on PATH differed by a feature band, and when this checkout's obj/ was
+    /// last restored on the Windows side of its `/mnt/c` path (e.g. by Visual Studio), which bakes in a
+    /// Windows-only NuGet fallback folder that does not exist from here — every project failed, and
+    /// every tool answered as if nothing were wrong. <see cref="RestoreAsync"/> restores before every
+    /// load specifically to self-heal the second case rather than relying on a human noticing.
     /// </summary>
     public bool IsDegraded
     {
@@ -106,6 +109,8 @@ public sealed class WorkspaceHost : IDisposable
         _loadWatch.Restart();
         try
         {
+            await RestoreAsync(entry);
+
             var workspace = MSBuildWorkspace.Create();
             workspace.RegisterWorkspaceFailedHandler(e =>
             {
@@ -155,6 +160,46 @@ public sealed class WorkspaceHost : IDisposable
         finally
         {
             _loadWatch.Stop();
+        }
+    }
+
+    /// <summary>
+    /// Restores before opening rather than trusting whatever <c>obj/</c> already holds.
+    /// <see cref="MSBuildWorkspace"/>'s design-time build does not restore — it reads the existing NuGet
+    /// assets cache — so a cache written by a different environment (observed here: a Windows-side
+    /// Visual Studio restore of this repo's `/mnt/c` checkout, which bakes in a VS-only fallback package
+    /// folder) fails under this environment even though the packages themselves are fine. A failed
+    /// restore is not fatal here: it is logged and the open is attempted anyway, since an existing cache
+    /// that is merely stale rather than foreign can still open successfully.
+    /// </summary>
+    private async Task RestoreAsync(string entry)
+    {
+        var dotnet = Environment.ProcessPath is { } p
+            && string.Equals(Path.GetFileNameWithoutExtension(p), "dotnet", StringComparison.OrdinalIgnoreCase)
+            ? p
+            : "dotnet";
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo(dotnet, ["restore", entry])
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            })!;
+            // Both streams must be drained concurrently, not just read after the fact: `dotnet restore`
+            // writes enough to stdout to fill the pipe buffer, and an unread redirected stream blocks the
+            // child from writing to it — so reading only stderr deadlocks the restore (and, upstream,
+            // the whole load) rather than merely losing stdout's content.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            await Task.WhenAll(stdout, stderr);
+            await proc.WaitForExitAsync();
+            if (proc.ExitCode != 0)
+                _log.LogWarning("dotnet restore exited {Code} before workspace load: {Error}", proc.ExitCode, stderr.Result.Trim());
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "dotnet restore could not be run before workspace load");
         }
     }
 
