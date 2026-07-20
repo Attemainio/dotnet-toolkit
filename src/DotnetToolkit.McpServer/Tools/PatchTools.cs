@@ -29,8 +29,8 @@ public static class PatchTools
     [McpServerTool(Name = "validate_patch")]
     [Description("Validate (and optionally apply) a code change against an in-memory compilation before it "
         + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
-        + "dependent_compile) and reports honestly whether that was sufficient for the change. baseVersions is "
-        + "required (stale context is rejected); intent is required to apply.")]
+        + "dependent_compile→targeted_tests→solution_validate) and reports honestly whether that was sufficient "
+        + "for the change. baseVersions is required (stale context is rejected); intent is required to apply.")]
     public static async Task<string> ValidatePatch(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -41,7 +41,7 @@ public static class PatchTools
         TelemetryRecorder telemetry,
         [Description("Map of symbolId -> held contentVersion the patch was built against. Required.")] Dictionary<string, string> baseVersions,
         [Description("The edits to apply.")] PatchEditInput[] edits,
-        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile.")] string? requestedLevel = null,
+        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
         [Description("Optional tags.")] string[]? tags = null,
@@ -56,15 +56,15 @@ public static class PatchTools
         var stopwatch = Stopwatch.StartNew();
 
         if (edits is null || edits.Length == 0)
-            return Error(toolCallId, patchId, validationAttemptId, "no_edits", "At least one edit is required.");
+            return Error("no_edits", "At least one edit is required.");
 
         // C8: applying requires an intent, rejected before any validation runs.
         if (applyOnSuccess && string.IsNullOrWhiteSpace(intent))
-            return Error(toolCallId, patchId, validationAttemptId, "intent_required",
+            return Error("intent_required",
                 "applyOnSuccess requires a non-empty intent describing the why.");
 
         if (baseVersions is null)
-            return Error(toolCallId, patchId, validationAttemptId, "missing_base_versions",
+            return Error("missing_base_versions",
                 "baseVersions is required so patches from stale context are rejected.");
 
         // The fetch-validate-commit-adopt sequence below is wrapped in a local function so an apply can
@@ -76,14 +76,13 @@ public static class PatchTools
         {
             var solution = await workspace.GetSolutionAsync();
             if (solution is null)
-                return Error(toolCallId, patchId, validationAttemptId, "workspace_loading",
+                return Error("workspace_loading",
                     "The semantic workspace is not ready; retry shortly.");
 
             var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
             var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
             if (sandbox.Error is not null)
-                return Error(toolCallId, patchId, validationAttemptId,
-                    sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
+                return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
 
             var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
 
@@ -98,7 +97,7 @@ public static class PatchTools
                             || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
                 .ToList();
             if (stale.Count > 0)
-                return StaleBase(toolCallId, patchId, validationAttemptId, stale);
+                return StaleBase(stale);
 
             // Which changed symbols are covered by tests decides whether the ladder must reach level 5.
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
@@ -136,8 +135,7 @@ public static class PatchTools
                 }
             }
 
-            var response = BuildResponse(toolCallId, patchId, validationAttemptId, detected, ladder, required,
-                isSufficient, applied, distillation);
+            var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation);
             var json = Formats.ToJson(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -208,7 +206,6 @@ public static class PatchTools
     }
 
     private static object BuildResponse(
-        string toolCallId, string patchId, string validationAttemptId,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
         ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation)
     {
@@ -290,8 +287,7 @@ public static class PatchTools
         return (ValidationLevel)Math.Max((int)computed, (int)requested);
     }
 
-    private static string StaleBase(string toolCallId, string patchId, string validationAttemptId,
-        IReadOnlyList<ChangeClassifier.Change> stale) =>
+    private static string StaleBase(IReadOnlyList<ChangeClassifier.Change> stale) =>
         Formats.ToJson(new
         {
             error = "stale_base",
@@ -299,6 +295,6 @@ public static class PatchTools
             current = stale.Select(c => new { symbolId = c.OldSymbolId, currentVersion = c.OldVersion }),
         });
 
-    private static string Error(string toolCallId, string patchId, string validationAttemptId, string kind, string message) =>
+    private static string Error(string kind, string message) =>
         Formats.ToJson(new { error = kind, message });
 }

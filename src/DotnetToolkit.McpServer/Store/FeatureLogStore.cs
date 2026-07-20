@@ -24,7 +24,6 @@ public sealed class FeatureLogStore
         IReadOnlyList<string> Tags, string? ValidationJson, IReadOnlyList<LogSymbol> Symbols);
 
     /// <summary>Appends one log record and its per-symbol rows in a single transaction. Returns the log id.</summary>
-    /// <summary>Appends one log record and its per-symbol rows in a single transaction. Returns the log id.</summary>
     public string Append(LogEntry entry)
     {
         if (!_store.Available)
@@ -110,6 +109,54 @@ public sealed class FeatureLogStore
         while (reader.Read())
             ids.Add(reader.GetString(0));
         return ids;
+    }
+
+    /// <summary>
+    /// RecentForSymbol for the common case: the chain walk and the log lookup folded into one query on
+    /// one connection, instead of a caller doing <see cref="ResolveIdChain"/> then <see
+    /// cref="RecentForSymbol"/> as two separate round trips. Was exactly that two-step call in
+    /// get_symbol's recentLog path -- on the default include set, a batched get_symbol turned every
+    /// symbol into 2 connection-open+query round trips instead of 1.
+    /// </summary>
+    public IReadOnlyList<SymbolLogEntry> RecentForSymbolWithChain(string symbolId, int limit = 3)
+    {
+        if (!_store.Available)
+            return [];
+
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            WITH RECURSIVE chain(id) AS (
+                SELECT $start
+                UNION
+                SELECT s.old_symbol_id
+                FROM feature_log_symbols s
+                JOIN chain c ON s.symbol_id = c.id
+                WHERE s.old_symbol_id IS NOT NULL AND s.old_symbol_id != s.symbol_id
+            )
+            SELECT l.log_id, l.created_at, l.intent, s.detail, s.new_version, s.api_impact
+            FROM feature_log_symbols s
+            JOIN feature_log l ON l.log_id = s.log_id
+            WHERE s.symbol_id IN (SELECT id FROM chain)
+            ORDER BY l.created_at DESC
+            LIMIT $limit;
+            """;
+        cmd.Parameters.AddWithValue("$start", symbolId);
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var entries = new List<SymbolLogEntry>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            entries.Add(new SymbolLogEntry(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        }
+        return entries;
     }
 
     /// <summary>

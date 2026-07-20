@@ -262,14 +262,18 @@ search_log(limit: 3)
 ```
 
 ```json
-{"items":[
-  {"logId":"log_01KXZME9...","date":"2026-07-20",
-   "intent":"Make search_log's items a compact table like search_index/get_references, and fix tags being double-JSON-encoded",
-   "tags":"[]"},
-  {"logId":"log_01KXZKP5...","date":"2026-07-20",
-   "intent":"Replace get_symbol's resolution/exclude with a single include selector",
-   "tags":"[]"}]}
+{"items":{"columns":["logId","date","intent","tags"],
+ "rows":[
+   ["log_01KY07FZ...","2026-07-20",
+    "Fix get_symbol's [Description]: the batch-mode response was documented as an array, but it's actually a CompactTable {columns,rows} like search_index/get_references",
+    []],
+   ["log_01KY07F8...","2026-07-20",
+    "Remove unused toolCallId/patchId/validationAttemptId parameters from Error/StaleBase/BuildResponse, ...",
+    []]]}}
 ```
+
+`items` is a **table** like `search_index`/`get_references`, not an array of objects — read `rows[i][3]` for
+`tags` (a real JSON array), not `rows[i].tags`.
 
 ## Write path
 

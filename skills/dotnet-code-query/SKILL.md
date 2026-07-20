@@ -294,10 +294,10 @@ lease: hold it, and pass it back later as `knownVersion`.
 - Something moved → you get fresh content.
 - **Only pass `knownVersion` when you actually still hold the content.** If you never held
   it, you are asking whether something you do not have has changed.
-- Escalating is safe: a request needing layers your token does not carry returns content
-  rather than `changed: false`, so `signature` → `full` against a signature token gives you
-  the source. You still get a wasted round trip if you lease for content you never held —
-  the lease just will not silently hand you nothing.
+- Escalating is safe: a request needing components your token does not carry returns content
+  rather than `changed: false`, so `include:"xmlDoc"` → `include:"xmlDoc,source"` against an
+  xmlDoc-only token gives you the source. You still get a wasted round trip if you lease for
+  content you never held — the lease just will not silently hand you nothing.
 
 The layers are meaningful: same `decl` with a different `body` means the API is unchanged
 and only the implementation moved.

@@ -53,7 +53,9 @@ public static class ContextTools
         + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. A "
         + "misspelled name is an invalid_component error, not silently dropped. "
         + "For several symbols in one call, use symbols instead of symbol — one include applies to all of "
-        + "them, and the response becomes {\"results\":[...]}, one envelope per symbol in request order, "
+        + "them, and the response becomes {\"results\":{\"columns\":[...],\"rows\":[[...]]}}, the same "
+        + "table shape as search_index/get_references, instead of issuing several times the calls for the "
+        + "same total answer. A row whose symbol did not resolve has error set instead of symbolId/content."
         + "instead of issuing several times the calls for the same total answer.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
@@ -546,8 +548,7 @@ private static async Task<string> GetSymbolOne(
     private static object? RecentLogFor(ISymbol sym, FeatureLogStore featureLog)
     {
         var currentId = SymbolKey.IdOf(sym);
-        var chain = featureLog.ResolveIdChain(currentId);
-        var entries = featureLog.RecentForSymbol(chain);
+        var entries = featureLog.RecentForSymbolWithChain(currentId);
         if (entries.Count == 0)
             return null;
 

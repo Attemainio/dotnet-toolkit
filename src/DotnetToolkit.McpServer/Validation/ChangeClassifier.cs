@@ -162,8 +162,6 @@ public static class ChangeClassifier
             ApiImpactOf(kinds, symbol)));
     }
 
-    /// <summary>The declaration key with any trailing arity (<c>/N</c>) stripped, so overloads/arity
-    /// changes of one member share a name for remove+add pairing.</summary>
     /// <summary>
     /// A pairing key for rename detection: container + kind + signature with the identifier itself
     /// stripped out, so <c>RecentLogFor</c> and <c>RecentLogForTest</c> key the same as long as their
@@ -185,6 +183,8 @@ public static class ChangeClassifier
         return sig is null ? null : container + "::" + sig;
     }
 
+    /// <summary>The declaration key with any trailing arity (<c>/N</c>) stripped, so overloads/arity
+    /// changes of one member share a name for remove+add pairing.</summary>
     private static string NameKey(string key)
     {
         var slash = key.LastIndexOf('/');

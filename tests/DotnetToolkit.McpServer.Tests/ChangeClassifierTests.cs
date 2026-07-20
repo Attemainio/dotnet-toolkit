@@ -2,6 +2,7 @@ using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -28,7 +29,7 @@ public sealed class ChangeClassifierTests
         }
         """;
 
-    private static (Solution Solution, DocumentId DocId) NewSolution()
+    private static (Solution Solution, DocumentId DocId) NewSolution(string? source = null)
     {
         var refs = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
@@ -40,7 +41,7 @@ public sealed class ChangeClassifierTests
             ProjectId.CreateNewId(), VersionStamp.Create(), "Demo", "Demo", LanguageNames.CSharp,
             metadataReferences: refs,
             compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)));
-        var document = workspace.AddDocument(project.Id, "Widget.cs", SourceText.From(BaseSource));
+        var document = workspace.AddDocument(project.Id, "Widget.cs", SourceText.From(source ?? BaseSource));
         return (workspace.CurrentSolution, document.Id);
     }
 
@@ -133,5 +134,97 @@ public sealed class ChangeClassifierTests
 
         var ladder = await ValidationLadder.RunAsync(forked, [docId], ValidationLevel.ProjectCompile);
         Assert.True(ladder.Succeeded);
+    }
+    [Fact]
+    public async Task IdentifierRename_PairsWithOldSymbolId()
+    {
+        var (solution, docId) = NewSolution();
+        var forked = Fork(solution, docId, BaseSource.Replace(
+            "public int Spin(int turns) => turns * 2;",
+            "public int Turn(int turns) => turns * 2;"));
+
+        // Compute the pre-rename symbol's own id independently (not by calling ChangeClassifier itself),
+        // so the assertion isn't just restating the production code's output back at it.
+        var baseDoc = solution.GetDocument(docId)!;
+        var baseModel = await baseDoc.GetSemanticModelAsync();
+        var baseRoot = await baseDoc.GetSyntaxRootAsync();
+        var spinDecl = baseRoot!.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.Text == "Spin" && m.Parent is ClassDeclarationSyntax);
+        var expectedOldId = SymbolKey.IdOf(baseModel!.GetDeclaredSymbol(spinDecl)!);
+
+        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        // IWidget.Spin is untouched (same key, same content) so it's silently skipped; only Widget.Turn
+        // should show up, as a single paired change rather than a separate remove + add.
+        var change = Assert.Single(changes, c => c.DisplayString.Contains("Turn"));
+        Assert.Contains(ChangeKind.Signature, change.Kinds);
+        Assert.Equal(expectedOldId, change.OldSymbolId);
+        Assert.NotEqual(change.SymbolId, change.OldSymbolId);
+    }
+
+    [Fact]
+    public async Task AmbiguousRename_FallsThroughToSeparateAddAndRemove()
+    {
+        const string source = """
+            namespace Demo;
+
+            public class Widget
+            {
+                public int Spin(int turns) => turns * 2;
+                public int Whirl(int turns) => turns * 3;
+            }
+            """;
+        const string renamed = """
+            namespace Demo;
+
+            public class Widget
+            {
+                public int A(int turns) => turns * 2;
+                public int B(int turns) => turns * 3;
+            }
+            """;
+        var (solution, docId) = NewSolution(source);
+        var forked = Fork(solution, docId, renamed);
+
+        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        // Two same-signature removals and two same-signature additions in one container is ambiguous --
+        // nothing here distinguishes "Spin became A, Whirl became B" from "Spin became B, Whirl became A",
+        // so neither pairs; each shows up as an independent added/removed change instead of being guessed.
+        Assert.Equal(4, changes.Count);
+        Assert.Equal(2, changes.Count(c => c.Kinds.Contains(ChangeKind.Added)));
+        Assert.Equal(2, changes.Count(c => c.Kinds.Contains(ChangeKind.Removed)));
+        Assert.DoesNotContain(changes, c => c.Kinds.Contains(ChangeKind.Signature));
+    }
+
+    [Fact]
+    public async Task PureAddition_IsDetectedAndAnchoredToContainingType()
+    {
+        var (solution, docId) = NewSolution();
+        var forked = Fork(solution, docId, BaseSource.Replace(
+            "public int Spin(int turns) => turns * 2;",
+            "public int Spin(int turns) => turns * 2;\n    public int Extra() => 1;"));
+
+        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes, c => c.DisplayString.Contains("Extra"));
+        Assert.Contains(ChangeKind.Added, change.Kinds);
+        // Anchored to the containing type's id, not its own -- a brand-new member has no prior version to
+        // lease against, so the caller's lease on Widget itself is what gets checked instead.
+        Assert.NotEqual(change.SymbolId, change.OldSymbolId);
+    }
+
+    [Fact]
+    public async Task PureRemoval_IsDetectedAndAnchoredToItsOwnOldSymbol()
+    {
+        var (solution, docId) = NewSolution();
+        var forked = Fork(solution, docId, BaseSource.Replace(
+            "    public int Spin(int turns) => turns * 2;\n", ""));
+
+        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes, c => c.DisplayString.Contains("Spin"));
+        Assert.Contains(ChangeKind.Removed, change.Kinds);
+        Assert.Equal(change.SymbolId, change.OldSymbolId);
     }
 }

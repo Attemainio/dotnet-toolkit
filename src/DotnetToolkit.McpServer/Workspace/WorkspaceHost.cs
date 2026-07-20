@@ -47,6 +47,16 @@ public sealed class WorkspaceHost : IDisposable
     // continuously across the whole sequence.
     private readonly SemaphoreSlim _applyGate = new(1, 1);
 
+    // Set when a project-file change arrives while State != Loaded. OnProjectFilesChanged used to call
+    // TriggerReload() unconditionally, with no check on State -- unlike OnFilesChanged, which defers into
+    // _pendingChanges for exactly this reason. TriggerReload's _reloading guard only prevents two reloads
+    // from overlapping each other; it does nothing to prevent a reload racing the very first StartLoading
+    // load, since StartLoading never touches _reloading. A .csproj/.props edit landing while the initial
+    // (restore-bound, slow-on-/mnt/*) load was still in flight could spawn a second concurrent LoadAsync;
+    // whichever call's lock(_gate) block ran last would win even if it read older content, silently
+    // reverting an already-adopted newer workspace and disposing it out from under any in-flight caller.
+    private bool _pendingProjectReload;
+
     public WorkspaceState State { get; private set; }
 
     public TimeSpan LoadElapsed => _loadWatch.Elapsed;
@@ -157,6 +167,15 @@ public sealed class WorkspaceHost : IDisposable
             DrainPendingChanges(); // edits that landed while this load was in flight
             _log.LogInformation("Workspace loaded: {Projects} projects in {Elapsed:F1}s",
                 ProjectCount, _loadWatch.Elapsed.TotalSeconds);
+
+            bool deferredProjectReload;
+            lock (_gate)
+            {
+                deferredProjectReload = _pendingProjectReload;
+                _pendingProjectReload = false;
+            }
+            if (deferredProjectReload)
+                TriggerReload(); // a project file changed mid-load; State is Loaded now, so this is safe
         }
         catch (Exception ex)
         {
@@ -341,6 +360,15 @@ public sealed class WorkspaceHost : IDisposable
     /// </summary>
     private void OnProjectFilesChanged()
     {
+        lock (_gate)
+        {
+            if (State != WorkspaceState.Loaded)
+            {
+                _pendingProjectReload = true;
+                _log.LogInformation("Project file changed while workspace was not ready; reload deferred");
+                return;
+            }
+        }
         _log.LogInformation("Project file changed; reloading workspace");
         TriggerReload();
     }
