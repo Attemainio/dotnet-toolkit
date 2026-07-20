@@ -123,6 +123,10 @@ fields they control: `source`, `xmlDoc`, `mechanicalFacts`, `referenceCounts`, `
 - `resolution: "signature", include: "members"` — a type's API surface with no bodies.
 - `exclude: "referenceCounts"` — the one component with a real latency cost (it waits on the
   semantic model). Drop it when you already know you are not expanding.
+- `exclude: "xmlDoc,referenceCounts,recentLog"` (on the default `signature` resolution) — strips
+  every optional component, leaving just the skeleton: `kind`, `displayString`, `accessibility`,
+  `containingType`, `declarationSites`. Use this when the only thing you actually need is where a
+  symbol lives — cheaper than reaching for a wider resolution and reading past what you asked for.
 
 An excluded component is absent from the JSON, not null, so it costs nothing. A misspelled
 name is an `invalid_component` error rather than being silently ignored.
@@ -131,6 +135,38 @@ name is an `invalid_component` error rather than being silently ignored.
 That is deliberate: escalating later (`signature` → `full`) with that token returns the new
 content rather than a false `changed: false`. It also means you cannot lease a wide request
 against a narrow token — hold the token from a fetch of the same shape.
+
+### Several symbols in one call
+
+`symbols` fetches a list instead of `symbol` fetching one — same `resolution`/`include`/`exclude`
+applied to every entry:
+
+```
+get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"])
+```
+
+The response's `results` is a table (`columns`/`rows`, same shape as `search_index`'s `items`).
+Fixed columns are `symbolId, contentVersion, limitedBy, error` — that outer envelope genuinely is
+uniform across every entry, unlike a symbol's own `content` (see the note on `search_index` above
+about when a table is and isn't the right call). A successful row has `error: null`. A row whose
+symbol did not resolve has `symbolId`/`contentVersion` null and `error` holding the short error
+string (`symbol_not_found`, `ambiguous_symbol`) — one failed lookup does not fail the batch.
+
+Between those fixed columns and `content` sit whatever fields the requested symbols' own content
+turned out to share **this call**: batch three methods and `kind`, `displayString`,
+`accessibility`, `declarationSites`, `referenceCounts`, and even `xmlDoc` (if every one happens to
+have a doc comment) all get pulled out as their own columns, since every row has them. Mix in a
+type alongside a method and `containingType` — which only the method has — stays nested in
+`content` instead, because it is no longer common to every row. This set is genuinely
+call-dependent, not fixed, which is exactly why it always shows up in `columns` rather than being
+something to memorize: check `columns`, not assume a shape. `content` holds whatever was not
+hoisted — for a symbol whose entire content got pulled into columns, that's `null`. A row with an
+error hoists nothing and keeps its whole error envelope (including `detail`/`candidates`) in
+`content`, since it shares no keys with a real symbol's content.
+
+`knownVersion`/`refetch` do not apply to a batch — leasing needs one token per symbol, which a
+single `knownVersion` cannot express — so every batch result carries full content regardless of
+what you already hold.
 
 ## Questions symbol lookup cannot answer
 
@@ -304,3 +340,14 @@ only when true. Absence of `tests` in `referenceCounts` means "not computed yet"
 `[Theory]`, `[Test]`, `[TestCase]`, `[TestMethod]`), so it can never exceed `callers`. A helper
 that merely lives in a test project is not counted. `get_references` marks the same callers with
 `isTest: true`, emitted only on the ones that are tests — an absent flag means "not a test".
+
+### `get_references`' `items` is a table too
+
+Same convention as `search_index`'s `items` and `get_symbol`'s batch `results`: `columns`/`rows`
+instead of one object per item. `symbolId`, `contentVersion`, `displayString`, `sites`, and
+`dispatchKind` are hoisted into their own columns whenever this call's actual items all have
+them (the ordinary case). `isTest` and `content` (the inline body, only present with
+`includeBodies: true`) are the fields most likely to end up in the trailing `rest` column
+instead — neither is present on every caller, so a call mixing test and non-test callers keeps
+`isTest` nested in `rest` rather than forcing a column that would be null half the time. Check
+`columns`, don't assume a fixed shape.

@@ -10,6 +10,36 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.6</b> — get_references' <c>items</c> becomes a <see cref="Output.CompactTable"/> combined with
+    /// <see cref="Output.JsonHoist"/>, the same treatment as get_symbol's batch <c>results</c>: whatever
+    /// fields this call's actual items share (typically <c>symbolId, contentVersion, displayString, sites,
+    /// dispatchKind</c>) become their own columns, and a trailing <c>rest</c> column carries whatever was
+    /// not common — <c>isTest</c> and <c>content</c> (the inline body, only present with
+    /// <c>includeBodies:true</c>) are the fields most likely to end up there, since neither is present on
+    /// every caller. BREAKING: a consumer reading <c>items[i].displayString</c> sees nothing; it now reads
+    /// <c>items.columns.IndexOf("displayString")</c> and <c>items.rows[i][that]</c>, or checks <c>rest</c>
+    /// for a field that did not make it into <c>columns</c> this call.
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.5</b> — get_symbol gained <c>symbols</c>, an alternative to <c>symbol</c> that fetches several
+    /// symbols in one call under one resolution/include/exclude. Additive: single-symbol calls are
+    /// untouched, byte-for-byte the same envelope as before. A batch response's <c>results</c> is a
+    /// <see cref="Output.CompactTable"/> whose fixed columns are <c>symbolId, contentVersion, limitedBy,
+    /// error</c> — that outer envelope IS uniform across every entry, on success or failure alike — plus
+    /// whatever <see cref="Output.JsonHoist"/> finds common to every requested symbol's own content THIS
+    /// call (e.g. <c>kind, displayString, accessibility</c> when every symbol has them, sometimes more:
+    /// <c>xmlDoc</c> joins them when every requested symbol happens to have a doc comment, and drops back
+    /// out the moment one does not), and finally <c>content</c> holding whatever was not common. This set
+    /// is genuinely call-dependent, not a fixed contract — which is why it is always reported in
+    /// <c>columns</c> rather than needing to be memorized. A row whose symbol did not resolve has
+    /// <c>symbolId</c>/<c>contentVersion</c> null, <c>error</c> holding the short error string, and
+    /// <c>content</c> holding that error's own envelope (its <c>detail</c> or <c>candidates</c>) rather
+    /// than dropping it; such a row shares no keys with a real symbol's content, so it never contributes
+    /// to what gets hoisted. <c>knownVersion</c> and <c>refetch</c> do not apply to a batch; each result
+    /// always carries full content, because leasing needs one token per symbol and a single
+    /// <c>knownVersion</c> cannot express that.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.4</b> — search_index's <c>items</c> becomes a <see cref="Output.CompactTable"/>:
     /// <c>{"columns":[...],"rows":[[...],...]}</c> instead of one object per hit. BREAKING: a consumer
     /// reading <c>items[i].name</c> sees nothing; it now reads <c>items.columns.IndexOf("name")</c> and
@@ -57,5 +87,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.4";
+    public const string Id = "ctx-contract/3.6";
 }

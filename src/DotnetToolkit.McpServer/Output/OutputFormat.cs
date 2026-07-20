@@ -28,4 +28,11 @@ public static class Formats
         format?.Trim().ToLowerInvariant() == "json" ? OutputFormat.Json : OutputFormat.Compact;
 
     public static string ToJson(object value) => JsonSerializer.Serialize(value, JsonOptions);
+
+    /// <summary>
+    /// Same encoding as <see cref="ToJson"/> but returns a JsonElement instead of a string — for building
+    /// a larger envelope out of pieces (e.g. JsonHoist over a list of items) without re-parsing JSON text
+    /// back out of itself.
+    /// </summary>
+    public static JsonElement ToElement(object value) => JsonSerializer.SerializeToElement(value, JsonOptions);
 }

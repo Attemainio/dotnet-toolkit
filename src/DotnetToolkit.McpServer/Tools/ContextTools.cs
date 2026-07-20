@@ -27,19 +27,25 @@ public static class ContextTools
     private const int ReferenceCap = 50;
 
     [McpServerTool(Name = "get_symbol")]
-    [Description("Retrieve one C# symbol at the resolution you need (signature|outline|full). "
+    [Description("Retrieve one or more C# symbols at the resolution you need (signature|outline|full). "
         + "USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when it is split across "
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
         + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
         + "changed:false when nothing moved, or refetch:true to force content. "
         + "Always returns declarationSites (file + startLine/endLine) at every resolution, so locating a "
         + "symbol never needs an extra argument or a second call — those line spans feed straight into a "
-        + "validate_patch edit. "
+        + "validate_patch edit. To get ONLY declarationSites (e.g. just where to point a patch), leave "
+        + "resolution at its default and exclude everything else: exclude:\"xmlDoc,referenceCounts,recentLog\" — "
+        + "what remains is the skeleton (kind, displayString, accessibility, containingType, declarationSites), "
+        + "which is never itself removable since a response without it is not interpretable. "
         + "Prefer a bare resolution: include/exclude are for when the default set is wrong, and every "
         + "added component costs tokens. When you do adjust it, name components exactly as they appear in "
         + "the response: source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members. e.g. "
         + "resolution:\"full\" exclude:\"source\" for everything known about a symbol except its text, or "
-        + "resolution:\"signature\" include:\"members\" to list a type's API without bodies.")]
+        + "resolution:\"signature\" include:\"members\" to list a type's API without bodies. "
+        + "For several symbols in one call, use symbols instead of symbol — one resolution/include/exclude "
+        + "applies to all of them, and the response becomes {\"results\":[...]}, one envelope per symbol in "
+        + "request order, instead of issuing several times the calls for the same total answer.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -48,20 +54,97 @@ public static class ContextTools
         FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
-        [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response.")] string symbol,
+        [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("signature | outline | full (default signature).")] string resolution = "signature",
         [Description("Comma-separated components to ADD to the resolution's default set: "
             + "source, xmlDoc, mechanicalFacts, referenceCounts, recentLog, members.")] string? include = null,
         [Description("Comma-separated components to REMOVE from the resolution's default set. "
             + "Same names as include.")] string? exclude = null,
-        [Description("Held version token to lease against.")] string? knownVersion = null,
-        [Description("Force full content even if the version matches.")] bool refetch = false,
+        [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
+            + "see symbols.")] string? knownVersion = null,
+        [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
         [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null,
+        [Description("Fetch several symbols in one call instead of symbol. The same resolution/include/exclude "
+            + "is applied to every entry. knownVersion/refetch are ignored here — leasing needs one token per "
+            + "symbol, which a single knownVersion cannot express, so every batch result carries full content "
+            + "regardless of what the caller already holds. Exactly one of symbol or symbols is required.")]
+            string[]? symbols = null)
     {
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
+
+        var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
+        if (targets is not { Length: > 0 })
+            return Formats.ToJson(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." });
+
+        if (targets is [var only] && symbols is null)
+            return await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
+                toolCallId, sessionId, taskId, only, resolution, include, exclude, knownVersion, refetch);
+
+        // Batch: each entry is a full, independent fetch (see the knownVersion/refetch note above) sharing
+        // one toolCallId, so the telemetry rows this produces read as one tool call over several symbols
+        // rather than several unrelated calls.
+        //
+        // The envelope around a symbol's content IS uniform across every batch entry — symbolId/
+        // contentVersion/content on success, or just error (plus whatever detail it carries, folded into
+        // content rather than dropped) on failure — so those four are always their own fixed columns.
+        // The content itself is not uniform in general (see CompactTable's own doc comment), but THIS
+        // call's actual contents might still share fields — e.g. every requested symbol happening to be a
+        // public method. JsonHoist finds whatever that turns out to be, for this call only, and reports it
+        // in columns rather than leaving it for the caller to notice or miss.
+        var prefix = new List<IReadOnlyList<object?>>(targets.Length);
+        var contents = new List<JsonElement?>(targets.Length);
+        foreach (var target in targets)
+        {
+            var itemJson = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
+                telemetry, toolCallId, sessionId, taskId, target, resolution, include, exclude,
+                knownVersion: null, refetch: false);
+            var item = JsonSerializer.Deserialize<JsonElement>(itemJson);
+
+            if (item.TryGetProperty("error", out var errorEl))
+            {
+                prefix.Add([null, null, null, errorEl.GetString()]);
+                contents.Add(item);
+            }
+            else
+            {
+                prefix.Add(
+                [
+                    item.GetProperty("symbolId").GetString(),
+                    item.GetProperty("contentVersion").GetString(),
+                    item.TryGetProperty("limitedBy", out var lb) ? lb.GetString() : null,
+                    null,
+                ]);
+                contents.Add(item.TryGetProperty("content", out var content) ? content : null);
+            }
+        }
+
+        var (hoistedColumns, hoistedValues, remainder) = JsonHoist.Split(contents);
+        var columns = new List<string> { "symbolId", "contentVersion", "limitedBy", "error" };
+        columns.AddRange(hoistedColumns);
+        columns.Add("content");
+
+        var rows = new List<IReadOnlyList<object?>>(targets.Length);
+        for (var i = 0; i < targets.Length; i++)
+        {
+            var row = new List<object?>(prefix[i]);
+            row.AddRange(hoistedValues[i]);
+            row.Add(remainder[i]);
+            rows.Add(row);
+        }
+
+        var results = new CompactTable(columns, rows);
+        return Formats.ToJson(new { results });
+    }
+
+    private static async Task<string> GetSymbolOne(
+        WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
+        FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder, TelemetryRecorder telemetry,
+        string toolCallId, string sessionId, string taskId,
+        string symbol, string resolution, string? include, string? exclude, string? knownVersion, bool refetch)
+    {
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
@@ -152,12 +235,14 @@ public static class ContextTools
             knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
     }
 
-    [McpServerTool(Name = "get_references")]
+[McpServerTool(Name = "get_references")]
     [Description("Callers, implementations or overrides of a C# symbol, from the compiler's own model. "
         + "USE THIS INSTEAD OF GREP — grep gives wrong caller lists: it cannot see interface, virtual or delegate "
         + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
         + "Returns every real call site, no false positives, and reports how many text-only matches it excluded. "
-        + "Each item carries a version token.")]
+        + "Each item carries a version token. items is a table whose columns are whatever fields this call's "
+        + "results actually share (same convention as search_index/get_symbol) plus a trailing rest column for "
+        + "whatever was not common — isTest and content are the fields most likely to end up there.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -202,25 +287,36 @@ public static class ContextTools
             ? await CountTextOnlyMatches(solution, sym.Name)
             : 0;
 
+        // Each item's own fields (symbolId/contentVersion/displayString/sites/dispatchKind are always
+        // present; isTest/content are conditional) go through JsonHoist the same way get_symbol's batch
+        // content does — whatever this call's actual items share becomes its own column, the rest stays
+        // nested per row under "rest" rather than repeating field names that are not actually common.
+        var itemElements = shown.Select(i => (JsonElement?)Formats.ToElement(new
+        {
+            symbolId = i.SymbolId,
+            // Per-item version so leases accumulate before any body is fetched (§10).
+            contentVersion = i.Version,
+            displayString = i.DisplayString,
+            sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
+            dispatchKind = i.DispatchKind,
+            // Emitted only when true — a caller list is mostly non-tests, and false on every row
+            // would cost more than the flag is worth. Absent means "not a test".
+            isTest = i.IsTest ? true : (bool?)null,
+            content = i.Body,
+        })).ToList();
+        var (hoistedColumns, hoistedValues, remainder) = JsonHoist.Split(itemElements);
+        var itemColumns = new List<string>(hoistedColumns) { "rest" };
+        var itemRows = new List<IReadOnlyList<object?>>(itemElements.Count);
+        for (var idx = 0; idx < itemElements.Count; idx++)
+            itemRows.Add(new List<object?>(hoistedValues[idx]) { remainder[idx] });
+
         var envelope = new
         {
             // The resolved target, so the caller can confirm which overload this answered for.
             // direction/targetContentVersion are omitted: the first echoes the request, the second is
             // only useful from get_symbol where the target is actually being leased.
             targetSymbolId = SymbolKey.IdOf(sym),
-            items = shown.Select(i => new
-            {
-                symbolId = i.SymbolId,
-                // Per-item version so leases accumulate before any body is fetched (§10).
-                contentVersion = i.Version,
-                displayString = i.DisplayString,
-                sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
-                dispatchKind = i.DispatchKind,
-                // Emitted only when true — a caller list is mostly non-tests, and false on every row
-                // would cost more than the flag is worth. Absent means "not a test".
-                isTest = i.IsTest ? true : (bool?)null,
-                content = i.Body,
-            }),
+            items = new CompactTable(itemColumns, itemRows),
             totalItems = ordered.Count,
             truncated = truncated ? true : (bool?)null,
             // Reported only when text-only matches actually existed; generatedCode is omitted until it
