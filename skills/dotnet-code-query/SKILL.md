@@ -41,14 +41,22 @@ ids in a date range with `groupBy: "session"`.
 | A type's member list | `get_symbol` with `include: "members"` | Read the file |
 | Callers / usages | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
-| What is callable at a point in a file | `get_scope` | Guess, or grep for a helper that may not apply here |
-| How one symbol reaches another | `get_call_slice` | Walk the graph with repeated `get_references` |
+| What is callable at a cursor position — locals, inherited members, extension methods, not just a type's own declared list (that's `get_symbol` with `include:"members"`, no position involved) | `get_scope` | Guess, or grep for a helper that may not apply here |
+| Whether a *known* symbol X reaches a *known* symbol Y, and through what path | `get_call_slice` | Walk the graph with repeated `get_references` calls and assemble the chain yourself |
+| Who eventually calls/is eventually called by a symbol, several levels deep — an open-ended tree, not one known destination | `get_call_hierarchy` | Chain `get_references` by hand, one level at a time, and assemble the tree yourself |
+| A type's full base chain, transitive interfaces, and every derived/implementing type | `get_type_hierarchy` | Guess from `get_symbol`'s one-hop `containingType`, or chain `get_references` |
+| The solution's project reference graph | `get_project_graph` | Open every `.csproj` and read `<ProjectReference>` by hand |
+| Circular project references | `detect_circular_dependencies` | Manually trace references looking for a loop |
 | What a commit or branch actually changed | `get_semantic_diff` | Read `git diff` and infer |
 | Why past code looks the way it does | `search_log` | Guess from the code |
 | Whether a change is safe | `validate_patch` (see the dotnet-change skill) | `dotnet build` |
 
 Read a .cs file only when you are about to edit lines that `get_symbol` did not give you,
 or for non-C# files (csproj, json, md) where Read/Grep are the right tools.
+
+`get_call_slice` needs both `from` and `to` already known — it is point-to-point pathfinding,
+not an open-ended walk. For "who calls this, and who calls those, up to the entry points"
+(Visual Studio's *View Call Hierarchy*), use `get_call_hierarchy` instead — see below.
 
 ## Search for everything at once
 
@@ -173,7 +181,7 @@ what you already hold.
 
 ## Questions symbol lookup cannot answer
 
-Three tools answer questions that no amount of `get_symbol` will. Every example below is a
+These tools answer questions that no amount of `get_symbol` will. Every example below is a
 real call against this plugin's own repo, with its real response.
 
 ### `get_scope` — what is callable *here*
@@ -182,8 +190,19 @@ Members, inherited members, locals, parameters and **applicable extension method
 file/line, filtered to what is actually accessible from that position. Grep cannot answer
 this: an extension method shares no text with its call site.
 
-Use it before writing a helper that may already exist, and to find out what a variable
-actually offers instead of guessing at a method name.
+**Different question from `get_symbol`'s `members`.** `members` is a static, position-free
+list of what a *type declares* — ask it when you already know the type. `get_scope` is
+position-sensitive — it also surfaces inherited members, locals/parameters in scope at that
+exact line, and extension methods applicable to a receiver, none of which `members` returns.
+
+Call it when:
+- you're about to write a helper and suspect one already exists on a variable in scope;
+- you're standing at a cursor and don't yet know the receiver's type, so `get_symbol` has
+  no target to query yet;
+- you want "what's in scope generally" at a line (drop `receiver` for that).
+
+Don't reach for it once you already know the type name — `get_symbol(include:"members")` is
+cheaper and doesn't need a file/line/column.
 
 ```
 get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
@@ -204,9 +223,15 @@ rather than on one expression.
 
 ### `get_call_slice` — how does X reach Y
 
-The shortest call path between two symbols. Use it for "how does this value get there"
-instead of walking outwards with repeated `get_references` calls, which costs a round trip
-per hop and leaves you assembling the chain yourself.
+The shortest call path between two symbols **you can already name**. Use it for "does X
+reach Y, and through what" instead of walking outwards with repeated `get_references` calls,
+which costs a round trip per hop and leaves you assembling the chain yourself.
+
+Call it when both endpoints are known — e.g. confirming a proposed removal is safe by
+checking whether an entry point still reaches it, or explaining an unexpected side effect by
+finding the path between the trigger and the symbol that causes it. It requires `to` as well
+as `from`: it cannot answer an open-ended "who (eventually) calls this" with no destination
+in mind — that's `get_call_hierarchy`, below.
 
 ```
 get_call_slice(from: "PatchTools.ValidatePatch", to: "FeatureLogStore.Append")
@@ -222,6 +247,109 @@ get_call_slice(from: "PatchTools.ValidatePatch", to: "FeatureLogStore.Append")
 A miss is still informative: it reports the nearest reachable frontier from each end, which
 tells you where the chain actually breaks. `found: false` means no path within `maxDepth`
 (default 8) — not necessarily no relationship.
+
+### `get_call_hierarchy` — who eventually calls this, up to the entry points
+
+An open-ended multi-level call tree from one symbol — Visual Studio's *View Call Hierarchy*,
+which `get_call_slice` structurally cannot answer (it needs a known `to`). `direction:
+"callers"` (default) walks upward toward entry points; `"callees"` walks downward into what
+the symbol invokes. Every node carries `symbolId` + `displayString`; add `kind`/`file`/`line`
+via `fields`.
+
+Call it to answer "if I change this, how much does it ripple" — `includeTree: false` returns
+only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
+version of that question, without paying for the full tree.
+
+```
+get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDepth: 1)
+```
+
+```json
+{"root": {"symbolId": "sym_c25d...", "displayString": "string FeatureLogStore.Append(LogEntry entry)"},
+ "direction": "callers",
+ "tree": {"symbolId": "sym_c25d...", "displayString": "string FeatureLogStore.Append(LogEntry entry)",
+   "children": [
+     {"symbolId": "sym_0e0e...", "displayString": "int DevlogMigration.Run(...)"},
+     {"symbolId": "sym_c3fc...", "displayString": "void FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds()"},
+     {"symbolId": "sym_2b15...", "displayString": "void PatchTools.AppendLog(...)"}, "...4 more"]},
+ "blastRadius": {"totalUniqueNodes": 8, "perDepth": [1, 7], "depthCapped": true}}
+```
+
+`depthCapped: true` here means `Append` has callers beyond `maxDepth: 1` — raise it to see further up the
+chain (a real 3-level pull from this same root reaches `PatchTools.ValidatePatch`, the actual MCP tool
+entry point, at depth 3).
+
+A symbol reached through two different branches (a diamond) legitimately appears twice in the
+tree — that isn't deduped, since collapsing it would hide a real second route in — but counts
+once in `blastRadius`. True recursion (a symbol reappearing on its own root-to-node path) stops
+as a leaf marked `recursive: true` rather than looping. `maxDepth` defaults to 3 and clamps to
+8; a well-connected graph grows fast, so start shallow and increase only if the answer needs
+it, or lean on `blastRadius.depthCapped` to see whether a branch was still expanding when the
+cap hit.
+
+### `get_type_hierarchy` — a type's full inheritance shape
+
+Base chain up to `object`, transitive interfaces (tagged `direct` vs `inherited`), and every
+derived/implementing type — one hop further than `get_symbol`/`get_references` give (those
+only show one level: `containingType`, or one hop of `implementations`/`overrides`).
+
+`derived` is a flat ranked list, not a nested tree — a widely-subclassed base could have
+hundreds of descendants, and the intermediate shape rarely matters; `get_symbol` on any single
+result reveals its own immediate base if you need one more level. Omitted entirely when
+`symbol` isn't a class/interface (structs/enums/delegates can't be derived from).
+
+```
+get_type_hierarchy(symbol: "SymbolStore")
+```
+
+```json
+{"symbolId": "sym_a477...", "displayString": "SymbolStore",
+ "baseChain": [{"symbolId": "sym_0230...", "displayString": "object"}],
+ "interfaces": [],
+ "derived": {"items": [], "totalItems": 0}}
+```
+
+`SymbolStore` is a `sealed class` with no interfaces, so `interfaces` is empty and `derived` correctly
+reports zero rather than being omitted — `derived` is omitted only when `symbol` isn't a class/interface
+at all (a method, a struct, an enum). For an interface or a widely-implemented base, `interfaces`/`derived`
+fill in with `origin: "direct"|"inherited"` tags and non-empty `items` (`limit`, default 40, matches
+`search_index`'s cap convention).
+
+### `get_project_graph` — the solution's project reference graph
+
+Which `.csproj` references which, and the reverse (`referencedBy`) — computed live from the
+loaded solution every call, no caching (project counts are small). Pass `project` to scope to
+one project's direct references and dependents instead of the whole graph.
+
+```
+get_project_graph()
+```
+
+```json
+{"projects": [
+   {"name": "DotnetToolkit.McpServer", "references": [], "referencedBy": ["DotnetToolkit.McpServer.Tests"]},
+   {"name": "DotnetToolkit.McpServer.Tests", "references": ["DotnetToolkit.McpServer"], "referencedBy": []}],
+ "totalProjects": 2}
+```
+
+### `detect_circular_dependencies` — a real dependency loop, not just deep nesting
+
+Cycles in the solution's project reference graph. `scope: "project"` (default, and for now the
+only supported value) reports one representative cycle per strongly-connected component found
+— not every distinct cycle within it, which can be combinatorial. `scope: "type"` returns
+`error: "unsupported_scope"` rather than a partial answer: it would need collapsing
+member-level call edges up to their containing type, which this server does not do today.
+
+```
+detect_circular_dependencies()
+```
+
+```json
+{"scope": "project", "cycles": [], "totalCycles": 0}
+```
+
+An empty `cycles` array is a checked "found none," not silence — this repo has no known
+project cycles today.
 
 ### `get_semantic_diff` — what changed, semantically
 

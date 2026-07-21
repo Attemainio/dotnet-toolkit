@@ -13,6 +13,10 @@ tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__get_scope,
   mcp__plugin_dotnet-toolkit_dotnet__get_call_slice,
+  mcp__plugin_dotnet-toolkit_dotnet__get_call_hierarchy,
+  mcp__plugin_dotnet-toolkit_dotnet__get_type_hierarchy,
+  mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
+  mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
   mcp__plugin_dotnet-toolkit_dotnet__get_semantic_diff,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status
 skills: [dotnet-code-query]
@@ -46,6 +50,9 @@ A `dimension` outside this table is a caller error — say so and stop rather th
 docs apply.
 
 **Per-dimension notes beyond what `review-workflow.md` states generally:**
+- `correctness`: `get_type_hierarchy` is useful for inheritance-depth/interface-bloat design smells —
+  a base chain going several levels deep, or a type accreting far more interfaces than it needs, is
+  easier to see from the full shape than by reading one file at a time.
 - `performance`: apply hot/cold-path classification in priority order — explicit marker >
   main-agent-stated hint > heuristic. Never guess past that order; findings marked 🟡 need a stated
   counter/trace/benchmark to verify (see output format in `review-workflow.md`).
@@ -53,7 +60,10 @@ docs apply.
   `get_references` (`direction: "callers"`) result showing zero items — never a `Grep` hit count,
   never `referenceCounts` alone. If you can't verify confidently, mark the finding lower-confidence
   rather than asserting it's dead. Never flag an `[Obsolete]` member with a future removal date —
-  that's an intentional, in-progress deprecation.
+  that's an intentional, in-progress deprecation. `get_call_hierarchy` (`includeTree: false`) is a
+  cheap blast-radius sanity check alongside that required zero-hit check before flagging a removal —
+  it doesn't replace the `get_references` requirement, it's a second signal on top of it.
+  `detect_circular_dependencies` is worth a mention when cleanup surfaces circular project references.
 - `docs`: **use `get_symbol` (`include: "xmlDoc,source"`) as your primary survey tool, not a raw file
   read.** `xmlDoc` is `{summary, returns, remarks, exceptions}` — check `xmlDoc.summary` specifically for
   the missing-doc signal, not `xmlDoc`'s own presence: a member with a `<returns>` but no `<summary>`

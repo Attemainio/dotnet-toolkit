@@ -181,6 +181,13 @@ search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.Mc
 Replaces: guessing a helper name, or grepping for one that may not apply at this position. Grep cannot
 answer this at all — an extension method shares no text with its call site.
 
+**Not the same question as `get_symbol`'s `members`.** `members` is a static, position-free list of
+what a *type declares* — reach for it once you already know the type. `get_scope` is
+position-sensitive: it also surfaces inherited members, locals/parameters in scope at that exact
+line, and extension methods applicable to a receiver, none of which `members` returns. Call `get_scope`
+when you're standing at a cursor deciding what to call — before writing a helper that may already
+exist, or when you don't yet know a receiver's type so `get_symbol` has no target to query.
+
 | Arg | Meaning |
 |---|---|
 | `file`, `line`, `column` | Required position (column defaults to 1). |
@@ -191,7 +198,7 @@ answer this at all — an extension method shares no text with its call site.
 Real call and response (trimmed):
 
 ```
-get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 190,
+get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 182,
           receiver: "featureLog", filter: "methods")
 ```
 
@@ -207,12 +214,20 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 190,
 ```
 
 `origin` separates what the type itself declares from what it inherits — usually the first thing you
-want to know. Drop `receiver` to see what's in scope at that line generally.
+want to know. Drop `receiver` to see what's in scope at that line generally. (The line number above
+tracks a real call site in this file; if a future refactor moves it, re-find the receiver with
+`search_index`/`get_symbol` rather than assuming this line still resolves.)
 
 ### `get_call_slice` — how does X reach Y
 
 Replaces: walking the graph with repeated `get_references` calls — one round trip per hop, and you
 assemble the chain yourself.
+
+**Point-to-point only — both `from` and `to` must already be known.** It cannot answer an
+open-ended "who (eventually) calls this" with no destination in mind; that's `get_call_hierarchy`,
+below. Reach for `get_call_slice` when you can name both ends — e.g. confirming a proposed removal is
+safe by checking whether a known entry point still reaches it, or explaining an unexpected side effect
+by finding the path between a known trigger and the symbol that causes it.
 
 | Arg | Meaning |
 |---|---|
@@ -235,6 +250,138 @@ get_call_slice(from: "PatchTools.ValidatePatch", to: "FeatureLogStore.Append")
 
 `found: false` means no path within `maxDepth` — not necessarily no relationship. It still reports the
 nearest reachable frontier from each end, so you know where the chain actually breaks.
+
+### `get_call_hierarchy` — who eventually calls this, up to the entry points
+
+Replaces: chaining `get_references(direction: "callers")` by hand, one level at a time, and assembling
+the tree yourself. This is what `get_call_slice` cannot do — it needs a known destination; this tool
+needs only a root. `direction: "callers"` (default, Visual Studio's *View Call Hierarchy*) walks
+upward toward entry points; `"callees"` walks downward into what the symbol invokes.
+
+| Arg | Meaning |
+|---|---|
+| `symbol` | Required. Same addressing as `get_symbol`. |
+| `direction` | `callers` (default) \| `callees`. |
+| `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
+| `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. |
+| `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." |
+| `fields` | Comma list adding `kind`, `file`, `line` to every node beyond the always-present `symbolId`/`displayString`. |
+
+Real call and response (trimmed to 4 of 7 children):
+
+```
+get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDepth: 1)
+```
+
+```json
+{"root":{"symbolId":"sym_c25d...","displayString":"string FeatureLogStore.Append(LogEntry entry)"},
+ "direction":"callers",
+ "tree":{"symbolId":"sym_c25d...","displayString":"string FeatureLogStore.Append(LogEntry entry)",
+   "children":[
+     {"symbolId":"sym_0e0e...","displayString":"int DevlogMigration.Run(DevlogStore devlog, FeatureLogStore log, ILogger logger)"},
+     {"symbolId":"sym_c3fc...","displayString":"void FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds()"},
+     {"symbolId":"sym_2b15...","displayString":"void PatchTools.AppendLog(...)"}]},
+ "blastRadius":{"totalUniqueNodes":8,"perDepth":[1,7],"depthCapped":true}}
+```
+
+`depthCapped:true` means `Append` has callers beyond `maxDepth:1` — raising `maxDepth` reaches
+`PatchTools.ValidatePatch` (the actual MCP tool entry point) three levels up from this root.
+
+A caller resolved through the edge cache but absent from the `symbols` table — a synthesized entry
+point like C#'s top-level-statements `Main`, which `get_references` renders as
+`<top-level-statements-entry-point>` via live Roslyn but the cache never stored a row for — falls back
+to its bare `symbolId` as `displayString` rather than failing the whole call. Rare in practice (this
+repo hits it once, at `DevlogMigration.Run`'s own caller), but worth recognizing if a leaf's
+`displayString` looks like a `sym_...` id instead of a real signature.
+
+A symbol reached through two different branches (a diamond) legitimately appears twice in the tree —
+not deduped, since collapsing it would hide a real second route in — but counts once in `blastRadius`.
+True recursion (a symbol reappearing on its own root-to-node path) stops as a leaf marked
+`recursive:true` rather than looping. Internally capped at a few thousand total nodes as a safety net
+against pathological fan-out, independent of `maxChildrenPerNode`.
+
+### `get_type_hierarchy` — a type's full inheritance shape
+
+Replaces: guessing from `get_symbol`'s one-hop `containingType`, or chaining `get_references`. Base
+chain up to `object`, transitive interfaces (tagged `direct` vs `inherited`), and every
+derived/implementing type — all beyond what `get_symbol`/`get_references` give in one hop.
+
+| Arg | Meaning |
+|---|---|
+| `symbol` | Required. Same addressing as `get_symbol`, must resolve to a class/interface/struct/enum/delegate/record. |
+| `limit` | Max derived types returned. Default 40, clamped 1-200 — mirrors `search_index`'s cap. |
+
+`derived` is a flat ranked list, not a nested tree (a widely-subclassed base could have hundreds of
+descendants, and the intermediate shape rarely matters — `get_symbol` on any result reveals its own
+immediate base) and is omitted entirely when `symbol` isn't a class/interface.
+
+Real call and response:
+
+```
+get_type_hierarchy(symbol: "SymbolStore")
+```
+
+```json
+{"symbolId":"sym_a477...","displayString":"SymbolStore",
+ "baseChain":[{"symbolId":"sym_0230...","displayString":"object"}],
+ "interfaces":[],
+ "derived":{"items":[],"totalItems":0}}
+```
+
+`SymbolStore` is a `sealed class` with no interfaces, so `derived` correctly reports zero rather than
+being omitted — omission means "not a class/interface at all" (a method, struct, or enum), not "zero
+found." For an interface or a widely-implemented base, `interfaces`/`derived` fill in with `origin:
+"direct"|"inherited"` tags and non-empty `items`.
+
+## Solution structure
+
+### `get_project_graph` — which project references which
+
+Replaces: opening every `.csproj` and reading `<ProjectReference>` entries by hand. Computed live from
+the loaded solution on every call, no caching — project counts are always small (tens, not thousands).
+
+| Arg | Meaning |
+|---|---|
+| `project` | Optional project name to scope to one project's direct references + dependents. Omit for the whole graph. |
+
+Real call and response:
+
+```
+get_project_graph()
+```
+
+```json
+{"projects":[
+   {"name":"DotnetToolkit.McpServer","references":[],"referencedBy":["DotnetToolkit.McpServer.Tests"]},
+   {"name":"DotnetToolkit.McpServer.Tests","references":["DotnetToolkit.McpServer"],"referencedBy":[]}],
+ "totalProjects":2}
+```
+
+A project named in `workspace_status`'s load diagnostics carries `degraded:true` on its own entry, in
+addition to the envelope-level `limitedBy:"degraded"`.
+
+### `detect_circular_dependencies` — a real dependency loop, not just deep nesting
+
+Replaces: manually tracing project references looking for a loop. Cycles in the solution's project
+reference graph via Tarjan's SCC.
+
+| Arg | Meaning |
+|---|---|
+| `scope` | `project` (default, and for now the only supported value) \| `type` — returns `error:"unsupported_scope"` rather than a partial answer; type-level cycle detection would need collapsing member-level call edges up to their containing type, which this server does not do today. |
+
+Reports one representative cycle per strongly-connected component found — not every distinct cycle
+within it, which can be combinatorial.
+
+```
+detect_circular_dependencies()
+```
+
+```json
+{"scope":"project","cycles":[],"totalCycles":0}
+```
+
+An empty `cycles` array is a checked "found none," not silence — this repo has no known project
+cycles today.
 
 ## History
 

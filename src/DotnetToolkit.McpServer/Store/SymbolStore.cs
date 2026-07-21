@@ -129,6 +129,35 @@ public sealed class SymbolStore
         return cmd.ExecuteScalar() as string;
     }
 
+    /// <summary>
+    /// Batch fq_name/kind/display_string lookup for many symbol ids at once — e.g. projecting every node
+    /// of a get_call_hierarchy tree without one query per node. Missing ids are simply absent from the
+    /// result rather than erroring, since a hierarchy walk over the edge cache can reference an id whose
+    /// row was since removed by a reindex.
+    /// </summary>
+    public IReadOnlyDictionary<string, (string? FqName, string? Kind, string? DisplayString)> RowsFor(IReadOnlyCollection<string> symbolIds)
+    {
+        var result = new Dictionary<string, (string?, string?, string?)>(StringComparer.Ordinal);
+        if (!_store.Available || symbolIds.Count == 0)
+            return result;
+        using var connection = _store.Connect();
+        // Chunked below SQLite's default 999-host-parameter limit (SQLITE_LIMIT_VARIABLE_NUMBER) — a
+        // hierarchy walk can pass up to CallHierarchy.HardNodeCap (3000) ids in one call.
+        foreach (var chunk in symbolIds.Chunk(900))
+        {
+            using var cmd = connection.CreateCommand();
+            var names = chunk.Select((_, i) => "$s" + i).ToList();
+            cmd.CommandText = $"SELECT symbol_id, fq_name, kind, display_string FROM symbols WHERE symbol_id IN ({string.Join(',', names)});";
+            var i = 0;
+            foreach (var id in chunk)
+                cmd.Parameters.AddWithValue("$s" + i++, id);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                result[reader.GetString(0)] = (reader.GetString(1), reader.GetString(2), reader.GetString(3));
+        }
+        return result;
+    }
+
     /// <summary>The semantic version layers (refs/api) recorded for a symbol, if the index has them.</summary>
     public (string? Refs, string? Api) LayersFor(string symbolId)
     {
