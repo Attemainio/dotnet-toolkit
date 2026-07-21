@@ -18,21 +18,26 @@ public sealed class MetricsReader
         int ToolCalls, long TokensReturned, int LeaseHits, long TokensSavedByLeases, int Refetches,
         int ValidationAttempts, int InsufficientValidations, int FailedValidations);
 
-    public sealed record Group(string Key, int Calls, long TokensReturned);
+    public sealed record Group(string Key, int Calls, long TokensReturned, string? FirstSeen = null, string? LastSeen = null);
 
     public sealed record Flag(string Kind, string? SymbolId, int Count, string Hint);
 
     public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups, IReadOnlyList<Flag> Flags);
 
-    /// <param name="scope">session | task | global</param>
-    /// <param name="groupBy">tool | symbol | level | none</param>
-    public Metrics Read(string scope, string? sessionId, string? taskId, string groupBy)
+    /// <param name="scope">session | global</param>
+    /// <param name="sessionIds">One or more session ids to merge together; required for scope=session.</param>
+    /// <param name="since">Inclusive ISO date (yyyy-MM-dd) lower bound on created_at.</param>
+    /// <param name="until">Exclusive bound on created_at, already resolved by the caller to the day AFTER
+    /// the last day wanted (an ISO date string compares correctly against created_at's full timestamp only
+    /// as a lower bound, so an inclusive "last day" filter needs its upper edge pushed one day out).</param>
+    /// <param name="groupBy">tool | symbol | level | session | none</param>
+    public Metrics Read(string scope, string[]? sessionIds, string? since, string? until, string groupBy)
     {
         if (!_store.Available)
             return new Metrics(new Totals(0, 0, 0, 0, 0, 0, 0, 0), [], []);
 
         using var connection = _store.Connect();
-        var (where, parameters) = ScopeFilter(scope, sessionId, taskId);
+        var (where, parameters) = ScopeFilter(scope, sessionIds, since, until);
 
         var totals = ReadTotals(connection, where, parameters);
         var groups = ReadGroups(connection, where, parameters, groupBy);
@@ -40,20 +45,39 @@ public sealed class MetricsReader
         return new Metrics(totals, groups, flags);
     }
 
-    private static (string Where, List<(string, object)> Params) ScopeFilter(string scope, string? sessionId, string? taskId)
+    private static (string Where, List<(string, object)> Params) ScopeFilter(
+        string scope, string[]? sessionIds, string? since, string? until)
     {
         var parameters = new List<(string, object)>();
-        switch (scope.Trim().ToLowerInvariant())
+        var clauses = new List<string>();
+
+        if (string.Equals(scope.Trim(), "session", StringComparison.OrdinalIgnoreCase) && sessionIds is { Length: > 0 })
         {
-            case "task" when !string.IsNullOrEmpty(taskId):
-                parameters.Add(("$task", taskId));
-                return ("task_id = $task", parameters);
-            case "session" when !string.IsNullOrEmpty(sessionId):
-                parameters.Add(("$session", sessionId));
-                return ("session_id = $session", parameters);
-            default:
-                return ("1=1", parameters);
+            var placeholders = new string[sessionIds.Length];
+            for (var i = 0; i < sessionIds.Length; i++)
+            {
+                placeholders[i] = "$sid" + i;
+                parameters.Add(("$sid" + i, sessionIds[i]));
+            }
+            clauses.Add($"session_id IN ({string.Join(',', placeholders)})");
         }
+        else
+        {
+            clauses.Add("1=1");
+        }
+
+        if (since is not null)
+        {
+            parameters.Add(("$since", since));
+            clauses.Add("created_at >= $since");
+        }
+        if (until is not null)
+        {
+            parameters.Add(("$until", until));
+            clauses.Add("created_at < $until");
+        }
+
+        return (string.Join(" AND ", clauses), parameters);
     }
 
     private Totals ReadTotals(SqliteConnection connection, string where, List<(string, object)> parameters)
@@ -99,12 +123,14 @@ public sealed class MetricsReader
         }
 
         int attempts = 0, insufficient = 0, failed = 0;
+        long patchTokens = 0;
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = $"""
                 SELECT COUNT(*),
                        COALESCE(SUM(CASE WHEN is_sufficient = 0 THEN 1 ELSE 0 END),0),
-                       COALESCE(SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END),0)
+                       COALESCE(SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(returned_tokens),0)
                 FROM patch_events WHERE {where};
                 """;
             Bind(cmd, parameters);
@@ -114,8 +140,16 @@ public sealed class MetricsReader
                 attempts = reader.GetInt32(0);
                 insufficient = reader.GetInt32(1);
                 failed = reader.GetInt32(2);
+                patchTokens = reader.GetInt64(3);
             }
         }
+
+        // validate_patch has no retrieval_events row at all - it writes patch_events instead (see
+        // TelemetryRecorder.RecordPatch) - so its calls and tokens must be folded in here or they
+        // silently vanish from every total this method reports, even though returned_tokens was
+        // recorded for every one of them.
+        toolCalls += attempts;
+        tokensReturned += patchTokens;
 
         return new Totals(toolCalls, tokensReturned, leaseHits, tokensSaved, refetches, attempts, insufficient, failed);
     }
@@ -136,9 +170,33 @@ public sealed class MetricsReader
                 SELECT completed_level, COUNT(*), COALESCE(SUM(returned_tokens),0)
                 FROM patch_events WHERE {where} GROUP BY completed_level ORDER BY 2 DESC;
                 """,
+            // A session can write to either table (or both), so merge the two under session_id, same
+            // reasoning as the tool-grouped view below. min/max created_at give the session's observed
+            // span without a separate query - this is how a caller discovers past session ids at all
+            // (there is no session directory; created_at IS the only way to answer "sessions from two
+            // weeks ago").
+            "session" => $"""
+                SELECT session_id, COUNT(*), COALESCE(SUM(returned_tokens),0), MIN(created_at), MAX(created_at)
+                FROM (
+                    SELECT session_id, returned_tokens, created_at FROM retrieval_events WHERE {where}
+                    UNION ALL
+                    SELECT session_id, returned_tokens, created_at FROM patch_events WHERE {where}
+                )
+                GROUP BY session_id ORDER BY MAX(created_at) DESC;
+                """,
+            // validate_patch never appears in retrieval_events (it has its own patch_events table -
+            // see the comment in ReadTotals), so the tool-grouped view needs a second branch unioned
+            // in under a literal label; patch_events has no tool_name column to group by since it is
+            // the only tool writing there, and HAVING with no GROUP BY filters the single whole-table
+            // aggregate row down to nothing when this scope has no patch_events at all.
             _ => $"""
                 SELECT tool_name, COUNT(*), COALESCE(SUM(returned_tokens),0)
-                FROM retrieval_events WHERE {where} GROUP BY tool_name ORDER BY 3 DESC;
+                FROM retrieval_events WHERE {where} GROUP BY tool_name
+                UNION ALL
+                SELECT 'validate_patch', COUNT(*), COALESCE(SUM(returned_tokens),0)
+                FROM patch_events WHERE {where}
+                HAVING COUNT(*) > 0
+                ORDER BY 3 DESC;
                 """,
         };
 
@@ -148,7 +206,11 @@ public sealed class MetricsReader
         Bind(cmd, parameters);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
-            groups.Add(new Group(reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2)));
+        {
+            groups.Add(reader.FieldCount >= 5
+                ? new Group(reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2), reader.GetString(3), reader.GetString(4))
+                : new Group(reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2)));
+        }
         return groups;
     }
 

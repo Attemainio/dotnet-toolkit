@@ -25,6 +25,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class ContextTools
 {
     private const int ReferenceCap = 50;
+    private const int ScopedOverfetchCap = 500;
 
 [McpServerTool(Name = "get_symbol")]
     [Description("Retrieve one or more C# symbols, choosing exactly which fields you get back via include. "
@@ -37,7 +38,11 @@ public static class ContextTools
         + "needs an extra argument or a second call, and those line spans feed straight into a validate_patch "
         + "edit. Everything past the skeleton is opt-in and controlled by include:\n"
         + "  source — full declaration source text.\n"
-        + "  xmlDoc — the <summary> only, XML-stripped to plain text (no <remarks>/<param>/etc).\n"
+        + "  xmlDoc — {summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}, each "
+        + "XML-stripped to plain text and absent when that tag isn't in the doc comment (xmlDoc itself is "
+        + "absent only when none of them are). params/typeParams are arrays of {name, text}, one per "
+        + "<param>/<typeparam> tag; exceptions is an array of {type, text}, one per <exception> tag; "
+        + "inheritdoc is true when an <inheritdoc/> tag is present (regardless of any other tag).\n"
         + "  mechanicalFacts — server-computed structural facts as opaque JSON; null if the body changed "
         + "since they were computed.\n"
         + "  referenceCounts — {implementations, overrides} always; adds {callers, tests} for a member "
@@ -46,6 +51,10 @@ public static class ContextTools
         + "current:true/false against the live body so stale history reads as stale, not as fact.\n"
         + "  members — for a type only: [{symbolId, displayString, kind, contentVersion}] per member, "
         + "each independently leasable without fetching its body; null for a non-type symbol.\n"
+        + "  attributes — this symbol's own C# attributes (not inherited), as [{name, arguments}]; name "
+        + "strips a trailing \"Attribute\" suffix (e.g. [Obsolete] -> \"Obsolete\"); arguments is a compact "
+        + "rendering of constructor/named arguments, with a long string argument truncated rather than "
+        + "reproduced in full. Absent when the symbol has no attributes.\n"
         + "include takes exactly one of: omitted or \"standard\" (default) for xmlDoc+referenceCounts+recentLog, "
         + "the set meaningful on nearly every call; \"all\" for every component above; or a comma-separated "
         + "list of component names, which REPLACES the default rather than adding to it — a literal query of "
@@ -66,20 +75,20 @@ public static class ContextTools
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
             + "names that replaces the default set exactly: source, xmlDoc, mechanicalFacts, "
-            + "referenceCounts, recentLog, members. See the tool description for what each returns.")] string? include = null,
+            + "referenceCounts, recentLog, members, attributes. See the tool description for what each "
+            + "returns.")] string? include = null,
         [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
             + "see symbols.")] string? knownVersion = null,
         [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null,
+
         [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
             + "every entry. knownVersion/refetch are ignored here — leasing needs one token per symbol, "
             + "which a single knownVersion cannot express, so every batch result carries full content "
             + "regardless of what the caller already holds. Exactly one of symbol or symbols is required.")]
             string[]? symbols = null)
     {
-        sessionId ??= Ids.AmbientSession;
-        taskId ??= Ids.UnattributedTask;
+        var sessionId = Ids.AmbientSession;
+        var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
 
         var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
@@ -245,12 +254,10 @@ private static async Task<string> GetSymbolOne(
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("callers | implementations | overrides (default callers).")] string direction = "callers",
-        [Description("Include member bodies inline (default false).")] bool includeBodies = false,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Include member bodies inline (default false).")] bool includeBodies = false)
     {
-        sessionId ??= Ids.AmbientSession;
-        taskId ??= Ids.UnattributedTask;
+        var sessionId = Ids.AmbientSession;
+        var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
         var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
         var solution = await workspace.GetSolutionAsync();
@@ -307,7 +314,7 @@ private static async Task<string> GetSymbolOne(
             null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
 
-[McpServerTool(Name = "search_index")]
+    [McpServerTool(Name = "search_index")]
     [Description("Find C# symbols when you don't know their exact names. "
         + "USE THIS INSTEAD OF GREP/GLOB over .cs files — it returns ranked symbols with ids and locations, not "
         + "raw text lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
@@ -319,6 +326,7 @@ private static async Task<string> GetSymbolOne(
         + "argument), kind, and the file/line it was found at, so going straight there needs no second call; "
         + "a hit whose name maps to several declarations (overloads) has file and line as null rather than "
         + "pointing at the wrong one — follow up with get_symbol, which separates overloads by parameter list. "
+        + "Pass pathPrefix to narrow the ranked results to one folder or file. "
         + "Follow up with get_symbol when you want the content itself.")]
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
@@ -331,18 +339,26 @@ private static async Task<string> GetSymbolOne(
             + "\"method,property\". An unrecognized value is passed through as-is rather than rejected, so a "
             + "typo silently matches nothing instead of erroring. Omit to search every kind.")] string? kinds = null,
         [Description("Max results (default 10, cap 50).")] int limit = 10,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Optional path prefix to narrow results to a folder or file, e.g. \"src/Tools\" or "
+            + "\"src/Tools/ContextTools.cs\" (relative to the repo root, forward slashes, matched on a full "
+            + "path-segment boundary so \"Tools\" cannot match \"ToolsFoo\"). A hit whose file cannot be "
+            + "resolved (an overloaded name — see the file/line note above) is dropped rather than guessed at, "
+            + "so scoped results can undercount for a very overload-heavy query. Ranking still runs over the "
+            + "whole index first, so a query with many more hits outside the prefix than the internal overfetch "
+            + "cap can return fewer than limit even though more in-scope matches exist — narrow the query text "
+            + "itself if that happens. Omit to search the whole index.")] string? pathPrefix = null)
     {
-        sessionId ??= Ids.AmbientSession;
-        taskId ??= Ids.UnattributedTask;
+        var sessionId = Ids.AmbientSession;
+        var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var kindList = string.IsNullOrWhiteSpace(kinds)
             ? null
             : kinds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
+        var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
 
-        var hits = symbolStore.Search(query, NormalizeKinds(kindList), limit);
+        var hits = symbolStore.Search(query, NormalizeKinds(kindList), fetchLimit);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
@@ -352,26 +368,28 @@ private static async Task<string> GetSymbolOne(
             .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
             .ToHashSet(StringComparer.Ordinal));
 
+        var resolved = hits.Select(h =>
+            (Hit: h, Site: sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName))));
+        if (scope is not null)
+            resolved = resolved.Where(r => WithinPathScope(r.Site?.File, scope));
+        var limited = resolved.Take(limit).ToList();
+
         object envelope = new
         {
             limitedBy = searchLimitedBy,
-            items = hits.Select(h =>
+            items = limited.Select(r => new
             {
-                var site = sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName));
-                return new
-                {
-                    symbolId = h.SymbolId,
-                    name = SymbolResolver.CompactName(h.FqName),
-                    kind = h.Kind,
-                    file = site?.File,
-                    line = site?.Line,
-                };
+                symbolId = r.Hit.SymbolId,
+                name = SymbolResolver.CompactName(r.Hit.FqName),
+                kind = r.Hit.Kind,
+                file = r.Site?.File,
+                line = r.Site?.Line,
             }),
         };
 
         var json = Formats.Render(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
-            null, false, false, null, hits.Count, searchLimitedBy, null, json);
+            null, false, false, null, limited.Count, searchLimitedBy, null, json);
     }
 
 
@@ -461,7 +479,7 @@ private static async Task<string> GetSymbolOne(
             declarationSites = DeclarationSites(sym, locator),
             source = components.Has(SymbolComponents.Source) ? SourceOf(sym) : null,
             xmlDoc = components.Has(SymbolComponents.XmlDoc)
-                ? OutlineBuilder.SummaryFromXml(sym.GetDocumentationCommentXml())
+                ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
             // Body-derived facts, served only while the body hash they were computed from still holds.
             mechanicalFacts = components.Has(SymbolComponents.MechanicalFacts)
@@ -469,10 +487,53 @@ private static async Task<string> GetSymbolOne(
                 : null,
             referenceCounts = counts,
             members,
+            attributes = components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
             // Why this code is the way it is. Entries describing a superseded body are flagged rather
             // than presented as current truth.
             recentLog = components.Has(SymbolComponents.RecentLog) ? RecentLogFor(sym, featureLog) : null,
         };
+    }
+
+    /// <summary>
+    /// This symbol's own C# attributes (not inherited ones — Roslyn's GetAttributes() only returns what
+    /// is declared directly on this symbol), as {name, arguments}. name strips a trailing "Attribute"
+    /// suffix to match how it reads at the use site (e.g. [Obsolete] -> "Obsolete"). arguments renders
+    /// constructor and named arguments as a compact string rather than the raw attribute syntax text,
+    /// since some attributes here carry multi-hundred-character Description strings that would otherwise
+    /// dominate the response; a long string argument is truncated rather than reproduced in full.
+    /// </summary>
+    private static object[]? AttributesOf(ISymbol sym)
+    {
+        var attrs = sym.GetAttributes();
+        if (attrs.Length == 0)
+            return null;
+
+        return attrs.Select(a => (object)new
+        {
+            name = a.AttributeClass?.Name is { } n && n.EndsWith("Attribute", StringComparison.Ordinal)
+                ? n[..^"Attribute".Length]
+                : a.AttributeClass?.Name,
+            arguments = FormatAttributeArguments(a),
+        }).ToArray();
+    }
+
+    private static string? FormatAttributeArguments(AttributeData attribute)
+    {
+        var parts = new List<string>(attribute.ConstructorArguments.Select(FormatTypedConstant));
+        parts.AddRange(attribute.NamedArguments.Select(kv => $"{kv.Key} = {FormatTypedConstant(kv.Value)}"));
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
+
+    private static string FormatTypedConstant(TypedConstant constant)
+    {
+        if (constant.Kind == TypedConstantKind.Array)
+            return "[" + string.Join(", ", constant.Values.Select(FormatTypedConstant)) + "]";
+
+        var text = constant.Value?.ToString() ?? "null";
+        // Cap rather than reproduce in full: some attributes here carry a multi-hundred-character
+        // [Description] string that would otherwise dominate the response on its own.
+        const int cap = 120;
+        return text.Length > cap ? text[..cap] + "…" : text;
     }
 
     /// <summary>
@@ -743,6 +804,27 @@ private static async Task<string> GetSymbolOne(
             "event" => "Event",
             _ => k.Trim(),
         })];
+    }
+
+    // pathPrefix is relative to the repo root (SolutionLocator.RelPath already yields forward
+    // slashes), so normalizing here only needs to fold backslashes and strip a leading "./" - never
+    // an absolute-path translation.
+    private static string NormalizePathPrefix(string pathPrefix)
+    {
+        var normalized = pathPrefix.Replace('\\', '/').Trim('/');
+        return normalized.StartsWith("./", StringComparison.Ordinal) ? normalized[2..] : normalized;
+    }
+
+    // Segment-boundary match, not a raw StartsWith: a prefix of "Tools" must not match a sibling
+    // folder named "ToolsFoo". A null file (an overload site.Locate could not disambiguate) is out
+    // of scope rather than guessed into it.
+    private static bool WithinPathScope(string? file, string normalizedPrefix)
+    {
+        if (file is null)
+            return false;
+        if (file.Equals(normalizedPrefix, StringComparison.Ordinal))
+            return true;
+        return file.StartsWith(normalizedPrefix + "/", StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -44,12 +44,10 @@ public static class PatchTools
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
-        [Description("Optional tags.")] string[]? tags = null,
-        [Description("Optional agent conversation id (ses_...) for telemetry grouping.")] string? sessionId = null,
-        [Description("Optional user task id (tsk_...) for telemetry grouping.")] string? taskId = null)
+        [Description("Optional tags.")] string[]? tags = null)
     {
-        sessionId ??= Ids.AmbientSession;
-        taskId ??= Ids.UnattributedTask;
+        var sessionId = Ids.AmbientSession;
+        var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
         var patchId = Ids.Patch();
         var validationAttemptId = Ids.ValidationAttempt();

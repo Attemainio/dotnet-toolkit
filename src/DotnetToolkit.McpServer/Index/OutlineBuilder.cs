@@ -210,11 +210,52 @@ public static partial class OutlineBuilder
             return null;
 
         var match = SummaryRegex().Match(xml);
-        if (!match.Success)
+        return match.Success ? Clean(match.Groups[1].Value) : null;
+    }
+
+    /// <summary>
+    /// Extracts every documented section from raw doc-comment XML (also used for ISymbol docs) as a
+    /// structured breakdown instead of just the &lt;summary&gt;. Null when none of the recognized tags
+    /// are present, so a symbol with no doc comment at all omits the field entirely rather than
+    /// returning an all-null shell.
+    /// </summary>
+    public static XmlDocSections? SectionsFromXml(string? xml)
+    {
+        if (string.IsNullOrWhiteSpace(xml))
             return null;
 
-        var text = match.Groups[1].Value;
-        text = text.Replace("///", " ");
+        var summary = SummaryRegex().Match(xml) is { Success: true } s ? Clean(s.Groups[1].Value) : null;
+        var returns = ReturnsRegex().Match(xml) is { Success: true } r ? Clean(r.Groups[1].Value) : null;
+        var remarks = RemarksRegex().Match(xml) is { Success: true } m ? Clean(m.Groups[1].Value) : null;
+        var value = ValueRegex().Match(xml) is { Success: true } v ? Clean(v.Groups[1].Value) : null;
+        var inheritdoc = InheritdocRegex().IsMatch(xml) ? true : (bool?)null;
+        var exceptions = ExceptionRegex().Matches(xml)
+            .Select(m => new XmlDocException(MemberNameFromCref(m.Groups[1].Value), Clean(m.Groups[2].Value) ?? ""))
+            .Where(e => e.Text.Length > 0)
+            .ToArray();
+        var parameters = ParamRegex().Matches(xml)
+            .Select(m => new XmlDocParam(m.Groups[1].Value, Clean(m.Groups[2].Value) ?? ""))
+            .Where(p => p.Text.Length > 0)
+            .ToArray();
+        var typeParams = TypeParamRegex().Matches(xml)
+            .Select(m => new XmlDocParam(m.Groups[1].Value, Clean(m.Groups[2].Value) ?? ""))
+            .Where(p => p.Text.Length > 0)
+            .ToArray();
+
+        if (summary is null && returns is null && remarks is null && value is null && inheritdoc is null
+            && exceptions.Length == 0 && parameters.Length == 0 && typeParams.Length == 0)
+            return null;
+
+        return new XmlDocSections(
+            summary, returns, remarks, value, inheritdoc,
+            parameters.Length == 0 ? null : parameters,
+            typeParams.Length == 0 ? null : typeParams,
+            exceptions.Length == 0 ? null : exceptions);
+    }
+
+    private static string? Clean(string raw)
+    {
+        var text = raw.Replace("///", " ");
         text = CrefRegex().Replace(text, m => MemberNameFromCref(m.Groups[1].Value));
         text = TagRegex().Replace(text, "");
         text = WhitespaceRegex().Replace(text, " ").Trim();
@@ -241,6 +282,27 @@ public static partial class OutlineBuilder
     [GeneratedRegex(@"<summary>([\s\S]*?)</summary>")]
     private static partial Regex SummaryRegex();
 
+    [GeneratedRegex(@"<returns>([\s\S]*?)</returns>")]
+    private static partial Regex ReturnsRegex();
+
+    [GeneratedRegex(@"<remarks>([\s\S]*?)</remarks>")]
+    private static partial Regex RemarksRegex();
+
+    [GeneratedRegex(@"<value>([\s\S]*?)</value>")]
+    private static partial Regex ValueRegex();
+
+    [GeneratedRegex(@"<param\s+name=""([^""]+)""\s*>([\s\S]*?)</param>")]
+    private static partial Regex ParamRegex();
+
+    [GeneratedRegex(@"<typeparam\s+name=""([^""]+)""\s*>([\s\S]*?)</typeparam>")]
+    private static partial Regex TypeParamRegex();
+
+    [GeneratedRegex(@"<inheritdoc(?:\s+cref=""(?:[A-Z]:)?[^""]+"")?\s*/>")]
+    private static partial Regex InheritdocRegex();
+
+    [GeneratedRegex(@"<exception\s+cref=""(?:[A-Z]:)?([^""]+)""\s*>([\s\S]*?)</exception>")]
+    private static partial Regex ExceptionRegex();
+
     [GeneratedRegex(@"<see\w*\s+\w+=""(?:[A-Z]:)?([^""]+)""\s*/?>")]
     private static partial Regex CrefRegex();
 
@@ -250,3 +312,15 @@ public static partial class OutlineBuilder
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
 }
+
+/// <summary>Structured breakdown of a symbol's XML doc comment beyond the plain &lt;summary&gt; string.</summary>
+public sealed record XmlDocSections(
+    string? Summary, string? Returns, string? Remarks, string? Value, bool? Inheritdoc,
+    IReadOnlyList<XmlDocParam>? Params, IReadOnlyList<XmlDocParam>? TypeParams,
+    IReadOnlyList<XmlDocException>? Exceptions);
+
+/// <summary>One &lt;param&gt;/&lt;typeparam&gt; entry: the parameter's name and its documented text.</summary>
+public sealed record XmlDocParam(string Name, string Text);
+
+/// <summary>One &lt;exception cref="..."&gt; entry: the exception's simple type name and its documented text.</summary>
+public sealed record XmlDocException(string Type, string Text);

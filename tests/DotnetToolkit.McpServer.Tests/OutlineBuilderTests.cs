@@ -131,6 +131,46 @@ public class OutlineBuilderTests
     }
 
     [Fact]
+    public void SectionsFromXmlExtractsEveryRecognizedTag()
+    {
+        var xml = """
+            <summary>Builds a widget.</summary>
+            <param name="count">How many to build.</param>
+            <typeparam name="T">The widget's element type.</typeparam>
+            <returns>The built widgets.</returns>
+            <exception cref="T:System.ArgumentException">count is negative.</exception>
+            <remarks>Not thread-safe.</remarks>
+            """;
+
+        var sections = OutlineBuilder.SectionsFromXml(xml);
+
+        Assert.Equal("Builds a widget.", sections?.Summary);
+        Assert.Equal("The built widgets.", sections?.Returns);
+        Assert.Equal("Not thread-safe.", sections?.Remarks);
+        Assert.Equal("count", sections?.Params?.Single().Name);
+        Assert.Equal("How many to build.", sections?.Params?.Single().Text);
+        Assert.Equal("T", sections?.TypeParams?.Single().Name);
+        Assert.Equal("ArgumentException", sections?.Exceptions?.Single().Type);
+        Assert.Null(sections?.Inheritdoc);
+    }
+
+    [Fact]
+    public void SectionsFromXmlSurfacesInheritdocEvenWithNoOtherTag()
+    {
+        var sections = OutlineBuilder.SectionsFromXml("<inheritdoc/>");
+
+        Assert.True(sections?.Inheritdoc);
+        Assert.Null(sections?.Summary);
+    }
+
+    [Fact]
+    public void SectionsFromXmlReturnsNullWhenNoRecognizedTagIsPresent()
+    {
+        Assert.Null(OutlineBuilder.SectionsFromXml("just text, no tags"));
+        Assert.Null(OutlineBuilder.SectionsFromXml(null));
+    }
+
+    [Fact]
     public void FileScopedAndBlockNamespacesBothIndex()
     {
         var blockNs = Build("namespace A { public class X { } }");

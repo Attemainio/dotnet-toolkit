@@ -6,9 +6,9 @@ points a consuming repo's `CLAUDE.md` at, and the doc to update whenever a tool'
 defaults or response shape changes (see CLAUDE.md's "Changing the tool surface" section — this file is
 one of the surfaces that has to move with the code).
 
-Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__` when called. Every tool accepts
-optional `sessionId`/`taskId` for telemetry grouping (omitted below for brevity) — see
-`skills/dotnet-code-query/SKILL.md` for the convention.
+Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__` when called. No tool takes a
+`sessionId`/`taskId` argument — every call in a server process shares one ambient session id
+automatically; see `skills/dotnet-code-query/SKILL.md` and `get_retrieval_metrics` below.
 
 Responses are deliberately terse: a field that is absent carries no information and costs no tokens.
 `limitedBy` appears only when something limited the answer (`index_only`, `stale`, `degraded`) — see
@@ -45,11 +45,12 @@ Component names are exactly the response fields they control:
 | Component | Returns |
 |---|---|
 | `source` | Full declaration source text |
-| `xmlDoc` | The `<summary>` only, XML-stripped to plain text |
+| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
+| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute` suffix (e.g. `[Obsolete]` → `"Obsolete"`); `arguments` is a compact rendering of constructor/named arguments, truncated rather than reproduced in full for a long string. Absent when the symbol has no attributes |
 
 The skeleton — `kind`, `displayString`, `accessibility`, `containingType`, `declarationSites` (`file`,
 `startLine`, `endLine`) — is unconditional: every call gets it regardless of `include`, and those line
@@ -135,6 +136,7 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 |---|---|
 | `query` | Free-text, OR-ed and ranked. **Put every term you want in one call**: `"fee ledger TryBuy TrySell"` returns all four in one ranked response — not four separate calls. |
 | `kinds` | Optional comma filter: `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. |
+| `pathPrefix` | Optional folder/file scope, e.g. `"src/Tools"` or `"src/Tools/ContextTools.cs"` — relative to the repo root, forward slashes, matched on a full path-segment boundary (`"Tools"` cannot match `"ToolsFoo"`). A hit whose file can't be resolved (an overloaded name) is dropped rather than guessed at, so scoped results can undercount for an overload-heavy query. Ranking still runs over the whole index first, so a query with far more hits outside the prefix than the internal overfetch cap can return fewer than `limit` even though more in-scope matches exist — narrow the query text itself if that happens. |
 | `limit` | Default 10, cap 50. |
 
 Real call and response:
@@ -156,6 +158,21 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5)
 `name` is directly usable as `get_symbol`'s `symbol` argument. A hit whose name maps to several
 overloads has `file`/`line` absent rather than pointing at the wrong one — resolve it through
 `get_symbol` instead, which separates overloads by parameter list.
+
+Scoped to one folder — `pathPrefix` narrows the same ranked search to a subsystem instead of the
+whole repo:
+
+```
+search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.McpServer/Store", limit: 5)
+```
+
+```json
+{"items":[
+   {"symbolId":"sym_6c0b...","name":"DotnetToolkit.McpServer.Store.SearchText.Segments(string)",
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":63},
+   {"symbolId":"sym_a487...","name":"DotnetToolkit.McpServer.Store.SearchText.ForIndex(string)",
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":18}]}
+```
 
 ## Relationships & flow
 
@@ -347,8 +364,10 @@ Replaces: guessing. Computed from this server's own telemetry.
 
 | Arg | Meaning |
 |---|---|
-| `scope` | `session` \| `task` \| `global` (default). |
-| `groupBy` | `tool` \| `symbol` \| `level` \| `none` (default `tool`). |
+| `scope` | `session` \| `global` (default). No more `task` — nothing ever read task-level metrics back through a tool, so it was retired along with the `taskId` argument on every other tool. |
+| `sessionIds` | One or more session ids to merge together. Required for `scope: "session"`. Every tool call in this process already shares one ambient session id automatically (no argument needed to set it) — `sessionIds` matters only when you want to combine that with sessions from *other* (past) server processes. |
+| `since` / `until` | Optional ISO date bounds (`yyyy-MM-dd` only) on `created_at`, inclusive on both ends, usable with either `scope`. |
+| `groupBy` | `tool` \| `symbol` \| `level` \| `session` \| `none` (default `tool`). `session` groups by `session_id` with `firstSeen`/`lastSeen` — since there's no directory of past sessions, this plus `since`/`until` is how you discover which session ids existed in a date range, before feeding them back into `sessionIds`. |
 
 Real call and response (trimmed):
 
@@ -357,12 +376,13 @@ get_retrieval_metrics(scope: "global", groupBy: "tool")
 ```
 
 ```json
-{"totals":{"toolCalls":71,"tokensReturned":29855,"leaseHits":1,"tokensSavedByLeases":351,
+{"totals":{"toolCalls":77,"tokensReturned":31450,"leaseHits":1,"tokensSavedByLeases":351,
            "refetches":0,"validationAttempts":6,"insufficientValidations":0,"failedValidations":0},
  "groups":[
    {"key":"get_symbol","calls":49,"tokensReturned":21004},
    {"key":"search_index","calls":15,"tokensReturned":5718},
-   {"key":"get_references","calls":7,"tokensReturned":3133}],
+   {"key":"get_references","calls":7,"tokensReturned":3133},
+   {"key":"validate_patch","calls":6,"tokensReturned":1595}],
  "flags":[
    {"kind":"repeat_fetch_without_lease","symbolId":"sym_21b0...","count":6,
     "hint":"Supply knownVersion for this symbol."}]}
@@ -371,6 +391,36 @@ get_retrieval_metrics(scope: "global", groupBy: "tool")
 `flags` calls out exactly what to fix: a symbol fetched repeatedly without ever passing `knownVersion`
 back is paying for the same content over and over. `leaseHits`/`tokensSavedByLeases` being low relative
 to `toolCalls` is itself a signal to start leasing.
+
+`validate_patch` writes to a separate raw-events table (`patch_events`, not `retrieval_events`) since it
+records validation-ladder fields no read tool has (`completedLevel`, `isSufficient`, …). `totals` and the
+default `tool` grouping fold its calls/tokens in alongside the read tools; `validationAttempts` above
+counts the same six calls from the angle of the validation ladder rather than raw token volume. A
+`validate_patch` entry appears in `groups` only when at least one such call falls in scope — it's absent,
+not zero, for a scope with no patch activity.
+
+Finding and merging past sessions — since there's no session directory, `groupBy: "session"` combined
+with `since`/`until` is the discovery mechanism:
+
+```
+get_retrieval_metrics(scope: "global", since: "2026-07-07", until: "2026-07-21", groupBy: "session")
+```
+
+```json
+{"totals":{...},
+ "groups":[
+   {"key":"ses_auto01J...","calls":214,"tokensReturned":98213,
+    "firstSeen":"2026-07-19T08:03:11...","lastSeen":"2026-07-19T17:42:05..."},
+   {"key":"ses_auto01H...","calls":87,"tokensReturned":31005,
+    "firstSeen":"2026-07-14T09:11:02...","lastSeen":"2026-07-14T12:20:44..."}],
+ "flags":[...]}
+```
+
+Feed the ids found this way back into `scope: "session"` to merge them:
+
+```
+get_retrieval_metrics(scope: "session", sessionIds: ["ses_auto01J...", "ses_auto01H..."])
+```
 
 ## Server
 

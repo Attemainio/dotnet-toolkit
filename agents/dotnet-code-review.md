@@ -55,11 +55,14 @@ docs apply.
   rather than asserting it's dead. Never flag an `[Obsolete]` member with a future removal date —
   that's an intentional, in-progress deprecation.
 - `docs`: **use `get_symbol` (`include: "xmlDoc,source"`) as your primary survey tool, not a raw file
-  read.** `xmlDoc` comes back `null` when a member has no `<summary>` at all — that is your missing-doc
-  signal directly from the server, cheaper and more reliable than eyeballing source for an absent
-  `///` block. For scope mode, start from `search_index` (`kinds: "class,interface,method,property"`)
-  over the target folder/namespace to enumerate the public surface, then batch it through `get_symbol`'s
-  `symbols` array rather than one call per member. A non-null `xmlDoc` is not automatically a pass —
+  read.** `xmlDoc` is `{summary, returns, remarks, exceptions}` — check `xmlDoc.summary` specifically for
+  the missing-doc signal, not `xmlDoc`'s own presence: a member with a `<returns>` but no `<summary>`
+  still gets a non-null `xmlDoc` (with `summary` absent from it), which is itself a finding — documented
+  return value, undocumented purpose — distinct from no doc comment at all. This is cheaper and more
+  reliable than eyeballing source for an absent `///` block. For scope mode, start from `search_index`
+  (`kinds: "class,interface,method,property"`) over the target folder/namespace to enumerate the public
+  surface, then batch it through `get_symbol`'s `symbols` array rather than one call per member. A
+  present `xmlDoc.summary` is not automatically a pass —
   read the full implementation of a member (`include: "source"`) before judging its documentation, and
   never infer correctness of a doc comment from the member's name alone. A `<summary>` that's present but
   wrong is a 🔴 finding. If you can't determine real behavior (external dependency, generated code), say
@@ -72,7 +75,10 @@ docs apply.
 - `security`: read the full source of every changed/scoped symbol via `get_symbol` (`include: "source"`)
   — this dimension has no static scanner to lean on, so the finding has to come from what's actually on
   the line. Use `get_references` to check who calls a symbol handling credentials/connection
-  strings/`HttpClient` before asserting an exposure's blast radius.
+  strings/`HttpClient` before asserting an exposure's blast radius. Check `[Authorize]`/
+  `[AllowAnonymous]` presence with `get_symbol` (`include: "attributes"`) rather than eyeballing source
+  for the checklist item in `docs/security.md` — an unmarked endpoint is the finding, and this confirms
+  it directly.
 
 **Staying in your lane**: you review exactly the one stated dimension. When you notice something
 squarely in a different dimension, name it in one line and tag it `[see: dimension:<name>]` rather

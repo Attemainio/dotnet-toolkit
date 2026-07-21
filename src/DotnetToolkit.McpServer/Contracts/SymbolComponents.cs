@@ -21,9 +21,10 @@ public readonly record struct SymbolComponents
     public const string ReferenceCounts = "referenceCounts";
     public const string RecentLog = "recentLog";
     public const string Members = "members";
+    public const string Attributes = "attributes";
 
     public static readonly IReadOnlyList<string> All =
-        [Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog, Members];
+        [Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog, Members, Attributes];
 
     private readonly HashSet<string> _set;
 

@@ -12,8 +12,6 @@ only if the result is genuinely sufficient. Disk is never touched otherwise.
 
 Use `Edit`/`Write` directly only for non-C# files (csproj, json, md).
 
-Reuse the same `sessionId`/`taskId` you established in the dotnet-code-query skill.
-
 ## The loop
 
 1. **Hold current content.** Fetch what you are about to change with `get_symbol`
@@ -38,8 +36,27 @@ Reuse the same `sessionId`/`taskId` you established in the dotnet-code-query ski
   every other change in that file while reporting success. Recover with `reload_workspace`,
   then re-read the symbol (its line spans will have moved) and rebuild the patch. Expect this
   after a `git checkout`, a `git pull`, a rebase, or any `.cs` edit made with `Edit`.
-- **`edits`** — `{ file, startLine, endLine, newText }`. The line span comes straight from
-  `declarationSites` in the `get_symbol` response.
+- **`edits`** — an array of `{ file, startLine, endLine, newText }`, not a single edit. Like
+  `search_index`'s multi-term query or `get_symbol`'s `symbols` batch, it takes as many hunks
+  as the task actually needs in one call, so a known multi-edit task never gets split into one
+  `validate_patch` call per edit. That's different from a task that genuinely needs only one
+  hunk — call it once for a single-line addition or removal, because there's only one hunk to
+  send, not because "once per hunk" is the rule. The actual rule: know the full set of edits
+  before calling, and send that whole set in one call — never discover edit 2 only after
+  submitting edit 1 as its own call, when both were already known upfront.
+
+  **Split into multiple tight hunks instead of one wide span.** `newText` replaces the whole
+  span verbatim, so a single edit covering "first changed line" through "last changed line"
+  resends every genuinely unchanged line in between too — pure waste when an untouched method
+  or block sits between two real changes. Draw the box around only what actually changed: if
+  lines 20-25 and lines 60-65 changed but 26-59 didn't, submit two edits (20-25 and 60-65) in
+  the same `edits` array, not one edit spanning 20-65. This is still one `validate_patch` call
+  either way — the array is what makes several tight hunks cost the same round trip as one
+  wide one. Don't overcorrect into single-line micro-hunks where changes genuinely cluster
+  (e.g. a rewritten method body) — split at real unchanged-content boundaries, not for its
+  own sake.
+
+  The line span comes straight from `declarationSites` in the `get_symbol` response.
 - **`intent`** — REQUIRED when `applyOnSuccess: true`. One sentence of *why*, in user
   terms ("Add cancellation support to training"), not *what* (the diff already says that).
   Reuse the task's intent across its patches. Omitting it is rejected before validation

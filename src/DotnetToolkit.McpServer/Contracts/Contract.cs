@@ -10,7 +10,75 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.15</b> — <c>sessionId</c>/<c>taskId</c> are removed as caller-facing arguments from
+    /// <c>search_index</c>, <c>get_symbol</c>, <c>get_references</c>, and <c>validate_patch</c>. Every
+    /// call in a server process now shares one ambient session id automatically (unchanged mechanism,
+    /// just no longer overridable) and the task concept is retired entirely — nothing read it back
+    /// through any tool, so it bought attribution granularity nobody consumed. BREAKING for a caller
+    /// that passed either argument: it is now rejected as an unrecognized parameter.
+    /// <c>get_retrieval_metrics</c> changes to match: <c>scope: "task"</c>/<c>taskId</c> are gone;
+    /// <c>sessionId</c> becomes <c>sessionIds</c> (an array, merged together when scope="session");
+    /// <c>since</c>/<c>until</c> (ISO <c>yyyy-MM-dd</c>) filter any scope by <c>created_at</c>; and
+    /// <c>groupBy</c> gains <c>"session"</c> (with <c>firstSeen</c>/<c>lastSeen</c>) — since there is no
+    /// session directory, this is how a caller discovers past session ids for a date range before
+    /// merging them via <c>sessionIds</c>.
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.14</b> — <c>get_symbol</c>'s <c>xmlDoc</c> (3.13) gains <c>value</c>, <c>inheritdoc</c>,
+    /// <c>params</c>, and <c>typeParams</c> alongside <c>summary</c>/<c>returns</c>/<c>remarks</c>/
+    /// <c>exceptions</c> — <c>value</c> from <c>&lt;value&gt;</c> (properties), <c>params</c>/
+    /// <c>typeParams</c> as arrays of <c>{name, text}</c> from <c>&lt;param&gt;</c>/<c>&lt;typeparam&gt;</c>,
+    /// and <c>inheritdoc</c> (<c>true</c>) when an <c>&lt;inheritdoc/&gt;</c> tag is present. Additive to
+    /// 3.13's object shape: existing consumers reading <c>xmlDoc.summary</c> etc. are unaffected; new keys
+    /// only appear when their tag is present. Also new: an <c>attributes</c> include component —
+    /// <c>[{name, arguments}]</c> of this symbol's own (non-inherited) C# attributes, absent when there are
+    /// none; a long string argument is truncated rather than reproduced in full. Both changes together mean
+    /// <c>xmlDoc</c> is no longer absent-or-summary-only as the missing-doc signal: a doc comment with only
+    /// a <c>&lt;returns&gt;</c> or a bare <c>&lt;inheritdoc/&gt;</c> now surfaces as a populated <c>xmlDoc</c>
+    /// with <c>summary</c> specifically absent, distinguishable from no doc comment at all (see
+    /// <c>docs/xml-documentation.md</c> and <c>agents/dotnet-code-review.md</c>'s <c>docs</c> dimension).
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.13</b> — <c>get_symbol</c>'s <c>xmlDoc</c> becomes a structured
+    /// <c>{summary, returns, remarks, exceptions}</c> breakdown of the doc comment instead of the plain
+    /// <c>&lt;summary&gt;</c> string it was through 3.12. Each field is XML-stripped to plain text and
+    /// absent when that tag isn't in the doc comment; <c>exceptions</c> is an array of
+    /// <c>{type, text}</c>, one per <c>&lt;exception&gt;</c> tag. <c>xmlDoc</c> itself is still absent
+    /// only when NONE of these tags are present — a doc comment with only a <c>&lt;returns&gt;</c> and no
+    /// <c>&lt;summary&gt;</c> now surfaces that (previously indistinguishable from no doc comment at all,
+    /// since the old extractor only ever looked at <c>&lt;summary&gt;</c>). BREAKING: a consumer reading
+    /// <c>content.xmlDoc</c> as a string sees an object; it now reads <c>content.xmlDoc.summary</c> for
+    /// the equivalent value, and must check for its presence separately from <c>xmlDoc</c>'s own presence.
+    /// <c>&lt;param&gt;</c> is still not extracted, since it duplicates the parameter list already in
+    /// <c>displayString</c>.
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.12</b> — <c>get_retrieval_metrics</c>'s <c>totals.toolCalls</c>/<c>totals.tokensReturned</c>
+    /// now include <c>validate_patch</c> activity, and the default <c>groupBy: "tool"</c> gains a
+    /// <c>validate_patch</c> bucket. <c>validate_patch</c> writes <c>patch_events</c>, not
+    /// <c>retrieval_events</c> like every other tool; <c>ReadTotals</c>/<c>ReadGroups</c> previously
+    /// queried <c>retrieval_events</c> only, so validate_patch's own recorded <c>returned_tokens</c>
+    /// were silently excluded from every total and never appeared in any <c>tool</c>-grouped row.
+    /// Additive/fix: field shapes are unchanged, but reported totals and the group list both grow to
+    /// include activity that was always recorded but never surfaced.
+    /// </description></item>
+    /// <item><description>
+    /// <b>3.11</b> — <c>search_index</c> gained <c>pathPrefix</c>, an optional folder/file scope
+    /// (repo-root-relative, forward slashes, matched on a path-segment boundary). Additive: omitted,
+    /// behavior is byte-for-byte unchanged. Location isn't stored beside the symbol row (same reasoning
+    /// as 3.3's <c>file</c>/<c>line</c>), so scoping is done by ranking the full index first and then
+    /// filtering the resolved sites — a hit whose file can't be resolved (an overloaded name) is excluded
+    /// rather than guessed into scope, and a query with far more out-of-scope hits than fit the internal
+    /// overfetch cap can return fewer than <c>limit</c> even though more in-scope matches exist.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.10</b> — <c>CompactTable</c>/<c>JsonHoist</c> (the <c>{columns,rows}</c> table shape
+    /// introduced across 3.4–3.8) are removed entirely. <c>search_index</c>'s/<c>get_references</c>'/
+    /// <c>get_symbol</c> batch's/<c>validate_patch</c>'s multi-item fields (<c>items</c>, <c>results</c>,
+    /// <c>detectedChanges</c>, <c>diagnostics.rootCauses</c>) are plain arrays of objects again — one
+    /// object per item, field names repeated per item, no <c>columns</c>/<c>rows</c> indirection and no
+    /// field hoisting into a <c>rest</c>/shared column set. BREAKING for a <c>compact</c>/<c>json</c>
+    /// consumer that read <c>.columns</c>/<c>.rows</c>: it now reads <c>items[i].fieldName</c> directly.
     /// introduced across 3.4–3.8) are removed entirely. <c>search_index</c>'s/<c>get_references</c>'/
     /// <c>get_symbol</c> batch's/<c>validate_patch</c>'s multi-item fields (<c>items</c>, <c>results</c>,
     /// <c>detectedChanges</c>, <c>diagnostics.rootCauses</c>) are plain arrays of objects again — one
@@ -144,5 +212,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.10";
+    public const string Id = "ctx-contract/3.15";
 }

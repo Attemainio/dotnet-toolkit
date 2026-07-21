@@ -144,9 +144,6 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
 [Trait("Category", "Integration")]
 public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixture>
 {
-    private const string Session = "ses_test";
-    private const string Task_ = "tsk_test";
-
     private readonly SampleSolutionFixture _f;
 
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
@@ -154,15 +151,14 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     private Task<string> GetSymbol(
         string symbol, string? include = null, string? knownVersion = null, bool refetch = false) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, include, knownVersion, refetch, Session, Task_);
+            symbol, include, knownVersion, refetch);
 
     private Task<string> GetSymbols(string[] symbols, string? include = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol: null, include, knownVersion: null, refetch: false,
-            sessionId: Session, taskId: Task_, symbols: symbols);
+            symbol: null, include, knownVersion: null, refetch: false, symbols: symbols);
 
     private Task<string> GetReferences(string symbol, string direction) =>
-        ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction, sessionId: Session, taskId: Task_);
+        ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction);
 
     private static JsonElement Root(string json) => JsonDocument.Parse(json).RootElement;
 
@@ -301,7 +297,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(rows[0].ContainsKey("error"));
 
         // xmlDoc is present exactly where a single-symbol call would put it: Widget has one, IWidget does not.
-        Assert.Equal("A spinning widget.", rows[0]["content"].GetProperty("xmlDoc").GetString());
+        Assert.Equal("A spinning widget.", rows[0]["content"].GetProperty("xmlDoc").GetProperty("summary").GetString());
         Assert.False(rows[1]["content"].TryGetProperty("xmlDoc", out _));
     }
 
@@ -328,7 +324,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetSymbol_MissingBothSymbolAndSymbolsIsAnError()
     {
         var result = Root(await ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog,
-            _f.Builder, _f.Telemetry, symbol: null, sessionId: Session, taskId: Task_));
+            _f.Builder, _f.Telemetry, symbol: null));
 
         Assert.Equal("missing_symbol", result.GetProperty("error").GetString());
     }
@@ -738,24 +734,24 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task ValidatePatch_BodyChange_AppliesAndLogsOnce_C12()
     {
         // The fixture runs on a throwaway temp copy, so this apply's disk write is discarded on dispose.
-        var applyTask = "tsk_apply_" + Guid.NewGuid().ToString("N")[..8];
         var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
         var version = sym.GetProperty("contentVersion").GetString()!;
-        var before = _f.FeatureLog.CountsForTask(applyTask);
+        // Scoped by symbolId rather than a unique taskId (task ids are no longer a caller-facing
+        // concept - every call in this process shares one ambient session id), so isolation from other
+        // tests comes from this being the only test that edits Widget.Spin.
+        var before = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
         var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             new Dictionary<string, string> { [symbolId] = version }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null,
-            sessionId: Session, taskId: applyTask));
+            requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
         Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean());
         Assert.True(root.GetProperty("applied").GetBoolean());
 
-        var after = _f.FeatureLog.CountsForTask(applyTask);
-        Assert.Equal(before.Entries + 1, after.Entries);   // exactly one feature_log row
-        Assert.Equal(before.Symbols + 1, after.Symbols);   // one per changed symbol (Widget.Spin)
+        var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
+        Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
     }
 
     /// <summary>

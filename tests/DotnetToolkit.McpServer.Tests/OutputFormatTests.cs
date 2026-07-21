@@ -62,7 +62,7 @@ public sealed class OutputFormatTests : IDisposable
     {
         var result = await ContextTools.GetSymbol(
             _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
-            "Demo.Foo", sessionId: "ses_a", taskId: "tsk_a");
+            "Demo.Foo");
 
         Assert.False(result.TrimStart().StartsWith('{'));
         Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(result));
@@ -77,7 +77,7 @@ public sealed class OutputFormatTests : IDisposable
 
         var result = await ContextTools.GetSymbol(
             _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
-            "Demo.Foo", sessionId: "ses_a", taskId: "tsk_a");
+            "Demo.Foo");
 
         // "json" is pretty-printed (WriteIndented), unlike "compact" — the two are otherwise the same data.
         Assert.Contains('\n', result);

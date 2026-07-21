@@ -23,19 +23,14 @@ positives, fewer tokens. A wrong caller list produces a wrong answer, not a slow
 The only legitimate reasons to read a file directly: non-C# files (csproj, json, md), or
 lines you are about to edit that `get_symbol` did not return.
 
-## Session and task ids (optional)
+## Session attribution is automatic
 
-Every tool accepts `sessionId` and `taskId`. They are **optional** — omit them and the
-tools still work; the server auto-attributes the call. Supply them when you can, because
-they are what make the usage metrics meaningful, but never let a missing id stop you from
-using a tool.
-
-- **`sessionId`** — generate once at the start of the conversation, e.g. `ses_<8 random
-  chars>`, and reuse it for **every** call thereafter.
-- **`taskId`** — generate one per user-level task, e.g. `tsk_<8 random chars>`, and reuse
-  it for every call belonging to that task. Start a new one when the user moves on.
-
-Do not invent a fresh id per call; that destroys the grouping.
+No tool takes a `sessionId`/`taskId` argument — there is nothing to pass. Every call in a
+server process shares one ambient session id automatically for that process's whole
+lifetime, so usage metrics group correctly with no setup and no way to get it wrong.
+`get_retrieval_metrics` reads that same id back via `scope: "session"`; see
+`docs/tool-reference.md` for merging several past sessions together or discovering session
+ids in a date range with `groupBy: "session"`.
 
 ## Decision table
 
@@ -89,6 +84,19 @@ written. **A name that maps to several declarations (overloads) omits both field
 
 Only split into separate calls when you need different `kinds` filters.
 
+Narrow to one subsystem with `pathPrefix` (folder or file, repo-root-relative, forward slashes)
+instead of filtering the whole-repo result yourself:
+
+```
+search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.McpServer/Store")
+```
+
+A hit whose `file` can't be resolved (an overloaded name — see above) is dropped rather than
+guessed into scope, so an overload-heavy query can undercount. Ranking still runs over the whole
+index before scoping, so a query with far more hits outside the prefix than fit an internal
+overfetch cap can return fewer than `limit` even with more in-scope matches available — narrow the
+query text itself if that happens, rather than raising `limit`.
+
 ## Choose exactly what you need with include
 
 `get_symbol` takes one selector, `include`, instead of a resolution ladder. It has three forms:
@@ -106,11 +114,12 @@ Component names are exactly the response fields they control:
 | Component | Returns |
 |---|---|
 | `source` | Full declaration source text |
-| `xmlDoc` | The `<summary>` only, XML-stripped to plain text (not `<remarks>`/`<param>`/etc.) |
+| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
+| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none |
 
 Examples:
 
@@ -118,8 +127,10 @@ Examples:
   `include: "xmlDoc,mechanicalFacts,referenceCounts,recentLog"`. Use when you want facts and
   history but are not going to edit the symbol.
 - `include: "members"` — a type's API surface with no bodies and none of the standard extras.
-- `include: "xmlDoc"` — the leanest non-default fetch: just the skeleton plus the doc summary,
+- `include: "xmlDoc"` — the leanest non-default fetch: just the skeleton plus the doc breakdown,
   no `referenceCounts` latency cost (it waits on the semantic model) and no history lookup.
+- `include: "attributes"` — check `[Authorize]`/`[AllowAnonymous]`/`[Obsolete]` presence on a
+  member without a `source` fetch; the `security` and `docs` review dimensions use this.
 
 An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
 misspelled name is an `invalid_component` error rather than being silently dropped.
