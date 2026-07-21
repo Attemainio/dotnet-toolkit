@@ -12,12 +12,19 @@ optional `sessionId`/`taskId` for telemetry grouping (omitted below for brevity)
 
 Responses are deliberately terse: a field that is absent carries no information and costs no tokens.
 `limitedBy` appears only when something limited the answer (`index_only`, `stale`, `degraded`) — see
-"Workspace readiness" at the end of this file. By default every response is rendered as **TOON**
-(Token-Oriented Object Notation), a compact JSON-equivalent text format — not JSON text. Set
-`defaultFormat` in `.claude/dotnet-toolkit/config.json` to `"compact"` for minified JSON or `"json"` for
-pretty-printed JSON if something in your workflow needs to parse responses as JSON directly; the field
-names and shapes documented below are identical in all three, only the wire encoding changes (see
-`Contracts/Contract.cs`'s 3.9 entry).
+"Workspace readiness" at the end of this file. This applies to plain objects too, not just top-level
+envelopes: a `null` field is dropped from JSON entirely rather than written as `"field":null`, so check
+for the key's absence, not its value.
+
+By default every response is rendered as **TOON** (Token-Oriented Object Notation), a compact
+JSON-equivalent text format — not JSON text. Call `set_output_format(format: "compact")` for minified
+JSON or `format: "json"` for pretty-printed JSON if something in your workflow needs to parse responses
+as JSON directly; it takes effect immediately and persists for the rest of the session. `defaultFormat`
+in `.claude/dotnet-toolkit/config.json` sets the format a fresh server starts with, before anything calls
+`set_output_format`. The field names and nesting documented below are identical in all three formats,
+only the wire encoding changes (see `Contracts/Contract.cs`'s 3.10 entry) — every multi-item response
+below is a plain array of objects, whether read as TOON or JSON; there is no separate columns/rows table
+representation to learn.
 
 ## Retrieval
 
@@ -74,13 +81,12 @@ Several symbols in one call — `symbols` instead of `symbol`:
 get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"], include: "members")
 ```
 
-The response becomes `{"results": {"columns": [...], "rows": [[...], ...]}}` — a
-`CompactTable` like `search_index`'s `items`, with fixed columns `symbolId, contentVersion, limitedBy,
-error` plus whatever fields this call's symbols' own content happen to share (call-dependent, always
-reported in `columns` rather than something to memorize). A row whose symbol did not resolve has
-`error` set (`symbol_not_found`, `ambiguous_symbol`) and null `symbolId`/`contentVersion` — one bad
-lookup does not fail the batch. `knownVersion`/`refetch` do not apply to a batch: every row carries full
-content.
+`results` becomes an array with one entry per requested symbol, and each entry is exactly what a
+single-symbol call for that symbol would have returned — batching is an orchestration convenience, not a
+different response shape. A symbol that did not resolve has `error` set (`symbol_not_found`,
+`ambiguous_symbol`) instead of `symbolId`/`contentVersion`/`content` — one bad lookup does not fail the
+batch, and the two shapes are told apart by which keys are present, not by a shared fixed column set.
+`knownVersion`/`refetch` do not apply to a batch: every entry carries full content.
 
 ### `get_references` — callers, implementations, overrides
 
@@ -101,27 +107,24 @@ get_references(symbol: "FeatureLogStore.Append")
 
 ```json
 {"targetSymbolId":"sym_c25d7c88b0e916b0",
- "items":{"columns":["symbolId","contentVersion","displayString","sites","dispatchKind","rest"],
-   "rows":[
-     ["sym_0e0e...","decl:66cc...|body:badd...",
-      "int DevlogMigration.Run(DevlogStore devlog, FeatureLogStore log, ILogger logger)",
-      [{"file":"src/DotnetToolkit.McpServer/Devlog/DevlogMigration.cs","line":29,
-        "snippet":"log.Append(new FeatureLogStore.LogEntry("}],
-      "direct", null],
-     ["sym_2b15...","decl:8c14...|body:785d...",
-      "void PatchTools.AppendLog(FeatureLogStore featureLog, ...)",
-      [{"file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":190,
-        "snippet":"featureLog.Append(new FeatureLogStore.LogEntry("}],
-      "direct", null]]},
+ "items":[
+   {"symbolId":"sym_0e0e...","contentVersion":"decl:66cc...|body:badd...",
+    "displayString":"int DevlogMigration.Run(DevlogStore devlog, FeatureLogStore log, ILogger logger)",
+    "sites":[{"file":"src/DotnetToolkit.McpServer/Devlog/DevlogMigration.cs","line":29,
+              "snippet":"log.Append(new FeatureLogStore.LogEntry("}],
+    "dispatchKind":"direct"},
+   {"symbolId":"sym_2b15...","contentVersion":"decl:8c14...|body:785d...",
+    "displayString":"void PatchTools.AppendLog(FeatureLogStore featureLog, ...)",
+    "sites":[{"file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":190,
+              "snippet":"featureLog.Append(new FeatureLogStore.LogEntry("}],
+    "dispatchKind":"direct"}],
  "totalItems":2,"excludedTextMatches":1}
 ```
 
-`items` is a **table**: read `items.rows[i][items.columns.indexOf("displayString")]`, not
-`items[i].displayString`. `columns` is whatever this call's items actually share — `symbolId,
-contentVersion, displayString, sites, dispatchKind` land there on nearly every call; `isTest` (emitted
-only when true) and `content` (with `includeBodies:true`) are the fields most likely to end up in the
-trailing `rest` column instead, since neither is present on every item. `excludedTextMatches` is the
-count of comment/string matches a grep would have wrongly included — 1 here, correctly excluded.
+Each item carries `symbolId, contentVersion, displayString, sites, dispatchKind` on every call;
+`isTest` (emitted only when `true`) and `content` (with `includeBodies:true`) are present only when they
+apply — absent, not `null`, otherwise. `excludedTextMatches` is the count of comment/string matches a
+grep would have wrongly included — 1 here, correctly excluded.
 
 ### `search_index` — find symbols when you don't know exact names
 
@@ -141,18 +144,17 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5)
 ```
 
 ```json
-{"items":{"columns":["symbolId","name","kind","file","line"],
- "rows":[
-   ["sym_dd78...","DotnetToolkit.McpServer.Tools.PatchTools.ValidatePatch(...)","Method",
-    "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",29],
-   ["sym_17cd...","DotnetToolkit.McpServer.Store.FeatureLogStore.LogEntry","Record",
-    "src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs",22],
-   ["sym_fc34...","DotnetToolkit.McpServer.Store.FeatureLogStore","Type",
-    "src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs",10]]}}
+{"items":[
+   {"symbolId":"sym_dd78...","name":"DotnetToolkit.McpServer.Tools.PatchTools.ValidatePatch(...)",
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":29},
+   {"symbolId":"sym_17cd...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore.LogEntry",
+    "kind":"Record","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":22},
+   {"symbolId":"sym_fc34...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore",
+    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":10}]}
 ```
 
 `name` is directly usable as `get_symbol`'s `symbol` argument. A hit whose name maps to several
-overloads has `file`/`line` as `null` rather than pointing at the wrong one — resolve it through
+overloads has `file`/`line` absent rather than pointing at the wrong one — resolve it through
 `get_symbol` instead, which separates overloads by parameter list.
 
 ## Relationships & flow
@@ -267,18 +269,16 @@ search_log(limit: 3)
 ```
 
 ```json
-{"items":{"columns":["logId","date","intent","tags"],
- "rows":[
-   ["log_01KY07FZ...","2026-07-20",
-    "Fix get_symbol's [Description]: the batch-mode response was documented as an array, but it's actually a CompactTable {columns,rows} like search_index/get_references",
-    []],
-   ["log_01KY07F8...","2026-07-20",
-    "Remove unused toolCallId/patchId/validationAttemptId parameters from Error/StaleBase/BuildResponse, ...",
-    []]]}}
+{"items":[
+   {"logId":"log_01KY07FZ...","date":"2026-07-20",
+    "intent":"Fix get_symbol's [Description]: the batch-mode response was documented as an array, but it's actually column-shaped like search_index/get_references",
+    "tags":[]},
+   {"logId":"log_01KY07F8...","date":"2026-07-20",
+    "intent":"Remove unused toolCallId/patchId/validationAttemptId parameters from Error/StaleBase/BuildResponse, ...",
+    "tags":[]}]}
 ```
 
-`items` is a **table** like `search_index`/`get_references`, not an array of objects — read `rows[i][3]` for
-`tags` (a real JSON array), not `rows[i].tags`.
+Each entry carries `logId, date, intent, tags` (`tags` a real JSON array).
 
 ## Write path
 
@@ -302,13 +302,12 @@ apply). `succeeded: true` with `isSufficient: false` is a **partial** green — 
 to `completedLevel`, and `nextAction` says what to do next (usually resubmit with `requestedLevel`
 raised). Never report a partial as done.
 
-`detectedChanges` and, on failure, `diagnostics.rootCauses` are both `CompactTable`s (`{columns, rows}`),
-the same convention as `search_index`/`get_references` — read `rows[i][columns.indexOf("symbolId")]`, not
-`rows[i].symbolId`. Each root cause is pre-distilled — one entry per root cause, not one per compiler
-error — carrying `suggestedInspection` (symbol ids to fetch before revising, a nested array of
-`{symbolId, displayString}` objects within that row, not further hoisted), `suppressedDiagnostics`
-(downstream errors that vanish once the root cause is fixed, so don't chase them), and `fixHint`. Fetch
-everything suggested and submit one revised patch; never resubmit unchanged or fix causes one at a time.
+`detectedChanges` and, on failure, `diagnostics.rootCauses` are both plain arrays of objects. Each root
+cause is pre-distilled — one entry per root cause, not one per compiler error — carrying
+`suggestedInspection` (symbol ids to fetch before revising, a nested array of `{symbolId, displayString}`
+objects), `suppressedDiagnostics` (downstream errors that vanish once the root cause is fixed, so don't
+chase them), and `fixHint`. Fetch everything suggested and submit one revised patch; never resubmit
+unchanged or fix causes one at a time.
 
 Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
 
@@ -319,17 +318,19 @@ validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
 ```
 
 ```json
-{"detectedChanges":{"columns":["symbolId","changeKinds","oldVersion","newVersion","apiImpact"],
- "rows":[["sym_7a9d...",["body"],"decl:7c76e9eba9da|body:2bac28c29969",null,"non-breaking"]]},
+{"detectedChanges":[
+   {"symbolId":"sym_7a9d...","changeKinds":["body"],
+    "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","apiImpact":"non-breaking"}],
  "ladder":{"completedLevel":"semantic_bind","requiredLevel":"project_compile","isSufficient":false,
    "reason":"Validation failed at semantic_bind.",
    "nextAction":"Fetch the suggested symbols, revise the patch, and resubmit."},
  "succeeded":false,"applied":false,
- "diagnostics":{"rootCauses":{
-   "columns":["diagnostic","summary","affectedSymbolId","fixHint","suggestedInspection","suppressedDiagnostics"],
-   "rows":[["CS0103","CS0103: 1 occurrence(s) — The name 'ThisTypeDoesNotExist' does not exist in the current context",
-            "sym_7a9d...","A name is not in scope here; check the identifier or add the missing member.",
-            [{"symbolId":"sym_7a9d...","displayString":"string ServerTools.Ping()"}],0]]},
+ "diagnostics":{"rootCauses":[
+   {"diagnostic":"CS0103",
+    "summary":"CS0103: 1 occurrence(s) — The name 'ThisTypeDoesNotExist' does not exist in the current context",
+    "affectedSymbolId":"sym_7a9d...",
+    "fixHint":"A name is not in scope here; check the identifier or add the missing member.",
+    "suggestedInspection":[{"symbolId":"sym_7a9d...","displayString":"string ServerTools.Ping()"}]}],
    "totalRaw":1,"totalSuppressed":0}}
 ```
 
@@ -376,6 +377,17 @@ to `toolCalls` is itself a signal to start leasing.
 ### `ping`
 
 Health check. `Ping()` → `"pong dotnet-toolkit/0.1.0"`. No arguments.
+
+### `set_output_format` — change how responses are encoded
+
+| Arg | Meaning |
+|---|---|
+| `format` | `json` (pretty-printed) \| `compact` (minified JSON) \| `toon` (default). |
+
+Takes effect immediately and persists for the rest of the session (until changed again or the server
+restarts). Returns a plain confirmation string, not a JSON/TOON envelope — e.g.
+`set_output_format(format: "json")` → `"output format set to json"`. An unrecognized `format` is reported
+back rather than silently defaulting: `"unknown format: yaml (use json|compact|toon)"`.
 
 ### `workspace_status` — is the index/workspace warm
 

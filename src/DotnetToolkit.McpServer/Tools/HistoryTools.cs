@@ -20,14 +20,12 @@ public static class HistoryTools
         + "Use this instead of reading a textual diff.")]
     public static async Task<string> GetSemanticDiff(
         GitAnalyzer git,
-        SolutionLocator locator,
         SemanticDiff diff,
         [Description("Base ref (branch, tag or sha). Default: HEAD~1.")] string fromRef = "HEAD~1",
         [Description("Target ref. Default: HEAD.")] string toRef = "HEAD")
     {
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         if (!await git.IsRepositoryAsync())
-            return Formats.Render(new { error = "not_a_git_repository" }, format);
+            return Formats.Render(new { error = "not_a_git_repository" });
 
         var from = await git.ResolveRefAsync(fromRef);
         var to = await git.ResolveRefAsync(toRef);
@@ -36,7 +34,7 @@ public static class HistoryTools
             {
                 error = "unresolved_ref",
                 message = from is null ? $"cannot resolve '{fromRef}'" : $"cannot resolve '{toRef}'",
-            }, format);
+            });
 
         var result = await diff.CompareAsync(from, to);
         var breaking = result.Changed.Count(c => c.ApiImpact.StartsWith("breaking", StringComparison.Ordinal));
@@ -59,32 +57,26 @@ public static class HistoryTools
                 added = result.Added.Count,
                 removed = result.Removed.Count,
             },
-        }, format);
+        });
     }
 
 [McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
         + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
-        + "Response shape: {items:{columns,rows}}, a TABLE with fixed columns [\"logId\",\"date\",\"intent\",\"tags\"] "
-        + "— read rows[i][3] for tags (a real JSON array), not rows[i].tags.")]
+        + "Each entry carries logId, date, intent, and tags (a JSON array).")]
     public static string SearchLog(
         FeatureLogStore featureLog,
-        SolutionLocator locator,
         [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
         [Description("Max entries (default 10).")] int limit = 10)
     {
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
-        var items = CompactTable.Of(
-            ["logId", "date", "intent", "tags"],
-            entries,
-            e => (IReadOnlyList<object?>)
-            [
-                e.LogId,
-                e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
-                e.Intent,
-                e.Tags,
-            ]);
-        return Formats.Render(new { items }, format);
+        var items = entries.Select(e => new
+        {
+            logId = e.LogId,
+            date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
+            intent = e.Intent,
+            tags = e.Tags,
+        });
+        return Formats.Render(new { items });
     }
 }

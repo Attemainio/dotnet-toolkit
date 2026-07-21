@@ -54,53 +54,39 @@ public static class PatchTools
         var patchId = Ids.Patch();
         var validationAttemptId = Ids.ValidationAttempt();
         var stopwatch = Stopwatch.StartNew();
-        var format = Formats.Parse(locator.Config.DefaultFormat);
 
         if (edits is null || edits.Length == 0)
-            return Error("no_edits", "At least one edit is required.", format);
+            return Error("no_edits", "At least one edit is required.");
 
-        // C8: applying requires an intent, rejected before any validation runs.
         if (applyOnSuccess && string.IsNullOrWhiteSpace(intent))
             return Error("intent_required",
-                "applyOnSuccess requires a non-empty intent describing the why.", format);
+                "applyOnSuccess requires a non-empty intent describing the why.");
 
         if (baseVersions is null)
             return Error("missing_base_versions",
-                "baseVersions is required so patches from stale context are rejected.", format);
+                "baseVersions is required so patches from stale context are rejected.");
 
-        // The fetch-validate-commit-adopt sequence below is wrapped in a local function so an apply can
-        // run it under workspace.RunExclusiveApplyAsync -- otherwise two concurrent applies could each
-        // fetch this same pre-commit solution, both pass their staleness checks against it, and both
-        // write, the second silently clobbering the first. Read-only calls (applyOnSuccess: false) skip
-        // the gate: they never touch disk, so there is nothing to race.
         async Task<string> RunAsync()
         {
             var solution = await workspace.GetSolutionAsync();
             if (solution is null)
                 return Error("workspace_loading",
-                    "The semantic workspace is not ready; retry shortly.", format);
+                    "The semantic workspace is not ready; retry shortly.");
 
             var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
             var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
             if (sandbox.Error is not null)
-                return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error, format);
+                return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
 
             var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
 
-            // stale_base: every changed symbol's current (old) version must match what the caller held.
-            // Keyed on the old symbol id — an arity/rename change gives the result a new id the agent
-            // never held, so matching the new id would spuriously reject a validly-based patch.
-            // Compared per layer, not by string equality: the caller may hold a four-layer token while the
-            // classifier computes only the syntax layers, and a layer one side never computed is not
-            // evidence that the base moved.
             var stale = detected
                 .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
                             || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
                 .ToList();
             if (stale.Count > 0)
-                return StaleBase(stale, format);
+                return StaleBase(stale);
 
-            // Which changed symbols are covered by tests decides whether the ladder must reach level 5.
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
             var affectedTests = symbolStore.TestsReferencing(changedIds);
             var testedIds = affectedTests.Count > 0
@@ -121,23 +107,20 @@ public static class PatchTools
                 : await DiagnosticDistiller.DistillAsync(sandbox.Forked, ladder.FailingDiagnostics,
                     detected.Select(c => (c.SymbolId, c.DisplayString)).ToList());
 
-            // C3: never apply unless the result is both sufficient and successful.
             var applied = false;
             if (applyOnSuccess && isSufficient && ladder.Succeeded)
             {
                 applied = await CommitAsync(sandbox.Forked, sandbox.ChangedDocuments, locator);
                 if (applied)
                 {
-                    // Both tiers have to move with the disk write, or the next patch to this file reads as
-                    // drifted against its own predecessor.
                     workspace.AdoptAppliedText(sandbox.Forked, sandbox.ChangedDocuments);
                     AppendLog(featureLog, taskId, patchId, intent!, tags, detected, ladder, required);
-                    indexBuilder.Start(); // refresh the symbol index against the new on-disk content
+                    indexBuilder.Start();
                 }
             }
 
             var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation);
-            var json = Formats.Render(response, format);
+            var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
             {
@@ -213,25 +196,14 @@ public static class PatchTools
         var (reason, nextAction) = Verdict(ladder, required, isSufficient);
         return new
         {
-            // A CompactTable like every other multi-item response (search_index, get_references,
-            // get_symbol's batch mode, search_log) -- column names paid for once instead of repeated per
-            // changed symbol. oldVersion is the current on-disk identity (what a retry must send as
-            // baseVersions); newVersion only describes reality once the patch is actually on disk.
-            detectedChanges = CompactTable.Of(
-                ["symbolId", "changeKinds", "oldVersion", "newVersion", "apiImpact"],
-                detected,
-                c => new object?[]
-                {
-                    c.SymbolId,
-                    c.Kinds.Select(k => k.Wire()).ToList(),
-                    c.OldVersion,
-                    applied ? c.NewVersion : null,
-                    c.ApiImpact,
-                }),
-            // The honest triple plus the imperative next step. Per-level timings live in telemetry, not
-            // here — completedLevel already identifies where the ladder stopped.
-            // reason/nextAction are emitted only when they add something: on a sufficient, successful
-            // run they merely restate the triple above and say "do nothing".
+            detectedChanges = detected.Select(c => new
+            {
+                symbolId = c.SymbolId,
+                changeKinds = c.Kinds.Select(k => k.Wire()).ToList(),
+                oldVersion = c.OldVersion,
+                newVersion = applied ? c.NewVersion : null,
+                apiImpact = c.ApiImpact,
+            }),
             ladder = new
             {
                 completedLevel = ladder.Completed.Wire(),
@@ -242,22 +214,18 @@ public static class PatchTools
             },
             succeeded = ladder.Succeeded,
             applied,
-            // Present only when level 5 actually ran and failed; compiler diagnostics live below.
             testFailures = ladder.TestFailureOutput,
             diagnostics = distillation.RootCauses.Count == 0 ? null : new
             {
-                rootCauses = CompactTable.Of(
-                    ["diagnostic", "summary", "affectedSymbolId", "fixHint", "suggestedInspection", "suppressedDiagnostics"],
-                    distillation.RootCauses,
-                    rc => new object?[]
-                    {
-                        rc.Diagnostic,
-                        rc.Summary,
-                        rc.AffectedSymbolId,
-                        rc.FixHint,
-                        rc.SuggestedInspection.Select(i => new { symbolId = i.SymbolId, displayString = i.DisplayString }).ToList(),
-                        rc.SuppressedDiagnostics,
-                    }),
+                rootCauses = distillation.RootCauses.Select(rc => new
+                {
+                    diagnostic = rc.Diagnostic,
+                    summary = rc.Summary,
+                    affectedSymbolId = rc.AffectedSymbolId,
+                    fixHint = rc.FixHint,
+                    suggestedInspection = rc.SuggestedInspection.Select(i => new { symbolId = i.SymbolId, displayString = i.DisplayString }).ToList(),
+                    suppressedDiagnostics = rc.SuppressedDiagnostics,
+                }),
                 totalRaw = distillation.TotalRaw,
                 totalSuppressed = distillation.TotalSuppressed,
             },
@@ -292,14 +260,14 @@ public static class PatchTools
         return (ValidationLevel)Math.Max((int)computed, (int)requested);
     }
 
-    private static string StaleBase(IReadOnlyList<ChangeClassifier.Change> stale, OutputFormat format) =>
+    private static string StaleBase(IReadOnlyList<ChangeClassifier.Change> stale) =>
         Formats.Render(new
         {
             error = "stale_base",
             message = "Patch built against outdated content; refetch these versions and rebuild.",
             current = stale.Select(c => new { symbolId = c.OldSymbolId, currentVersion = c.OldVersion }),
-        }, format);
+        });
 
-    private static string Error(string kind, string message, OutputFormat format) =>
-        Formats.Render(new { error = kind, message }, format);
+    private static string Error(string kind, string message) =>
+        Formats.Render(new { error = kind, message });
 }

@@ -33,26 +33,25 @@ public static class FlowTools
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
         [Description("Max results (default 40).")] int limit = 40)
     {
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" }, format);
+            return Formats.Render(new { error = "workspace_loading" });
 
         var documentId = solution.GetDocumentIdsWithFilePath(locator.AbsPath(file)).FirstOrDefault();
         if (documentId is null)
-            return Formats.Render(new { error = "file_not_in_solution", file }, format);
+            return Formats.Render(new { error = "file_not_in_solution", file });
 
         var document = solution.GetDocument(documentId)!;
         var text = await document.GetTextAsync();
         if (line < 1 || line > text.Lines.Count)
-            return Formats.Render(new { error = "line_out_of_range", line, lines = text.Lines.Count }, format);
+            return Formats.Render(new { error = "line_out_of_range", line, lines = text.Lines.Count });
 
         var textLine = text.Lines[line - 1];
         var position = Math.Min(textLine.Start + Math.Max(0, column - 1), textLine.End);
 
         var model = await document.GetSemanticModelAsync();
         if (model is null)
-            return Formats.Render(new { error = "no_semantic_model" }, format);
+            return Formats.Render(new { error = "no_semantic_model" });
 
         ITypeSymbol? receiverType = null;
         IEnumerable<ISymbol> symbols;
@@ -61,10 +60,8 @@ public static class FlowTools
         {
             receiverType = ResolveReceiverType(model, textLine.ToString(), receiver, position);
             if (receiverType is null)
-                return Formats.Render(new { error = "receiver_not_resolved", receiver }, format);
+                return Formats.Render(new { error = "receiver_not_resolved", receiver });
 
-            // includeReducedExtensionMethods honours the file's using directives, so only extension
-            // methods actually in scope here are returned.
             symbols = model.LookupSymbols(position, receiverType, name: null, includeReducedExtensionMethods: true);
         }
         else
@@ -93,7 +90,7 @@ public static class FlowTools
             position = new { file, line },
             receiverType = receiverType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             items,
-        }, format);
+        });
     }
 
     [McpServerTool(Name = "get_call_slice")]
@@ -102,7 +99,6 @@ public static class FlowTools
         + "calls. A miss still reports the nearest reachable frontier from each end.")]
     public static async Task<string> GetCallSlice(
         WorkspaceHost workspace,
-        SolutionLocator locator,
         SymbolStore symbolStore,
         CallSlice slice,
         SymbolIndexBuilder indexBuilder,
@@ -110,13 +106,12 @@ public static class FlowTools
         [Description("Destination symbol: fully-qualified name, unique suffix, or sym_... id.")] string to,
         [Description("Maximum path length to search (default 8).")] int maxDepth = 8)
     {
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         if (!indexBuilder.Ready)
-            return Formats.Render(new { error = "index_building", message = "The edge cache is still being built." }, format);
+            return Formats.Render(new { error = "index_building", message = "The edge cache is still being built." });
 
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" }, format);
+            return Formats.Render(new { error = "workspace_loading" });
 
         var fromId = await ResolveToIdAsync(solution, symbolStore, from);
         var toId = await ResolveToIdAsync(solution, symbolStore, to);
@@ -125,20 +120,19 @@ public static class FlowTools
             {
                 error = "symbol_not_found",
                 message = fromId is null ? $"cannot resolve '{from}'" : $"cannot resolve '{to}'",
-            }, format);
+            });
 
         var result = slice.Find(fromId, toId, Math.Clamp(maxDepth, 1, 20));
 
         if (!result.Found)
         {
-            // A miss names where each side ran out, so the next question is informed.
             return Formats.Render(new
             {
                 found = false,
                 nodesExplored = result.NodesExplored,
                 forwardFrontier = result.ForwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
                 backwardFrontier = result.BackwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
-            }, format);
+            });
         }
 
         return Formats.Render(new
@@ -151,7 +145,7 @@ public static class FlowTools
             }),
             depth = result.Path.Count - 1,
             nodesExplored = result.NodesExplored,
-        }, format);
+        });
     }
 
     // ---- helpers -------------------------------------------------------------

@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Tools;
@@ -31,6 +32,10 @@ public sealed class StalenessTests : IDisposable
 
     public StalenessTests()
     {
+        // Pinned so JsonDocument.Parse assertions read plain JSON regardless of Formats.Current's
+        // process-wide default (toon) — this fixture is constructed directly, not through Program.cs,
+        // so the config.json-based seeding path never runs for it.
+        Formats.Current = OutputFormat.Compact;
         _root = Directory.CreateTempSubdirectory("staleness-tests-").FullName;
         File.WriteAllText(Path.Combine(_root, "Foo.cs"),
             "namespace Demo;\n\n/// <summary>A demo type.</summary>\npublic class Foo\n{\n    public int Bar() => 1;\n}\n");

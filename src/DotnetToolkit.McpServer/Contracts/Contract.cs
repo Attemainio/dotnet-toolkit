@@ -10,6 +10,28 @@ public static class Contract
     /// The response contract version.
     /// <list type="bullet">
     /// <item><description>
+    /// <b>3.10</b> — <c>CompactTable</c>/<c>JsonHoist</c> (the <c>{columns,rows}</c> table shape
+    /// introduced across 3.4–3.8) are removed entirely. <c>search_index</c>'s/<c>get_references</c>'/
+    /// <c>get_symbol</c> batch's/<c>validate_patch</c>'s multi-item fields (<c>items</c>, <c>results</c>,
+    /// <c>detectedChanges</c>, <c>diagnostics.rootCauses</c>) are plain arrays of objects again — one
+    /// object per item, field names repeated per item, no <c>columns</c>/<c>rows</c> indirection and no
+    /// field hoisting into a <c>rest</c>/shared column set. BREAKING for a <c>compact</c>/<c>json</c>
+    /// consumer that read <c>.columns</c>/<c>.rows</c>: it now reads <c>items[i].fieldName</c> directly.
+    /// Reversed because TOON (3.9) already tabulates a uniform array of plain objects natively — encoding
+    /// our own pre-hoisted <c>{columns,rows}</c> wrapper through TOON cost MORE tokens than handing TOON
+    /// the plain array and letting its own uniform-array detection do the job, since the wrapper's
+    /// <c>columns:</c>/<c>rows:</c>/per-row <c>- [N]:</c> markers are pure overhead TOON's native encoding
+    /// does not need. <c>compact</c>/<c>json</c> lose the old column-name deduplication as a result —
+    /// accepted, since TOON is the token-optimized path now and JSON is the fallback/debugging one.
+    /// Also: <c>OutputFormat</c> is no longer read from <c>ToolkitConfig.DefaultFormat</c> on every call.
+    /// <c>Formats.Current</c> is a runtime-mutable static, seeded once at startup from
+    /// <c>defaultFormat</c>, changeable for the rest of the session via the new <c>set_output_format</c>
+    /// tool. A field's absence now uniformly means "does not apply" in every format, including nested
+    /// objects inside a plain array (e.g. an item's <c>isTest</c>/<c>content</c>) — previously only true
+    /// for top-level envelope fields; a JSON consumer must check key presence, not compare against
+    /// <c>null</c>.
+    /// </description></item>
+    /// <item><description>
     /// <b>3.9</b> — every tool response is now rendered through one of three <c>OutputFormat</c>s
     /// instead of always being plain JSON: <c>toon</c> (TOON — Token-Oriented Object Notation, the new
     /// default), <c>compact</c> (the exact minified JSON every tool already produced through 3.8), or
@@ -122,5 +144,5 @@ public static class Contract
     /// </description></item>
     /// </list>
     /// </summary>
-    public const string Id = "ctx-contract/3.9";
+    public const string Id = "ctx-contract/3.10";
 }

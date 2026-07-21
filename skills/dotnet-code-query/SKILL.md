@@ -74,19 +74,18 @@ Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` 
 puts the symbols matching more of your terms first, which is exactly the overlap you want.
 
 Each hit carries where it was found, so going straight there costs no second call. `items` is a
-table — `columns` once, then one array per hit in that order — not one object per hit, so the
-field names aren't repeated on every row:
+plain array of objects — `symbolId, name, kind, file, line` on every hit:
 
 ```json
-{"items":{"columns":["symbolId","name","kind","file","line"],
- "rows":[["sym_...","Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)","Method","Lib/Pipeline.cs",6]]}}
+{"items":[{"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)",
+           "kind":"Method","file":"Lib/Pipeline.cs","line":6}]}
 ```
 
 `file`/`line` are resolved from the syntax index at response time — swept for staleness on the
 way — so they point at where the declaration is *now*, not where it was when the row was
-written. **A name that maps to several declarations (overloads) omits both** (`null` in the row)
-rather than pointing at the wrong one; that hit still resolves through `get_symbol`, which
-separates overloads by parameter list and always returns exact spans.
+written. **A name that maps to several declarations (overloads) omits both fields entirely**
+(absent, not `null`) rather than pointing at the wrong one; that hit still resolves through
+`get_symbol`, which separates overloads by parameter list and always returns exact spans.
 
 Only split into separate calls when you need different `kinds` filters.
 
@@ -149,24 +148,13 @@ wide request against a narrow token — hold the token from a fetch of the same 
 get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"])
 ```
 
-The response's `results` is a table (`columns`/`rows`, same shape as `search_index`'s `items`).
-Fixed columns are `symbolId, contentVersion, limitedBy, error` — that outer envelope genuinely is
-uniform across every entry, unlike a symbol's own `content` (see the note on `search_index` above
-about when a table is and isn't the right call). A successful row has `error: null`. A row whose
-symbol did not resolve has `symbolId`/`contentVersion` null and `error` holding the short error
-string (`symbol_not_found`, `ambiguous_symbol`) — one failed lookup does not fail the batch.
-
-Between those fixed columns and `content` sit whatever fields the requested symbols' own content
-turned out to share **this call**: batch three methods and `kind`, `displayString`,
-`accessibility`, `declarationSites`, `referenceCounts`, and even `xmlDoc` (if every one happens to
-have a doc comment) all get pulled out as their own columns, since every row has them. Mix in a
-type alongside a method and `containingType` — which only the method has — stays nested in
-`content` instead, because it is no longer common to every row. This set is genuinely
-call-dependent, not fixed, which is exactly why it always shows up in `columns` rather than being
-something to memorize: check `columns`, not assume a shape. `content` holds whatever was not
-hoisted — for a symbol whose entire content got pulled into columns, that's `null`. A row with an
-error hoists nothing and keeps its whole error envelope (including `detail`/`candidates`) in
-`content`, since it shares no keys with a real symbol's content.
+The response's `results` is a plain array with one entry per requested symbol, and each entry is
+*exactly* what a single-symbol `get_symbol` call for that symbol would have returned — batching is
+an orchestration convenience, not a different response shape, so there is no fixed column set to
+learn and nothing gets hoisted out of `content`. A successful entry has `symbolId, contentVersion,
+limitedBy, content`; a symbol that did not resolve has `error` instead (`symbol_not_found`,
+`ambiguous_symbol`) with no `symbolId`/`contentVersion`/`content` — one failed lookup does not fail
+the batch, and the two shapes are told apart by which keys are present.
 
 `knownVersion`/`refetch` do not apply to a batch — leasing needs one token per symbol, which a
 single `knownVersion` cannot express — so every batch result carries full content regardless of
@@ -341,22 +329,20 @@ only when true. Absence of `tests` in `referenceCounts` means "not computed yet"
 "no tests".
 
 By default responses are rendered as **TOON** (Token-Oriented Object Notation) rather than JSON text —
-still the same field names and shapes described throughout this skill, just a more compact encoding of
-them. A repo can set `defaultFormat: "compact"` (minified JSON) or `"json"` (pretty-printed JSON) in
-`.claude/dotnet-toolkit/config.json` to get JSON text back instead.
+still the same field names and nesting described throughout this skill, just a more compact encoding of
+them: every multi-item response is a plain array of objects in either case, there is no separate
+columns/rows table shape. Call `set_output_format(format: "compact")` (minified JSON) or `format: "json"`
+(pretty-printed) to get JSON text back for the rest of the session; `defaultFormat` in
+`.claude/dotnet-toolkit/config.json` only sets what a fresh server starts with.
 
 `tests` is the subset of `callers` whose own declaration carries a test attribute (`[Fact]`,
 `[Theory]`, `[Test]`, `[TestCase]`, `[TestMethod]`), so it can never exceed `callers`. A helper
 that merely lives in a test project is not counted. `get_references` marks the same callers with
 `isTest: true`, emitted only on the ones that are tests — an absent flag means "not a test".
 
-### `get_references`' `items` is a table too
+### `get_references`' `items` fields
 
-Same convention as `search_index`'s `items` and `get_symbol`'s batch `results`: `columns`/`rows`
-instead of one object per item. `symbolId`, `contentVersion`, `displayString`, `sites`, and
-`dispatchKind` are hoisted into their own columns whenever this call's actual items all have
-them (the ordinary case). `isTest` and `content` (the inline body, only present with
-`includeBodies: true`) are the fields most likely to end up in the trailing `rest` column
-instead — neither is present on every caller, so a call mixing test and non-test callers keeps
-`isTest` nested in `rest` rather than forcing a column that would be null half the time. Check
-`columns`, don't assume a fixed shape.
+Each item is a plain object carrying `symbolId`, `contentVersion`, `displayString`, `sites`, and
+`dispatchKind` on every call. `isTest` and `content` (the inline body, only present with
+`includeBodies: true`) are present only when they apply — absent, not `null`, on a caller that
+isn't a test or wasn't fetched with a body.

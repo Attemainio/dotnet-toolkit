@@ -1,5 +1,6 @@
 using DotnetToolkit.McpServer.Devlog;
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
@@ -49,6 +50,9 @@ var app = builder.Build();
 // well inside Claude Code's ~5s startup timeout; tools await readiness themselves.
 app.Services.GetRequiredService<ProjectIndex>().StartInitialization();
 app.Services.GetRequiredService<WorkspaceHost>().StartLoading();
+// Seeds the runtime-mutable Formats.Current once; set_output_format (ServerTools) is the only
+// other writer, so a session can change the active format later without a restart.
+Formats.Current = Formats.Parse(app.Services.GetRequiredService<SolutionLocator>().Config.DefaultFormat);
 // Populate the SQLite symbol index + edge cache once the workspace is ready (it self-awaits).
 app.Services.GetRequiredService<SymbolIndexBuilder>().Start();
 

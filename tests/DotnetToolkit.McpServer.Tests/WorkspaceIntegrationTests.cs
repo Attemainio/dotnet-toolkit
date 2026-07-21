@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Validation;
@@ -37,6 +38,11 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     {
         if (!Microsoft.Build.Locator.MSBuildLocator.IsRegistered)
             Microsoft.Build.Locator.MSBuildLocator.RegisterDefaults();
+
+        // Pinned so every JsonDocument.Parse assertion in this class reads plain JSON regardless of
+        // Formats.Current's process-wide default (toon) — this fixture is constructed directly, not
+        // through Program.cs, so the config.json-based seeding path never runs for it.
+        Formats.Current = OutputFormat.Compact;
 
         // Copy the fixture to a throwaway temp dir (native /tmp on WSL — faster than /mnt, and
         // isolated so validate_patch's disk writes never pollute the repo/bin fixture).
@@ -161,33 +167,17 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     private static JsonElement Root(string json) => JsonDocument.Parse(json).RootElement;
 
     /// <summary>
-    /// search_index's items is a <c>{columns, rows}</c> table (ctx-contract/3.4), not one object per hit.
-    /// Rehydrates it into the per-row lookup the rest of these tests were already written against, so a
-    /// wire-format change here doesn't force every assertion below to learn column indices.
+    /// Reads a plain JSON array of objects into the per-row lookup the rest of these tests were already
+    /// written against.
     /// </summary>
-    private static List<Dictionary<string, JsonElement>> TableRows(JsonElement table)
-    {
-        var columns = table.GetProperty("columns").EnumerateArray().Select(c => c.GetString()!).ToList();
-        return table.GetProperty("rows").EnumerateArray()
-            .Select(row => columns.Zip(row.EnumerateArray(), (c, v) => (c, v))
-                .ToDictionary(x => x.c, x => x.v))
+    private static List<Dictionary<string, JsonElement>> TableRows(JsonElement items) =>
+        items.EnumerateArray()
+            .Select(item => item.EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.Ordinal))
             .ToList();
-    }
 
-    /// <summary>
-    /// A JsonHoist-produced row splits fields between hoisted columns and a trailing "rest" object,
-    /// depending on what happened to be common across THIS call's items (ctx-contract/3.6) — not a fixed
-    /// contract. Tests that only care about a field's value, not whether it happened to be hoisted this
-    /// time, should look here rather than assume either location.
-    /// </summary>
-    private static Dictionary<string, JsonElement> MergedRow(Dictionary<string, JsonElement> row)
-    {
-        var merged = new Dictionary<string, JsonElement>(row, StringComparer.Ordinal);
-        if (merged.Remove("rest", out var rest) && rest.ValueKind == JsonValueKind.Object)
-            foreach (var prop in rest.EnumerateObject())
-                merged[prop.Name] = prop.Value;
-        return merged;
-    }
+    /// <summary>Identity pass-through, kept so call sites written against the old hoisted-"rest" shape
+    /// (ctx-contract/3.6, since removed) don't all need editing — there is no more rest object to merge.</summary>
+    private static Dictionary<string, JsonElement> MergedRow(Dictionary<string, JsonElement> row) => row;
 
     /// <summary>
     /// Retrieval must work for a caller that supplies no session/task ids. Attribution is
@@ -228,7 +218,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
     {
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Widget Gadget"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
 
         var names = TableRows(root.GetProperty("items"))
             .Select(i => i["name"].GetString()!).ToList();
@@ -246,7 +236,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
         var name = hit["name"].GetString()!;
 
         // Fully qualified up to the member, but the parameter's namespace is gone.
@@ -288,10 +278,9 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     /// symbols batches several fetches under one resolution into one call. Each result must be exactly
     /// what a single-symbol call for that same symbol would return — batching is an orchestration
     /// convenience, not a different code path with its own behaviour to drift from the single-symbol one.
-    /// kind/displayString/accessibility/declarationSites/referenceCounts are common to both requested
-    /// types here and so are hoisted into their own columns (JsonHoist); xmlDoc is NOT, because IWidget
-    /// (unlike Widget) has no doc comment in the fixture — a real case of the hoisted set depending on
-    /// what this specific call actually asked for, not a fixed contract.
+    /// There is no more field hoisting (CompactTable/JsonHoist, removed): every result is its own
+    /// complete, independent envelope, exactly the shape a single get_symbol call for that symbol
+    /// produces — including keys like error being ABSENT (not present-and-null) on a successful result.
     /// </summary>
     [Fact]
     public async Task GetSymbol_SymbolsBatchesMultipleFetchesInOneCall()
@@ -304,48 +293,22 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var iwidgetAlone = Root(await GetSymbol("Sample.Lib.IWidget"));
 
         Assert.Equal(widgetAlone.GetProperty("symbolId").GetString(), rows[0]["symbolId"].GetString());
-        Assert.Equal(widgetAlone.GetProperty("content").GetProperty("kind").GetString(), rows[0]["kind"].GetString());
+        Assert.Equal(widgetAlone.GetProperty("content").GetProperty("kind").GetString(),
+            rows[0]["content"].GetProperty("kind").GetString());
         Assert.Equal(iwidgetAlone.GetProperty("symbolId").GetString(), rows[1]["symbolId"].GetString());
-        Assert.Equal("Interface", rows[1]["kind"].GetString());
-        // error is null, not absent, on a successful row — every row shares the same columns.
-        Assert.Equal(JsonValueKind.Null, rows[0]["error"].ValueKind);
+        Assert.Equal("Interface", rows[1]["content"].GetProperty("kind").GetString());
+        // Absent entirely on a successful result, not present-and-null.
+        Assert.False(rows[0].ContainsKey("error"));
 
-        // xmlDoc did not make it into the hoisted columns...
-        Assert.DoesNotContain(batch.GetProperty("results").GetProperty("columns").EnumerateArray()
-            .Select(c => c.GetString()), c => c == "xmlDoc");
-        // ...so it is still reachable, exactly where a single-symbol call would put it.
+        // xmlDoc is present exactly where a single-symbol call would put it: Widget has one, IWidget does not.
         Assert.Equal("A spinning widget.", rows[0]["content"].GetProperty("xmlDoc").GetString());
-        Assert.Equal(JsonValueKind.Null, rows[1]["content"].ValueKind);
+        Assert.False(rows[1]["content"].TryGetProperty("xmlDoc", out _));
     }
 
     /// <summary>
-    /// The opposite case: every requested symbol has a doc comment this time, so xmlDoc DOES get hoisted —
-    /// but containingType still does not, because only the method (not the type alongside it) has one.
-    /// Confirms the hoist is genuinely per-field, not "hoist everything once anything is common".
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_SymbolsBatchHoistsOnlyFieldsCommonToEveryRequestedSymbol()
-    {
-        var batch = Root(await GetSymbols(["Sample.Lib.Widget", "Sample.Lib.Widget.Spin"]));
-        var columns = batch.GetProperty("results").GetProperty("columns").EnumerateArray()
-            .Select(c => c.GetString()).ToList();
-
-        Assert.Contains("xmlDoc", columns);
-        Assert.DoesNotContain("containingType", columns);
-
-        var rows = TableRows(batch.GetProperty("results"));
-        Assert.Equal("Spins the widget.", rows[1]["xmlDoc"].GetString());
-        // Not hoisted, so still nested under content for the one row that has it.
-        Assert.Equal("Widget", rows[1]["content"].GetProperty("containingType").GetProperty("displayString").GetString());
-        Assert.Equal(JsonValueKind.Null, rows[0]["content"].ValueKind);
-    }
-
-    /// <summary>
-    /// A batch entry that fails to resolve has no symbolId/contentVersion/content to offer — the table
-    /// still needs every row to carry the same columns, so those come back null (not the row being
-    /// dropped or shaped differently) and the error's own detail moves into the content cell rather than
-    /// being lost, since error is otherwise just a short string. An error row's content shares no keys
-    /// with a real symbol's content, so it also correctly hoists nothing.
+    /// A batch entry that fails to resolve has no symbolId/contentVersion/content to offer — its result is
+    /// simply the error envelope ResolveAsync would have produced, exactly like an unresolved
+    /// single-symbol call, not a row shaped to match its neighbours' columns (there are no columns).
     /// </summary>
     [Fact]
     public async Task GetSymbol_SymbolsBatchCarriesAPerRowErrorForAnUnresolvedEntry()
@@ -354,12 +317,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var rows = TableRows(batch.GetProperty("results"));
         Assert.Equal(2, rows.Count);
 
-        Assert.Equal(JsonValueKind.Null, rows[0]["error"].ValueKind);
+        Assert.False(rows[0].ContainsKey("error"));
 
-        Assert.Equal(JsonValueKind.Null, rows[1]["symbolId"].ValueKind);
-        Assert.Equal(JsonValueKind.Null, rows[1]["contentVersion"].ValueKind);
+        Assert.False(rows[1].ContainsKey("symbolId"));
+        Assert.False(rows[1].ContainsKey("contentVersion"));
         Assert.Equal("symbol_not_found", rows[1]["error"].GetString());
-        Assert.Equal("symbol_not_found", rows[1]["content"].GetProperty("error").GetString());
     }
 
     [Fact]
@@ -479,7 +441,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
 
         // The fixture's own project does have edges, so real symbols stay measurable.
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Spin", kinds: "Method"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
         var id = TableRows(root.GetProperty("items")).First()["symbolId"].GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
@@ -514,7 +476,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator,
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
             "Widget", kinds: "class", limit: 10));
 
         var items = TableRows(root.GetProperty("items"));
@@ -602,7 +564,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     private Task<string> ContextToolsCallSlice(string from, string to) =>
-        FlowTools.GetCallSlice(_f.Workspace, _f.Locator, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
+        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
 
     // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
     // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
@@ -805,7 +767,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
 
         var file = hit["file"].GetString()!;
         var line = hit["line"].GetInt32();
@@ -823,10 +785,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, _f.Locator, "Ambiguous")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous")).GetProperty("items")).First();
 
-        Assert.Equal(JsonValueKind.Null, hit["file"].ValueKind);
-        Assert.Equal(JsonValueKind.Null, hit["line"].ValueKind);
+        Assert.False(hit.ContainsKey("file"));
+        Assert.False(hit.ContainsKey("line"));
         // The hit itself is still useful — it just costs a get_symbol to locate.
         Assert.Contains("Ambiguous", hit["name"].GetString());
     }

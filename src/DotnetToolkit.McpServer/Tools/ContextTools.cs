@@ -53,10 +53,8 @@ public static class ContextTools
         + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. A "
         + "misspelled name is an invalid_component error, not silently dropped. "
         + "For several symbols in one call, use symbols instead of symbol — one include applies to all of "
-        + "them, and the response becomes {\"results\":{\"columns\":[...],\"rows\":[[...]]}}, the same "
-        + "table shape as search_index/get_references, instead of issuing several times the calls for the "
-        + "same total answer. A row whose symbol did not resolve has error set instead of symbolId/content."
-        + "instead of issuing several times the calls for the same total answer.")]
+        + "them, returning one result per symbol instead of issuing the call several times for the same "
+        + "total answer. A result whose symbol did not resolve carries error instead of symbolId/content.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -83,78 +81,46 @@ public static class ContextTools
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
-        var format = Formats.Parse(locator.Config.DefaultFormat);
 
         var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
         if (targets is not { Length: > 0 })
-            return Formats.Render(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." }, format);
+            return Formats.Render(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." });
 
         if (targets is [var only] && symbols is null)
-            return await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
-                toolCallId, sessionId, taskId, only, include, knownVersion, refetch, format);
+        {
+            var only1Json = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
+                toolCallId, sessionId, taskId, only, include, knownVersion, refetch);
+            return Formats.Render(JsonSerializer.Deserialize<JsonElement>(only1Json));
+        }
 
         // Batch: each entry is a full, independent fetch (see the knownVersion/refetch note above) sharing
         // one toolCallId, so the telemetry rows this produces read as one tool call over several symbols
-        // rather than several unrelated calls.
-        //
-        // The envelope around a symbol's content IS uniform across every batch entry — symbolId/
-        // contentVersion/content on success, or just error (plus whatever detail it carries, folded into
-        // content rather than dropped) on failure — so those four are always their own fixed columns.
-        // The content itself is not uniform in general (see CompactTable's own doc comment), but THIS
-        // call's actual contents might still share fields — e.g. every requested symbol happening to be a
-        // public method. JsonHoist finds whatever that turns out to be, for this call only, and reports it
-        // in columns rather than leaving it for the caller to notice or miss.
-        var prefix = new List<IReadOnlyList<object?>>(targets.Length);
-        var contents = new List<JsonElement?>(targets.Length);
+        // rather than several unrelated calls. Each result is the same shape GetSymbolOne already returns
+        // for a single symbol (parsed back out of its own JSON so the batch can build one array), not
+        // hoisted or column-shaped — whichever OutputFormat is active does its own thing with a plain
+        // uniform array of these.
+        var results = new List<JsonElement>(targets.Length);
         foreach (var target in targets)
         {
             var itemJson = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
                 telemetry, toolCallId, sessionId, taskId, target, include,
-                knownVersion: null, refetch: false, format);
-            var item = JsonSerializer.Deserialize<JsonElement>(itemJson);
-
-            if (item.TryGetProperty("error", out var errorEl))
-            {
-                prefix.Add([null, null, null, errorEl.GetString()]);
-                contents.Add(item);
-            }
-            else
-            {
-                prefix.Add(
-                [
-                    item.GetProperty("symbolId").GetString(),
-                    item.GetProperty("contentVersion").GetString(),
-                    item.TryGetProperty("limitedBy", out var lb) ? lb.GetString() : null,
-                    null,
-                ]);
-                contents.Add(item.TryGetProperty("content", out var content) ? content : null);
-            }
+                knownVersion: null, refetch: false);
+            results.Add(JsonSerializer.Deserialize<JsonElement>(itemJson));
         }
 
-        var (hoistedColumns, hoistedValues, remainder) = JsonHoist.Split(contents);
-        var columns = new List<string> { "symbolId", "contentVersion", "limitedBy", "error" };
-        columns.AddRange(hoistedColumns);
-        columns.Add("content");
-
-        var rows = new List<IReadOnlyList<object?>>(targets.Length);
-        for (var i = 0; i < targets.Length; i++)
-        {
-            var row = new List<object?>(prefix[i]);
-            row.AddRange(hoistedValues[i]);
-            row.Add(remainder[i]);
-            rows.Add(row);
-        }
-
-        var results = new CompactTable(columns, rows);
-        return Formats.Render(new { results }, format);
+        return Formats.Render(new { results });
     }
 
 private static async Task<string> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
         FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder, TelemetryRecorder telemetry,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include, string? knownVersion, bool refetch, OutputFormat format)
+        string symbol, string? include, string? knownVersion, bool refetch)
     {
+        // Every return in this method is PLAIN JSON, regardless of Formats.Current — its result is
+        // always re-parsed and re-rendered by its caller (GetSymbol, for both the single-symbol and
+        // batch paths), never returned to an MCP caller directly. Rendering in the active format here
+        // (e.g. TOON) would make that re-parse fail outright.
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
@@ -176,17 +142,17 @@ private static async Task<string> GetSymbolOne(
                         contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
                         changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
                     };
-                var indexJson = Formats.Render(indexEnvelope, format);
+                var indexJson = Formats.ToJson(indexEnvelope);
                 return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
                     knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
             }
 
-            var loading = Error(toolCallId, format, workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace");
+            var loading = Formats.ToJson(new { error = workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace" });
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "index_only", "workspace_loading", loading);
         }
 
-        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, format);
+        var (sym, error) = await ResolveAsPlainJsonAsync(solution, ResolveHandle(symbol, symbolStore));
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
@@ -196,8 +162,11 @@ private static async Task<string> GetSymbolOne(
         var components = SymbolComponents.Resolve(include, out var invalidComponent);
         if (components is not { } parts)
         {
-            var badComponent = Error(toolCallId, format, "invalid_component",
-                $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.");
+            var badComponent = Formats.ToJson(new
+            {
+                error = "invalid_component",
+                detail = $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.",
+            });
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "invalid_component", badComponent);
         }
@@ -211,8 +180,6 @@ private static async Task<string> GetSymbolOne(
         object envelope;
         if (lease.OmitContent)
         {
-            // Lease hit: content is omitted entirely. changed:false is the signal; heldVersion and the
-            // hint are required by the lease contract (§8).
             envelope = new
             {
                 symbolId,
@@ -226,22 +193,38 @@ private static async Task<string> GetSymbolOne(
         else
         {
             var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
-            // "changed" is omitted here: content being present already says it.
             envelope = new
             {
                 symbolId,
                 contentVersion = version.ToString(),
                 limitedBy,
-                // Echoed only when the caller passed a non-default include: on the plain standard set it
-                // would repeat what the default already said, on every single call.
                 components = include is null ? null : parts.Resolved,
                 content,
             };
         }
 
-        var json = Formats.Render(envelope, format);
+        var json = Formats.ToJson(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
             knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
+    }
+
+    /// <summary>Plain-JSON variant of <see cref="ResolveAsync"/> for use inside <see cref="GetSymbolOne"/> only.</summary>
+    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsPlainJsonAsync(Solution solution, string symbol)
+    {
+        var resolution = await SymbolResolver.ResolveAsync(solution, symbol);
+        if (resolution.Symbol is not null)
+            return (resolution.Symbol, null);
+        if (resolution.Candidates.Count == 0)
+            return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
+        return (null, Formats.ToJson(new
+        {
+            error = "ambiguous_symbol",
+            candidates = resolution.Candidates.Take(10).Select(c => new
+            {
+                symbolId = SymbolKey.IdOf(c),
+                displayString = c.ToDisplayString(),
+            }),
+        }));
     }
 
 [McpServerTool(Name = "get_references")]
@@ -250,17 +233,11 @@ private static async Task<string> GetSymbolOne(
         + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
         + "Returns every real call site, no false positives, and reports how many text-only matches it excluded "
         + "as excludedTextMatches (callers direction only). "
-        + "Response shape: {targetSymbolId, items:{columns,rows}, totalItems, truncated, excludedTextMatches, "
-        + "limitedBy}. items is a TABLE, not one object per hit: columns lists field names once, each row is a "
-        + "parallel array — read items.rows[i][items.columns.IndexOf(\"displayString\")], not items[i].displayString. "
-        + "columns is NOT fixed — it is whatever fields every item in THIS call's result set actually shares "
-        + "(same convention as search_index/get_symbol's batch results), plus a trailing rest column holding "
-        + "whatever was not common. symbolId, contentVersion, displayString, sites, dispatchKind are common on "
-        + "nearly every call and usually land in columns; isTest (emitted only when true) and content (the "
-        + "inline body, present only with includeBodies:true) are the fields most likely to end up in rest "
-        + "instead, since neither is present on every item. sites is itself a list: "
-        + "[{file, line, snippet}, ...], one entry per call site for that symbol. Each item also carries its own "
-        + "contentVersion for leasing, independent of the target symbol's version.")]
+        + "Each item carries symbolId, contentVersion (independent of the target symbol's own version, so an "
+        + "item can be leased on its own), displayString, dispatchKind, and sites — a list of {file, line, "
+        + "snippet}, one entry per call site for that symbol. isTest is present only when true; content (the "
+        + "inline body) only with includeBodies:true. targetSymbolId confirms which overload this answered "
+        + "for; truncated and excludedTextMatches are present only when they apply.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -275,17 +252,16 @@ private static async Task<string> GetSymbolOne(
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
-            var loading = Error(toolCallId, format, "workspace_loading");
+            var loading = Error(toolCallId, "workspace_loading");
             return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
                 null, false, false, null, 0, "index_only", "workspace_loading", loading, direction);
         }
 
-        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, format);
+        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
                 null, false, false, null, 0, "live", "unresolved", error!, direction);
@@ -306,47 +282,27 @@ private static async Task<string> GetSymbolOne(
             ? await CountTextOnlyMatches(solution, sym.Name)
             : 0;
 
-        // Each item's own fields (symbolId/contentVersion/displayString/sites/dispatchKind are always
-        // present; isTest/content are conditional) go through JsonHoist the same way get_symbol's batch
-        // content does — whatever this call's actual items share becomes its own column, the rest stays
-        // nested per row under "rest" rather than repeating field names that are not actually common.
-        var itemElements = shown.Select(i => (JsonElement?)Formats.ToElement(new
-        {
-            symbolId = i.SymbolId,
-            // Per-item version so leases accumulate before any body is fetched (§10).
-            contentVersion = i.Version,
-            displayString = i.DisplayString,
-            sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
-            dispatchKind = i.DispatchKind,
-            // Emitted only when true — a caller list is mostly non-tests, and false on every row
-            // would cost more than the flag is worth. Absent means "not a test".
-            isTest = i.IsTest ? true : (bool?)null,
-            content = i.Body,
-        })).ToList();
-        var (hoistedColumns, hoistedValues, remainder) = JsonHoist.Split(itemElements);
-        var itemColumns = new List<string>(hoistedColumns) { "rest" };
-        var itemRows = new List<IReadOnlyList<object?>>(itemElements.Count);
-        for (var idx = 0; idx < itemElements.Count; idx++)
-            itemRows.Add(new List<object?>(hoistedValues[idx]) { remainder[idx] });
-
         var envelope = new
         {
-            // The resolved target, so the caller can confirm which overload this answered for.
-            // direction/targetContentVersion are omitted: the first echoes the request, the second is
-            // only useful from get_symbol where the target is actually being leased.
             targetSymbolId = SymbolKey.IdOf(sym),
-            items = new CompactTable(itemColumns, itemRows),
+            items = shown.Select(i => new
+            {
+                symbolId = i.SymbolId,
+                // Per-item version so leases accumulate before any body is fetched (§10).
+                contentVersion = i.Version,
+                displayString = i.DisplayString,
+                sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
+                dispatchKind = i.DispatchKind,
+                isTest = i.IsTest ? true : (bool?)null,
+                content = i.Body,
+            }),
             totalItems = ordered.Count,
             truncated = truncated ? true : (bool?)null,
-            // Reported only when text-only matches actually existed; generatedCode is omitted until it
-            // is genuinely computed rather than hardcoded to zero.
             excludedTextMatches = excludedComments > 0 ? excludedComments : (int?)null,
-            // A caller list from a degraded workspace is missing whatever the failed projects would
-            // have contributed, and nothing in the list itself says so.
             limitedBy = refLimitedBy,
         };
 
-        var json = Formats.Render(envelope, format);
+        var json = Formats.Render(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, SymbolKey.IdOf(sym), null,
             null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
@@ -359,20 +315,16 @@ private static async Task<string> GetSymbolOne(
         + "query:\"fee ledger TryBuy TrySell\" returns the symbols for all four in a single response. Do NOT "
         + "issue one call per word — that is several times the tokens for a worse-ranked result. Partial and "
         + "camel-case-interior terms work too: \"Ledger\" finds FIFOLedger. "
-        + "Response shape: {items:{columns,rows}}. items is a TABLE, not one object per hit: "
-        + "columns is always exactly [\"symbolId\",\"name\",\"kind\",\"file\",\"line\"], and each entry in rows "
-        + "is a parallel array in that column order — read rows[i][2] for kind, not rows[i].kind. name is the "
-        + "fully-qualified name, directly usable as get_symbol's symbol argument. Each hit carries the file and "
-        + "line it was found at, so going straight there needs no second call; a hit whose name maps to several "
-        + "declarations (overloads) has file and line as null rather than pointing at the wrong one — follow up "
-        + "with get_symbol, which separates overloads by parameter list. "
+        + "Each hit carries symbolId, name (the fully-qualified name, directly usable as get_symbol's symbol "
+        + "argument), kind, and the file/line it was found at, so going straight there needs no second call; "
+        + "a hit whose name maps to several declarations (overloads) has file and line as null rather than "
+        + "pointing at the wrong one — follow up with get_symbol, which separates overloads by parameter list. "
         + "Follow up with get_symbol when you want the content itself.")]
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
-        SolutionLocator locator,
         [Description("Free-text query over symbol names.")] string query,
         [Description("Optional comma-separated kind filter, case-insensitive. Valid values: class (alias for "
             + "type), interface, struct, record, enum, delegate, method, property, field, event. e.g. "
@@ -385,60 +337,39 @@ private static async Task<string> GetSymbolOne(
         sessionId ??= Ids.AmbientSession;
         taskId ??= Ids.UnattributedTask;
         var toolCallId = Ids.ToolCall();
-        var format = Formats.Parse(locator.Config.DefaultFormat);
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var kindList = string.IsNullOrWhiteSpace(kinds)
             ? null
             : kinds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var hits = symbolStore.Search(query, NormalizeKinds(kindList), limit);
-        // A populated store is necessary but not sufficient: a degraded workspace can fill it with
-        // wrong data, which is exactly how a whole repo's test flags came back false.
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
 
-        // Locations come from the syntax index, swept for staleness first, so a hit points at where the
-        // declaration is now rather than where it was when the row was written.
         await index.EnsureFreshAsync();
         var sites = index.Locate(hits
             .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
             .ToHashSet(StringComparer.Ordinal));
 
-        // A table instead of one object per hit: the field names (symbolId, name, kind, file, line) are
-        // stated once instead of once per row, which is most of what a hit list costs at limit:50.
         object envelope = new
         {
-            // Absent means nothing limited this answer — the healthy case costs no tokens.
             limitedBy = searchLimitedBy,
-            items = CompactTable.Of(
-                ["symbolId", "name", "kind", "file", "line"],
-                hits,
-                h =>
+            items = hits.Select(h =>
+            {
+                var site = sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName));
+                return new
                 {
-                    // Where to look, so the common "search then go there" pass costs one call instead of
-                    // two. Omitted — rather than guessed — when the name maps to more than one
-                    // declaration, since the index keys members without their parameter lists and cannot
-                    // separate overloads. Null means "call get_symbol", which was the only option before.
-                    var site = sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName));
-                    return (IReadOnlyList<object?>)
-                    [
-                        h.SymbolId,
-                        // Fully qualified up to the member — unambiguous across namespaces and directly
-                        // usable as a retrieval target — but with parameter types shortened. A
-                        // 15-parameter method spent ~500 characters here repeating the same namespace
-                        // once per parameter, and the resolver strips those prefixes before matching
-                        // anyway, so the long form bought nothing.
-                        // Rank/score and matchedOn are omitted — the list is already ordered.
-                        SymbolResolver.CompactName(h.FqName),
-                        h.Kind,
-                        site?.File,
-                        site?.Line,
-                    ];
-                }),
+                    symbolId = h.SymbolId,
+                    name = SymbolResolver.CompactName(h.FqName),
+                    kind = h.Kind,
+                    file = site?.File,
+                    line = site?.Line,
+                };
+            }),
         };
 
-        var json = Formats.Render(envelope, format);
+        var json = Formats.Render(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
             null, false, false, null, hits.Count, searchLimitedBy, null, json);
     }
@@ -937,13 +868,13 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
         return member.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.Internal;
     }
 
-    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(Solution solution, string symbol, string toolCallId, OutputFormat format)
+    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(Solution solution, string symbol, string toolCallId)
     {
         var resolution = await SymbolResolver.ResolveAsync(solution, symbol);
         if (resolution.Symbol is not null)
             return (resolution.Symbol, null);
         if (resolution.Candidates.Count == 0)
-            return (null, Formats.Render(new { error = "symbol_not_found", symbol }, format));
+            return (null, Formats.Render(new { error = "symbol_not_found", symbol }));
         return (null, Formats.Render(new
         {
             error = "ambiguous_symbol",
@@ -952,12 +883,12 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 symbolId = SymbolKey.IdOf(c),
                 displayString = c.ToDisplayString(),
             }),
-        }, format));
+        }));
     }
 
     // detail carries what the caller needs to correct the call — omitted when the kind says it all.
-    private static string Error(string toolCallId, OutputFormat format, string kind, string? detail = null) =>
-        Formats.Render(new { error = kind, detail }, format);
+    private static string Error(string toolCallId, string kind, string? detail = null) =>
+        Formats.Render(new { error = kind, detail });
 
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,

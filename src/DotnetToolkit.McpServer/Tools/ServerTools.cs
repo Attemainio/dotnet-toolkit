@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using DotnetToolkit.McpServer.Devlog;
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Workspace;
 using ModelContextProtocol.Server;
 
@@ -13,6 +14,19 @@ public static class ServerTools
     [McpServerTool(Name = "ping")]
     [Description("Health check; returns pong and the server version.")]
     public static string Ping() => "pong dotnet-toolkit/0.1.0";
+
+    [McpServerTool(Name = "set_output_format")]
+    [Description("Change how tool responses are encoded for the rest of this session: json (pretty-printed), "
+        + "compact (minified JSON), or toon (Token-Oriented Object Notation, the default — same data, far "
+        + "fewer tokens). Persists until changed again or the server restarts.")]
+    public static string SetOutputFormat([Description("json | compact | toon")] string format)
+    {
+        var normalized = format.Trim().ToLowerInvariant();
+        if (normalized is not ("json" or "compact" or "toon"))
+            return $"unknown format: {format} (use json|compact|toon)";
+        Formats.Current = Formats.Parse(normalized);
+        return $"output format set to {Formats.Current.ToString().ToLowerInvariant()}";
+    }
 
     [McpServerTool(Name = "workspace_status")]
     [Description("Status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready.")]

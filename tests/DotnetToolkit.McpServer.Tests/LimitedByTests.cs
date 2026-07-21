@@ -1,4 +1,5 @@
 using DotnetToolkit.McpServer.Indexing;
+using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Tools;
 using DotnetToolkit.McpServer.Telemetry;
@@ -30,6 +31,10 @@ public sealed class LimitedByTests : IDisposable
 
     public LimitedByTests()
     {
+        // Pinned so JsonDocument.Parse assertions read plain JSON regardless of Formats.Current's
+        // process-wide default (toon) — this fixture is constructed directly, not through Program.cs,
+        // so the config.json-based seeding path never runs for it.
+        Formats.Current = OutputFormat.Compact;
         _root = Directory.CreateTempSubdirectory("limited-by-").FullName;
         Directory.CreateDirectory(Path.Combine(_root, ".claude", "dotnet-toolkit"));
         File.WriteAllText(Path.Combine(_root, ".claude", "dotnet-toolkit", "config.json"), "{\"defaultFormat\":\"compact\"}");
@@ -68,7 +73,7 @@ public sealed class LimitedByTests : IDisposable
     [Fact]
     public async Task SearchIndexReportsIndexOnlyWhileTheStoreIsEmpty()
     {
-        var json = await ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, _locator, "Anything");
+        var json = await ContextTools.SearchIndex(_symbols, _index, _workspace, _telemetry, "Anything");
         var root = System.Text.Json.JsonDocument.Parse(json).RootElement;
 
         Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());
