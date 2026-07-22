@@ -50,7 +50,7 @@ Docs get audited against this, not against their own prior text.
 arguments they claim, and that every tool relevant to that skill's subject actually appears in it — a tool
 added to `Tools/*.cs` that fits an existing skill's scope but isn't mentioned there is a finding, not just
 a missing doc row. `skills/dotnet-toolkit-init/SKILL.md` embeds its own copy of the tool table for
-*consuming* repos — check that copy separately; it drifts independently of `.claude/rules/csharp-tools.md`.
+*consuming* repos — check that copy separately; it drifts independently of `CLAUDE.md`'s table.
 
 **4. Every instruction/guideline file that tells a caller to use the MCP tools.** Check each one still
 lists every tool from Step 0, with nothing stale (a tool it describes that no longer exists) and nothing
@@ -61,11 +61,14 @@ missing (a tool that exists but appears nowhere in it):
 | `docs/tool-reference.md` | complete per-tool catalog: arguments, one real example call/response, what it replaces |
 | `CLAUDE.md`'s "Working in this repo" table (`Instead of / Use`) | one row per read/write tool a session would otherwise reach for Grep/Read/`find` instead of |
 | `CLAUDE.md`'s Architecture section, `Tools/` bullet | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new clause |
-| `CLAUDE.md`'s Code review section (dimension list + read-side toolset paragraph) | the review agent's actual granted tool list, not a stale subset |
-| `.claude/rules/csharp-tools.md` | the same tool table CLAUDE.md carries, since this is the at-contact copy — check it doesn't silently diverge from CLAUDE.md's version |
-| `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table, written into consuming repos |
-| `agents/dotnet-code-review.md` | `tools:` frontmatter list matches Step 0 exactly for whatever subset the agent should have — every read-side MCP tool the agent needs for efficient orientation (not a stale subset missing a tool added since); dimension table's doc pointers still resolve to real files |
-| `docs/review-workflow.md` | every tool named in it (setup steps, boundaries) still exists and is still described accurately (e.g. what `workspace_status` signals, what a zero-hit from a semantic tool does and doesn't prove) |
+| `CLAUDE.md`'s Code review section (aspect list + read-side toolset paragraph) | the review agent's actual granted tool list, not a stale subset |
+| `.claude/rules/csharp-standards.md` | the always-loaded standards index — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/`, and its `validate_patch` line must match the current write path |
+| the nine standards files in `.claude/rules/` (`naming`, `styling`, `best-practices`, `antipatterns`, `performance`, `concurrency`, `security`, `testing`, `xml-documentation`) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
+| `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently |
+| `agents/dotnet-code-review.md` | `tools:` frontmatter list matches Step 0 exactly for whatever subset the agent should have — every read-side MCP tool the agent needs for efficient orientation (not a stale subset missing a tool added since); its standards-file list (all nine) still resolves to real files in `.claude/rules/` |
+| `docs/agent-reference.md` | every tool named in it (setup steps, boundaries) still exists and is still described accurately (e.g. what `workspace_status` signals, what a zero-hit from a semantic tool does and doesn't prove); its aspect list matches the agent file's |
+| `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
+| `docs/skill-reference.md` | one entry per skill under `skills/`, none stale, none missing |
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
 
 **5. Hooks and scripts.** Read `hooks/hooks.json` and every script it points at
@@ -76,21 +79,22 @@ missing (a tool that exists but appears nowhere in it):
      read guard, `reload_workspace(scope: "all")` for the reload hint)? A guard script's message is read
      at the exact moment a caller is blocked — a stale one teaches the wrong fix at the worst moment.
    - Does `hooks/hooks.json` still point at scripts that exist, with matchers (`Edit`/`Write`/`NotebookEdit`/
-     `Read`) that match what CLAUDE.md's "Plugin packaging" section claims they do?
-   - Any new script under `scripts/` not mentioned in CLAUDE.md's "Plugin packaging" section is a finding
-     (see Step 6).
+     `Read`) that match what `docs/hook-reference.md` and CLAUDE.md's "Plugin packaging" section claim
+     they do?
+   - Any new script under `scripts/` not mentioned in `docs/hook-reference.md` or CLAUDE.md's "Plugin
+     packaging" section is a finding (see Step 6).
    - `hooks/hooks.json`'s matchers key on tool name only (`Edit|Write|NotebookEdit`, `Read`), not on which
      agent issues the call — they fire identically whether the tool call comes from the main agent or a
      subagent invocation of `dotnet-code-review`. That agent is granted `Read` (for the cases
-     `docs/review-workflow.md`'s Setup step 3 allows — judging specific lines `get_symbol` didn't already
+     `docs/agent-reference.md`'s Setup step 3 allows — judging specific lines `get_symbol` didn't already
      give it), so confirm two things stay true together: (a) `agents/dotnet-code-review.md`'s `tools:` list
      does not grant it `Edit`/`Write`/`NotebookEdit` at all — the guard for those exists but the agent
-     should never need it, since `docs/review-workflow.md`'s Boundaries section states it never modifies
-     code; and (b) `docs/review-workflow.md`'s Setup step 3 still tells it to reach for `search_index`/
+     should never need it, since `docs/agent-reference.md`'s Boundaries section states it never modifies
+     code; and (b) `docs/agent-reference.md`'s Setup step 3 still tells it to reach for `search_index`/
      `get_symbol` first and only `Read` a file when a symbol lookup didn't give it the lines — i.e. its
      `Read` grant is a narrow, guarded fallback that `guard-cs-read.sh` still enforces on every call, not an
      unguarded escape hatch from the MCP tools. If either drifts — the agent gains `Edit`/`Write`, or
-     `review-workflow.md` stops steering it toward symbol retrieval first — that's a finding here, not just
+     `agent-reference.md` stops steering it toward symbol retrieval first — that's a finding here, not just
      in Step 4's table.
 
 **6. New or modified files nothing else references.** This is the drift-detection step, not just a
@@ -131,4 +135,4 @@ Apply fixes yourself once found, in the Step 1→8 order above (code is never th
 skill — only the docs/skills/rules/hooks that describe it). Every fix here is to a non-`.cs` file, so none
 of it goes through `validate_patch`; `Edit`/`Write` apply directly. Do not silently skip a step because
 "nothing looks wrong there" — state that the step was checked and came back clean, the same discipline
-`dotnet-code-review` applies to a clean dimension.
+`dotnet-code-review` applies to a clean aspect.

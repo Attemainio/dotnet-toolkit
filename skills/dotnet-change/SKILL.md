@@ -12,6 +12,21 @@ only if the result is genuinely sufficient. Disk is never touched otherwise.
 
 Use `Edit`/`Write` directly only for non-C# files (csproj, json, md).
 
+## Before the first C# edit of a session: read the standards
+
+The canonical coding standards live in `.claude/rules/` (in a consuming repo:
+`${CLAUDE_PLUGIN_ROOT}/.claude/rules/`, or the repo's own copies if `dotnet-toolkit-init` installed
+them; a repo-local override at `.claude/dotnet-toolkit/<name>.md` wins per file). They are **not**
+auto-loaded — this step is what loads them. Per `csharp-standards.md`'s index, read before editing:
+
+- **always**: `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`;
+- **when the change touches** endpoints/auth/SQL/config/logging/crypto: `security.md`;
+  hot paths, buffers, SIMD, `unsafe`: `performance.md`; awaits/locks/tasks/shared state:
+  `concurrency.md`; tests: `testing.md`.
+
+Once per session is enough — hold them; don't re-read per edit. `dotnet-code-review` validates against
+the same files afterward, but writing to the standard beats fixing to it.
+
 ## The loop
 
 1. **Hold current content.** Fetch what you are about to change with `get_symbol`
@@ -21,7 +36,7 @@ Use `Edit`/`Write` directly only for non-C# files (csproj, json, md).
    implementations are otherwise guaranteed.
 3. **Check for a summary.** If the symbol you're changing has no `<summary>`
    (`xmlDoc.summary` absent from step 1's fetch, or `search_index`'s `hasSummary` was absent) — add
-   one in the *same* patch, following `docs/xml-documentation.md`'s tag rules: purpose only, 1–2
+   one in the *same* patch, following `.claude/rules/xml-documentation.md`'s tag rules: purpose only, 1–2
    sentences, never restate the method name, implementation/performance detail goes in
    `<remarks>` not `<summary>`. This isn't optional cleanup — an edit that leaves a touched public
    symbol undocumented is not a finished edit.

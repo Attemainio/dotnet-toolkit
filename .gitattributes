@@ -1,0 +1,10 @@
+# Force LF in the working tree for all text files. Windows-side tooling kept CRLF-ing checkouts,
+# which broke real things: guard-cs-read.sh's shebang became "bash\r" (every hook invocation then
+# failed open), and CRLF inside test raw-string literals failed two CompactFormatter tests. Shell
+# scripts, C# sources, and hook JSON are load-bearing about this; the blanket rule keeps diffs
+# clean everywhere else too.
+* text=auto eol=lf
+*.sh text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+hooks/hooks.json text eol=lf

@@ -1,23 +1,27 @@
-# Review agent workflow
+# Agent reference: dotnet-code-review
 
-Shared process for `dotnet-code-review`, this plugin's single review subagent. It is launched once per
-dimension (`correctness`, `performance`, `cleanup`, `docs`, `testing`, `security` — see the table in
-`agents/dotnet-code-review.md`), in parallel when more than one dimension applies to a request. That agent
-file states **which** dimension maps to **which** doc(s); this doc states **how** any invocation operates,
-regardless of dimension — read once, referenced by every invocation, so the process stays in one place
-instead of drifting per dimension.
+This plugin ships one review subagent, `dotnet-code-review` (`agents/dotnet-code-review.md`) — a
+read-only **validation layer** that checks code against the standards in `.claude/rules/`, not a source
+of standards itself. Each invocation reviews **all quality aspects at once** — correctness, naming,
+styling, best practices, performance, concurrency, security, testing, XML documentation, and
+cleanup/duplication — over **one precisely stated scope**. Parallelism comes from scope partitioning,
+not aspect splitting: a large target is divided into disjoint slices (per folder, per project, per
+changed-file cluster) and one instance of the same agent is launched per slice, all in a single
+message. Each instance covers everything about its slice; together they cover everything about the
+target, with no file reviewed twice.
 
-Each invocation is a **validation layer**: it checks that code follows the standards recorded in this
-`docs/` folder. It does not own the standards themselves — this folder does, and the main agent reads the
-same files, so the main agent and every review invocation are working from one shared source of truth.
+The standards are shared: the main agent reads the same `.claude/rules/` files at write time (per
+`csharp-standards.md`'s index), so writer and reviewer work from one source of truth. The
+`dotnet-review` skill teaches the main conversation how to partition scope, what to tell each
+instance, and how to merge their output.
 
 ## Setup — before reviewing anything
 
-1. **Read the doc(s) for your stated `dimension`**, per the table in `agents/dotnet-code-review.md`,
-   checking for a repo-local override first:
+1. **Read the standards** — all nine files (or only the `focus:` aspects' files when the invoking
+   prompt explicitly narrows), each checked for a repo-local override first:
    `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
-   `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md`. A repo-local file fully replaces the bundled default for that
-   doc — don't blend the two.
+   `${CLAUDE_PLUGIN_ROOT}/.claude/rules/<name>.md`. A repo-local file fully replaces the bundled
+   default for that file — don't blend the two.
 2. **Call `workspace_status` before trusting a semantic result, not just when a tool errors.** It reports
    whether the MSBuild workspace is fully loaded, still `index_only`, or degraded. `get_references`,
    `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`, and
@@ -46,10 +50,8 @@ same files, so the main agent and every review invocation are working from one s
 
 ## Review modes
 
-`mode` (diff/scope) is independent of `dimension` (correctness/performance/cleanup/docs/testing/security)
-— the invoking agent states both. If mode isn't stated, default to your dimension's default mode from the
-table in `agents/dotnet-code-review.md` (diff for every dimension except `cleanup`, which defaults to
-scope).
+The invoking agent states the `mode`; default to **diff** when a baseline is stated or implied by the
+request, **scope** when handed a folder/project.
 
 - **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
   working tree). Start with `get_semantic_diff` against that baseline: it reports exactly which symbols
@@ -60,27 +62,38 @@ scope).
   to the stated file list when the baseline is the working tree.
 - **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
   Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
-  `cleanup` defaults to scope mode when unstated (dead code needs a wide view).
+  Dead-code claims are most reliable in scope mode, where the wide view exists.
 
-## Staying in your lane
+## Scope discipline — the contract that makes parallelism work
 
-Each invocation owns exactly the one dimension stated in its prompt. When you notice something squarely
-in a different dimension, name it in one line and tag it `[see: dimension:<name>]` rather than reviewing
-it yourself — this is what keeps several parallel invocations, one per dimension, from producing
-overlapping opinions about the same line, and keeps each one's output genuinely focused.
+Each instance owns exactly the scope stated in its prompt, and other instances may own neighboring
+scopes in the same run:
+
+- **Report findings only about code inside your scope.** Following evidence *outward* is fine and often
+  necessary (a caller in another folder, a lock's other acquisition site, a test project elsewhere) —
+  but the finding it supports must anchor to a file:line inside your scope.
+- **Something clearly wrong outside your scope** gets one line at the end of your report
+  (`Outside scope: <file:line> — <one clause>`), not a review — the invoking agent decides whether
+  another instance already covers it.
+- **Never widen a vague scope yourself.** If the stated scope is ambiguous, state your narrowest
+  reasonable reading in one line and proceed with it.
 
 ## Output format
 
 For each finding:
 - **File and line**: `path/to/File.cs:42`
+- **Aspect**: `[correctness]` `[performance]` `[concurrency]` `[cleanup]` `[docs]` `[testing]`
+  `[security]` — the standards file the finding derives from.
 - **Severity**: 🔴 Bug/must-fix, 🟡 Convention violation or needs verification, 🔵 Suggestion.
 - **What**: the issue, concisely.
-- **Why**: why it matters in this code specifically — not generic advice restating the doc.
+- **Why**: why it matters in this code specifically — not generic advice restating the standard.
 - **Fix**: describe the remedy; a short snippet when the fix is unambiguous.
 - **How to verify** *(performance 🟡 findings only)*: a specific counter, trace, or benchmark setup.
 
-Group findings by file, ordered 🔴 → 🟡 → 🔵. End with a totals line. If a scope is clean, say so in one
-sentence — don't pad with praise, and don't manufacture findings to justify having run.
+Group findings by file, ordered 🔴 → 🟡 → 🔵. End with a totals line (overall and per aspect — an
+aspect with zero findings is stated as clean, so silence is never ambiguous). If the whole scope is
+clean, say so in one sentence — don't pad with praise, and don't manufacture findings to justify having
+run.
 
 ## Boundaries — every invocation
 
@@ -88,7 +101,8 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
   structurally, not just by instruction. Report findings for the main agent (or the user) to act on.
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
-  guess — say "uncertain, verify" rather than assert.
+  guess — say "uncertain, verify" rather than assert. A race/deadlock claim names the two call paths that
+  overlap, traced with `get_references`/`get_call_hierarchy`, not just the pattern.
 - **Zero callers is not proof of dead code.** Rule out an unready workspace first, per the `workspace_status`
   step above — a zero-hit while the workspace is `index_only` or still loading is workspace state, not a
   finding. Once the workspace is confirmed loaded, the count is of *static call sites in the loaded solution*,
@@ -100,16 +114,15 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
   attribute on the symbol (or on its type) is the signal that the count is not the answer. Before claiming
   removal, check whether something reaches it another way — `get_call_slice` from a plausible entry point,
   or such an attribute — and if it is framework-invoked, say so and drop the finding.
-- **Stay in your one dimension.** Defer everything else per "Staying in your lane" above.
-- **Don't flag pure preference** outside what your dimension doc actually states.
+- **Stay in your stated scope.** Defer everything else per "Scope discipline" above.
+- **Don't flag pure preference** outside what the standards actually state.
 
 ## Memory
 
 `dotnet-code-review` has persistent, project-scoped memory (`memory: project` — one namespace per
-consuming repo, **shared across all dimensions** since every invocation is the same agent). Prefix every
-note with the dimension it applies to (e.g. `[performance] ...`) — an invocation reading memory written
-under a different dimension should skip notes not tagged for its own. Record concise, factual notes on:
-project-specific conventions confirmed intentional (via a `search_log` hit or repeated deliberate pattern)
-so you stop re-flagging them, recurring finding classes, and anything your dimension doc doesn't cover
-that this project has clearly standardized on. Memory does not authorize editing anything in `docs/` —
-doc changes stay with the main agent and the user.
+consuming repo, shared across all parallel instances since every instance is the same agent). Prefix
+every note with the aspect it applies to (e.g. `[performance] ...`). Record concise, factual notes on:
+project-specific conventions confirmed intentional (via a `search_log` hit or repeated deliberate
+pattern) so you stop re-flagging them, recurring finding classes, and anything the standards don't
+cover that this project has clearly standardized on. Memory does not authorize editing anything in
+`.claude/rules/` — standards changes stay with the main agent and the user.

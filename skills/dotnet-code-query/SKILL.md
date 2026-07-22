@@ -184,7 +184,7 @@ Examples:
 - `include: "xmlDoc"` — the leanest non-default fetch: just the skeleton plus the doc breakdown,
   no `referenceCounts` latency cost (it waits on the semantic model) and no history lookup.
 - `include: "attributes"` — check `[Authorize]`/`[AllowAnonymous]`/`[Obsolete]` presence on a
-  member without a `source` fetch; the `security` and `docs` review dimensions use this.
+  member without a `source` fetch; the review agent's `[security]` and `[docs]` aspects use this.
 
 An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
 misspelled name is an `invalid_component` error rather than being silently dropped.

@@ -1,84 +1,81 @@
 ---
 name: dotnet-review
-description: Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues, assess hot/cold-path performance, find dead code/duplication, review XML documentation, check test coverage, or do a security review. Delegates to the plugin's dotnet-code-review subagent (launched once per dimension) rather than reviewing inline, since it runs with fresh context and reads the project's reference docs in docs/.
+description: Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues, assess performance or concurrency, find dead code/duplication, review XML documentation, check test coverage, or do a security review. Delegates to the plugin's dotnet-code-review subagent — each instance reviews ALL quality aspects of one precisely stated scope, and large targets are partitioned into disjoint scopes reviewed by parallel instances — rather than reviewing inline, since it runs with fresh context and reads the project's standards in .claude/rules/.
 ---
 
 # Delegating to dotnet-code-review
 
-This plugin ships one review subagent, `dotnet-code-review`, that reviews exactly **one dimension per
-invocation** — `correctness`, `performance`, `cleanup`, `docs`, `testing`, or `security` — stated as
-`dimension: <name>` in its prompt. It starts with **no prior context of the project** — it reads code and
-the shared `docs/` reference (styling, naming, best practices, performance, XML documentation, testing,
-security, common anti-patterns, and `docs/review-workflow.md`'s shared process) fresh, like a senior
-developer seeing the codebase for the first time — and reports findings without editing anything. Route
-review requests to it instead of reviewing inline yourself; it reads the actual reference docs (or a
-consuming repo's overrides under `.claude/dotnet-toolkit/`) that you only have a summary of.
+This plugin ships one review subagent, `dotnet-code-review`. Each invocation reviews **all quality
+aspects at once** — correctness, naming, styling, best practices, performance, concurrency, security,
+testing, XML documentation, cleanup/duplication — over **one stated scope**. It starts with **no prior
+context of the project**: it reads code and the shared standards in the plugin's `.claude/rules/` (or a
+consuming repo's overrides under `.claude/dotnet-toolkit/`) fresh, like a senior developer seeing the
+codebase for the first time, and reports findings without editing anything. Route review requests to it
+instead of reviewing inline yourself — it reads the actual standards files that you only have a summary
+of.
 
-It has the plugin's read-side MCP toolset: `search_index` to locate symbols, `get_symbol` for a symbol's
-shape/members/source, `get_references` to trace callers, implementations and overrides semantically,
-`get_scope` for what is callable at a point (including extension methods), `get_call_slice` for the
-shortest path between two symbols, `get_call_hierarchy`/`get_type_hierarchy` for callers-of/callees-of and
-base/derived shape, `get_project_graph`/`detect_circular_dependencies` for project-level structure,
-`search_log` to check whether a pattern was a recorded past decision, `workspace_status` to confirm the
-workspace is fully loaded before trusting a semantic result, and `get_semantic_diff` for what a commit
-range actually changed and whether any of it is breaking. It has no `Edit`/`Write` and no `validate_patch`,
-so it cannot change code.
+**Parallelism is by scope, not by aspect.** For anything larger than a handful of files, partition the
+target into disjoint slices and launch one instance per slice in a single message (parallel tool
+calls). Every instance covers every aspect of its slice, so nothing is reviewed twice and no aspect is
+silently skipped.
+
+## Partitioning the scope
+
+- **Small change / single folder** (≲ 10 files): one instance, whole target as its scope.
+- **A project or large diff**: partition along natural seams — one instance per subsystem folder
+  (`Workspace/`, `Store/`, `Tools/`…) or per project. Prefer seams that keep tightly-coupled files in
+  the same slice, so an instance sees a whole unit.
+- **A diff spanning several subsystems**: cluster the changed files by folder and give each instance
+  one cluster *plus the shared baseline statement*.
+- **Whole-solution audit**: one instance per project, or per top-level folder of a large project.
+
+State each instance's scope **precisely** — an explicit folder path or file list, never "the rest" or
+"everything else". Scopes must be disjoint: the same file in two scopes produces duplicate,
+possibly-conflicting findings. Each instance stays strictly inside its slice (per
+`docs/agent-reference.md`'s scope-discipline section) and reports anything it notices outside as a
+one-line `Outside scope:` note — check those notes against your partition to see whether another
+instance already covered them.
+
+## What to tell each instance
+
+- **Scope** (required): the exact folder(s)/file list this instance owns.
+- **`mode`**: `diff` (changed files vs. a stated baseline — say what the baseline is: `main`, last
+  commit, uncommitted working tree) or `scope` (the slice as a cohesive unit). If a baseline is
+  relevant, state it for every instance identically.
+- **`focus:`** (optional, exceptional): one or more aspects (`correctness`, `performance`,
+  `concurrency`, `cleanup`, `docs`, `testing`, `security`) when the user *explicitly* asked for a
+  narrow review ("security review only", "just check test coverage"). Omit it otherwise — the default
+  is all aspects, and that default is the point: a full review that silently skipped concurrency or
+  docs because nobody asked is the failure mode this design replaces.
+- Any hot/cold-path hint you already know — saves the instance re-deriving something you established
+  earlier in the conversation.
 
 Because it has `get_semantic_diff`, a review scoped to committed refs is worth stating as such — the
-agent can then skip files a formatting-only commit merely touched. It reads git refs, so it cannot see
-uncommitted work; for a working-tree review, state the file list instead.
+instance can then skip files a formatting-only commit merely touched. It reads git refs, so it cannot
+see uncommitted work; for a working-tree review, state the file list instead.
 
-Note: it can consult the development log with `search_log` before asserting a finding, so a pattern
+Note: it consults the development log with `search_log` before asserting a finding, so a pattern
 recorded as a deliberate past decision is cited rather than re-flagged. The log only covers changes
 applied through `validate_patch`, so decisions made outside that path leave no trace — if a finding
 might reflect one, that context still has to come from you.
 
-The `security` dimension has no dedicated static-analysis scanner behind it (no CVE/dependency check, no
-taint tracking) — its findings come from reading source and tracing references the same way every other
-dimension does. If the user needs a CVE/dependency-vulnerability scan specifically, say that's out of
-scope rather than letting a `security` review imply it was covered.
-
-## Which dimension(s) to request
-
-| Request shape | Launch with `dimension:` |
-|---|---|
-| "Review this code" / "review this PR" / naming or style feedback / general code-quality check | `correctness` |
-| Code that's loop-heavy, request-handling, tick-based, or the user asks about performance/allocations | `correctness` + `performance` |
-| "Find dead code" / "find duplication" / cleanup / tech-debt pass | `cleanup` (add `correctness` too if the request is a general "review," not cleanup-specific) |
-| New/changed public API surface, or "review the docs/comments on this" | `docs` (add `correctness` too for a general review that happens to touch public API) |
-| "Is this tested" / "check test coverage" / new code with no tests visible | `testing` |
-| "Security review" / auth, secrets, or input-handling code / pre-production hardening pass | `security` |
-| A full/comprehensive review with no narrower scope stated | All six dimensions, in parallel |
-
-Launch one `dotnet-code-review` invocation per dimension in a single message (parallel tool calls) when
-more than one applies — they're independent and read-only, so there's no ordering dependency. Adding a
-new dimension later is a change to `agents/dotnet-code-review.md`'s dimension table and a new `docs/*.md`
-file — not a new agent to route to here.
-
-## What to tell each invocation
-
-Every invocation needs the same context from you (per `docs/review-workflow.md`'s review-modes section,
-which it reads itself — you just need to supply the specifics):
-- **`dimension`**: `correctness` | `performance` | `cleanup` | `docs` | `testing` | `security`, per the
-  table above. Required — the agent defaults to `correctness` if you omit it, which is only right for the
-  first row.
-- **`mode`**: `diff` (changed files vs. a stated baseline — say what the baseline is: `main`, last commit,
-  uncommitted working tree) or `scope` (an entire folder/project as a unit). Leave unstated to let the
-  invocation apply its dimension's own default (diff for every dimension except `cleanup`, which defaults
-  to scope).
-- **Scope**: which files/folders/project, not the whole solution unless asked.
-- Any hot/cold-path hint you already know, for a `performance` invocation — saves it re-deriving
-  something you already established earlier in the conversation.
+The `[security]` aspect has no dedicated static-analysis scanner behind it (no CVE/dependency check, no
+taint tracking) — its findings come from reading source and tracing references like every other aspect.
+If the user needs a CVE/dependency-vulnerability scan specifically, say that's out of scope rather than
+letting a review imply it was covered.
 
 ## Merging results
 
-Every invocation returns findings in the same severity-tagged format (🔴/🟡/🔵, grouped by file, totals
-line — defined once in `docs/review-workflow.md`). When more than one dimension ran:
-- Merge by file, not by dimension — a reader wants everything about `OrderService.cs` together.
-- Findings that duplicate across two dimensions' output (rare, since each stays in its lane and defers
-  with `[see: dimension:<name>]` tags per `docs/review-workflow.md`) — keep the more specific one, drop
-  the deferred restatement.
-- Preserve each finding's severity and file:line exactly as reported; don't re-summarize away specifics.
+Every instance returns findings in the same format (aspect tag + 🔴/🟡/🔵, grouped by file, per-aspect
+totals — defined once in `docs/agent-reference.md`). When more than one instance ran:
+
+- Concatenate by scope — scopes are disjoint, so there is no per-file dedup to do; a reader wants
+  everything about `OrderService.cs` together, and exactly one instance produced it.
+- Collect the `Outside scope:` one-liners, drop those already covered by another instance's findings,
+  and surface the rest (they point at code no slice owned).
+- Sum the per-aspect totals across instances so the merged report states clean aspects explicitly.
+- Preserve each finding's severity, aspect tag, and file:line exactly as reported; don't re-summarize
+  away specifics.
 
 ## What this agent will never do
 

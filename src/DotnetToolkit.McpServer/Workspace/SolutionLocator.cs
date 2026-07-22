@@ -14,14 +14,26 @@ public sealed class SolutionLocator
 
     private readonly ILogger<SolutionLocator> _log;
 
+    // volatile: swapped whole by Rescan() on the reload path while request threads read the
+    // properties below — one reference swap keeps Config/WorkspaceEntry/Candidates consistent.
+    private volatile ResolvedState _state;
+
     public string Root { get; }
-    public ToolkitConfig Config { get; private set; }
-    public string? WorkspaceEntry { get; private set; }
-    public IReadOnlyList<string> Candidates { get; private set; }
+    public ToolkitConfig Config => _state.Config;
+    public string? WorkspaceEntry => _state.WorkspaceEntry;
+    public IReadOnlyList<string> Candidates => _state.Candidates;
 
     public string ToolkitDir => Path.Combine(Root, ".claude", "dotnet-toolkit");
     public string CacheDir => Path.Combine(ToolkitDir, "cache");
-    public bool IsAmbiguous => WorkspaceEntry is null && Candidates.Count > 1;
+    public bool IsAmbiguous
+    {
+        get
+        {
+            // One snapshot read — evaluating the two properties separately could straddle a Rescan().
+            var s = _state;
+            return s.WorkspaceEntry is null && s.Candidates.Count > 1;
+        }
+    }
 
     public SolutionLocator(ILogger<SolutionLocator> log, string? rootOverride = null)
     {
@@ -32,9 +44,10 @@ public sealed class SolutionLocator
             ?? Directory.GetCurrentDirectory());
 
         _log = log;
-        Config = LoadConfig(log);
-        (WorkspaceEntry, Candidates) = ResolveEntry(log);
-        log.LogInformation("Root: {Root}; workspace entry: {Entry}", Root, WorkspaceEntry ?? "(none)");
+        var config = LoadConfig(log);
+        var (entry, candidates) = ResolveEntry(config, log);
+        _state = new ResolvedState(config, entry, candidates);
+        log.LogInformation("Root: {Root}; workspace entry: {Entry}", Root, entry ?? "(none)");
     }
 
     /// <summary>
@@ -46,9 +59,10 @@ public sealed class SolutionLocator
     /// </summary>
     public void Rescan()
     {
-        Config = LoadConfig(_log);
-        (WorkspaceEntry, Candidates) = ResolveEntry(_log);
-        _log.LogInformation("Re-resolved workspace entry: {Entry}", WorkspaceEntry ?? "(none)");
+        var config = LoadConfig(_log);
+        var (entry, candidates) = ResolveEntry(config, _log);
+        _state = new ResolvedState(config, entry, candidates);
+        _log.LogInformation("Re-resolved workspace entry: {Entry}", entry ?? "(none)");
     }
 
     private ToolkitConfig LoadConfig(ILogger log)
@@ -67,9 +81,9 @@ public sealed class SolutionLocator
         }
     }
 
-    private (string? Entry, IReadOnlyList<string> Candidates) ResolveEntry(ILogger log)
+    private (string? Entry, IReadOnlyList<string> Candidates) ResolveEntry(ToolkitConfig config, ILogger log)
     {
-        if (Config.Solution is { } configured)
+        if (config.Solution is { } configured)
         {
             var abs = Path.GetFullPath(Path.Combine(Root, configured));
             if (File.Exists(abs))
@@ -128,4 +142,12 @@ public sealed class SolutionLocator
 
     public static bool ShouldSkipDir(string name) =>
         SkipDirs.Contains(name, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Immutable snapshot of the loaded config and resolved workspace entry, swapped as a single
+    /// reference so a concurrent reader never observes Config/WorkspaceEntry/Candidates from two
+    /// different scans.
+    /// </summary>
+    private sealed record ResolvedState(
+        ToolkitConfig Config, string? WorkspaceEntry, IReadOnlyList<string> Candidates);
 }

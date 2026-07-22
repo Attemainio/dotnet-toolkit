@@ -44,23 +44,31 @@ whether that level was sufficient for the kind of change made.
 `query: "fee ledger TryBuy TrySell"` returns the symbols for all four. Names are indexed
 split on both separators and camel-case boundaries, so `Ledger` finds `FIFOLedger`.
 
-One read-only review agent (`dotnet-code-review`) ships alongside the tools, reviewing one stated
-dimension per invocation — `correctness`, `performance`, `cleanup`, `docs`, `testing`, or `security` —
-launched once per dimension needed. It starts with no prior project context, has the read-side MCP
-toolset, reads bundled reference docs (`docs/*.md`, overridable per-repo under
-`.claude/dotnet-toolkit/`), and reports findings without editing code. See `CLAUDE.md`'s Code review
-section for details.
+One read-only review agent (`dotnet-code-review`) ships alongside the tools. Each invocation reviews
+**all quality aspects at once** — correctness, performance, concurrency, cleanup, docs, testing,
+security — over one precisely stated scope; large targets are partitioned into disjoint scopes reviewed
+by parallel instances of the same agent. It starts with no prior project context, has the read-side MCP
+toolset, reads the bundled coding standards (`.claude/rules/*.md`, overridable per-repo under
+`.claude/dotnet-toolkit/`), and reports findings without editing code. The same standards files are what
+the main agent reads at write time, so writer and reviewer share one source of truth. See `CLAUDE.md`'s
+Code review section and `docs/agent-reference.md` for details.
 
 ## Making Claude actually prefer these tools
 
 Installing the plugin makes the tools *available*; it doesn't make a fresh session in your repo
-*prefer* them over Grep/Read/`dotnet build`. Run `/dotnet-toolkit-init` once per repo to fix that: it
-drafts an additive, path-scoped `.claude/rules/dotnet-toolkit-csharp.md` (backing off if another plugin
-already governs code search there), shows you the exact content, and writes it only after you approve —
-backing up any existing version first so it's fully reversible. It never modifies your `CLAUDE.md`:
-`.claude/rules/` loads independently, so the rule file stands on its own. See
-`skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
+*prefer* them over Grep/Read/`dotnet build`, and it can't auto-load the coding standards (plugins have
+no mechanism for that). Run `/dotnet-toolkit-init` once per repo to fix both: it drafts an additive,
+always-loaded `.claude/rules/dotnet-toolkit-csharp.md` protocol rule (backing off if another plugin
+already governs code search there) plus copies of the nine standards files, shows you the exact plan,
+and writes only after you approve — backing up anything it replaces so it's fully reversible. It never
+modifies your `CLAUDE.md`: `.claude/rules/` loads independently, so the rule files stand on their own.
+See `skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
 per-tool reference the rule file points at.
+
+> Upgrading from an earlier version: the standards used to live in `docs/` under different names
+> (`naming-conventions.md`, `common-antipatterns.md`, `review-workflow.md`, …). They are now
+> `.claude/rules/{naming,antipatterns,…}.md` plus `docs/agent-reference.md`, and per-repo overrides
+> under `.claude/dotnet-toolkit/` must use the new file names.
 
 ## Requirements
 
@@ -165,6 +173,7 @@ solution discovery, `Index/` + `Indexing/` the syntax index and edge builder, `S
 SQLite, `Fingerprint/` + `Contracts/` version layers and leases, `Validation/` the write
 path, `Telemetry/`, `Git/`, `Identity/`, `Devlog/` legacy), `tests/` (xunit +
 `fixtures/SampleSolution`), `skills/` (plugin skills), `agents/` (review subagents),
-`docs/*.md` (review reference docs, plus `tool-reference.md` — the complete per-tool catalog),
+`.claude/rules/` (the coding standards + the always-loaded index rule),
+`docs/` (`tool-reference.md`, `agent-reference.md`, `hook-reference.md`, `skill-reference.md`),
 `.claude-plugin/` (plugin + marketplace manifests),
 `.mcp.json` (MCP registration).

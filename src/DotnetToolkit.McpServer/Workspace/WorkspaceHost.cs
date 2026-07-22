@@ -37,7 +37,9 @@ public sealed class WorkspaceHost : IDisposable
 
     private MSBuildWorkspace? _workspace;
     private Solution? _solution;
-    private Task _loadTask = Task.CompletedTask;
+    // volatile: reassigned by TriggerReload's background path while GetSolutionAsync reads it from
+    // request threads without holding _gate — the swap must be visible, not just atomic.
+    private volatile Task _loadTask = Task.CompletedTask;
     private int _reloading;
 
     // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk, AND the
@@ -119,16 +121,20 @@ public sealed class WorkspaceHost : IDisposable
 
     public void StartLoading() => _loadTask = Task.Run(LoadAsync);
 
+    /// <summary>Loads the MSBuild workspace for the resolved solution entry and brings
+    /// <see cref="State"/> to Loaded (or Failed), applying any file changes that arrived mid-load.</summary>
     private async Task LoadAsync()
     {
         var entry = _locator.WorkspaceEntry;
         if (entry is null)
         {
-            State = WorkspaceState.NoSolution;
+            lock (_gate)
+                State = WorkspaceState.NoSolution;
             return;
         }
 
-        State = WorkspaceState.Loading;
+        lock (_gate)
+            State = WorkspaceState.Loading;
         _loadWatch.Restart();
         try
         {
@@ -188,8 +194,16 @@ public sealed class WorkspaceHost : IDisposable
             {
                 _applyGate.Release();
             }
-            State = WorkspaceState.Loaded;
-            DrainPendingChanges(); // edits that landed while this load was in flight
+            // The Loaded transition and the drain of edits that queued during this load are one atomic
+            // step: OnFilesChanged checks State and enqueues under this same gate, so a change either
+            // queues before this block runs (and is drained here — Monitor is reentrant) or observes
+            // Loaded and applies directly. Setting State and draining as two separate steps left a
+            // window where a change queued after the drain and sat in _pendingChanges forever.
+            lock (_gate)
+            {
+                State = WorkspaceState.Loaded;
+                DrainPendingChanges();
+            }
             _log.LogInformation("Workspace loaded: {Projects} projects in {Elapsed:F1}s",
                 ProjectCount, _loadWatch.Elapsed.TotalSeconds);
 
@@ -204,9 +218,11 @@ public sealed class WorkspaceHost : IDisposable
         }
         catch (Exception ex)
         {
-            State = WorkspaceState.Failed;
             lock (_gate)
+            {
+                State = WorkspaceState.Failed;
                 _loadDiagnostics.Add($"Load failed: {ex.Message}");
+            }
             _log.LogError(ex, "Workspace load failed");
         }
         finally
@@ -350,6 +366,8 @@ public sealed class WorkspaceHost : IDisposable
             return _solution;
     }
 
+    /// <summary>Routes batched file-change notifications from the index sweep into the live workspace,
+    /// deferring them while the workspace is not ready to take them.</summary>
     private void OnFilesChanged(IReadOnlyList<string> changedRelPaths, bool structural)
     {
         // A change arriving mid-load cannot be applied yet, but dropping it loses it for good: the index
@@ -359,22 +377,27 @@ public sealed class WorkspaceHost : IDisposable
         // This is how a whole commit went missing here: the workspace was reloading after an SDK fix
         // when the edits landed, the events were discarded, and every later read served pre-commit text
         // while reporting itself healthy.
-        if (State != WorkspaceState.Loaded)
+        //
+        // The State check and the enqueue/apply decision share one _gate acquisition, paired with
+        // LoadAsync setting Loaded and draining under the same gate — checking State before taking the
+        // gate left a narrower version of that same lost-change window open.
+        lock (_gate)
         {
-            lock (_gate)
+            if (State != WorkspaceState.Loaded)
+            {
                 foreach (var rel in changedRelPaths)
                     _pendingChanges.Add(rel);
-            return;
+                return;
+            }
+
+            if (!structural)
+            {
+                ApplyChangedPaths(changedRelPaths);
+                return;
+            }
         }
 
-        if (structural)
-        {
-            TriggerReload();
-            return;
-        }
-
-        lock (_gate)
-            ApplyChangedPaths(changedRelPaths);
+        TriggerReload();
     }
 
     /// <summary>
