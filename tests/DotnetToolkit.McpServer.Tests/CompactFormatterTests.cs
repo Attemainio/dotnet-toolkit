@@ -40,6 +40,16 @@ public class CompactFormatterTests
     }
 
     [Fact]
+    public void TruncateCutsAtLengthWithEllipsis()
+    {
+        Assert.Equal("hello", CompactFormatter.Truncate("hello", 10));
+
+        var result = CompactFormatter.Truncate(new string('x', 500), 160);
+        Assert.Equal(160, result.Length);
+        Assert.EndsWith("…", result);
+    }
+
+    [Fact]
     public void OutlineRendererMatchesCompactSpec()
     {
         var entry = OutlineBuilder.Build("""

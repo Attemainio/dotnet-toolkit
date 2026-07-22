@@ -22,7 +22,7 @@ JSON or `format: "json"` for pretty-printed JSON if something in your workflow n
 as JSON directly; it takes effect immediately and persists for the rest of the session. `defaultFormat`
 in `.claude/dotnet-toolkit/config.json` sets the format a fresh server starts with, before anything calls
 `set_output_format`. The field names and nesting documented below are identical in all three formats,
-only the wire encoding changes (see `Contracts/Contract.cs`'s 3.10 entry) — every multi-item response
+only the wire encoding changes (see `search_log(query: "contract")` for the 3.10 rationale) — every multi-item response
 below is a plain array of objects, whether read as TOON or JSON; there is no separate columns/rows table
 representation to learn.
 
@@ -54,7 +54,9 @@ Component names are exactly the response fields they control:
 
 The skeleton — `kind`, `displayString`, `accessibility`, `containingType`, `declarationSites` (`file`,
 `startLine`, `endLine`) — is unconditional: every call gets it regardless of `include`, and those line
-spans are exactly what a `validate_patch` edit takes.
+spans are exactly what a `validate_patch` edit takes. When the symbol has a leading `///` XML doc
+comment, `startLine` (and `source`) begin at the comment, not at the attribute/signature line after
+it — so an edit built from `declarationSites` can rewrite the doc comment along with the declaration.
 
 Default call, real response:
 
@@ -135,9 +137,10 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 | Arg | Meaning |
 |---|---|
 | `query` | Free-text, OR-ed and ranked. **Put every term you want in one call**: `"fee ledger TryBuy TrySell"` returns all four in one ranked response — not four separate calls. |
-| `kinds` | Optional comma filter: `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. |
+| `kinds` | Optional kind filter, space- or comma-separated: `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. Bare tokens are an include-only filter (`"method property"` searches only those two). Prefix a token with `-` to exclude it instead (`"-struct -enum"` searches every kind except those two). Mixing both forms in one call: the bare tokens win and the `-` tokens are dropped, rather than combining. |
 | `pathPrefix` | Optional folder/file scope, e.g. `"src/Tools"` or `"src/Tools/ContextTools.cs"` — relative to the repo root, forward slashes, matched on a full path-segment boundary (`"Tools"` cannot match `"ToolsFoo"`). A hit whose file can't be resolved (an overloaded name) is dropped rather than guessed at, so scoped results can undercount for an overload-heavy query. Ranking still runs over the whole index first, so a query with far more hits outside the prefix than the internal overfetch cap can return fewer than `limit` even though more in-scope matches exist — narrow the query text itself if that happens. |
 | `limit` | Default 10, cap 50. |
+| `summary` | Optional XML doc `<summary>` signal per hit, read from the syntax index (no MSBuild needed, so it works at `index_only` too). `"has"` adds `hasSummary` (bool) — a cheap presence check with no text. `"full"` adds `summary` (string, the extracted text capped at 160 characters with a trailing `…`; absent if the symbol has no `<summary>`). The cap keeps a pathologically long doc comment from dominating a multi-hit response — fetch `get_symbol`'s `xmlDoc.summary` for the untruncated text once you've picked a symbol. Omit `summary` for the pre-existing response, byte-for-byte — no extra field, no extra cost. An unrecognized value is treated as omitted, same precedent as `kinds`' unrecognized tokens. |
 
 Real call and response:
 
@@ -172,6 +175,33 @@ search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.Mc
     "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":63},
    {"symbolId":"sym_a487...","name":"DotnetToolkit.McpServer.Store.SearchText.ForIndex(string)",
     "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":18}]}
+```
+
+Checking documentation coverage before spending a `get_symbol` call — `summary: "has"` is the cheap
+presence check, no text sent:
+
+```
+search_index(query: "Spin", kinds: "method", summary: "has")
+```
+
+```json
+{"items":[
+   {"symbolId":"sym_...","name":"Sample.Lib.Widget.Spin(int)","kind":"Method",
+    "file":"Lib/Widget.cs","line":12,"hasSummary":true},
+   {"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)","kind":"Method",
+    "file":"Lib/Pipeline.cs","line":6}]}
+```
+
+`SpinTwice` has no `hasSummary` key at all (not `false`) — it has no `<summary>` doc comment. Ask for
+the actual text with `summary: "full"` instead of a follow-up `get_symbol`:
+
+```
+search_index(query: "Widget.Spin", kinds: "method", summary: "full")
+```
+
+```json
+{"items":[{"symbolId":"sym_...","name":"Sample.Lib.Widget.Spin(int)","kind":"Method",
+   "file":"Lib/Widget.cs","line":12,"summary":"Spins the widget."}]}
 ```
 
 ## Relationships & flow
@@ -594,7 +624,7 @@ count.
 Real response, this repo:
 
 ```
-root: /mnt/c/Users/atte9/source/repos/dotnet-toolkit
+root: /path/to/dotnet-toolkit
 solution: dotnet-toolkit.slnx
 index: ready 83 files, 134 types
 workspace: loaded 2 projects in 2.6s

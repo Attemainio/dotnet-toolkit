@@ -341,6 +341,9 @@ public sealed class ProjectIndex
     /// <summary>Where a declaration sits: the file it is in and the line it starts on.</summary>
     public sealed record Site(string File, int Line);
 
+    /// <summary>Where a declaration sits, plus its extracted XML doc &lt;summary&gt; text, if any.</summary>
+    public sealed record DocSite(string File, int Line, string? Doc);
+
     /// <summary>
     /// Resolves fully-qualified names — without parameter lists — to their declaration site, in one pass
     /// over the index.
@@ -357,11 +360,21 @@ public sealed class ProjectIndex
     /// "look it up".
     /// </summary>
     public IReadOnlyDictionary<string, Site> Locate(IReadOnlySet<string> fqNamesWithoutParameters)
+        => LocateWithDocs(fqNamesWithoutParameters).ToDictionary(
+            kv => kv.Key, kv => new Site(kv.Value.File, kv.Value.Line), StringComparer.Ordinal);
+
+    /// <summary>
+    /// Same resolution as <see cref="Locate"/>, but each site also carries its declaration's extracted
+    /// XML doc &lt;summary&gt; text (null when absent) — the data <c>search_index</c>'s <c>summary</c>
+    /// argument surfaces, computed here rather than re-parsed, since <see cref="Indexing.TypeEntry.Doc"/>/
+    /// <see cref="Indexing.MemberEntry.Doc"/> already hold it from the syntax pass.
+    /// </summary>
+    public IReadOnlyDictionary<string, DocSite> LocateWithDocs(IReadOnlySet<string> fqNamesWithoutParameters)
     {
-        var found = new Dictionary<string, Site>(StringComparer.Ordinal);
+        var found = new Dictionary<string, DocSite>(StringComparer.Ordinal);
         var ambiguous = new HashSet<string>(StringComparer.Ordinal);
 
-        void Offer(string fqName, Site site)
+        void Offer(string fqName, DocSite site)
         {
             if (!fqNamesWithoutParameters.Contains(fqName) || ambiguous.Contains(fqName))
                 return;
@@ -381,9 +394,9 @@ public sealed class ProjectIndex
         {
             foreach (var type in Flatten(entry.Types))
             {
-                Offer(type.FqName, new Site(file, type.Line));
+                Offer(type.FqName, new DocSite(file, type.Line, type.Doc));
                 foreach (var member in type.Members)
-                    Offer($"{type.FqName}.{member.Name}", new Site(file, member.Line));
+                    Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.Doc));
             }
         }
         return found;

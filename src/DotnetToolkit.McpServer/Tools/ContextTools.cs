@@ -12,6 +12,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
@@ -26,6 +27,7 @@ public static class ContextTools
 {
     private const int ReferenceCap = 50;
     private const int ScopedOverfetchCap = 500;
+    private const int SummaryCap = 160;
 
 [McpServerTool(Name = "get_symbol")]
     [Description("Retrieve one or more C# symbols, choosing exactly which fields you get back via include. "
@@ -314,7 +316,7 @@ private static async Task<string> GetSymbolOne(
             null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
     }
 
-    [McpServerTool(Name = "search_index")]
+[McpServerTool(Name = "search_index")]
     [Description("Find C# symbols when you don't know their exact names. "
         + "USE THIS INSTEAD OF GREP/GLOB over .cs files — it returns ranked symbols with ids and locations, not "
         + "raw text lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
@@ -326,7 +328,9 @@ private static async Task<string> GetSymbolOne(
         + "argument), kind, and the file/line it was found at, so going straight there needs no second call; "
         + "a hit whose name maps to several declarations (overloads) has file and line as null rather than "
         + "pointing at the wrong one — follow up with get_symbol, which separates overloads by parameter list. "
-        + "Pass pathPrefix to narrow the ranked results to one folder or file. "
+        + "Pass pathPrefix to narrow the ranked results to one folder or file. Pass summary:\"has\" or "
+        + "summary:\"full\" to check or read each hit's XML doc <summary> without a follow-up get_symbol call — "
+        + "full text is capped short, get_symbol's xmlDoc.summary for the untruncated version. "
         + "Follow up with get_symbol when you want the content itself.")]
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
@@ -334,10 +338,13 @@ private static async Task<string> GetSymbolOne(
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
         [Description("Free-text query over symbol names.")] string query,
-        [Description("Optional comma-separated kind filter, case-insensitive. Valid values: class (alias for "
-            + "type), interface, struct, record, enum, delegate, method, property, field, event. e.g. "
-            + "\"method,property\". An unrecognized value is passed through as-is rather than rejected, so a "
-            + "typo silently matches nothing instead of erroring. Omit to search every kind.")] string? kinds = null,
+        [Description("Optional kind filter, case-insensitive, space- or comma-separated. Valid values: class "
+            + "(alias for type), interface, struct, record, enum, delegate, method, property, field, event. "
+            + "Bare tokens restrict the search to only those kinds, e.g. \"method property\". Prefix a token "
+            + "with '-' to exclude it instead, e.g. \"-struct -enum\" searches every kind except those two. "
+            + "If a call mixes both forms, the bare (include) tokens win and the '-' tokens are ignored rather "
+            + "than combined with them. An unrecognized value is passed through as-is rather than rejected, so "
+            + "a typo silently matches nothing instead of erroring. Omit to search every kind.")] string? kinds = null,
         [Description("Max results (default 10, cap 50).")] int limit = 10,
         [Description("Optional path prefix to narrow results to a folder or file, e.g. \"src/Tools\" or "
             + "\"src/Tools/ContextTools.cs\" (relative to the repo root, forward slashes, matched on a full "
@@ -346,25 +353,31 @@ private static async Task<string> GetSymbolOne(
             + "so scoped results can undercount for a very overload-heavy query. Ranking still runs over the "
             + "whole index first, so a query with many more hits outside the prefix than the internal overfetch "
             + "cap can return fewer than limit even though more in-scope matches exist — narrow the query text "
-            + "itself if that happens. Omit to search the whole index.")] string? pathPrefix = null)
+            + "itself if that happens. Omit to search the whole index.")] string? pathPrefix = null,
+        [Description("Include XML doc <summary> info per hit. \"has\": adds hasSummary (bool) per item — cheap "
+            + "presence check, no text. \"full\": adds summary (string, the extracted <summary> text, capped at "
+            + "160 chars with an ellipsis — fetch get_symbol's xmlDoc.summary for the untruncated text; absent if "
+            + "none) per item. Omit for today's behavior (no summary fields, no extra cost). An unrecognized "
+            + "value is treated as omitted.")] string? summary = null)
     {
         var sessionId = Ids.AmbientSession;
         var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
         limit = Math.Clamp(limit, 1, ReferenceCap);
-        var kindList = string.IsNullOrWhiteSpace(kinds)
-            ? null
-            : kinds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var (includeKindTokens, excludeKindTokens) = ParseKindFilter(kinds);
+        var includeKinds = NormalizeKinds(includeKindTokens);
+        var excludeKinds = includeKindTokens.Length == 0 ? NormalizeKinds(excludeKindTokens) : null;
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
+        var summaryMode = summary is "has" or "full" ? summary : null;
 
-        var hits = symbolStore.Search(query, NormalizeKinds(kindList), fetchLimit);
+        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
 
         await index.EnsureFreshAsync();
-        var sites = index.Locate(hits
+        var sites = index.LocateWithDocs(hits
             .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
             .ToHashSet(StringComparer.Ordinal));
 
@@ -384,6 +397,8 @@ private static async Task<string> GetSymbolOne(
                 kind = r.Hit.Kind,
                 file = r.Site?.File,
                 line = r.Site?.Line,
+                hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
+                summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
             }),
         };
 
@@ -593,11 +608,15 @@ private static async Task<string> GetSymbolOne(
         };
     }
 
-    private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
+private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
         sym.DeclaringSyntaxReferences.Select(r =>
         {
-            var span = r.SyntaxTree.GetLineSpan(r.Span);
-            // Flat file/startLine/endLine — these feed straight into a validate_patch edit.
+            var node = NormalizeDeclNode(r.GetSyntax());
+            var (start, end) = DeclarationBoundsIncludingDocComment(node);
+            var span = r.SyntaxTree.GetLineSpan(TextSpan.FromBounds(start, end));
+            // Flat file/startLine/endLine — these feed straight into a validate_patch edit. Start
+            // includes a leading /// doc comment when present, so an edit targeting this span can
+            // rewrite the comment along with the declaration, not just the declaration alone.
             return (object)new
             {
                 file = locator.RelPath(span.Path),
@@ -606,14 +625,16 @@ private static async Task<string> GetSymbolOne(
             };
         }).ToArray();
 
-    private static string? SourceOf(ISymbol sym)
+private static string? SourceOf(ISymbol sym)
     {
         var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)
             return null;
         var node = NormalizeDeclNode(reference.GetSyntax());
+        var (start, end) = DeclarationBoundsIncludingDocComment(node);
+        var text = node.SyntaxTree!.GetText().ToString(TextSpan.FromBounds(start, end));
         var header = sym.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-        return header is null ? node.ToString() : $"// in {header}\n{node}";
+        return header is null ? text : $"// in {header}\n{text}";
     }
 
     private static async Task<object> ReferenceCounts(ISymbol sym, Solution solution, SymbolStore symbolStore)
@@ -806,6 +827,23 @@ private static async Task<string> GetSymbolOne(
         })];
     }
 
+    /// <summary>
+    /// Splits search_index's <c>kinds</c> argument into include/exclude token arrays. A bare token is an
+    /// include; a token prefixed with '-' is an exclude, e.g. "method property -struct" (mixing the two
+    /// is legal to parse — SearchIndex decides above whether to honor the exclude side or drop it once
+    /// include is non-empty; this method only splits). Space, comma, tab, and newline all separate
+    /// tokens, so "method,property" and "method property" parse the same way.
+    /// </summary>
+    private static (string[] Include, string[] Exclude) ParseKindFilter(string? kinds)
+    {
+        if (string.IsNullOrWhiteSpace(kinds))
+            return ([], []);
+        var tokens = kinds.Split([' ', ',', '\t', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var include = tokens.Where(t => t[0] != '-').ToArray();
+        var exclude = tokens.Where(t => t[0] == '-' && t.Length > 1).Select(t => t[1..]).ToArray();
+        return (include, exclude);
+    }
+
     // pathPrefix is relative to the repo root (SolutionLocator.RelPath already yields forward
     // slashes), so normalizing here only needs to fold backslashes and strip a leading "./" - never
     // an absolute-path translation.
@@ -936,10 +974,28 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
         return ContentVersion.Of(syntax.Get("decl"), syntax.Get("body"), refs, api);
     }
 
-    private static SyntaxNode NormalizeDeclNode(SyntaxNode node) =>
+private static SyntaxNode NormalizeDeclNode(SyntaxNode node) =>
         node is VariableDeclaratorSyntax && node.FirstAncestorOrSelf<BaseFieldDeclarationSyntax>() is { } field
             ? field
             : node;
+
+    /// <summary>
+    /// A declaration's real boundary for display/editing purposes: <paramref name="node"/>'s own Span
+    /// (Roslyn's node.Span/ToString() exclude the outermost leading trivia, so a /// doc comment sitting
+    /// there is invisible to both) widened to start at that doc comment when one is present. The end is
+    /// unchanged — trailing trivia is never part of "the declaration" the way a comment ABOVE it is.
+    /// </summary>
+private static (int Start, int End) DeclarationBoundsIncludingDocComment(SyntaxNode node)
+    {
+        var doc = node.GetLeadingTrivia().FirstOrDefault(t =>
+            t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
+            t.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia));
+        // FullSpan, not Span: a documentation comment trivia's OWN Span excludes the "///" exterior
+        // marker on its first line (Roslyn attaches it as leading trivia of the structure's first
+        // token), so Span alone would start one line right but three characters short.
+        var start = doc.IsKind(SyntaxKind.None) ? node.SpanStart : doc.FullSpan.Start;
+        return (start, node.Span.End);
+    }
 
     private static bool IsListable(ISymbol member)
     {

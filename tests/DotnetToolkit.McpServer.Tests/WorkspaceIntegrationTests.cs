@@ -591,12 +591,36 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     // Conformance C10: one partial-class part returns the unified type with all declaration sites.
+// Conformance C10: one partial-class part returns the unified type with all declaration sites.
     [Fact]
     public async Task GetSymbol_UnifiesPartialClass_C10()
     {
         var root = Root(await GetSymbol("Sample.Lib.Gadget"));
         var sites = root.GetProperty("content").GetProperty("declarationSites");
         Assert.Equal(2, sites.GetArrayLength());
+    }
+
+    /// <summary>
+    /// Widget.Spin has a /// doc comment on the line directly above its signature. declarationSites and
+    /// source must both start AT the comment, not at the signature — otherwise a validate_patch edit
+    /// built from declarationSites' own line span has no way to touch the comment at all.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_DeclarationSpanIncludesTheLeadingDocComment()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var content = root.GetProperty("content");
+        var site = content.GetProperty("declarationSites")[0];
+
+        var startLine = site.GetProperty("startLine").GetInt32();
+        var fileLines = await File.ReadAllLinesAsync(_f.Locator.AbsPath(site.GetProperty("file").GetString()!));
+        Assert.Contains("///", fileLines[startLine - 1]);
+
+        // source is prefixed with a "// in <ContainingType>" header line for a member, so the doc
+        // comment is the SECOND line, not the first.
+        var sourceLines = content.GetProperty("source").GetString()!.Split('\n');
+        Assert.StartsWith("// in Widget", sourceLines[0]);
+        Assert.Contains("/// <summary>", sourceLines[1]);
     }
 
     // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
@@ -770,6 +794,49 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var text = await File.ReadAllLinesAsync(_f.Locator.AbsPath(file));
         Assert.Contains("SpinTwice", text[line - 1]);
+    }
+
+    /// <summary>
+    /// summary:"has" is a cheap presence check — a documented symbol reports hasSummary:true with no
+    /// summary text sent, so a caller can spot "is this documented" without paying for the extracted text.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_SummaryHas_ReportsPresenceWithoutText()
+    {
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "has")).GetProperty("items"))
+            .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
+
+        Assert.True(hit["hasSummary"].GetBoolean());
+        Assert.False(hit.ContainsKey("summary"));
+    }
+
+    /// <summary>
+    /// summary:"full" returns the actual extracted &lt;summary&gt; text, matching what get_symbol's
+    /// xmlDoc.summary reports for the same member — one call instead of a search followed by a fetch.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_SummaryFull_ReturnsExtractedText()
+    {
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "full")).GetProperty("items"))
+            .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
+
+        Assert.Equal("Spins the widget.", hit["summary"].GetString());
+    }
+
+    /// <summary>
+    /// Omitting summary must be byte-for-byte the pre-3.18 response — no hasSummary/summary field on
+    /// any item — so every existing caller that never asked for it sees nothing new.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_OmittingSummary_AddsNoFields()
+    {
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+
+        Assert.False(hit.ContainsKey("hasSummary"));
+        Assert.False(hit.ContainsKey("summary"));
     }
 
     /// <summary>

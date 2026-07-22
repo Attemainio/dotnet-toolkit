@@ -19,9 +19,15 @@ Use `Edit`/`Write` directly only for non-C# files (csproj, json, md).
 2. **Know the blast radius.** If you are changing a signature, accessibility, base type or
    interface, call `get_references` first — dependent-compile failures across
    implementations are otherwise guaranteed.
-3. **Submit one patch** covering the symbol *and* every call site you already know needs
+3. **Check for a summary.** If the symbol you're changing has no `<summary>`
+   (`xmlDoc.summary` absent from step 1's fetch, or `search_index`'s `hasSummary` was absent) — add
+   one in the *same* patch, following `docs/xml-documentation.md`'s tag rules: purpose only, 1–2
+   sentences, never restate the method name, implementation/performance detail goes in
+   `<remarks>` not `<summary>`. This isn't optional cleanup — an edit that leaves a touched public
+   symbol undocumented is not a finished edit.
+4. **Submit one patch** covering the symbol *and* every call site you already know needs
    updating.
-4. **Read the verdict** (below). Fix and resubmit, or you're done.
+5. **Read the verdict** (below). Fix and resubmit, or you're done.
 
 ## Required fields
 

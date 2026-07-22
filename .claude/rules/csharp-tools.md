@@ -13,6 +13,9 @@ You are touching a `.cs` file. `search_index` / `get_symbol` / `get_references` 
 Grep, Glob, `find`, `cat`, and bare `Read` here — text search cannot see interface, virtual, or
 delegate dispatch, and hands back partial-class fragments with no signal the rest exists.
 
+**Reads go through `search_index`/`get_symbol`.** A `PreToolUse` hook blocks `Read` on a `.cs` file that
+a project actually compiles, so reaching for one costs a round trip and returns nothing.
+
 **Writes go through `validate_patch`.** A `PreToolUse` hook blocks `Edit`/`Write` on an existing `.cs`
 file, so reaching for one costs a round trip and changes nothing. It is also the only writer to the
 development log — an edit that bypasses it loses its reasoning permanently.
@@ -25,3 +28,6 @@ development log — an edit that bypasses it loses its reasoning permanently.
 "Too large or interleaved to decompose" is not an exception — split it into more `validate_patch`
 calls, one per touched symbol, sharing one `intent`. Creating a *new* file is the only real exception:
 `baseVersions` needs a `symbolId` that does not exist yet.
+
+A symbol touched via `validate_patch` with no `<summary>` (check with `search_index`'s `summary`
+argument or `get_symbol`'s `xmlDoc`) gains one in the same edit — see the `dotnet-change` skill.

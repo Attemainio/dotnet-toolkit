@@ -105,6 +105,28 @@ index before scoping, so a query with far more hits outside the prefix than fit 
 overfetch cap can return fewer than `limit` even with more in-scope matches available — narrow the
 query text itself if that happens, rather than raising `limit`.
 
+### Check documentation without a follow-up get_symbol call
+
+Pass `summary` to fold an XML doc `<summary>` signal into the same search response — read from the
+syntax index, so it costs nothing extra and works even at `index_only`:
+
+- `summary: "has"` — adds `hasSummary` (bool) per item. The cheap check: is this hit even
+  documented, before you decide whether it's worth a `get_symbol` round trip.
+- `summary: "full"` — adds `summary` (the extracted text, capped at 160 characters with a trailing
+  `…`) per item. Use it when judging whether a hit is actually the symbol you want, without paying
+  for a separate fetch just to read its intent. The cap keeps one pathological doc comment from
+  dominating a multi-hit response — once you've picked the symbol, `get_symbol`'s `xmlDoc.summary`
+  gives you the untruncated text.
+- Omit `summary` entirely for the default, unchanged response — no `hasSummary`/`summary` field on
+  any item.
+
+A hit with no `<summary>` doc comment has no `hasSummary` key at all (not `false`) — same
+absent-means-absent convention as everything else in this skill.
+
+**If a symbol you are about to edit has no summary, see the `dotnet-change` skill** — a missing
+summary on a symbol you touch is not just a gap to note, it's something `validate_patch` should fix
+in the same edit.
+
 ## Choose exactly what you need with include
 
 `get_symbol` takes one selector, `include`, instead of a resolution ladder. It has three forms:
