@@ -20,6 +20,10 @@ about the tool, not a reason to fall back to shell.
 | `grep` for callers, or guessing who implements an interface | `get_references` (Roslyn semantic model — sees interface, virtual, and delegate dispatch) |
 | `find`/`ls`/Glob to map a subsystem | `get_scope` |
 | Manually tracing a call chain across files | `get_call_slice` |
+| Chaining `get_references` by hand to build a callers/callees tree | `get_call_hierarchy` |
+| Guessing a type's base chain/interfaces from `get_symbol`'s one-hop view | `get_type_hierarchy` |
+| Opening every `.csproj` to trace project references by hand | `get_project_graph` |
+| Manually tracing project references looking for a cycle | `detect_circular_dependencies` |
 | `git diff` to judge what a change actually altered | `get_semantic_diff` |
 | Guessing why code looks the way it does | `search_log` (the intent behind past changes) |
 | Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
@@ -100,7 +104,7 @@ Other subsystems:
 - `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from Roslyn symbols.
 - `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution), `ChangeClassifier.cs` (declaration delta → change kinds), `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4), `DiagnosticDistiller.cs` (root causes + suggested inspections).
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
-- `Tools/` — the MCP surface: `ContextTools.cs` (`get_symbol`, `get_references`, `search_index`), `FlowTools.cs` (`get_scope`, `get_call_slice`), `HistoryTools.cs` (`get_semantic_diff`, `search_log`), `PatchTools.cs` (`validate_patch`), `MetricsTools.cs` (`get_retrieval_metrics`), `ServerTools.cs` (`ping`, `workspace_status`, `reload_workspace`).
+- `Tools/` — the MCP surface: `ContextTools.cs` (`get_symbol`, `get_references`, `search_index`), `FlowTools.cs` (`get_scope`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`), `GraphTools.cs` (`get_project_graph`, `detect_circular_dependencies`), `HistoryTools.cs` (`get_semantic_diff`, `search_log`), `PatchTools.cs` (`validate_patch`), `MetricsTools.cs` (`get_retrieval_metrics`), `ServerTools.cs` (`ping`, `set_output_format`, `workspace_status`, `reload_workspace`).
 
 Change detection across both tiers is **mtime-polling**, not filesystem watchers — this is deliberate so it works on WSL `/mnt/*` drives where inotify doesn't fire.
 
@@ -160,7 +164,9 @@ nothing and cost its tokens on every session that touches C#. It also cannot rep
 path-scoped rule fires when Claude *reads* a matching file, and a session that reaches for Grep first may
 never trigger it. Always-loaded steering belongs here; at-contact reminders belong there. The full
 standalone protocol lives in `skills/dotnet-toolkit-init/SKILL.md`'s rule template, which is correct —
-a *consuming* repo's CLAUDE.md gets only a pointer, so that copy has nothing above it to lean on.
+that skill writes only a `.claude/rules/` file into a *consuming* repo and never touches that repo's
+CLAUDE.md, since `.claude/rules/` loads independently of CLAUDE.md rather than being appended into it, so
+that copy has nothing above it to lean on.
 
 `.claude/rules/csharp-standards.md` is a second, equally short reinforcement rule in this repo (also
 path-scoped to `**/*.cs`) for the highest-cost-if-caught-late security/testing items — a pointer to
@@ -169,7 +175,9 @@ path-scoped to `**/*.cs`) for the highest-cost-if-caught-late security/testing i
 kept separate, since that template is the full standalone protocol rather than a reinforcement pointer —
 see that skill for why one file was chosen there.
 
-`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`, `dotnet-toolkit-init`) are the plugin's own skills, shipped to consumers. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`); `dotnet-review` says when to delegate to the review agents below; `dotnet-toolkit-init` writes an additive, approval-gated tool-usage *and coding-standards* rule into a *consuming* repo's own `.claude/rules/` plus a short CLAUDE.md pointer (backed up first, undoable) — installing the plugin makes the tools available, this skill is what makes a fresh session in that repo actually prefer them and follow the security/testing checklist at write time. It exists because a plugin can ship `docs/*.md` for its agent to read explicitly (`${CLAUDE_PLUGIN_ROOT}/docs/...`), but has no manifest field to make the harness auto-load a rule the way a consuming repo's own `.claude/rules/` gets scanned.
+`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`, `dotnet-toolkit-init`, `dotnet-toolkit-consistency`) are the plugin's own skills, shipped to consumers. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`); `dotnet-review` says when to delegate to the review agents below; `dotnet-toolkit-init` writes an additive, approval-gated tool-usage *and coding-standards* rule into a *consuming* repo's own `.claude/rules/` (backed up first, undoable) and never touches that repo's CLAUDE.md — `.claude/rules/` loads independently of CLAUDE.md, not appended into it, so the rule file is self-sufficient — installing the plugin makes the tools available, this skill is what makes a fresh session in that repo actually prefer them and follow the security/testing checklist at write time. It exists because a plugin can ship `docs/*.md` for its agent to read explicitly (`${CLAUDE_PLUGIN_ROOT}/docs/...`), but has no manifest field to make the harness auto-load a rule the way a consuming repo's own `.claude/rules/` gets scanned. `dotnet-toolkit-consistency` is this repo's own internal audit — it checks `Tools/*.cs` against every file listed in "Changing the tool surface" below and fixes whatever has drifted; it ships to consumers too, but its primary use is on this repo itself.
+
+**Invoke `dotnet-toolkit-consistency` whenever you notice — or suspect — that this plugin's own docs, skills, agent, rules, hooks, or `CLAUDE.md`/`README.md` are out of sync with the actual tool surface.** Concretely: after any tool addition/removal/rename/signature change, after editing a hook or script, after adding a new `docs/*.md` or `skills/*` file, or any time you catch a stale tool name, a missing row in one of the tables below, or a doc describing behavior the code no longer has. Don't silently patch one file and move on — run the skill so the fix is checked against every file that describes the same surface, not just the one you happened to be looking at.
 
 ## Changing the tool surface: update the docs that teach it
 
@@ -192,6 +200,7 @@ The surface that has to move with the code:
 | `scripts/guard-cs-edit.sh` | the deny message a blocked `Edit` returns — it restates the `validate_patch` procedure, so a wrong signature here teaches the wrong call at the worst moment |
 | `scripts/guard-cs-read.sh` | the deny message a blocked `Read` returns — it restates the `search_index`/`get_symbol` alternatives, so a stale tool description here teaches the wrong call at the worst moment |
 | the `[Description]` attributes in `Tools/*.cs` | what the model sees before it has read any skill — the first and often only description it gets |
+| `skills/dotnet-toolkit-consistency/SKILL.md` | the audit itself — its Step 4 table is a second copy of this table's row list, so a row added here needs the matching row added there too |
 
 For each change, make sure the docs still carry:
 
@@ -245,8 +254,9 @@ a restatement of `docs/security.md`/`docs/testing.md`. The review dimensions sti
 regardless of whether the rule fired; the rule exists to reduce how often they need to.
 
 It has the read-side MCP toolset — `search_index`, `get_symbol`, `get_references`, `search_log`,
-`get_scope`, `get_call_slice`, `get_semantic_diff` — uniform across every dimension, so the shared
-`docs/review-workflow.md` can reference any of them without per-dimension conditionals. The point is
+`get_scope`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`,
+`detect_circular_dependencies`, `get_semantic_diff`, `workspace_status` — uniform across every dimension,
+so the shared `docs/review-workflow.md` can reference any of them without per-dimension conditionals. The point is
 that it traces callers and implementations semantically rather than grepping, establishes reachability
 instead of assuming it, and can check whether an apparent violation was a deliberately recorded decision
 before asserting it. The log only covers changes applied

@@ -14,7 +14,17 @@
       "WebFetch(domain:docs.claude.com)",
       "Bash(export DOTNET_ROOT=/home/atte/.dotnet)",
       "Bash(curl -s \"https://api.github.com/repos/codewithmukesh/dotnet-claude-kit/git/trees/main?recursive=1\")",
-      "WebSearch"
+      "WebSearch",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_call_hierarchy",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_type_hierarchy",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_project_graph",
+      "mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies",
+      "Bash(chmod +x *)",
+      "Bash(bash -n scripts/guard-cs-read.sh)",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_references",
+      "Bash(sort -u -t: -k2)",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_symbol",
+      "mcp__plugin_dotnet-toolkit_dotnet__search_index"
     ]
   },
   "disabledMcpjsonServers": [

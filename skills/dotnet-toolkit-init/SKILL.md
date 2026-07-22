@@ -1,6 +1,6 @@
 ---
 name: dotnet-toolkit-init
-description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Writes a path-scoped rule into .claude/rules/ that mandates the MCP tools over Grep/Read/find for C# and carries a write-time security/testing checklist, adds a short pointer to the repo's CLAUDE.md, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact diff.
+description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Writes a path-scoped rule into .claude/rules/ that mandates the MCP tools over Grep/Read/find for C# and carries a write-time security/testing checklist, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact diff. Does not modify the repo's CLAUDE.md.
 ---
 
 # Wiring dotnet-toolkit into a project
@@ -12,56 +12,58 @@ any proactive nudge toward the security/testing standards `dotnet-code-review`'s
 dimensions check for at review time — a plugin can ship `docs/*.md` for an *agent* to read explicitly
 (via `${CLAUDE_PLUGIN_ROOT}/docs/...`), but it cannot ship a `.claude/rules/` file the harness auto-loads;
 only a repo's own `.claude/rules/` gets scanned that way, and a plugin has no manifest field to register
-one. This skill writes both kinds of guidance into a target repo, additively, and only with explicit
-approval.
+one. This skill writes that guidance into a target repo, additively, and only with explicit approval.
+
+**This skill does not touch the repo's `CLAUDE.md`.** Per Claude Code's documentation
+(`code.claude.com/docs/en/memory`), `.claude/rules/` is discovered and loaded independently of CLAUDE.md —
+rules are not appended into that file at runtime, they are a separate context injection. A path-scoped
+rule (`paths: ["**/*.cs"]`, what this skill writes) loads on its own the moment Claude reads a matching
+file; it needs no pointer elsewhere to be discovered. The one artifact this skill produces is therefore
+self-sufficient, and the project's own CLAUDE.md — its architecture, commands, and conventions, written
+and owned by the project — is left alone entirely. This also makes install/uninstall a single-file
+operation: see "Undoing this later" below.
 
 **Do not skip the approval step under any circumstances**, even if the user's request sounded like a
-green light to "just do it." These files change how every future session in that repo behaves; show the
+green light to "just do it." This file changes how every future session in that repo behaves; show the
 exact content and wait for a yes.
 
-## What gets written, and why it is split
+## What gets written
 
-Two artifacts, deliberately sized differently:
+One artifact:
 
-| File | Content | Why there |
-| --- | --- | --- |
-| `.claude/rules/dotnet-toolkit-csharp.md` | the full C# protocol (tool table, write path, worked steps) *and* a write-time security/testing checklist | path-scoped to `**/*.cs`, so it loads **when Claude touches a C# file**, not once at launch |
-| `CLAUDE.md` | ~5 lines: the tools exist, the rule file governs their use | CLAUDE.md is the repo's *general* instruction file; a full tool protocol does not belong in it |
+| File | Content |
+| --- | --- |
+| `.claude/rules/dotnet-toolkit-csharp.md` | the full C# protocol (tool table, write path, worked steps) *and* a write-time security/testing checklist, under `paths: ["**/*.cs"]` so it loads **when Claude touches a C# file**, not once at launch |
 
 The checklist is folded into the same rule file rather than a second one deliberately — one file means one
 approval step and one load event per touched `.cs` file, instead of asking the harness to inject two
 separate rules at the same moment for a concern that's really one "how to touch C# here" protocol.
 
-The split is the point. A rule in `.claude/rules/` with `paths:` frontmatter is injected at the moment
-Claude reads a matching file — which counteracts the adherence decay that makes a launch-time CLAUDE.md
-instruction get ignored 100k tokens into a session. Keeping CLAUDE.md's share to a pointer also leaves
-that file for what it is for: the project's own architecture, commands, and conventions.
-
 **Be honest with the user about what this does and does not buy.** Per Claude Code's documentation,
 rules without `paths` load at launch *with the same priority as `.claude/CLAUDE.md`* — there is no
-precedence win, and both are context rather than enforced configuration. What path-scoping buys is
-**timing**, not priority. The actual enforcement is the plugin's `PreToolUse` hook (`hooks/hooks.json`),
-which blocks `Edit`/`Write` on existing `.cs` files and ships with the plugin — it needs no per-repo
-setup and this skill does not install it. Do not tell the user rules "override" CLAUDE.md.
+precedence win, and both are context rather than enforced configuration. This rule ships with `paths`, so
+what it buys is **timing**: it stays out of context until a `.cs` file is actually touched. The actual
+enforcement is the plugin's `PreToolUse` hook (`hooks/hooks.json`), which blocks `Edit`/`Write` on
+existing `.cs` files and ships with the plugin — it needs no per-repo setup and this skill does not
+install it. Do not tell the user the rule "overrides" CLAUDE.md; it loads alongside it, not above it, and
+does not touch it at all.
 
 ## Step 1 — Locate the target repo
 
 The target repo is the current working directory (or `CLAUDE_PROJECT_DIR` if set) — **not** this plugin
 repo, unless the user is deliberately testing the skill against it.
 
-A missing `CLAUDE.md` is no longer a blocker: the rule file is the primary artifact and stands alone. If
-there is no `CLAUDE.md`, write the rule and tell the user that Step 5's pointer was skipped, suggesting
-`/init` if they want one. Do not create a bare-bones CLAUDE.md just to have something to append to.
+The rule file is the only artifact and stands alone regardless of whether the repo has a `CLAUDE.md` at
+all — nothing here depends on that file existing.
 
 ## Step 2 — Read what is already there
 
-Read the existing `CLAUDE.md` in full if present, and list `.claude/rules/`. The project's own
-conventions take priority over anything this skill adds. Concretely:
+Read `CLAUDE.md` if present (read-only, for Step 3's conflict check — it is never written to) and list
+`.claude/rules/`. The project's own conventions take priority over anything this skill adds. Concretely:
 
-- Never reorder, reword, or remove anything already in either place.
-- Additions are inserted at one point, not scattered.
-- If an existing rule or CLAUDE.md section already covers tool usage, code search, or "how to explore
-  this codebase," read it carefully — Step 3 decides whether it complements or conflicts.
+- Never reorder, reword, or remove anything already in `.claude/rules/`.
+- If an existing rule already covers tool usage, code search, or "how to explore this codebase," read it
+  carefully — Step 3 decides whether it complements or conflicts.
 
 ## Step 3 — Detect other plugins and existing tool/standards guidance
 
@@ -79,7 +81,7 @@ here — the plugin's own tools are for `.cs`.
 Then decide:
 
 - **No other code-intelligence plugin** → draft as-is.
-- **Another plugin governs other languages, no overlap** → draft as-is; note the scoping in Step 5.
+- **Another plugin governs other languages, no overlap** → draft as-is; note the scoping in Step 4's draft.
 - **Genuine overlap** — another plugin's instructions already govern `.cs` search or edits → do not
   draft silently. Surface the conflict and ask how to resolve it (defer to the existing plugin, scope
   dotnet-toolkit to a subfolder, replace the older guidance) before going further.
@@ -112,6 +114,10 @@ when output is truncated, and returns one fragment of a partial class with no si
 | `grep` for callers or implementors | `get_references` (Roslyn semantic model) |
 | `find`/`ls`/Glob to map a subsystem | `get_scope` |
 | Tracing a call chain by hand | `get_call_slice` |
+| Who eventually calls/is called by a symbol, several levels deep | `get_call_hierarchy` |
+| A type's full base chain, interfaces, and derived/implementing types | `get_type_hierarchy` |
+| Opening every `.csproj` to trace project references by hand | `get_project_graph` |
+| Manually tracing project references looking for a cycle | `detect_circular_dependencies` |
 | `git diff` to judge a change | `get_semantic_diff` |
 | Guessing why code looks the way it does | `search_log` |
 | `Edit`/`Write` then `dotnet build` | `validate_patch` |
@@ -169,71 +175,51 @@ If Step 3 found a scoped-but-resolvable overlap, add one sentence noting the bou
 non-.NET code, `<other plugin>` remains the tool of record; this rule only governs `.cs`." One sentence;
 don't restate the other plugin's docs.
 
-## Step 5 — Draft the CLAUDE.md pointer
-
-Only if `CLAUDE.md` exists. Keep the markers verbatim — they make the block idempotently findable on a
-re-run (Step 8) and removable on uninstall.
-
-```markdown
-<!-- dotnet-toolkit:start (v3) -->
-## C# tooling
-
-This repo has the dotnet-toolkit plugin installed: a Roslyn-powered MCP server for token-efficient C#
-query (`search_index`, `get_symbol`, `get_references`, `get_scope`) and compiler-validated edits
-(`validate_patch`). For `.cs` files these replace Grep/Read/Edit, and a write-time security/testing
-checklist applies too — see `.claude/rules/dotnet-toolkit-csharp.md`, which loads automatically whenever
-a C# file is in play.
-<!-- dotnet-toolkit:end -->
-```
-
-Insert it **immediately after the file's title and any short intro paragraph**, before the first `##`
-section. If the file has no clear title/intro, insert as the first `##` section. State the chosen
-position in the plan so the user can redirect it.
-
-## Step 6 — Present the plan, then wait
+## Step 5 — Present the plan, then wait
 
 Show the user, in chat (not applied yet):
 - The full rule file content and its path.
-- The CLAUDE.md pointer block and the heading it will follow — or that CLAUDE.md was absent and skipped.
 - One line on what Step 3 found, and how it was handled.
-- One line stating plainly that rules carry the *same* priority as CLAUDE.md, that path-scoping buys
-  load timing rather than precedence, and that the `PreToolUse` hook is the actual enforcement.
+- One line stating plainly that this rule loads independently of CLAUDE.md (per Claude Code's docs, not
+  appended into it), that `paths` scoping buys load timing rather than precedence over CLAUDE.md, and
+  that the `PreToolUse` hook is the actual enforcement. CLAUDE.md itself is untouched.
 
 Then ask directly whether to proceed. Use AskUserQuestion if there are real options to choose between
-(two candidate insertion points, a Step 3 coexistence resolution). **Do not write until the user has
-said yes.** A generic "go ahead and set it up" from earlier is not that yes if the plan has not been
-shown yet.
+(a Step 3 coexistence resolution). **Do not write until the user has said yes.** A generic "go ahead and
+set it up" from earlier is not that yes if the plan has not been shown yet.
 
-## Step 7 — Back up, then apply
+## Step 6 — Back up, then apply
 
-1. If `CLAUDE.md` will be modified, copy it to
-   `.claude/dotnet-toolkit/backups/CLAUDE.md.<UTC timestamp>.bak` first. Same for an existing
-   `.claude/rules/dotnet-toolkit-csharp.md` on a re-run. Keep backups after a successful apply.
-2. Write the rule file, then the CLAUDE.md block. Both are markdown, so `Write`/`Edit` is correct —
-   `validate_patch` is for `.cs`, and the hook does not touch these.
-3. Confirm back: what was written, what was backed up and where, and how to undo.
+1. If `.claude/rules/dotnet-toolkit-csharp.md` already exists (a re-run), copy it to
+   `.claude/dotnet-toolkit/backups/dotnet-toolkit-csharp.md.<UTC timestamp>.bak` first. Keep backups
+   after a successful apply.
+2. Write the rule file. It's markdown, so `Write`/`Edit` is correct — `validate_patch` is for `.cs`, and
+   the hook does not touch this file.
+3. Confirm back: what was written, what was backed up (if a re-run), and how to undo.
 
-## Step 8 — Re-running (update, not duplicate)
+## Step 7 — Re-running (update, not duplicate)
 
-If `.claude/rules/dotnet-toolkit-csharp.md` or the CLAUDE.md markers already exist, this is a refresh:
-diff existing content against the current template (it may have drifted if the tool surface or the
-standards checklist changed), show *that* diff in Step 6 instead of the full text, back up as in Step 7,
-and replace only the rule file and the text between the existing markers — same position, no reordering.
+If `.claude/rules/dotnet-toolkit-csharp.md` already exists, this is a refresh: diff its content against
+the current template (it may have drifted if the tool surface or the standards checklist changed), show
+*that* diff in Step 5 instead of the full text, back up as in Step 6, and replace the file's content —
+same path, no new file.
 
-A `(v1)` marker block from an older run holds the full protocol inline in CLAUDE.md. Migrating it is the
-right move: propose replacing it with the pointer and moving the substance into the rule file, and say why
-(it loads at the moment C# is touched instead of once at launch). A `(v2)` block predates the
-security/testing checklist section — migrating to `(v3)` adds that section to the existing rule file
-without otherwise disturbing it. Show both diffs together either way.
+If the existing file instead has a `<!-- dotnet-toolkit:start -->`/`<!-- dotnet-toolkit:end -->` marker
+block inside a `CLAUDE.md` (a `(v1)`/`(v2)` artifact from before this skill stopped writing to CLAUDE.md),
+propose two things together: writing the current rule-file template to
+`.claude/rules/dotnet-toolkit-csharp.md`, and removing the old marker block from `CLAUDE.md` (see
+"Undoing this later" for the exact removal). Say why: CLAUDE.md is no longer touched by this skill, and
+the rule file alone is sufficient. Show the user both changes before applying either.
 
 ## Undoing this later
 
-- **Remove the rule**: delete `.claude/rules/dotnet-toolkit-csharp.md`.
-- **Remove the pointer**: delete everything from `<!-- dotnet-toolkit:start -->` to
-  `<!-- dotnet-toolkit:end -->` inclusive.
-- **Full restore**: copy the newest file from `.claude/dotnet-toolkit/backups/` back over `CLAUDE.md`.
+- **Remove the rule**: delete `.claude/rules/dotnet-toolkit-csharp.md`. That's the only file this skill
+  writes, so this is the whole uninstall.
+- **If an old CLAUDE.md marker block exists from a prior version of this skill**: delete everything from
+  `<!-- dotnet-toolkit:start -->` to `<!-- dotnet-toolkit:end -->` inclusive, or restore the newest file
+  from `.claude/dotnet-toolkit/backups/` over `CLAUDE.md`.
 
 The hook comes and goes with the plugin itself — uninstalling the plugin removes it; there is nothing
 repo-local to clean up.
 
-Mention all of these when reporting Step 7's result.
+Mention all of these when reporting Step 6's result.

@@ -51,6 +51,9 @@ Component names are exactly the response fields they control:
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
 | `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute` suffix (e.g. `[Obsolete]` → `"Obsolete"`); `arguments` is a compact rendering of constructor/named arguments, truncated rather than reproduced in full for a long string. Absent when the symbol has no attributes |
+| `modifiers` | The literal C# modifier phrase in declaration order — `"public static readonly"`, `"public sealed"`, `"public override"`, etc. Declaration-only: no semantic-model body walk, same cost tier as `xmlDoc` |
+| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type (not `object` filtered out, not the transitive chain — `get_type_hierarchy` owns that). Absent for anything else, including when a type has no explicit base |
+| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else |
 
 The skeleton — `kind`, `displayString`, `accessibility`, `containingType`, `declarationSites` (`file`,
 `startLine`, `endLine`) — is unconditional: every call gets it regardless of `include`, and those line
@@ -138,6 +141,8 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 |---|---|
 | `query` | Free-text, OR-ed and ranked. **Put every term you want in one call**: `"fee ledger TryBuy TrySell"` returns all four in one ranked response — not four separate calls. |
 | `kinds` | Optional kind filter, space- or comma-separated: `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. Bare tokens are an include-only filter (`"method property"` searches only those two). Prefix a token with `-` to exclude it instead (`"-struct -enum"` searches every kind except those two). Mixing both forms in one call: the bare tokens win and the `-` tokens are dropped, rather than combining. |
+| `modifiers` | Optional modifier filter, space- or comma-separated: the literal C# keywords (`public`, `private`, `protected`, `internal`, `static`, `const`, `readonly`, `volatile`, `virtual`, `abstract`, `sealed`, `override`, `async`, `extern`, `partial` — `"private protected"`/`"protected internal"` also match their bare halves) plus a few cheap derived tags that aren't keywords: `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`. **Unlike `kinds`, bare tokens are AND-ed, not OR-ed** — modifiers are multi-valued per symbol (`"public static"` means both), where kind is single-valued (so `kinds`' OR makes sense but wouldn't here). `-` tokens exclude and *combine* with the bare tokens rather than one replacing the other, e.g. `"public -sealed"` is public AND NOT sealed. |
+| `implements` | Optional interface name — narrows to its direct implementers only (not transitive). Resolved the same way any symbol name is resolved elsewhere; an unresolvable name yields an empty result rather than an error. Narrows the ranked `query` hits the same way `pathPrefix` does — not a standalone browse-by-interface mode, so `query` still needs a real search term. |
 | `pathPrefix` | Optional folder/file scope, e.g. `"src/Tools"` or `"src/Tools/ContextTools.cs"` — relative to the repo root, forward slashes, matched on a full path-segment boundary (`"Tools"` cannot match `"ToolsFoo"`). A hit whose file can't be resolved (an overloaded name) is dropped rather than guessed at, so scoped results can undercount for an overload-heavy query. Ranking still runs over the whole index first, so a query with far more hits outside the prefix than the internal overfetch cap can return fewer than `limit` even though more in-scope matches exist — narrow the query text itself if that happens. |
 | `limit` | Default 10, cap 50. |
 | `summary` | Optional XML doc `<summary>` signal per hit, read from the syntax index (no MSBuild needed, so it works at `index_only` too). `"has"` adds `hasSummary` (bool) — a cheap presence check with no text. `"full"` adds `summary` (string, the extracted text capped at 160 characters with a trailing `…`; absent if the symbol has no `<summary>`). The cap keeps a pathologically long doc comment from dominating a multi-hit response — fetch `get_symbol`'s `xmlDoc.summary` for the untruncated text once you've picked a symbol. Omit `summary` for the pre-existing response, byte-for-byte — no extra field, no extra cost. An unrecognized value is treated as omitted, same precedent as `kinds`' unrecognized tokens. |
@@ -175,6 +180,32 @@ search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.Mc
     "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":63},
    {"symbolId":"sym_a487...","name":"DotnetToolkit.McpServer.Store.SearchText.ForIndex(string)",
     "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":18}]}
+```
+
+Filtering by modifier and by interface — `"Widget"` matches both `Widget` and `TurboWidget`;
+`modifiers: "public sealed"` (AND, not OR) narrows to the one that is both:
+
+```
+search_index(query: "Widget", kinds: "class", modifiers: "public sealed", limit: 5)
+```
+
+```json
+{"items":[
+   {"symbolId":"sym_...","name":"Sample.Lib.TurboWidget","kind":"Type",
+    "file":"Lib/Widget.cs","line":16}]}
+```
+
+`implements` narrows to direct implementers of a named interface instead — both widgets implement
+`IWidget`, so both come back:
+
+```
+search_index(query: "Widget", kinds: "class", implements: "IWidget", limit: 5)
+```
+
+```json
+{"items":[
+   {"symbolId":"sym_...","name":"Sample.Lib.Widget","kind":"Type","file":"Lib/Widget.cs","line":9},
+   {"symbolId":"sym_...","name":"Sample.Lib.TurboWidget","kind":"Type","file":"Lib/Widget.cs","line":16}]}
 ```
 
 Checking documentation coverage before spending a `get_symbol` call — `summary: "has"` is the cheap

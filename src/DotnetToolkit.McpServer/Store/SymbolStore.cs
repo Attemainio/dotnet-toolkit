@@ -14,10 +14,10 @@ public sealed class SymbolStore
 
     public bool Available => _store.Available;
 
-    public sealed record SymbolRow(
+public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
-        string? RefsHash = null, string? ApiHash = null, bool IsTest = false);
+        string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "");
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
@@ -232,24 +232,14 @@ public sealed class SymbolStore
         return cmd.ExecuteScalar() as string;
     }
 
-    /// <summary>
-    /// Ranked symbol lookup for <c>search_index</c> (spec §16). MVP backend: substring match over
-    /// fully-qualified name, ranked exact &gt; prefix &gt; contains. The FTS5 upgrade is Phase 7;
-    /// the response schema is already final so callers do not change when the backend does.
-    /// </summary>
-    /// <summary>
-    /// Ranked symbol lookup. Tries FTS first so multi-word and camel-case-interior queries work
-    /// ("Ledger TryBuy TrySell" finds both methods on FIFOLedger); falls back to the substring
-    /// matcher when FTS finds nothing, which keeps single-token and partial-identifier queries
-    /// working on an index written before the FTS migration ran.
-    /// </summary>
-    public IReadOnlyList<SearchHit> Search(
-        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
+public IReadOnlyList<SearchHit> Search(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
     {
         if (!_store.Available || string.IsNullOrWhiteSpace(query))
             return [];
 
-        var fts = SearchFts(query, includeKinds, excludeKinds, limit);
+        var fts = SearchFts(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers);
         if (fts.Count >= limit)
             return fts;
 
@@ -258,12 +248,13 @@ public sealed class SymbolStore
         // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
         // meant a single weak token match suppressed the substring index entirely.
         var seen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
-        var topUp = SearchLike(query, includeKinds, excludeKinds, limit).Where(h => seen.Add(h.SymbolId));
+        var topUp = SearchLike(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers).Where(h => seen.Add(h.SymbolId));
         return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
-    private IReadOnlyList<SearchHit> SearchFts(
-        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
+private IReadOnlyList<SearchHit> SearchFts(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
     {
         var match = SearchText.ForQuery(query);
         if (match is null)
@@ -272,6 +263,7 @@ public sealed class SymbolStore
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
         var kindFilter = AppendKindFilter(cmd, "s.kind", includeKinds, excludeKinds);
+        var modifierFilter = AppendModifierFilter(cmd, "s.modifiers", includeModifiers, excludeModifiers);
         // bm25 is negated by convention (more negative = better), so ordering ascending puts the
         // rows matching more of the query's terms first. The exact/prefix cases are still promoted
         // ahead of it so an exact name never loses to a better-scoring partial.
@@ -284,7 +276,7 @@ public sealed class SymbolStore
                    END AS rank
             FROM symbols_fts f
             JOIN symbols s ON s.symbol_id = f.symbol_id
-            WHERE symbols_fts MATCH $match{kindFilter}
+            WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}
             ORDER BY rank, bm25(symbols_fts), length(s.fq_name), s.fq_name
             LIMIT $limit;
             """;
@@ -301,13 +293,15 @@ public sealed class SymbolStore
         return ReadHits(cmd);
     }
 
-    private IReadOnlyList<SearchHit> SearchLike(
-        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
+private IReadOnlyList<SearchHit> SearchLike(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
     {
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
         // COLLATE NOCASE so callers are not silently punished for "method" vs "Method".
         var kindFilter = AppendKindFilter(cmd, "kind", includeKinds, excludeKinds);
+        var modifierFilter = AppendModifierFilter(cmd, "modifiers", includeModifiers, excludeModifiers);
         cmd.CommandText = $"""
             SELECT symbol_id, display_string, kind, fq_name, decl_hash,
                    CASE
@@ -317,7 +311,7 @@ public sealed class SymbolStore
                      ELSE 3
                    END AS rank
             FROM symbols
-            WHERE fq_name LIKE $contains{kindFilter}
+            WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}
             ORDER BY rank, length(fq_name), fq_name
             LIMIT $limit;
             """;
@@ -329,14 +323,7 @@ public sealed class SymbolStore
         return ReadHits(cmd);
     }
 
-    /// <summary>
-    /// Builds the "kind IN (include) AND kind NOT IN (exclude)" fragment shared by SearchFts/SearchLike
-    /// and registers the parameters it references against <paramref name="cmd"/>. include and exclude
-    /// are independent here — search_index resolves mixed include/exclude tokens down to include-only
-    /// before this layer ever sees both non-empty, but nothing below stops a future caller from passing
-    /// both, so both are honored rather than assuming one is always null.
-    /// </summary>
-    private static string AppendKindFilter(
+private static string AppendKindFilter(
         SqliteCommand cmd, string columnExpr,
         IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds)
     {
@@ -358,6 +345,63 @@ public sealed class SymbolStore
                 cmd.Parameters.AddWithValue("$ke" + i++, k);
         }
         return clauses.Count == 0 ? "" : " AND " + string.Join(" AND ", clauses);
+    }
+
+    /// <summary>
+    /// Builds the modifier-filter fragment for SearchFts/SearchLike. Unlike <see cref="AppendKindFilter"/>,
+    /// include and exclude are independent filters that combine (AND) rather than one replacing the
+    /// other: kind is single-valued per symbol so "OR the includes, ignore excludes if any include was
+    /// given" makes sense, but modifiers are multi-valued per symbol, so "has all of these AND none of
+    /// those" is the combination callers actually want. Tokens are matched as whole words against a
+    /// modifiers column stored with a leading/trailing space, so a plain LIKE with space-padded
+    /// wildcards is a safe word-boundary match without a tokenizer.
+    /// </summary>
+    private static string AppendModifierFilter(
+        SqliteCommand cmd, string columnExpr,
+        IReadOnlyCollection<string>? includeTokens, IReadOnlyCollection<string>? excludeTokens)
+    {
+        var clauses = new List<string>();
+        if (includeTokens is { Count: > 0 })
+        {
+            var i = 0;
+            foreach (var t in includeTokens)
+            {
+                var p = "$mi" + i++;
+                clauses.Add($"{columnExpr} LIKE {p}");
+                cmd.Parameters.AddWithValue(p, $"% {t} %");
+            }
+        }
+        if (excludeTokens is { Count: > 0 })
+        {
+            var i = 0;
+            foreach (var t in excludeTokens)
+            {
+                var p = "$me" + i++;
+                clauses.Add($"{columnExpr} NOT LIKE {p}");
+                cmd.Parameters.AddWithValue(p, $"% {t} %");
+            }
+        }
+        return clauses.Count == 0 ? "" : " AND " + string.Join(" AND ", clauses);
+    }
+
+    /// <summary>
+    /// symbolIds of every type recorded as directly implementing <paramref name="interfaceSymbolId"/>
+    /// (search_index's implements filter). Direct only — mirrors get_symbol's interfaces component,
+    /// not a transitive closure.
+    /// </summary>
+    public IReadOnlyCollection<string> ImplementorsOf(string interfaceSymbolId)
+    {
+        if (!_store.Available)
+            return [];
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT from_symbol FROM reference_edges WHERE to_symbol = $id AND edge_kind = 'implements';";
+        cmd.Parameters.AddWithValue("$id", interfaceSymbolId);
+        var result = new List<string>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            result.Add(reader.GetString(0));
+        return result;
     }
 
     /// <summary>
@@ -595,7 +639,7 @@ public sealed class SymbolStore
 
     // ---- shared writers (used by both the full rebuild and the incremental pass) ----------------
 
-    private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
+private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
     {
         if (symbols.Count == 0)
             return;
@@ -604,8 +648,8 @@ public sealed class SymbolStore
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, embedding, is_test)
-            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest);
+                 refs_hash, api_hash, display_string, embedding, is_test, modifiers)
+            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -623,6 +667,7 @@ public sealed class SymbolStore
             cmd.Parameters.AddWithValue("$ts", now);
             cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
             cmd.Parameters.AddWithValue("$isTest", s.IsTest ? 1 : 0);
+            cmd.Parameters.AddWithValue("$modifiers", " " + s.Modifiers + " ");
             cmd.ExecuteNonQuery();
         }
 

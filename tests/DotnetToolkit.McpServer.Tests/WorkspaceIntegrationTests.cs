@@ -925,6 +925,76 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         }
     }
 
+    /// <summary>
+    /// The literal C# modifier phrase, declaration-only. HighGear is `public sealed class HighGear :
+    /// GearBase`, so its own modifiers render "public sealed", and its Ratio override renders
+    /// "public override".
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Modifiers_RendersLiteralKeywordPhrase()
+    {
+        var type = Root(await GetSymbol("Sample.Lib.HighGear", "modifiers"));
+        Assert.Equal("public sealed", type.GetProperty("content").GetProperty("modifiers").GetString());
+
+        var method = Root(await GetSymbol("Sample.Lib.HighGear.Ratio", "modifiers"));
+        Assert.Equal("public override", method.GetProperty("content").GetProperty("modifiers").GetString());
+    }
+
+    /// <summary>
+    /// baseType/interfaces are type-only: direct only (not the transitive chain get_type_hierarchy
+    /// already owns), and absent entirely -- not null-and-present -- for a member.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_BaseTypeAndInterfaces_AreTypeOnlyAndDirect()
+    {
+        var highGear = Root(await GetSymbol("Sample.Lib.HighGear", "baseType,interfaces"));
+        Assert.Equal("GearBase",
+            highGear.GetProperty("content").GetProperty("baseType").GetProperty("displayString").GetString());
+
+        var widget = Root(await GetSymbol("Sample.Lib.Widget", "interfaces"));
+        var interfaces = widget.GetProperty("content").GetProperty("interfaces");
+        Assert.Contains(interfaces.EnumerateArray(), i => i.GetProperty("displayString").GetString() == "IWidget");
+
+        var method = Root(await GetSymbol("Sample.Lib.Widget.Spin", "baseType,interfaces"));
+        Assert.False(method.GetProperty("content").TryGetProperty("baseType", out _));
+        Assert.False(method.GetProperty("content").TryGetProperty("interfaces", out _));
+    }
+
+    /// <summary>Bare modifier tokens AND: "public sealed" must match TurboWidget only, not plain Widget.</summary>
+    [Fact]
+    public async Task SearchIndex_ModifiersFilter_RequiresAllIncludedTokens()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Widget", kinds: "class", modifiers: "public sealed", limit: 10));
+
+        var items = TableRows(root.GetProperty("items"));
+        Assert.Single(items);
+        Assert.Equal("Sample.Lib.TurboWidget", items[0]["name"].GetString());
+    }
+
+    /// <summary>The implements filter narrows to direct implementers of the named interface.</summary>
+    [Fact]
+    public async Task SearchIndex_ImplementsFilter_ReturnsDirectImplementersOfTheNamedInterface()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Widget", kinds: "class", implements: "IWidget", limit: 10));
+
+        var names = TableRows(root.GetProperty("items")).Select(i => i["name"].GetString()).ToList();
+        Assert.Contains("Sample.Lib.Widget", names);
+        Assert.Contains("Sample.Lib.TurboWidget", names);
+    }
+
+    /// <summary>A query matching only non-implementers of the named interface returns no items.</summary>
+    [Fact]
+    public async Task SearchIndex_ImplementsFilter_ExcludesNonImplementers()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Gear", kinds: "class", implements: "IWidget", limit: 10));
+
+        Assert.Empty(TableRows(root.GetProperty("items")));
+    }
+
+
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);

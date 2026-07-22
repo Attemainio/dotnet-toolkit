@@ -22,9 +22,15 @@ public readonly record struct SymbolComponents
     public const string RecentLog = "recentLog";
     public const string Members = "members";
     public const string Attributes = "attributes";
+    // Declaration-only facts (no semantic-model body walk): the literal modifier phrase, plus the
+    // direct base type/interfaces — type-only, null for anything else, same as Members.
+    public const string Modifiers = "modifiers";
+    public const string BaseType = "baseType";
+    public const string Interfaces = "interfaces";
 
     public static readonly IReadOnlyList<string> All =
-        [Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog, Members, Attributes];
+        [Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog, Members, Attributes,
+         Modifiers, BaseType, Interfaces];
 
     private readonly HashSet<string> _set;
 

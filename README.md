@@ -23,11 +23,12 @@ fraction of the tokens.
 | Domain | Tools | What it replaces |
 |---|---|---|
 | Symbol retrieval | `get_symbol`, `search_index` | Read over .cs files, ls/Glob to learn a codebase |
-| Relationships | `get_references`, `get_call_slice`, `get_scope` | Grep for usages; guessing what is callable where |
+| Relationships | `get_references`, `get_call_slice`, `get_scope`, `get_call_hierarchy`, `get_type_hierarchy` | Grep for usages; guessing what is callable where; manually tracing callers/overrides across files |
+| Project structure | `get_project_graph`, `detect_circular_dependencies` | Reading `.csproj`/`.sln` references by hand to map project dependencies |
 | History | `get_semantic_diff`, `search_log` | Reading textual diffs; re-proposing rejected designs |
 | Validated edits | `validate_patch` | Editing blind, then `dotnet build` output dumps |
 | Self-observation | `get_retrieval_metrics` | Guessing where tokens went |
-| Server | `ping`, `workspace_status`, `reload_workspace` | — |
+| Server | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` | — |
 
 Responses are JSON, deliberately terse: **absent fields carry no information**, and a
 field is omitted rather than guessed. A caller count is reported only where the edge
@@ -54,11 +55,12 @@ section for details.
 
 Installing the plugin makes the tools *available*; it doesn't make a fresh session in your repo
 *prefer* them over Grep/Read/`dotnet build`. Run `/dotnet-toolkit-init` once per repo to fix that: it
-reads your existing `CLAUDE.md`, drafts an additive "use these tools for C#" section (backing off if
-another plugin already governs code search there), shows you the exact diff, and writes it only after
-you approve — backing up the original first so it's fully reversible. See
+drafts an additive, path-scoped `.claude/rules/dotnet-toolkit-csharp.md` (backing off if another plugin
+already governs code search there), shows you the exact content, and writes it only after you approve —
+backing up any existing version first so it's fully reversible. It never modifies your `CLAUDE.md`:
+`.claude/rules/` loads independently, so the rule file stands on its own. See
 `skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
-per-tool reference it points your `CLAUDE.md` at.
+per-tool reference the rule file points at.
 
 ## Requirements
 

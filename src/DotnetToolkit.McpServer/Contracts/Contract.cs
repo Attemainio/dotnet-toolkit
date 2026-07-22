@@ -6,7 +6,7 @@ namespace DotnetToolkit.McpServer.Contracts;
 /// </summary>
 public static class Contract
 {
-    /// <summary>The response contract version — current: 3.19.</summary>
+    /// <summary>The response contract version — current: 3.20.</summary>
     /// <remarks>
     /// Bump this whenever a tool's request/response shape changes, so a caller can react to a
     /// changed version string without diffing every field itself. Through 3.18, this doc comment also
@@ -18,5 +18,5 @@ public static class Contract
     /// src/DotnetToolkit.McpServer/Contracts/Contract.cs</c> for the exact wording and full history
     /// back to 2.1, including the versions that predate the log.
     /// </remarks>
-    public const string Id = "ctx-contract/3.19";
+    public const string Id = "ctx-contract/3.20";
 }

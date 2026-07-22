@@ -17,8 +17,12 @@ consuming repo's overrides under `.claude/dotnet-toolkit/`) that you only have a
 It has the plugin's read-side MCP toolset: `search_index` to locate symbols, `get_symbol` for a symbol's
 shape/members/source, `get_references` to trace callers, implementations and overrides semantically,
 `get_scope` for what is callable at a point (including extension methods), `get_call_slice` for the
-shortest path between two symbols, and `get_semantic_diff` for what a commit range actually changed and
-whether any of it is breaking. It has no `Edit`/`Write` and no `validate_patch`, so it cannot change code.
+shortest path between two symbols, `get_call_hierarchy`/`get_type_hierarchy` for callers-of/callees-of and
+base/derived shape, `get_project_graph`/`detect_circular_dependencies` for project-level structure,
+`search_log` to check whether a pattern was a recorded past decision, `workspace_status` to confirm the
+workspace is fully loaded before trusting a semantic result, and `get_semantic_diff` for what a commit
+range actually changed and whether any of it is breaking. It has no `Edit`/`Write` and no `validate_patch`,
+so it cannot change code.
 
 Because it has `get_semantic_diff`, a review scoped to committed refs is worth stating as such — the
 agent can then skip files a formatting-only commit merely touched. It reads git refs, so it cannot see

@@ -345,6 +345,21 @@ private static async Task<string> GetSymbolOne(
             + "If a call mixes both forms, the bare (include) tokens win and the '-' tokens are ignored rather "
             + "than combined with them. An unrecognized value is passed through as-is rather than rejected, so "
             + "a typo silently matches nothing instead of erroring. Omit to search every kind.")] string? kinds = null,
+        [Description("Optional modifier filter, space- or comma-separated. Valid tokens: the literal C# "
+            + "keywords (public, private, protected, internal, static, const, readonly, volatile, virtual, "
+            + "abstract, sealed, override, async, extern, partial — \"private protected\"/\"protected internal\" "
+            + "also match their bare halves, so a \"protected\" query matches those too) plus a few cheap "
+            + "derived tags that aren't keywords: extension (extension method), indexer, initonly (init-only "
+            + "setter), disposable/asyncdisposable (type implements IDisposable/IAsyncDisposable). UNLIKE "
+            + "kinds, bare tokens are AND-ed, not OR-ed — modifiers are multi-valued per symbol, so "
+            + "\"public static\" means both, not either. '-' tokens exclude and COMBINE with the bare tokens "
+            + "rather than being dropped, e.g. \"public -sealed\" is public AND NOT sealed. Omit for no "
+            + "modifier filtering.")] string? modifiers = null,
+        [Description("Optional interface name to filter to its direct implementers only (not deep/transitive "
+            + "implementers of an implementer). Resolved the same way any symbol name is resolved elsewhere — "
+            + "an unresolvable name yields an empty result rather than an error. Narrows the ranked query hits "
+            + "the same way pathPrefix does; it is not a standalone browse-by-interface mode, so query still "
+            + "needs a real search term.")] string? implements = null,
         [Description("Max results (default 10, cap 50).")] int limit = 10,
         [Description("Optional path prefix to narrow results to a folder or file, e.g. \"src/Tools\" or "
             + "\"src/Tools/ContextTools.cs\" (relative to the repo root, forward slashes, matched on a full "
@@ -367,11 +382,27 @@ private static async Task<string> GetSymbolOne(
         var (includeKindTokens, excludeKindTokens) = ParseKindFilter(kinds);
         var includeKinds = NormalizeKinds(includeKindTokens);
         var excludeKinds = includeKindTokens.Length == 0 ? NormalizeKinds(excludeKindTokens) : null;
+
+        // Reuses the same bare/'-'-prefixed token grammar as kinds, but include and exclude are both
+        // honored together here (not one replacing the other) — see the modifiers parameter description.
+        var (includeModTokens, excludeModTokens) = ParseKindFilter(modifiers);
+        var includeMods = includeModTokens.Length == 0 ? null : includeModTokens.Select(t => t.ToLowerInvariant()).ToArray();
+        var excludeMods = excludeModTokens.Length == 0 ? null : excludeModTokens.Select(t => t.ToLowerInvariant()).ToArray();
+
+        HashSet<string>? implementorIds = null;
+        if (!string.IsNullOrWhiteSpace(implements))
+        {
+            var interfaceHit = symbolStore.Search(implements, ["Interface"], null, 1).FirstOrDefault();
+            implementorIds = interfaceHit is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : new HashSet<string>(symbolStore.ImplementorsOf(interfaceHit.SymbolId), StringComparer.Ordinal);
+        }
+
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
         var summaryMode = summary is "has" or "full" ? summary : null;
 
-        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit);
+        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
@@ -385,6 +416,8 @@ private static async Task<string> GetSymbolOne(
             (Hit: h, Site: sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName))));
         if (scope is not null)
             resolved = resolved.Where(r => WithinPathScope(r.Site?.File, scope));
+        if (implementorIds is not null)
+            resolved = resolved.Where(r => implementorIds.Contains(r.Hit.SymbolId));
         var limited = resolved.Take(limit).ToList();
 
         object envelope = new
@@ -453,16 +486,7 @@ private static async Task<string> GetSymbolOne(
 
     // ---- content builder -----------------------------------------------------
 
-    /// <summary>
-    /// Builds the response body for exactly the requested components. One path regardless of how
-    /// <c>include</c> resolved: an earlier version special-cased outline with an early return from its
-    /// own object literal, which is why it silently lacked containingType and recentLog — a divergence,
-    /// not a decision.
-    ///
-    /// Every optional field is null when not requested, and <c>WhenWritingNull</c> drops it from the
-    /// JSON — so an unrequested component costs nothing, not even an empty key.
-    /// </summary>
-    private static async Task<object> BuildContent(
+private static async Task<object> BuildContent(
         ISymbol sym, SymbolComponents components, Solution solution, SolutionLocator locator,
         SymbolStore symbolStore, SymbolIndexBuilder indexBuilder, FeatureLogStore featureLog)
     {
@@ -481,6 +505,18 @@ private static async Task<string> GetSymbolOne(
                 // decl-layer version so members can be leased without ever fetching their bodies.
                 contentVersion = VersionOf(m).ToString(),
             }).ToArray()
+            : null;
+
+        // baseType/interfaces are type-only, same as members — null for anything else rather than an
+        // empty array, so a member's response carries no trace of a component that cannot apply to it.
+        // Direct only (BaseType/Interfaces, not AllInterfaces): a one-hop pointer, not a hierarchy walk —
+        // get_type_hierarchy already owns the transitive chain.
+        var namedType = sym as INamedTypeSymbol;
+        var baseType = components.Has(SymbolComponents.BaseType) && namedType?.BaseType is { } bt
+            ? TypeRef(bt)
+            : null;
+        var interfaces = components.Has(SymbolComponents.Interfaces) && namedType is not null
+            ? namedType.Interfaces.Select(TypeRef).ToArray()
             : null;
 
         // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
@@ -503,6 +539,12 @@ private static async Task<string> GetSymbolOne(
             referenceCounts = counts,
             members,
             attributes = components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
+            // Declaration-only: the literal C# modifier phrase, no semantic-model body walk needed.
+            modifiers = components.Has(SymbolComponents.Modifiers)
+                ? DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym)
+                : null,
+            baseType,
+            interfaces,
             // Why this code is the way it is. Entries describing a superseded body are flagged rather
             // than presented as current truth.
             recentLog = components.Has(SymbolComponents.RecentLog) ? RecentLogFor(sym, featureLog) : null,
@@ -596,7 +638,7 @@ private static async Task<string> GetSymbolOne(
         }
     }
 
-    private static object? ContainingType(ISymbol sym)
+private static object? ContainingType(ISymbol sym)
     {
         if (sym.ContainingType is not { } ct)
             return null;
@@ -607,6 +649,13 @@ private static async Task<string> GetSymbolOne(
             displayString = ct.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
         };
     }
+
+    /// <summary>The same navigation-pointer shape as <see cref="ContainingType"/>, for baseType/interfaces.</summary>
+    private static object TypeRef(ITypeSymbol type) => new
+    {
+        symbolId = SymbolKey.IdOf(type),
+        displayString = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+    };
 
 private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
         sym.DeclaringSyntaxReferences.Select(r =>

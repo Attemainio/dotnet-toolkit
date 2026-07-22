@@ -99,7 +99,7 @@ public sealed class SymbolIndexBuilder
         is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax or BaseMethodDeclarationSyntax
         or PropertyDeclarationSyntax or EventDeclarationSyntax or BaseFieldDeclarationSyntax;
 
-    private void IndexDeclaration(
+private void IndexDeclaration(
         SyntaxNode node, SemanticModel model, string project,
         Dictionary<string, SymbolStore.SymbolRow> symbols,
         HashSet<SymbolStore.EdgeRow> edges,
@@ -132,7 +132,8 @@ public sealed class SymbolIndexBuilder
                     symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                     RefsHash: SemanticFingerprint.ComputeRefs(ReferencedSymbolIds(node, model)),
                     ApiHash: SemanticFingerprint.ComputeApi(symbol as INamedTypeSymbol ?? symbol.ContainingType, DeclHashOf),
-                    IsTest: TestAttributes.IsTestMethod(symbol));
+                    IsTest: TestAttributes.IsTestMethod(symbol),
+                    Modifiers: string.Join(' ', DotnetToolkit.McpServer.Fingerprint.ModifierText.Tags(symbol)));
             }
         }
 
@@ -149,6 +150,16 @@ public sealed class SymbolIndexBuilder
 
             if (body is not null && MechanicalFactsExtractor.Extract(node, owner, model) is { } extracted)
                 facts.Add(new SymbolStore.FactsRow(ownerId, JsonSerializer.Serialize(extracted), body));
+        }
+
+        // search_index's implements filter (interfaces only, direct — matches get_symbol's interfaces
+        // component). Reuses the generic reference_edges table with a new edge_kind rather than a
+        // dedicated table, the same way call edges already do.
+        if (node is BaseTypeDeclarationSyntax && declared[0] is INamedTypeSymbol namedType)
+        {
+            var ownerId = SymbolKey.IdOf(namedType);
+            foreach (var iface in namedType.Interfaces)
+                edges.Add(new SymbolStore.EdgeRow(ownerId, SymbolKey.IdOf(iface), "implements", null, null));
         }
     }
 

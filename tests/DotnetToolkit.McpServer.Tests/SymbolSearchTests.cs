@@ -183,6 +183,53 @@ public sealed class SymbolSearchTests : IDisposable
         Assert.Equal(2, hits.Count);
         Assert.Contains(hits, h => h.FqName == "Demo.Reformat");
     }
+
+    /// <summary>
+    /// Bare modifier tokens AND, unlike kinds' OR: a symbol must carry every requested modifier to
+    /// match, not just one of them.
+    /// </summary>
+    [Fact]
+    public void ModifierFilterRequiresAllIncludedTokens()
+    {
+        _symbols.ReplaceAll([
+            Row("sym_a", "Demo.PublicStatic") with { Modifiers = "public static" },
+            Row("sym_b", "Demo.PublicOnly") with { Modifiers = "public" },
+        ], []);
+
+        var hits = _symbols.Search("Demo", null, null, 10, ["public", "static"]);
+
+        Assert.Single(hits);
+        Assert.Equal("sym_a", hits[0].SymbolId);
+    }
+
+    /// <summary>Exclude tokens combine with include tokens (AND NOT), rather than one replacing the other.</summary>
+    [Fact]
+    public void ModifierFilterExcludeCombinesWithInclude()
+    {
+        _symbols.ReplaceAll([
+            Row("sym_a", "Demo.PublicSealed") with { Modifiers = "public sealed" },
+            Row("sym_b", "Demo.PublicOpen") with { Modifiers = "public" },
+        ], []);
+
+        var hits = _symbols.Search("Demo", null, null, 10, ["public"], ["sealed"]);
+
+        Assert.Single(hits);
+        Assert.Equal("sym_b", hits[0].SymbolId);
+    }
+
+    /// <summary>ImplementorsOf returns only the direct implementers recorded against the interface's edge.</summary>
+    [Fact]
+    public void ImplementorsOfReturnsDirectImplementersOnly()
+    {
+        _symbols.ReplaceAll(
+            [Row("sym_iface", "Demo.IWidget"), Row("sym_impl", "Demo.Widget")],
+            [new SymbolStore.EdgeRow("sym_impl", "sym_iface", "implements", null, null)]);
+
+        var implementors = _symbols.ImplementorsOf("sym_iface");
+
+        Assert.Single(implementors);
+        Assert.Contains("sym_impl", implementors);
+    }
 }
 
 /// <summary>

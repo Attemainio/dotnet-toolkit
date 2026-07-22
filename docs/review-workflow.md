@@ -18,7 +18,14 @@ same files, so the main agent and every review invocation are working from one s
    `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
    `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md`. A repo-local file fully replaces the bundled default for that
    doc — don't blend the two.
-2. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
+2. **Call `workspace_status` before trusting a semantic result, not just when a tool errors.** It reports
+   whether the MSBuild workspace is fully loaded, still `index_only`, or degraded. `get_references`,
+   `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`, and
+   `detect_circular_dependencies` all depend on the loaded workspace for full accuracy — a zero-hit or
+   empty result from any of them while the workspace is not yet `loaded` is workspace state, not evidence
+   of absence, and must be reported as such rather than asserted as a finding (see the zero-callers note
+   under Boundaries below).
+3. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
    members with `get_symbol` (`include: "members"`) and a specific symbol's source with
    `include: "all"`. Only `Read` a file in full when you're about to judge specific lines and
    `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
@@ -29,7 +36,7 @@ same files, so the main agent and every review invocation are working from one s
    path between two symbols — use it to establish whether something is reachable, or how a value gets
    somewhere, instead of walking outwards with repeated `get_references`), and `get_semantic_diff`
    (what a range of commits changed semantically, with API impact per symbol).
-3. **Check for a prior recorded decision before asserting a violation.** `search_log` queries the
+4. **Check for a prior recorded decision before asserting a violation.** `search_log` queries the
    development log — the intents recorded when past changes were applied. A pattern that looks wrong
    may be a deliberate, previously-reasoned choice. Search it whenever a finding could plausibly be
    an intentional tradeoff. If the log records the decision, cite it and drop the finding or reframe
@@ -82,7 +89,9 @@ sentence — don't pad with praise, and don't manufacture findings to justify ha
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert.
-- **Zero callers is not proof of dead code.** The count is of *static call sites in the loaded solution*,
+- **Zero callers is not proof of dead code.** Rule out an unready workspace first, per the `workspace_status`
+  step above — a zero-hit while the workspace is `index_only` or still loading is workspace state, not a
+  finding. Once the workspace is confirmed loaded, the count is of *static call sites in the loaded solution*,
   so anything a framework invokes reports only whatever happens to call it by name as well: reflection-
   registered entry points, DI-resolved implementations, serialization targets, `[Theory]` data, event
   handlers wired by attribute. The count is then incidental rather than meaningful — in this plugin,

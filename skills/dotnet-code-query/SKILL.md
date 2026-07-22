@@ -105,6 +105,27 @@ index before scoping, so a query with far more hits outside the prefix than fit 
 overfetch cap can return fewer than `limit` even with more in-scope matches available — narrow the
 query text itself if that happens, rather than raising `limit`.
 
+### Filter by modifier or by interface
+
+`modifiers` filters the same way `kinds` does — space/comma-separated tokens, `-token` to exclude —
+but with the opposite combining rule for bare tokens: **AND, not OR**. A symbol carries several
+modifiers at once (a method can be both `public` and `static`), so `modifiers: "public static"`
+means both, not either — unlike `kinds`, where a symbol has exactly one kind and `"method
+property"` reads naturally as "either of these". `-` tokens exclude and combine with the bare
+tokens (`"public -sealed"` is public AND NOT sealed), rather than one replacing the other the way
+`kinds`' mixed form does. Valid tokens are the literal C# keywords (`public`, `static`, `readonly`,
+`sealed`, `override`, `async`, `partial`, …) plus a few cheap derived tags that aren't keywords:
+`extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`.
+
+`implements` narrows to the direct implementers of a named interface — resolved the same way any
+symbol name is elsewhere, an unresolvable name yields an empty result rather than an error. It
+narrows the ranked `query` hits the same way `pathPrefix` does, so `query` still needs a real term:
+
+```
+search_index(query: "Widget", kinds: "class", modifiers: "public sealed")   ← AND: public AND sealed
+search_index(query: "Widget", kinds: "class", implements: "IWidget")        ← direct implementers only
+```
+
 ### Check documentation without a follow-up get_symbol call
 
 Pass `summary` to fold an XML doc `<summary>` signal into the same search response — read from the
@@ -150,6 +171,9 @@ Component names are exactly the response fields they control:
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
 | `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none |
+| `modifiers` | The literal C# modifier phrase in declaration order, e.g. `"public sealed"`, `"public override"`, `"public static readonly"`. Declaration-only — same cost tier as `xmlDoc`, no body walk |
+| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type — one hop, not the transitive chain (`get_type_hierarchy` owns that). Absent for anything else |
+| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else |
 
 Examples:
 
