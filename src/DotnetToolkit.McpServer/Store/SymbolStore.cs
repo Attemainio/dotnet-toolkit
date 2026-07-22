@@ -243,12 +243,13 @@ public sealed class SymbolStore
     /// matcher when FTS finds nothing, which keeps single-token and partial-identifier queries
     /// working on an index written before the FTS migration ran.
     /// </summary>
-    public IReadOnlyList<SearchHit> Search(string query, IReadOnlyCollection<string>? kinds, int limit)
+    public IReadOnlyList<SearchHit> Search(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
     {
         if (!_store.Available || string.IsNullOrWhiteSpace(query))
             return [];
 
-        var fts = SearchFts(query, kinds, limit);
+        var fts = SearchFts(query, includeKinds, excludeKinds, limit);
         if (fts.Count >= limit)
             return fts;
 
@@ -257,11 +258,12 @@ public sealed class SymbolStore
         // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
         // meant a single weak token match suppressed the substring index entirely.
         var seen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
-        var topUp = SearchLike(query, kinds, limit).Where(h => seen.Add(h.SymbolId));
+        var topUp = SearchLike(query, includeKinds, excludeKinds, limit).Where(h => seen.Add(h.SymbolId));
         return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
-    private IReadOnlyList<SearchHit> SearchFts(string query, IReadOnlyCollection<string>? kinds, int limit)
+    private IReadOnlyList<SearchHit> SearchFts(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
     {
         var match = SearchText.ForQuery(query);
         if (match is null)
@@ -269,9 +271,7 @@ public sealed class SymbolStore
 
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
-        var kindFilter = kinds is { Count: > 0 }
-            ? " AND s.kind COLLATE NOCASE IN (" + string.Join(',', kinds.Select((_, i) => "$k" + i)) + ")"
-            : "";
+        var kindFilter = AppendKindFilter(cmd, "s.kind", includeKinds, excludeKinds);
         // bm25 is negated by convention (more negative = better), so ordering ascending puts the
         // rows matching more of the query's terms first. The exact/prefix cases are still promoted
         // ahead of it so an exact name never loses to a better-scoring partial.
@@ -292,12 +292,6 @@ public sealed class SymbolStore
         cmd.Parameters.AddWithValue("$q", query);
         cmd.Parameters.AddWithValue("$prefix", query + "%");
         cmd.Parameters.AddWithValue("$limit", limit);
-        if (kinds is { Count: > 0 })
-        {
-            var i = 0;
-            foreach (var k in kinds)
-                cmd.Parameters.AddWithValue("$k" + i++, k);
-        }
 
         // No catch here on purpose. ForQuery quotes and escapes every term it emits, so a malformed
         // MATCH expression is unreachable — the only SqliteException this can raise is a bug in the
@@ -307,14 +301,13 @@ public sealed class SymbolStore
         return ReadHits(cmd);
     }
 
-    private IReadOnlyList<SearchHit> SearchLike(string query, IReadOnlyCollection<string>? kinds, int limit)
+    private IReadOnlyList<SearchHit> SearchLike(
+        string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit)
     {
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
         // COLLATE NOCASE so callers are not silently punished for "method" vs "Method".
-        var kindFilter = kinds is { Count: > 0 }
-            ? " AND kind COLLATE NOCASE IN (" + string.Join(',', kinds.Select((_, i) => "$k" + i)) + ")"
-            : "";
+        var kindFilter = AppendKindFilter(cmd, "kind", includeKinds, excludeKinds);
         cmd.CommandText = $"""
             SELECT symbol_id, display_string, kind, fq_name, decl_hash,
                    CASE
@@ -332,14 +325,39 @@ public sealed class SymbolStore
         cmd.Parameters.AddWithValue("$prefix", query + "%");
         cmd.Parameters.AddWithValue("$contains", "%" + query + "%");
         cmd.Parameters.AddWithValue("$limit", limit);
-        if (kinds is { Count: > 0 })
-        {
-            var i = 0;
-            foreach (var k in kinds)
-                cmd.Parameters.AddWithValue("$k" + i++, k);
-        }
 
         return ReadHits(cmd);
+    }
+
+    /// <summary>
+    /// Builds the "kind IN (include) AND kind NOT IN (exclude)" fragment shared by SearchFts/SearchLike
+    /// and registers the parameters it references against <paramref name="cmd"/>. include and exclude
+    /// are independent here — search_index resolves mixed include/exclude tokens down to include-only
+    /// before this layer ever sees both non-empty, but nothing below stops a future caller from passing
+    /// both, so both are honored rather than assuming one is always null.
+    /// </summary>
+    private static string AppendKindFilter(
+        SqliteCommand cmd, string columnExpr,
+        IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds)
+    {
+        var clauses = new List<string>();
+        if (includeKinds is { Count: > 0 })
+        {
+            clauses.Add($"{columnExpr} COLLATE NOCASE IN ("
+                + string.Join(',', includeKinds.Select((_, i) => "$ki" + i)) + ")");
+            var i = 0;
+            foreach (var k in includeKinds)
+                cmd.Parameters.AddWithValue("$ki" + i++, k);
+        }
+        if (excludeKinds is { Count: > 0 })
+        {
+            clauses.Add($"{columnExpr} COLLATE NOCASE NOT IN ("
+                + string.Join(',', excludeKinds.Select((_, i) => "$ke" + i)) + ")");
+            var i = 0;
+            foreach (var k in excludeKinds)
+                cmd.Parameters.AddWithValue("$ke" + i++, k);
+        }
+        return clauses.Count == 0 ? "" : " AND " + string.Join(" AND ", clauses);
     }
 
     /// <summary>

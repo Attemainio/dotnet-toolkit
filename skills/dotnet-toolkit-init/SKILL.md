@@ -116,6 +116,12 @@ when output is truncated, and returns one fragment of a partial class with no si
 | Guessing why code looks the way it does | `search_log` |
 | `Edit`/`Write` then `dotnet build` | `validate_patch` |
 
+## Reading
+
+A `PreToolUse` hook also enforces the read side: `Read` on a `.cs` file a project actually compiles
+is blocked in favor of `search_index`/`get_symbol`, so reaching for it costs a round trip and returns
+nothing. It travels with the plugin like the write-side guard below — no separate install step.
+
 ## Writing
 
 `validate_patch` is the write path, and a `PreToolUse` hook enforces it — `Edit`/`Write` on an

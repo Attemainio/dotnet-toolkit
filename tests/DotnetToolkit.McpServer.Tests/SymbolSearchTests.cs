@@ -49,7 +49,7 @@ public sealed class SymbolSearchTests : IDisposable
     /// The original bug, at its source: re-indexing a symbol whose content moved must leave one FTS row,
     /// not two. Before the fix this returned the symbol twice from a single query.
     /// </summary>
-    [Fact]
+[Fact]
     public void ReindexingAChangedSymbolDoesNotDuplicateItsSearchRow()
     {
         var id = "sym_reindex";
@@ -59,26 +59,26 @@ public sealed class SymbolSearchTests : IDisposable
 
         Assert.Equal(1, FtsRowCount(id));
 
-        var hits = _symbols.Search("OutputFormat", null, 10);
+        var hits = _symbols.Search("OutputFormat", null, null, 10);
         Assert.Single(hits);
     }
 
     /// <summary>A removed symbol must leave the mirror with it — the DELETE trigger is gone.</summary>
-    [Fact]
+[Fact]
     public void RemovingASymbolClearsItsSearchRow()
     {
         _symbols.ReplaceAll([Row("sym_a", "Demo.Keep"), Row("sym_b", "Demo.Drop")], []);
         _symbols.ApplyIncremental([Row("sym_a", "Demo.Keep")], [], []);
 
         Assert.Equal(0, FtsRowCount("sym_b"));
-        Assert.Empty(_symbols.Search("Drop", null, 10));
+        Assert.Empty(_symbols.Search("Drop", null, null, 10));
     }
 
     /// <summary>
     /// A cache written by the pre-fix build: rows missing from the mirror entirely, plus duplicates.
     /// RepairSearchIndex must restore one row per symbol without touching the symbols themselves.
     /// </summary>
-    [Fact]
+[Fact]
     public void RepairSearchIndexBackfillsMissingRowsAndDropsDuplicates()
     {
         _symbols.ReplaceAll([Row("sym_a", "Demo.Alpha"), Row("sym_b", "Demo.Bravo")], []);
@@ -97,15 +97,15 @@ public sealed class SymbolSearchTests : IDisposable
         Assert.Equal(2, FtsRowCount("sym_b"));
 
         // Even before repair, a duplicated mirror row must not reach the caller twice.
-        Assert.Single(_symbols.Search("Bravo", null, 10));
+        Assert.Single(_symbols.Search("Bravo", null, null, 10));
 
         var repaired = _symbols.RepairSearchIndex();
 
         Assert.Equal(2, repaired);
         Assert.Equal(1, FtsRowCount("sym_a"));
         Assert.Equal(1, FtsRowCount("sym_b"));
-        Assert.Single(_symbols.Search("Alpha", null, 10));
-        Assert.Single(_symbols.Search("Bravo", null, 10));
+        Assert.Single(_symbols.Search("Alpha", null, null, 10));
+        Assert.Single(_symbols.Search("Bravo", null, null, 10));
     }
 
     /// <summary>
@@ -170,7 +170,7 @@ public sealed class SymbolSearchTests : IDisposable
     /// fallback on "FTS returned zero rows" meant one weak token hit suppressed the fragment match; the
     /// fallback now tops up a short result instead of being skipped.
     /// </summary>
-    [Fact]
+[Fact]
     public void PartialFtsResultIsToppedUpFromTheSubstringMatcher()
     {
         // "Format" is a whole token of Demo.Format, so FTS reaches it. Demo.Reformat has no interior
@@ -178,7 +178,7 @@ public sealed class SymbolSearchTests : IDisposable
         // '%Format%' can. The old code returned FTS's single hit and never consulted LIKE at all.
         _symbols.ReplaceAll([Row("sym_a", "Demo.Format"), Row("sym_b", "Demo.Reformat")], []);
 
-        var hits = _symbols.Search("Format", null, 10);
+        var hits = _symbols.Search("Format", null, null, 10);
 
         Assert.Equal(2, hits.Count);
         Assert.Contains(hits, h => h.FqName == "Demo.Reformat");

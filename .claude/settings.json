@@ -11,7 +11,18 @@
       "mcp__plugin_dotnet-toolkit_dotnet__get_retrieval_metrics",
       "mcp__plugin_dotnet-toolkit_dotnet__workspace_status",
       "mcp__plugin_dotnet-toolkit_dotnet__reload_workspace",
-      "mcp__plugin_dotnet-toolkit_dotnet__ping"
+      "mcp__plugin_dotnet-toolkit_dotnet__ping",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_call_hierarchy",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_type_hierarchy",
+      "mcp__plugin_dotnet-toolkit_dotnet__get_project_graph",
+      "mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies",
+      "Bash(./scripts/build-plugin.sh:*)",
+      "Bash(./scripts/run-server.sh:*)",
+      "Bash(chmod +x scripts/*.sh)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebSearch"
     ]
   }
 }

@@ -117,6 +117,26 @@ setup step. The script reads its JSON payload through whichever of `node`, `pyth
 (none is guaranteed: `jq` is absent on this repo's own dev box, and Claude Code's native installer means
 `node` cannot be assumed either) and allows the edit if none is.
 
+`hooks/hooks.json` also registers a second `PreToolUse` guard on `Read`, `scripts/guard-cs-read.sh`: a
+`Read` on a `.cs` file that is actually compiled by a project is blocked in favor of `search_index`/
+`get_symbol`, the same enforcement reasoning as the `Edit`/`Write` guard applied to the read side. Solution
+membership is decided in the hook itself, from the filesystem alone, rather than left to Claude to judge at
+read time — a hook is a separate process with no access to the MCP stdio pipe, so it cannot ask
+`WorkspaceHost` whether a file is part of the loaded solution the way the running server could. What it
+checks statically: walking upward from the file for the nearest `.csproj`, while also watching for a
+`*.sln`/`*.slnx` at some level strictly between the file and the repo root — finding one there means the
+file belongs to its own independent, nested solution (a test fixture's throwaway sample project, for
+example) rather than the one this repo's own server loads, so the nearest `.csproj` found along the way is
+the wrong project and the read is allowed. Reaching the repo root itself (where this repo's own top-level
+`.slnx` lives) is the ordinary case and is not treated as nested. If a governing project is found, its own
+`<Compile Remove>` globs are checked too, so a file excluded from compilation the way
+`DotnetToolkit.McpServer.Tests.csproj` excludes `fixtures/**` is still allowed through. None of this is a
+full MSBuild evaluation — conditions, multi-targeting, and unusual glob forms aren't handled — so it is a
+heuristic that is right for the common cases, not a guarantee equivalent to what MSBuild itself would
+decide. It also cannot close one gap: a file genuinely governed by a project while the server's own
+workspace is still `index_only`/degraded, since that is runtime state a static, filesystem-only check has
+no way to see. Same JSON-payload fallback chain and fail-open behavior as the `Edit`/`Write` guard.
+
 The same file also ships a `PostToolUse` hook on `Write`, `scripts/hint-reload-new-cs-file.sh`. A `Write`
 that creates a brand-new `.cs` file (the one case the `PreToolUse` guard above lets through) leaves the
 syntax index and MSBuild workspace unaware of it — both are mtime-polling, not filesystem watchers, and a
@@ -170,6 +190,7 @@ The surface that has to move with the code:
 | `.claude/rules/csharp-tools.md` | this repo's own path-scoped C# rule — the tool table a session sees the moment it touches a `.cs` file |
 | `skills/dotnet-toolkit-init/SKILL.md` | the rule-file template written into *consuming* repos, which embeds its own copy of the tool table |
 | `scripts/guard-cs-edit.sh` | the deny message a blocked `Edit` returns — it restates the `validate_patch` procedure, so a wrong signature here teaches the wrong call at the worst moment |
+| `scripts/guard-cs-read.sh` | the deny message a blocked `Read` returns — it restates the `search_index`/`get_symbol` alternatives, so a stale tool description here teaches the wrong call at the worst moment |
 | the `[Description]` attributes in `Tools/*.cs` | what the model sees before it has read any skill — the first and often only description it gets |
 
 For each change, make sure the docs still carry:
