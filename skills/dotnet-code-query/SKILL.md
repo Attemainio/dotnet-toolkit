@@ -182,7 +182,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine`. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine`. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |

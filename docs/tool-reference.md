@@ -44,7 +44,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
@@ -77,8 +77,9 @@ symbol resolved only because this repo's own code calls, constructs, implements,
 external symbol's `declarationSites` is always `[]` and `source`/`xmlDoc` are effectively unavailable —
 there is no file in this repo to point at.
 
-Real `include: "source"` call and response — each line is its own `{line, text}` entry, `line` an
-absolute file line, rather than one string carrying literal `\n`/`\"` escapes:
+Real `include: "source"` call and response (shown as `format:"json"`, where `source` is `[{line, text}]`
+structured data) — each line is its own entry, `line` an absolute file line, rather than one string
+carrying literal `\n`/`\"` escapes:
 
 ```
 get_symbol(symbol: "SymbolResolver.NameWithoutParameters", include: "source")
@@ -105,6 +106,29 @@ get_symbol(symbol: "SymbolResolver.NameWithoutParameters", include: "source")
 Each entry's `line` is directly usable as a `validate_patch` `startLine`/`endLine` — no separate
 `get_symbol` round trip to learn where inside a large declaration a particular statement sits.
 `get_references`' `includeBodies:true` content carries the identical `[{line, text}]` shape.
+
+**Under the default `toon` format, `source`/`content` render differently.** TOON's normal tabular
+array-of-objects encoding would quote/escape every line containing a comma or a literal `"` — which is
+nearly every real C# line — turning a method into a wall of `\"` noise. Instead, `Formats.Render`
+structurally detects this one shape and splices in a raw, completely unescaped `line: text` block, at
+the cost of that one field no longer being strict parseable data (only `source`/`content` — everything
+else in the response stays normal TOON). A real capture, a line containing its own embedded `"`
+included, unescaped exactly as the file reads:
+
+```
+source:
+  50: private static TypeEntry BuildType(BaseTypeDeclarationSyntax type, string containerFq, string ns)
+  51:     {
+  52:         var name = type.Identifier.Text + (type is TypeDeclarationSyntax { TypeParameterList: { } tp } ? tp.ToString() : "");
+  53:         var fq = Combine(containerFq, name);
+  54:         var kind = type switch
+  55:         {
+  56:             InterfaceDeclarationSyntax => "I",
+  ...
+```
+
+`format:"json"`/`"compact"` always keep the structured `[{line, text}]` array shown above — a caller
+that needs `source` to stay strictly machine-parseable should use one of those, not the TOON default.
 
 Default call, real response:
 
@@ -148,7 +172,7 @@ string matches as hits, and silently drops sites when output is truncated.
 |---|---|
 | `symbol` | Required. Same addressing as `get_symbol`. |
 | `direction` | `callers` (default) \| `implementations` \| `overrides`. |
-| `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source` (default `false` — fetch bodies only for the ones you'll actually edit). |
+| `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source`, including the `toon`-format raw-block rendering (default `false` — fetch bodies only for the ones you'll actually edit). |
 
 Real call and response (trimmed):
 
@@ -177,9 +201,8 @@ Each item carries `symbolId, contentVersion, displayString, sites, dispatchKind`
 apply — absent, not `null`, otherwise. `excludedTextMatches` is the count of comment/string matches a
 grep would have wrongly included — 1 here, correctly excluded.
 
-`includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (trimmed
-here to one caller) — a line containing its own embedded `"` renders as one readable row instead of
-forcing the whole method into one `\"`-escaped blob:
+`includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (shown
+here as `format:"json"`, trimmed to one caller):
 
 ```
 get_references(symbol: "SearchText.CamelParts", includeBodies: true)
@@ -196,6 +219,18 @@ get_references(symbol: "SearchText.CamelParts", includeBodies: true)
      {"line":43,"text":"    public static string? ForQuery(string query)"},
      {"line":54,"text":"                // Prefix match, so \"Ledg\" still finds \"Ledger\". Quoted to keep FTS5 from reading a"},
      {"line":56,"text":"                terms.Add($\"\\\"{candidate.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"*\");"}]}]}
+```
+
+Under the default `toon` format, that same `content` renders as the raw block described above —
+a line building a doubled-up quoted string literal, unescaped exactly as the file reads:
+
+```
+content:
+  43: public static string? ForQuery(string query)
+  ...
+  54:                 // Prefix match, so "Ledg" still finds "Ledger". Quoted to keep FTS5 from reading a
+  55:                 // term as one of its operators (NOT, OR, NEAR) or choking on a stray character.
+  56:                 terms.Add($"\"{candidate.Replace("\"", "\"\"")}\"*");
 ```
 
 ### `search_index` — find symbols when you don't know exact names
