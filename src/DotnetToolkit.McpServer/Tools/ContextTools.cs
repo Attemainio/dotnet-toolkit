@@ -231,7 +231,7 @@ private static async Task<string> GetSymbolOne(
             knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
     }
 
-    /// <summary>Plain-JSON variant of <see cref="ResolveAsync"/> for use inside <see cref="GetSymbolOne"/> only.</summary>
+/// <summary>Plain-JSON variant of <see cref="ResolveAsync"/> for use inside <see cref="GetSymbolOne"/> only.</summary>
     private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsPlainJsonAsync(
         Solution solution, string symbol, SymbolStore symbolStore)
     {
@@ -242,6 +242,8 @@ private static async Task<string> GetSymbolOne(
         {
             if (await ResolveExternalAsync(solution, symbol, symbolStore) is { } external)
                 return (external, null);
+            if (await ResolveEntryPointAsync(solution, symbol) is { } entryPoint)
+                return (entryPoint, null);
             return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
         }
         return (null, Formats.ToJson(new
@@ -255,7 +257,7 @@ private static async Task<string> GetSymbolOne(
         }));
     }
 
-    /// <summary>
+/// <summary>
     /// Resolves a name/id that only matches a previously-discovered external symbol row (BCL/NuGet code
     /// this repo's own source calls, implements, or extends) into a live <c>ISymbol</c> via its stored
     /// documentation-comment id, so it flows through the same BuildContent/DeclarationSites/VersionOf
@@ -276,6 +278,29 @@ private static async Task<string> GetSymbolOne(
             var matches = DocumentationCommentId.GetSymbolsForDeclarationId(docId, compilation);
             if (matches.Length > 0)
                 return matches[0];
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves a handle to a project's synthesized top-level-statements entry point when no other path
+    /// finds it. The entry point has no ordinary declaration syntax for SymbolIndexBuilder's declaration
+    /// walk to index (it only appears as an edge owner), so it may reach here either as the raw
+    /// <c>sym_…</c> id (no indexed row) or as that row's stored display text (once indexed) — matched
+    /// against both forms of the live entry-point symbol rather than assuming which one arrived.
+    /// </summary>
+    private static async Task<ISymbol?> ResolveEntryPointAsync(Solution solution, string handle)
+    {
+        foreach (var project in solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync();
+            var entryPoint = compilation?.GetEntryPoint(CancellationToken.None);
+            if (entryPoint is null)
+                continue;
+            if (SymbolKey.IdOf(entryPoint) == handle
+                || entryPoint.ToDisplayString() == handle
+                || entryPoint.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == handle)
+                return entryPoint;
         }
         return null;
     }
@@ -312,7 +337,7 @@ private static async Task<string> GetSymbolOne(
                 null, false, false, null, 0, "index_only", "workspace_loading", loading, direction);
         }
 
-        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId);
+        var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, symbolStore);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
                 null, false, false, null, 0, "live", "unresolved", error!, direction);
@@ -447,7 +472,7 @@ private static async Task<string> GetSymbolOne(
         HashSet<string>? implementorIds = null;
         if (!string.IsNullOrWhiteSpace(implements))
         {
-            var interfaceHit = symbolStore.Search(implements, ["Interface"], null, 1).FirstOrDefault();
+            var interfaceHit = symbolStore.Search(implements, ["Interface"], null, 1, origin: "all").FirstOrDefault();
             implementorIds = interfaceHit is null
                 ? new HashSet<string>(StringComparer.Ordinal)
                 : new HashSet<string>(symbolStore.ImplementorsOf(interfaceHit.SymbolId), StringComparer.Ordinal);
@@ -489,6 +514,7 @@ private static async Task<string> GetSymbolOne(
                     kind = r.Hit.Kind,
                     file = r.Site?.File,
                     line = r.Site?.Line,
+                    endLine = r.Site?.EndLine,
                     hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
                 }),
@@ -498,14 +524,14 @@ private static async Task<string> GetSymbolOne(
         {
             var rows = limited.Select(r =>
             {
-                var ns = r.Site is null ? "(unresolved)" : r.Site.Namespace;
+                var ns = r.Site?.Namespace ?? r.Hit.Namespace ?? "(unresolved)";
                 var file = r.Site?.File ?? "(unresolved)";
                 var compact = SymbolResolver.CompactName(r.Hit.FqName);
                 var leafName = ns.Length > 0 && compact.StartsWith(ns + ".", StringComparison.Ordinal)
                     ? compact[(ns.Length + 1)..]
                     : compact;
                 return new SymbolGrouping.Row(
-                    r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line,
+                    r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line, r.Site?.EndLine,
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null);
             }).ToList();
@@ -769,14 +795,28 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
             };
         }).ToArray();
 
-private static string? SourceOf(ISymbol sym)
+    /// <summary>One line of a symbol's <c>source</c> component — 1-based absolute file line plus its
+    /// text, so a multi-line declaration renders as a real per-line table (TOON/JSON alike) instead of
+    /// one string carrying literal \n/\" escapes, and each line's number is directly usable as a
+    /// validate_patch startLine/endLine without a separate get_symbol round trip.</summary>
+    private sealed record SourceLine(int Line, string Text);
+
+    private static IReadOnlyList<SourceLine> SplitLines(string text, int startLine) =>
+        text.Replace("\r\n", "\n").Split('\n')
+            .Select((line, i) => new SourceLine(startLine + i, line))
+            .ToArray();
+
+    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym)
     {
         var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)
             return null;
         var node = NormalizeDeclNode(reference.GetSyntax());
         var (start, end) = DeclarationBoundsIncludingDocComment(node);
-        return node.SyntaxTree!.GetText().ToString(TextSpan.FromBounds(start, end));
+        var tree = node.SyntaxTree!;
+        var span = TextSpan.FromBounds(start, end);
+        var startLine = tree.GetLineSpan(span).StartLinePosition.Line + 1;
+        return SplitLines(tree.GetText().ToString(span), startLine);
     }
 
     /// <summary>
@@ -864,7 +904,7 @@ private static string? SourceOf(ISymbol sym)
     // ---- reference directions -------------------------------------------------
 
     private sealed record RefItem(string SymbolId, string Version, string DisplayString,
-        IReadOnlyList<(string File, int Line, string Snippet)> Sites, string? DispatchKind, string? Body,
+        IReadOnlyList<(string File, int Line, string Snippet)> Sites, string? DispatchKind, IReadOnlyList<SourceLine>? Body,
         bool IsTest = false);
 
     private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
@@ -1072,7 +1112,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
             return null;
 
         var version = "decl:index";
-        string? source = null;
+        IReadOnlyList<SourceLine>? source = null;
         try
         {
             var text = File.ReadAllText(locator.AbsPath(hit.File));
@@ -1085,7 +1125,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 var (decl, body) = SyntaxFingerprint.Compute(NormalizeDeclNode(node));
                 version = ContentVersion.Of(decl, body).ToString();
                 if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
-                    source = node.ToString();
+                    source = SplitLines(node.ToString(), hit.Line);
             }
         }
         catch
@@ -1171,13 +1211,20 @@ private static (int Start, int End) DeclarationBoundsIncludingDocComment(SyntaxN
         return member.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.Internal;
     }
 
-    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(Solution solution, string symbol, string toolCallId)
+private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
+        Solution solution, string symbol, string toolCallId, SymbolStore symbolStore)
     {
         var resolution = await SymbolResolver.ResolveAsync(solution, symbol);
         if (resolution.Symbol is not null)
             return (resolution.Symbol, null);
         if (resolution.Candidates.Count == 0)
+        {
+            if (await ResolveExternalAsync(solution, symbol, symbolStore) is { } external)
+                return (external, null);
+            if (await ResolveEntryPointAsync(solution, symbol) is { } entryPoint)
+                return (entryPoint, null);
             return (null, Formats.Render(new { error = "symbol_not_found", symbol }));
+        }
         return (null, Formats.Render(new
         {
             error = "ambiguous_symbol",

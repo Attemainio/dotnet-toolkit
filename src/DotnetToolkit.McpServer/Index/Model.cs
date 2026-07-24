@@ -11,6 +11,7 @@ public sealed record MemberEntry(
     string Signature,
     string? Doc,
     int Line,
+    int EndLine,
     bool IsPublic);
 
 public sealed record TypeEntry(
@@ -22,6 +23,7 @@ public sealed record TypeEntry(
     string[] Bases,
     string Modifiers,
     int Line,
+    int EndLine,
     List<MemberEntry> Members,
     List<TypeEntry> Nested,
     bool IsPublic);
@@ -34,7 +36,7 @@ public sealed record FileEntry(
 
 public sealed class IndexDocument
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

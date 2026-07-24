@@ -341,8 +341,9 @@ public sealed class ProjectIndex
     /// <summary>Where a declaration sits: the file it is in and the line it starts on.</summary>
     public sealed record Site(string File, int Line);
 
-    /// <summary>Where a declaration sits, its extracted XML doc &lt;summary&gt; text if any, and the namespace its declaring type belongs to.</summary>
-    public sealed record DocSite(string File, int Line, string? Doc, string Namespace);
+    /// <summary>Where a declaration sits, its extracted XML doc &lt;summary&gt; text if any, its declaration's
+    /// own end line, and the namespace its declaring type belongs to.</summary>
+    public sealed record DocSite(string File, int Line, int EndLine, string? Doc, string Namespace);
 
     /// <summary>
     /// Resolves fully-qualified names — without parameter lists — to their declaration site, in one pass
@@ -394,9 +395,9 @@ public sealed class ProjectIndex
         {
             foreach (var type in Flatten(entry.Types))
             {
-                Offer(type.FqName, new DocSite(file, type.Line, type.Doc, type.Namespace));
+                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace));
                 foreach (var member in type.Members)
-                    Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.Doc, type.Namespace));
+                    Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace));
             }
         }
         return found;

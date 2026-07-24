@@ -32,7 +32,14 @@ public static partial class SymbolResolver
             return new Resolution(null, []);
 
         var declarations = await SymbolFinder.FindSourceDeclarationsAsync(solution, name, ignoreCase: true, ct);
-        var matches = declarations
+        // FindSourceDeclarationsAsync matches by symbol.Name, and a constructor's Name is ".ctor" — never
+        // the type name — so a "Type.Type(...)" spec can only ever land here as the type itself. Expand
+        // each type hit into its own instance constructors too, so a constructor spec has something to
+        // match against.
+        var candidates = declarations.SelectMany(s => s is INamedTypeSymbol type
+            ? type.InstanceConstructors.Cast<ISymbol>().Append(type)
+            : [s]);
+        var matches = candidates
             .Where(s => MatchesSpec(s, spec, specParams))
             .DistinctBy(s => s.ToDisplayString())
             .ToList();

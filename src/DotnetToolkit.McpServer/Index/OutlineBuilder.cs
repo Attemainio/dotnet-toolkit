@@ -68,7 +68,7 @@ public static partial class OutlineBuilder
             foreach (var m in en.Members)
             {
                 var sig = m.EqualsValue is { } eq ? $"{m.Identifier.Text} = {eq.Value}" : m.Identifier.Text;
-                members.Add(new MemberEntry("F", m.Identifier.Text, sig, DocSummary(m), Line(m), true));
+                members.Add(new MemberEntry("F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true));
             }
         }
         else if (type is TypeDeclarationSyntax td)
@@ -93,10 +93,10 @@ public static partial class OutlineBuilder
             }
             // Primary-constructor records: surface the parameter list as a constructor.
             if (td is RecordDeclarationSyntax { ParameterList: { } rp })
-                members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), true));
+                members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), EndLine(td), true));
         }
 
-        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true));
+        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true));
     }
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
@@ -104,8 +104,8 @@ public static partial class OutlineBuilder
         var name = del.Identifier.Text + (del.TypeParameterList?.ToString() ?? "");
         var fq = Combine(containerFq, name);
         var sigMember = new MemberEntry(
-            "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), true);
-        return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del),
+            "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
+        return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
             [sigMember], [], IsPublic(del.Modifiers, containerHasNamespaceOnly: true));
     }
 
@@ -119,42 +119,42 @@ public static partial class OutlineBuilder
                 var name = m.Identifier.Text + (m.TypeParameterList?.ToString() ?? "");
                 return new MemberEntry("M", m.Identifier.Text,
                     $"{name}{RenderParams(m.ParameterList)} -> {m.ReturnType}",
-                    DocSummary(m), Line(m), isPublic);
+                    DocSummary(m), Line(m), EndLine(m), isPublic);
             }
             case ConstructorDeclarationSyntax c:
                 return new MemberEntry("K", c.Identifier.Text,
                     $"{c.Identifier.Text}{RenderParams(c.ParameterList)}",
-                    DocSummary(c), Line(c), isPublic);
+                    DocSummary(c), Line(c), EndLine(c), isPublic);
             case PropertyDeclarationSyntax p:
                 return new MemberEntry("P", p.Identifier.Text,
                     $"{p.Identifier.Text}: {p.Type} {Accessors(p)}",
-                    DocSummary(p), Line(p), isPublic);
+                    DocSummary(p), Line(p), EndLine(p), isPublic);
             case IndexerDeclarationSyntax ix:
                 return new MemberEntry("P", "this[]",
                     $"this[{RenderParamList(ix.ParameterList.Parameters)}]: {ix.Type}",
-                    DocSummary(ix), Line(ix), isPublic);
+                    DocSummary(ix), Line(ix), EndLine(ix), isPublic);
             case FieldDeclarationSyntax f:
             {
                 var v = f.Declaration.Variables.First();
                 return new MemberEntry("F", v.Identifier.Text,
                     $"{v.Identifier.Text}: {f.Declaration.Type}",
-                    DocSummary(f), Line(f), isPublic);
+                    DocSummary(f), Line(f), EndLine(f), isPublic);
             }
             case EventFieldDeclarationSyntax ef:
             {
                 var v = ef.Declaration.Variables.First();
                 return new MemberEntry("V", v.Identifier.Text,
                     $"{v.Identifier.Text}: {ef.Declaration.Type}",
-                    DocSummary(ef), Line(ef), isPublic);
+                    DocSummary(ef), Line(ef), EndLine(ef), isPublic);
             }
             case EventDeclarationSyntax e:
                 return new MemberEntry("V", e.Identifier.Text,
                     $"{e.Identifier.Text}: {e.Type}",
-                    DocSummary(e), Line(e), isPublic);
+                    DocSummary(e), Line(e), EndLine(e), isPublic);
             case OperatorDeclarationSyntax op:
                 return new MemberEntry("M", $"operator {op.OperatorToken.Text}",
                     $"operator {op.OperatorToken.Text}{RenderParams(op.ParameterList)} -> {op.ReturnType}",
-                    DocSummary(op), Line(op), isPublic);
+                    DocSummary(op), Line(op), EndLine(op), isPublic);
             default:
                 return null;
         }
@@ -182,6 +182,14 @@ public static partial class OutlineBuilder
 
     private static int Line(SyntaxNode node) =>
         node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    /// <summary>
+    /// The last line a declaration's own syntax occupies (trailing trivia excluded) — a cheap
+    /// fetch-strategy signal for whether get_symbol's <c>source</c> component is worth requesting,
+    /// without changing what <see cref="Line"/> itself points at.
+    /// </summary>
+    private static int EndLine(SyntaxNode node) =>
+        node.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
 
     private static string Combine(string container, string name) =>
         container.Length == 0 ? name : $"{container}.{name}";

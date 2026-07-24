@@ -213,6 +213,21 @@ private static void IndexTopLevelStatements(
             return;
 
         var entryId = SymbolKey.IdOf(entry);
+        // Gives get_call_hierarchy a real displayString instead of the raw id, and gives
+        // ContextTools.ResolveEntryPointAsync's row-text match path something to match against — this
+        // row has no meaningful project/decl-hash lineage of its own, so it mirrors
+        // RecordExternalIfNeeded's minimal-row shape rather than IndexDeclaration's full one.
+        if (!symbols.ContainsKey(entryId))
+        {
+            symbols[entryId] = new SymbolStore.SymbolRow(
+                entryId,
+                entry.ToDisplayString(),
+                SymbolKey.KindOf(entry),
+                Project: "",
+                DeclHash: SyntaxFingerprint.Compute(unit).Decl,
+                BodyHash: null,
+                DisplayString: entry.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat));
+        }
         foreach (var statement in statements)
             CollectCallEdges(statement, entry, model, entryId, edges, symbols);
     }
@@ -248,12 +263,15 @@ private static void IndexTopLevelStatements(
         }
     }
 
-    /// <summary>
+/// <summary>
     /// Mints a minimal row for a symbol discovered only as an edge target — never as a declaration this
     /// pass walked — because it lives outside this repo's own solution (BCL, a NuGet package, another
     /// assembly). No decl/body hash and no owning project, matching Store/Schema.cs's SymbolOriginColumn
     /// migration: origin marks a referenced identity, not something this repo declares or re-derives from
-    /// source, so there is nothing here for a later pass to invalidate against.
+    /// source, so there is nothing here for a later pass to invalidate against. Namespace IS captured
+    /// (unlike decl/body hash, it costs nothing to recompute and needs no source to derive), so
+    /// search_index's namespace grouping does not have to fall back to "(unresolved)" just because
+    /// there is no local file for the ProjectIndex-based lookup every other row uses.
     /// </summary>
     private static void RecordExternalIfNeeded(
         ISymbol target, string id, Dictionary<string, SymbolStore.SymbolRow> symbols)
@@ -269,7 +287,8 @@ private static void IndexTopLevelStatements(
             BodyHash: null,
             DisplayString: target.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             Origin: "external",
-            DocumentationId: SymbolKey.DocumentationIdOf(target));
+            DocumentationId: SymbolKey.DocumentationIdOf(target),
+            Namespace: target.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() : null);
     }
 
 }

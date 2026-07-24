@@ -77,11 +77,11 @@ Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` 
 puts the symbols matching more of your terms first, which is exactly the overlap you want.
 
 Each hit carries where it was found, so going straight there costs no second call. `items` is a
-plain array of objects — `symbolId, name, kind, file, line` on every hit:
+plain array of objects — `symbolId, name, kind, file, line, endLine` on every hit:
 
 ```json
 {"items":[{"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)",
-           "kind":"Method","file":"Lib/Pipeline.cs","line":6}]}
+           "kind":"Method","file":"Lib/Pipeline.cs","line":6,"endLine":6}]}
 ```
 
 `file`/`line` are resolved from the syntax index at response time — swept for staleness on the
@@ -89,6 +89,9 @@ way — so they point at where the declaration is *now*, not where it was when t
 written. **A name that maps to several declarations (overloads) omits both fields entirely**
 (absent, not `null`) rather than pointing at the wrong one; that hit still resolves through
 `get_symbol`, which separates overloads by parameter list and always returns exact spans.
+`endLine` is the declaration's own last line (trailing trivia excluded) — a cheap signal for
+whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
+whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration.
 
 Only split into separate calls when you need different `kinds` filters.
 
@@ -179,7 +182,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source text |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine`. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |

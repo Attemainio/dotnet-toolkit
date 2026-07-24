@@ -44,7 +44,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source text |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
@@ -76,6 +76,35 @@ symbol resolved only because this repo's own code calls, constructs, implements,
 `search_index`'s `origin` argument below for how such a symbol gets discovered in the first place). An
 external symbol's `declarationSites` is always `[]` and `source`/`xmlDoc` are effectively unavailable —
 there is no file in this repo to point at.
+
+Real `include: "source"` call and response — each line is its own `{line, text}` entry, `line` an
+absolute file line, rather than one string carrying literal `\n`/`\"` escapes:
+
+```
+get_symbol(symbol: "SymbolResolver.NameWithoutParameters", include: "source")
+```
+
+```json
+{"symbolId":"sym_3ea06d...","contentVersion":"decl:2b96b2c51e23|body:76ef6255ae6b",
+ "content":{"kind":"Method","origin":"source",
+   "containingType":{"symbolId":"sym_914205...","displayString":"SymbolResolver"},
+   "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Workspace/SymbolResolver.cs",
+                         "startLine":86,"endLine":94}],
+   "source":[
+     {"line":86,"text":"/// <summary>"},
+     {"line":87,"text":"    /// The name with any parameter list dropped entirely — the form the syntax index keys declarations"},
+     {"line":88,"text":"    /// by, so a stored name can be matched against it."},
+     {"line":89,"text":"    /// </summary>"},
+     {"line":90,"text":"    public static string NameWithoutParameters(string fqName)"},
+     {"line":91,"text":"    {"},
+     {"line":92,"text":"        var paren = fqName.IndexOf('(');"},
+     {"line":93,"text":"        return paren < 0 ? fqName : fqName[..paren];"},
+     {"line":94,"text":"    }"}]}}
+```
+
+Each entry's `line` is directly usable as a `validate_patch` `startLine`/`endLine` — no separate
+`get_symbol` round trip to learn where inside a large declaration a particular statement sits.
+`get_references`' `includeBodies:true` content carries the identical `[{line, text}]` shape.
 
 Default call, real response:
 
@@ -119,7 +148,7 @@ string matches as hits, and silently drops sites when output is truncated.
 |---|---|
 | `symbol` | Required. Same addressing as `get_symbol`. |
 | `direction` | `callers` (default) \| `implementations` \| `overrides`. |
-| `includeBodies` | Inline each caller's source (default `false` — fetch bodies only for the ones you'll actually edit). |
+| `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source` (default `false` — fetch bodies only for the ones you'll actually edit). |
 
 Real call and response (trimmed):
 
@@ -148,6 +177,27 @@ Each item carries `symbolId, contentVersion, displayString, sites, dispatchKind`
 apply — absent, not `null`, otherwise. `excludedTextMatches` is the count of comment/string matches a
 grep would have wrongly included — 1 here, correctly excluded.
 
+`includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (trimmed
+here to one caller) — a line containing its own embedded `"` renders as one readable row instead of
+forcing the whole method into one `\"`-escaped blob:
+
+```
+get_references(symbol: "SearchText.CamelParts", includeBodies: true)
+```
+
+```json
+{"targetSymbolId":"sym_bfdafc...",
+ "items":[{"symbolId":"sym_528271...","contentVersion":"decl:aa2c7b...|body:34e677...",
+   "displayString":"string? SearchText.ForQuery(string query)",
+   "sites":[{"file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":50,
+             "snippet":"foreach (var candidate in new[] { segment }.Concat(CamelParts(segment)))"}],
+   "dispatchKind":"direct",
+   "content":[
+     {"line":43,"text":"    public static string? ForQuery(string query)"},
+     {"line":54,"text":"                // Prefix match, so \"Ledg\" still finds \"Ledger\". Quoted to keep FTS5 from reading a"},
+     {"line":56,"text":"                terms.Add($\"\\\"{candidate.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"*\");"}]}]}
+```
+
 ### `search_index` — find symbols when you don't know exact names
 
 Replaces: `grep`/`Glob` over `.cs` files. Returns ranked symbols with ids and locations, not raw text
@@ -174,16 +224,20 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
 ```json
 {"items":[
    {"symbolId":"sym_dd78...","name":"DotnetToolkit.McpServer.Tools.PatchTools.ValidatePatch(...)",
-    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":29},
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":29,"endLine":151},
    {"symbolId":"sym_17cd...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore.LogEntry",
-    "kind":"Record","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":22},
+    "kind":"Record","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":22,"endLine":24},
    {"symbolId":"sym_fc34...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore",
-    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":10}]}
+    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":10,"endLine":260}]}
 ```
 
 `name` is directly usable as `get_symbol`'s `symbol` argument. A hit whose name maps to several
 overloads has no `file` at all rather than pointing at the wrong one — resolve it through
-`get_symbol` instead, which separates overloads by parameter list.
+`get_symbol` instead, which separates overloads by parameter list. `endLine` is the declaration's own
+last line (trailing trivia excluded, leading doc comment excluded — so it stays comparable to `line`,
+which never counts the doc comment either) — a cheap size signal for judging whether `get_symbol`'s
+`source` component is worth requesting before asking for it. `ValidatePatch` spans over a hundred
+lines; `LogEntry` is a three-line record — a caller can tell the two apart without a round trip.
 
 The same shape of query with the default `groupBy` omitted — a real capture against the fixture
 solution, `"Spin"` matching four methods across two files under one namespace. The namespace and
@@ -197,11 +251,11 @@ search_index(query: "Spin", kinds: "method")
 ```json
 {"groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
    {"path":"Lib/Pipeline.cs","kind":"Method","symbols":[
-      {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6}]},
+      {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6}]},
    {"path":"Lib/Widget.cs","kind":"Method","symbols":[
-      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12},
-      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5},
-      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18}]}]}]}
+      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12,"endLine":12},
+      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5,"endLine":5},
+      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18,"endLine":18}]}]}]}
 ```
 
 `groupBy: "file"` inverts the nesting to file → namespace → symbols instead. And when a query's
@@ -215,7 +269,7 @@ search_index(query: "Spin", kinds: "method", limit: 1)
 
 ```json
 {"namespace":"Sample.Lib","file":"Lib/Pipeline.cs","kind":"Method",
- "symbols":[{"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6}]}
+ "symbols":[{"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6}]}
 ```
 
 Scoped to one folder — `pathPrefix` narrows the same ranked search to a subsystem instead of the
@@ -228,9 +282,9 @@ search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.Mc
 ```json
 {"items":[
    {"symbolId":"sym_6c0b...","name":"DotnetToolkit.McpServer.Store.SearchText.Segments(string)",
-    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":63},
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":63,"endLine":80},
    {"symbolId":"sym_a487...","name":"DotnetToolkit.McpServer.Store.SearchText.ForIndex(string)",
-    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":18}]}
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":18,"endLine":34}]}
 ```
 
 Filtering by modifier and by interface — `"Widget"` matches both `Widget` and `TurboWidget`;
@@ -243,7 +297,7 @@ search_index(query: "Widget", kinds: "class", modifiers: "public sealed", limit:
 ```json
 {"items":[
    {"symbolId":"sym_...","name":"Sample.Lib.TurboWidget","kind":"Type",
-    "file":"Lib/Widget.cs","line":16}]}
+    "file":"Lib/Widget.cs","line":16,"endLine":19}]}
 ```
 
 `implements` narrows to direct implementers of a named interface instead — both widgets implement
@@ -255,8 +309,8 @@ search_index(query: "Widget", kinds: "class", implements: "IWidget", limit: 5, g
 
 ```json
 {"items":[
-   {"symbolId":"sym_...","name":"Sample.Lib.Widget","kind":"Type","file":"Lib/Widget.cs","line":9},
-   {"symbolId":"sym_...","name":"Sample.Lib.TurboWidget","kind":"Type","file":"Lib/Widget.cs","line":16}]}
+   {"symbolId":"sym_...","name":"Sample.Lib.Widget","kind":"Type","file":"Lib/Widget.cs","line":9,"endLine":13},
+   {"symbolId":"sym_...","name":"Sample.Lib.TurboWidget","kind":"Type","file":"Lib/Widget.cs","line":16,"endLine":19}]}
 ```
 
 Checking documentation coverage before spending a `get_symbol` call — `summary: "has"` is the cheap
@@ -269,9 +323,9 @@ search_index(query: "Spin", kinds: "method", summary: "has", groupBy: "none")
 ```json
 {"items":[
    {"symbolId":"sym_...","name":"Sample.Lib.Widget.Spin(int)","kind":"Method",
-    "file":"Lib/Widget.cs","line":12,"hasSummary":true},
+    "file":"Lib/Widget.cs","line":12,"endLine":12,"hasSummary":true},
    {"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)","kind":"Method",
-    "file":"Lib/Pipeline.cs","line":6}]}
+    "file":"Lib/Pipeline.cs","line":6,"endLine":6}]}
 ```
 
 `SpinTwice` has no `hasSummary` key at all (not `false`) — it has no `<summary>` doc comment. Ask for
@@ -283,7 +337,7 @@ search_index(query: "Widget.Spin", kinds: "method", summary: "full", groupBy: "n
 
 ```json
 {"items":[{"symbolId":"sym_...","name":"Sample.Lib.Widget.Spin(int)","kind":"Method",
-   "file":"Lib/Widget.cs","line":12,"summary":"Spins the widget."}]}
+   "file":"Lib/Widget.cs","line":12,"endLine":12,"summary":"Spins the widget."}]}
 ```
 
 ## Relationships & flow

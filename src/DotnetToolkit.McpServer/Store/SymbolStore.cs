@@ -14,11 +14,11 @@ public sealed class SymbolStore
 
     public bool Available => _store.Available;
 
-    public sealed record SymbolRow(
+public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
         string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "",
-        string Origin = "source", string? DocumentationId = null);
+        string Origin = "source", string? DocumentationId = null, string? Namespace = null);
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
@@ -215,7 +215,7 @@ public sealed class SymbolStore
         return tests;
     }
 
-    public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank);
+public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank, string? Namespace = null);
 
     /// <summary>
     /// Resolves a <c>sym_…</c> identifier back to its fully-qualified name. symbolId is a one-way hash,
@@ -276,7 +276,7 @@ public sealed class SymbolStore
         return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
-    private IReadOnlyList<SearchHit> SearchFts(
+private IReadOnlyList<SearchHit> SearchFts(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
         string origin = "source")
@@ -299,7 +299,8 @@ public sealed class SymbolStore
                      WHEN s.fq_name = $q THEN 0
                      WHEN s.fq_name LIKE $prefix THEN 1
                      ELSE 2
-                   END AS rank
+                   END AS rank,
+                   s.namespace
             FROM symbols_fts f
             JOIN symbols s ON s.symbol_id = f.symbol_id
             WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}{originFilter}
@@ -319,7 +320,7 @@ public sealed class SymbolStore
         return ReadHits(cmd);
     }
 
-    private IReadOnlyList<SearchHit> SearchLike(
+private IReadOnlyList<SearchHit> SearchLike(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
         string origin = "source")
@@ -337,7 +338,8 @@ public sealed class SymbolStore
                      WHEN fq_name LIKE $prefix THEN 1
                      WHEN fq_name LIKE $contains THEN 2
                      ELSE 3
-                   END AS rank
+                   END AS rank,
+                   namespace
             FROM symbols
             WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}{originFilter}
             ORDER BY rank, length(fq_name), fq_name
@@ -445,7 +447,7 @@ private static string AppendKindFilter(
         return result;
     }
 
-    /// <summary>
+/// <summary>
     /// Reads hits in rank order, keeping the first row per symbol. The dedupe lives here rather than as
     /// a GROUP BY because FTS5 refuses bm25() in an aggregate context ("unable to use function bm25 in
     /// the requested context") — and that error is swallowed by the degradation catch below, so the
@@ -464,7 +466,8 @@ private static string AppendKindFilter(
                 continue;
             hits.Add(new SearchHit(
                 symbolId, reader.GetString(1), reader.GetString(2),
-                reader.GetString(3), reader.GetString(4), reader.GetInt32(5)));
+                reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
         }
         return hits;
     }
@@ -565,11 +568,17 @@ private static string AppendKindFilter(
         return existing;
     }
 
-    /// <summary>
+/// <summary>
     /// Fingerprint-gated update (spec §Maintenance): rows are rewritten only where a version layer
-    /// actually moved, edges only for owners whose content moved, and facts only where the body moved.
-    /// A formatting sweep across many files therefore updates zero semantic rows, because the trivia-blind
-    /// hashes do not change.
+    /// actually moved, and facts only where the body moved. Edge DELETION (pruning a stale edge left
+    /// over from a genuine content change) stays gated the same way an owner's row is, but edge
+    /// INSERTION does not: every edge recomputed this pass is (re-)written via INSERT OR IGNORE
+    /// regardless of whether its owner's own content moved, because an edge can become newly
+    /// collectible from an otherwise-unchanged owner when the extraction logic itself changes (a new
+    /// edge kind, a fix in CollectCallEdges) — gating inserts on "owner changed" left such edges
+    /// permanently missing for any owner whose fingerprint predated the logic change, immune even to a
+    /// full reload_workspace. INSERT OR IGNORE keeps this cheap for the (common) case where the edge
+    /// was already present.
     /// </summary>
     public UpdateStats ApplyIncremental(
         IReadOnlyList<SymbolRow> symbols,
@@ -589,12 +598,12 @@ private static string AppendKindFilter(
         var removed = existing.Keys.Where(id => !incoming.ContainsKey(id)).ToList();
 
         // Edge owners that are not symbols in their own right (e.g. a synthesized entry point) have no
-        // hash to compare, so their edges are always refreshed — they are few.
+        // hash to compare, so their stale edges are always pruned — they are few.
         var edgeOwners = edges.Select(e => e.From).Distinct(StringComparer.Ordinal)
             .Where(from => changed.Contains(from) || !incoming.ContainsKey(from))
             .ToHashSet(StringComparer.Ordinal);
 
-        if (changed.Count == 0 && removed.Count == 0 && edgeOwners.Count == 0)
+        if (changed.Count == 0 && removed.Count == 0 && edgeOwners.Count == 0 && edges.Count == 0)
             return new UpdateStats(0, 0, existing.Count);
 
         using var connection = _store.Connect();
@@ -611,7 +620,7 @@ private static string AppendKindFilter(
             ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id;", owner);
 
         WriteSymbols(connection, tx, symbols.Where(s => changed.Contains(s.SymbolId)).ToList());
-        WriteEdges(connection, tx, edges.Where(e => edgeOwners.Contains(e.From)).ToList());
+        WriteEdges(connection, tx, edges);
         WriteFacts(connection, tx, facts.Where(f => changed.Contains(f.SymbolId)).ToList());
 
         tx.Commit();
@@ -684,7 +693,7 @@ private static string AppendKindFilter(
 
     // ---- shared writers (used by both the full rebuild and the incremental pass) ----------------
 
-    private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
+private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
     {
         if (symbols.Count == 0)
             return;
@@ -693,8 +702,8 @@ private static string AppendKindFilter(
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id)
-            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId);
+                 refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id, namespace)
+            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId, $ns);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -715,6 +724,7 @@ private static string AppendKindFilter(
             cmd.Parameters.AddWithValue("$modifiers", " " + s.Modifiers + " ");
             cmd.Parameters.AddWithValue("$origin", s.Origin);
             cmd.Parameters.AddWithValue("$docId", (object?)s.DocumentationId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$ns", (object?)s.Namespace ?? DBNull.Value);
             cmd.ExecuteNonQuery();
         }
 

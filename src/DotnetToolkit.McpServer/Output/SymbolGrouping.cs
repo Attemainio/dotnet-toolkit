@@ -11,7 +11,7 @@ public static class SymbolGrouping
     /// <summary>One search hit, already resolved to its namespace/file and reduced to a member-local name.</summary>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
-        int? Line, bool? HasSummary, string? Summary);
+        int? Line, int? EndLine, bool? HasSummary, string? Summary);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
@@ -70,6 +70,7 @@ public static class SymbolGrouping
             d["kind"] = r.Kind;
         d["name"] = r.LeafName;
         d["line"] = r.Line;
+        d["endLine"] = r.EndLine;
         if (r.HasSummary is not null)
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)

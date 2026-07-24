@@ -256,7 +256,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetSymbol_ExplicitIncludeListIsExactlyTheNamedComponents()
     {
         var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        Assert.False(string.IsNullOrEmpty(full.GetProperty("content").GetProperty("source").GetString()));
+        Assert.True(full.GetProperty("content").GetProperty("source").GetArrayLength() > 0);
 
         var trimmed = Root(await GetSymbol("Sample.Lib.Widget.Spin", "xmlDoc,mechanicalFacts,referenceCounts,recentLog"));
         var content = trimmed.GetProperty("content");
@@ -620,8 +620,9 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         // source reads exactly as the file does, no header line prepended — the doc comment is the
         // first line.
-        var sourceLines = content.GetProperty("source").GetString()!.Split('\n');
-        Assert.Contains("/// <summary>", sourceLines[0]);
+        var sourceLines = content.GetProperty("source");
+        Assert.Contains("/// <summary>", sourceLines[0].GetProperty("text").GetString());
+        Assert.Equal(startLine, sourceLines[0].GetProperty("line").GetInt32());
     }
 
     // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
@@ -683,8 +684,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all", knownVersion: signatureToken));
 
         Assert.False(full.TryGetProperty("changed", out _));
-        Assert.False(string.IsNullOrEmpty(
-            full.GetProperty("content").GetProperty("source").GetString()));
+        Assert.True(
+            full.GetProperty("content").GetProperty("source").GetArrayLength() > 0);
     }
 
     [Fact]
@@ -783,6 +784,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     /// A search hit carries where it was found, so "search, then go there" is one call rather than two.
     /// The line is checked against the file's actual content, not just asserted non-null — a location
     /// that points at the wrong line is worse than none, since a caller has no reason to doubt it.
+    /// endLine is the same fetch-strategy signal get_symbol's declarationSites gives, cheap enough to
+    /// check here too: a declaration's end can never come before its start.
     /// </summary>
     [Fact]
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
@@ -792,9 +795,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var file = hit["file"].GetString()!;
         var line = hit["line"].GetInt32();
+        var endLine = hit["endLine"].GetInt32();
 
         var text = await File.ReadAllLinesAsync(_f.Locator.AbsPath(file));
         Assert.Contains("SpinTwice", text[line - 1]);
+        Assert.True(endLine >= line);
     }
 
     /// <summary>
@@ -955,7 +960,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var root = Root(await GetSymbol("Sample.Lib.HighGear", "source,xmlDoc,attributes,baseType,interfaces,usings"));
         var content = root.GetProperty("content");
 
-        Assert.False(string.IsNullOrEmpty(content.GetProperty("source").GetString()));
+        Assert.True(content.GetProperty("source").GetArrayLength() > 0);
         Assert.False(content.TryGetProperty("displayString", out _));
         Assert.False(content.TryGetProperty("modifiers", out _));
         Assert.False(content.TryGetProperty("xmlDoc", out _));

@@ -23,6 +23,7 @@ public static readonly IReadOnlyList<Migration> Migrations =
         new(10, "rename_chain_on_feature_log_symbols", RenameChainOnFeatureLogSymbols),
         new(11, "symbol_modifiers_column", SymbolModifiersColumn),
         new(12, "symbol_origin_column", SymbolOriginColumn),
+        new(13, "symbol_namespace_column", SymbolNamespaceColumn),
     ];
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
@@ -49,8 +50,17 @@ public static readonly IReadOnlyList<Migration> Migrations =
         ALTER TABLE symbols ADD COLUMN documentation_id TEXT;
         """;
 
-    private const string SymbolModifiersColumn = """
+private const string SymbolModifiersColumn = """
         ALTER TABLE symbols ADD COLUMN modifiers TEXT;
+        """;
+
+    // External rows predating this column have no namespace and, per Moved()'s external-origin
+    // exemption, are never reconsidered "changed" by content — so a plain ALTER TABLE would leave
+    // every already-recorded external symbol's namespace NULL forever. Dropping them instead makes
+    // the next SymbolIndexBuilder rebuild treat them as new rows, which populates the column.
+    private const string SymbolNamespaceColumn = """
+        ALTER TABLE symbols ADD COLUMN namespace TEXT;
+        DELETE FROM symbols WHERE origin = 'external';
         """;
 
     private const string RenameChainOnFeatureLogSymbols = """
