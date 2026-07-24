@@ -1199,6 +1199,20 @@ private static (int Start, int End) DeclarationBoundsIncludingDocComment(SyntaxN
         // marker on its first line (Roslyn attaches it as leading trivia of the structure's first
         // token), so Span alone would start one line right but three characters short.
         var start = doc.IsKind(SyntaxKind.None) ? node.SpanStart : doc.FullSpan.Start;
+
+        // start still lands on the first non-trivia character, not the start of ITS OWN line, so a
+        // caller reading the span back line-by-line (SourceOf) would see the first line missing its own
+        // leading indentation while every later line keeps its real formatting. Snap back to the line's
+        // start whenever everything before `start` on that line is pure whitespace (an indented
+        // declaration, the overwhelmingly common case) — never when something else precedes it on the
+        // same physical line (e.g. a prior sibling declaration), since that would fold unrelated code
+        // into this declaration's own span. GetLineSpan()'s reported line NUMBER is unaffected either
+        // way, so DeclarationSites' startLine/endLine (which never look at the column) don't change.
+        var text = node.SyntaxTree!.GetText();
+        var line = text.Lines.GetLineFromPosition(start);
+        if (string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(line.Start, start))))
+            start = line.Start;
+
         return (start, node.Span.End);
     }
 

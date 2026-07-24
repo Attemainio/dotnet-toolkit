@@ -619,10 +619,13 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains("///", fileLines[startLine - 1]);
 
         // source reads exactly as the file does, no header line prepended — the doc comment is the
-        // first line.
+        // first line, leading indentation included (not just its own text) — a declaration's first
+        // extracted line silently lost its indentation once before, since the span's own start point
+        // sits on the first non-trivia character rather than that line's true start.
         var sourceLines = content.GetProperty("source");
         Assert.Contains("/// <summary>", sourceLines[0].GetProperty("text").GetString());
         Assert.Equal(startLine, sourceLines[0].GetProperty("line").GetInt32());
+        Assert.Equal(fileLines[startLine - 1], sourceLines[0].GetProperty("text").GetString());
     }
 
     // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
