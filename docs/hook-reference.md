@@ -1,8 +1,8 @@
 # Hook reference
 
-The plugin ships three hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships four hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
-plugin removes them. All three read their JSON payload through whichever of `node`, `python3`, or `jq` is
+plugin removes them. All four read their JSON payload through whichever of `node`, `python3`, or `jq` is
 present (none is guaranteed — `jq` is absent on this repo's own dev box, and Claude Code's native
 installer means `node` cannot be assumed) and **fail open** (allow the call) if none is available.
 
@@ -25,9 +25,10 @@ script's message must change with it (see CLAUDE.md's "Changing the tool surface
 Blocks `Read` on a `.cs` file that a project actually compiles, in favor of `search_index`/`get_symbol` —
 the read-side counterpart of the edit guard.
 
-Solution membership is decided in the hook itself, from the filesystem alone: a hook is a separate
-process with no access to the MCP stdio pipe, so it cannot ask the running server's `WorkspaceHost`
-whether a file belongs to the loaded solution. What it checks statically:
+Solution membership is decided from the filesystem alone, in `scripts/lib-cs-membership.sh` (shared with
+`guard-cs-bash-read.sh` below, so the two can never disagree on the answer): a hook is a separate process
+with no access to the MCP stdio pipe, so it cannot ask the running server's `WorkspaceHost` whether a
+file belongs to the loaded solution. What it checks statically:
 
 - Walk upward from the file for the nearest `.csproj`, watching for a `*.sln`/`*.slnx` at a level
   **strictly between** the file and the repo root — finding one there means the file belongs to its own
@@ -41,6 +42,22 @@ This is a heuristic, not an MSBuild evaluation: conditions, multi-targeting, and
 aren't handled, and it cannot see runtime state — a file genuinely governed by a project is still blocked
 even while the server's workspace is `index_only`/degraded, because that is state a static check has no
 way to observe.
+
+## `guard-cs-bash-read.sh` — PreToolUse on `Bash`
+
+Closes the gap `guard-cs-read.sh` structurally cannot: its matcher is the `Read` tool by name, so a shell
+command that dumps the same file's bytes into the transcript via `Bash` (`cat`, `sed`, `head`, `tail`,
+`grep`/`egrep`/`fgrep`/`rg`/`ag`, `awk`/`gawk`, `nl`, `tac`, `bat`, or `less`/`more`) is invisible to it —
+a different tool name, same underlying read. This hook watches `Bash` instead and applies the identical
+membership question via the same shared `scripts/lib-cs-membership.sh`.
+
+It is not a shell parser: it splits the command on pipeline/statement separators (`| ; && ||`), takes
+each segment's first word as the invoked command, and — only for a segment whose command is in the
+blocklist above (overridable via `DOTNET_TOOLKIT_READ_BLOCKLIST`) — looks for a bare `.cs`-suffixed
+argument token. Quoted paths with spaces, variable-expanded paths, and heredocs are not recognized; that
+under-detection is deliberate (same fail-open posture as the other guards), not a security boundary meant
+to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are never touched, so
+`git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
 
 ## `hint-reload-new-cs-file.sh` — PostToolUse on `Write`
 
@@ -59,6 +76,9 @@ manual JSON string escaping.
 
 ## Related scripts (not hooks)
 
-`scripts/run-server.sh` launches the MCP server (registered via `.mcp.json`), preferring a user-local
-`~/.dotnet` install over `dotnet` on `PATH`. `scripts/build-plugin.sh` publishes the server to `dist/` —
-required after any change under `src/` for the plugin to serve the new build.
+`scripts/lib-cs-membership.sh` is the shared solution-membership check sourced by `guard-cs-read.sh` and
+`guard-cs-bash-read.sh` — not registered in `hooks/hooks.json` itself, since it has no `PreToolUse`/
+`PostToolUse` entry of its own. `scripts/run-server.sh` launches the MCP server (registered via
+`.mcp.json`), preferring a user-local `~/.dotnet` install over `dotnet` on `PATH`. `scripts/build-plugin.sh`
+publishes the server to `dist/` — required after any change under `src/` for the plugin to serve the new
+build.

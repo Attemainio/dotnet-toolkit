@@ -28,3 +28,16 @@ public sealed class HighGear : GearBase
 {
     public override int Ratio() => 5;
 }
+
+/// <summary>Doc-section filter fixture for search_index's xmlDoc filter tests.</summary>
+public static class DocSectionsFixture
+{
+    /// <returns>Always zero.</returns>
+    /// <remarks>Has both returns and remarks, for the xmlDoc AND/exclude tests.</remarks>
+    public static int Full() => 0;
+
+    /// <returns>Always zero.</returns>
+    public static int ReturnsOnly() => 0;
+
+    public static int Undocumented() => 0;
+}

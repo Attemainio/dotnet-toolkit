@@ -115,11 +115,13 @@ when output is truncated, and returns one fragment of a partial class with no si
 | Manually tracing project references looking for a cycle | `detect_circular_dependencies` |
 | `git diff` to judge a change | `get_semantic_diff` |
 | Guessing why code looks the way it does | `search_log` |
+| Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
 | `Edit`/`Write` then `dotnet build` | `validate_patch` |
 
-`PreToolUse` hooks enforce both sides: `Read` on a compiled `.cs` file and `Edit`/`Write` on an
-existing one are blocked — reaching for them costs a round trip and returns nothing. The hooks travel
-with the plugin; nothing repo-local to maintain.
+`PreToolUse` hooks enforce all three sides: `Read` on a compiled `.cs` file, a `Bash` command reading
+the same bytes (`cat`/`grep`/`sed`/etc.), and `Edit`/`Write` on an existing one are all blocked —
+reaching for any of them costs a round trip and returns nothing. The hooks travel with the plugin;
+nothing repo-local to maintain.
 
 ## Writing
 

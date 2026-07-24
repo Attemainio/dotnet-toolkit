@@ -162,6 +162,18 @@ syntax index, so it costs nothing extra and works even at `index_only`:
 A hit with no `<summary>` doc comment has no `hasSummary` key at all (not `false`) — same
 absent-means-absent convention as everything else in this skill.
 
+### Filter by which XML doc sections are present
+
+`xmlDoc` filters on whether a hit's doc comment carries specific sections beyond plain `<summary>`
+presence (that's what `summary` checks) — same grammar as `modifiers`: bare tokens AND (a declaration
+can carry several tags at once), a `-`-prefixed token excludes and combines with the bare tokens.
+Valid tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`,
+`exceptions`. Narrows the ranked `query` hits the same way `pathPrefix`/`implements` do:
+
+```
+search_index(query: "Widget", kinds: "method", xmlDoc: "returns -remarks")   ← has-returns AND NOT has-remarks
+```
+
 **If a symbol you are about to edit has no summary, see the `dotnet-change` skill** — a missing
 summary on a symbol you touch is not just a gap to note, it's something `validate_patch` should fix
 in the same edit.

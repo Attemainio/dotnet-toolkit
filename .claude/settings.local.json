@@ -30,7 +30,11 @@
       "mcp__plugin_dotnet-toolkit_dotnet__set_output_format",
       "Bash(xargs -I{} sh -c 'echo ==={}===; cat {}')",
       "Read(//home/atte/.nuget/packages/**)",
-      "Bash(find / -iname \"*ToonEncoder*.dll\")"
+      "Bash(find / -iname \"*ToonEncoder*.dll\")",
+      "Bash(env)",
+      "Bash(xargs -I{} sh -c 'python3 -c \"import json; d=json.load\\(open\\(\\\\\"{}\\\\\"\\)\\); print\\(list\\(d[\\\\\"libraries\\\\\"].items\\(\\)\\)[:3]\\)\"')",
+      "Bash(find / -maxdepth 6 -iname \"MSBuildWorkspace*.dll\")",
+      "Bash(xargs -I{} echo {})"
     ]
   },
   "disabledMcpjsonServers": [

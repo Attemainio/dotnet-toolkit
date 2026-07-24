@@ -849,6 +849,32 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
+    /// xmlDoc filters on which XML doc sections a hit's declaration carries, beyond plain summary
+    /// presence. Bare tokens AND (a declaration must carry every included section); a '-'-prefixed
+    /// token excludes and combines with the included tokens — same grammar as modifiers.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_XmlDocFilter_AndsIncludedTokensAndCombinesExcludes()
+    {
+        var withReturns = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Full ReturnsOnly Undocumented",
+            kinds: "method", xmlDoc: "returns", groupBy: "none")).GetProperty("items"))
+            .Select(h => h["name"].GetString()).ToList();
+
+        Assert.Contains(withReturns, n => n!.EndsWith(".Full()", StringComparison.Ordinal));
+        Assert.Contains(withReturns, n => n!.EndsWith(".ReturnsOnly()", StringComparison.Ordinal));
+        Assert.DoesNotContain(withReturns, n => n!.EndsWith(".Undocumented()", StringComparison.Ordinal));
+
+        var returnsWithoutRemarks = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Full ReturnsOnly Undocumented",
+            kinds: "method", xmlDoc: "returns -remarks", groupBy: "none")).GetProperty("items"))
+            .Select(h => h["name"].GetString()).ToList();
+
+        Assert.DoesNotContain(returnsWithoutRemarks, n => n!.EndsWith(".Full()", StringComparison.Ordinal));
+        Assert.Contains(returnsWithoutRemarks, n => n!.EndsWith(".ReturnsOnly()", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// The index keys members without their parameter lists, so overloads collapse to one name and the
     /// site cannot be resolved. Omit it: absent already means "call get_symbol", which is what a caller
     /// did before locations existed, whereas a confidently wrong line is a new failure mode.

@@ -72,15 +72,17 @@ missing (a tool that exists but appears nowhere in it):
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
 
 **5. Hooks and scripts.** Read `hooks/hooks.json` and every script it points at
-(`scripts/guard-cs-edit.sh`, `scripts/guard-cs-read.sh`, `scripts/hint-reload-new-cs-file.sh`,
-`scripts/run-server.sh`, `scripts/build-plugin.sh`). Specifically:
+(`scripts/guard-cs-edit.sh`, `scripts/guard-cs-read.sh`, `scripts/guard-cs-bash-read.sh`,
+`scripts/hint-reload-new-cs-file.sh`, `scripts/run-server.sh`, `scripts/build-plugin.sh`), plus
+`scripts/lib-cs-membership.sh` (the solution-membership check shared by the two read guards, not itself
+registered in `hooks/hooks.json`). Specifically:
    - Does the deny/hint message text in each guard script still name the correct tool(s) and describe the
      correct procedure (`validate_patch`'s current argument names, `search_index`/`get_symbol` for the
-     read guard, `reload_workspace(scope: "all")` for the reload hint)? A guard script's message is read
+     read guards, `reload_workspace(scope: "all")` for the reload hint)? A guard script's message is read
      at the exact moment a caller is blocked — a stale one teaches the wrong fix at the worst moment.
    - Does `hooks/hooks.json` still point at scripts that exist, with matchers (`Edit`/`Write`/`NotebookEdit`/
-     `Read`) that match what `docs/hook-reference.md` and CLAUDE.md's "Plugin packaging" section claim
-     they do?
+     `Read`/`Bash`) that match what `docs/hook-reference.md` and CLAUDE.md's "Plugin packaging" section
+     claim they do?
    - Any new script under `scripts/` not mentioned in `docs/hook-reference.md` or CLAUDE.md's "Plugin
      packaging" section is a finding (see Step 6).
    - `hooks/hooks.json`'s matchers key on tool name only (`Edit|Write|NotebookEdit`, `Read`), not on which

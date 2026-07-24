@@ -398,6 +398,8 @@ private static async Task<string> GetSymbolOne(
         + "Pass pathPrefix to narrow the ranked results to one folder or file. Pass summary:\"has\" or "
         + "summary:\"full\" to check or read each hit's XML doc <summary> without a follow-up get_symbol call — "
         + "full text is capped short, get_symbol's xmlDoc.summary for the untruncated version. "
+        + "Pass xmlDoc to filter hits by which XML doc sections beyond <summary> are present — remarks, "
+        + "returns, params, typeparams, exceptions, value, inheritdoc — same AND/exclude grammar as modifiers. "
         + "Follow up with get_symbol when you want the content itself.")]
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
@@ -427,6 +429,13 @@ private static async Task<string> GetSymbolOne(
             + "an unresolvable name yields an empty result rather than an error. Narrows the ranked query hits "
             + "the same way pathPrefix does; it is not a standalone browse-by-interface mode, so query still "
             + "needs a real search term.")] string? implements = null,
+        [Description("Optional filter on which XML doc sections a hit's declaration has, beyond plain "
+            + "<summary> presence (see the summary parameter for that). Space- or comma-separated tokens: "
+            + "summary, returns, remarks, value, inheritdoc, params, typeparams, exceptions. Same grammar as "
+            + "modifiers — bare tokens are AND-ed (a symbol can have several sections at once), and a "
+            + "'-'-prefixed token excludes and COMBINES with the bare tokens, e.g. \"remarks -returns\" is "
+            + "remarks AND NOT returns. This narrows the ranked query hits the same way pathPrefix/implements "
+            + "do — query still needs a real search term. Omit for no doc-section filtering.")] string? xmlDoc = null,
         [Description("Max results (default 10, cap 50).")] int limit = 10,
         [Description("Optional path prefix to narrow results to a folder or file, e.g. \"src/Tools\" or "
             + "\"src/Tools/ContextTools.cs\" (relative to the repo root, forward slashes, matched on a full "
@@ -469,6 +478,10 @@ private static async Task<string> GetSymbolOne(
         var includeMods = includeModTokens.Length == 0 ? null : includeModTokens.Select(t => t.ToLowerInvariant()).ToArray();
         var excludeMods = excludeModTokens.Length == 0 ? null : excludeModTokens.Select(t => t.ToLowerInvariant()).ToArray();
 
+        var (includeDocTokens, excludeDocTokens) = ParseKindFilter(xmlDoc);
+        var includeDocs = includeDocTokens.Length == 0 ? null : includeDocTokens.Select(t => t.ToLowerInvariant()).ToArray();
+        var excludeDocs = excludeDocTokens.Length == 0 ? null : excludeDocTokens.Select(t => t.ToLowerInvariant()).ToArray();
+
         HashSet<string>? implementorIds = null;
         if (!string.IsNullOrWhiteSpace(implements))
         {
@@ -498,6 +511,8 @@ private static async Task<string> GetSymbolOne(
             resolved = resolved.Where(r => WithinPathScope(r.Site?.File, scope));
         if (implementorIds is not null)
             resolved = resolved.Where(r => implementorIds.Contains(r.Hit.SymbolId));
+        if (includeDocs is not null || excludeDocs is not null)
+            resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
 
         var mode = groupBy is "file" or "none" ? groupBy : "namespace";
@@ -1068,6 +1083,24 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
         if (file.Equals(normalizedPrefix, StringComparison.Ordinal))
             return true;
         return file.StartsWith(normalizedPrefix + "/", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Checks a hit's comma-joined <see cref="Indexing.ProjectIndex.DocSite"/>-style DocSections tags
+    /// against search_index's xmlDoc include/exclude token arrays — same AND-include/exclude-combine
+    /// semantics as the modifiers filter. A null docSections (no doc comment, or none of the recognized
+    /// tags) matches only when include is also null.
+    /// </summary>
+    private static bool MatchesXmlDocFilter(string? docSections, string[]? include, string[]? exclude)
+    {
+        string[] tags = docSections is null
+            ? []
+            : docSections.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        if (include is not null && !include.All(t => tags.Contains(t, StringComparer.Ordinal)))
+            return false;
+        if (exclude is not null && exclude.Any(t => tags.Contains(t, StringComparer.Ordinal)))
+            return false;
+        return true;
     }
 
     /// <summary>

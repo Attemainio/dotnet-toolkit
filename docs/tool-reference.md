@@ -247,6 +247,7 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 | `pathPrefix` | Optional folder/file scope, e.g. `"src/Tools"` or `"src/Tools/ContextTools.cs"` — relative to the repo root, forward slashes, matched on a full path-segment boundary (`"Tools"` cannot match `"ToolsFoo"`). A hit whose file can't be resolved (an overloaded name) is dropped rather than guessed at, so scoped results can undercount for an overload-heavy query. Ranking still runs over the whole index first, so a query with far more hits outside the prefix than the internal overfetch cap can return fewer than `limit` even though more in-scope matches exist — narrow the query text itself if that happens. |
 | `limit` | Default 10, cap 50. |
 | `summary` | Optional XML doc `<summary>` signal per hit, read from the syntax index (no MSBuild needed, so it works at `index_only` too). `"has"` adds `hasSummary` (bool) — a cheap presence check with no text. `"full"` adds `summary` (string, the extracted text capped at 160 characters with a trailing `…`; absent if the symbol has no `<summary>`). The cap keeps a pathologically long doc comment from dominating a multi-hit response — fetch `get_symbol`'s `xmlDoc.summary` for the untruncated text once you've picked a symbol. Omit `summary` for the pre-existing response, byte-for-byte — no extra field, no extra cost. An unrecognized value is treated as omitted, same precedent as `kinds`' unrecognized tokens. |
+| `xmlDoc` | Optional filter on which XML doc sections beyond plain `<summary>` presence a hit's declaration carries (that's what `summary` checks) — space/comma-separated tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions`. Same grammar as `modifiers`: bare tokens AND (a declaration must carry every included section, since a doc comment can carry several tags at once), and a `-`-prefixed token excludes and *combines* with the bare tokens rather than replacing them, e.g. `"returns -remarks"` is has-returns AND NOT has-remarks. Narrows the ranked `query` hits the same way `pathPrefix`/`implements` do — `query` still needs a real search term. Read from the syntax index, so it costs nothing extra and works at `index_only` too. Omit for no doc-section filtering. |
 | `groupBy` | How results are nested. `"namespace"` (default) groups namespace → file → symbols; `"file"` groups file → namespace → symbols; `"none"` returns the flat `items[]` list shown below, with `file`/`kind` repeated on every row and no `namespace` field. Whichever axis the whole result set collapses to a single value on additionally collapses its wrapper array to a flat `namespace`/`file` header field instead of a nested array, and a leaf's `kind` column drops out whenever every hit in that leaf shares one kind. An unrecognized value is treated as `"namespace"`. |
 | `origin` | `"source"` (default) searches only symbols this repo's own solution declares — existing callers see no behavior change. `"external"` searches only BCL/NuGet symbols already discovered as a call/construction/implements target from this repo's own source (`search_index(query: "IDisposable", kinds: "interface", origin: "external")` finds `System.IDisposable` once something here implements it) — not a general library browser, only what this repo's code already references. `"all"` searches both. An unrecognized value is treated as `"source"`. |
 
@@ -374,6 +375,24 @@ search_index(query: "Widget.Spin", kinds: "method", summary: "full", groupBy: "n
 {"items":[{"symbolId":"sym_...","name":"Sample.Lib.Widget.Spin(int)","kind":"Method",
    "file":"Lib/Widget.cs","line":12,"endLine":12,"summary":"Spins the widget."}]}
 ```
+
+Filtering by which doc sections a declaration actually carries — `xmlDoc: "returns"` matches only
+methods documented with a `<returns>` tag, `-remarks` on top narrows further to ones that also lack a
+`<remarks>` tag:
+
+```
+search_index(query: "Full ReturnsOnly Undocumented", kinds: "method", xmlDoc: "returns -remarks", groupBy: "none")
+```
+
+```json
+{"items":[
+   {"symbolId":"sym_...","name":"Sample.Lib.DocSectionsFixture.ReturnsOnly()","kind":"Method",
+    "file":"Lib/Widget.cs","line":40,"endLine":40}]}
+```
+
+`Full()` carries both `<returns>` and `<remarks>`, so it's excluded once `-remarks` is added; plain
+`xmlDoc: "returns"` (no exclude) would have returned both `Full()` and `ReturnsOnly()`, but not
+`Undocumented()`.
 
 ## Relationships & flow
 

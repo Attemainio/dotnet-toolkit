@@ -12,7 +12,8 @@ public sealed record MemberEntry(
     string? Doc,
     int Line,
     int EndLine,
-    bool IsPublic);
+    bool IsPublic,
+    string? DocSections = null);
 
 public sealed record TypeEntry(
     string Kind,
@@ -26,7 +27,8 @@ public sealed record TypeEntry(
     int EndLine,
     List<MemberEntry> Members,
     List<TypeEntry> Nested,
-    bool IsPublic);
+    bool IsPublic,
+    string? DocSections = null);
 
 public sealed record FileEntry(
     long MtimeTicks,

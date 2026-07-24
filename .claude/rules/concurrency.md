@@ -147,6 +147,18 @@ await Task.WhenAll(stdoutTask, stderrTask);
 await process.WaitForExitAsync(ct);
 ```
 
+- **Concurrent draining alone is not sufficient when the child spawns its own persistent workers** —
+  `dotnet build`/`dotnet restore`/MSBuild are the recurring example: they hand off to long-lived MSBuild
+  worker nodes that inherit the redirected pipes and outlive the direct child process. `WaitForExitAsync`
+  on the direct child returns, but a lingering node still holds the pipe's write end open, so
+  `ReadToEndAsync` never sees EOF and hangs anyway — past every drain-concurrently fix above. Set
+  `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0` on the `ProcessStartInfo` when
+  shelling out to `dotnet build`/`restore`/`msbuild` with redirected streams, and bound the drain with a
+  timeout so a stray pipe-holder fails loudly instead of hanging silently. This bit twice in the same
+  codebase on the same line of work — fixed once, then resurfaced at a second call site that shelled out
+  to the same command without the fix — because the symptom (near-zero CPU, no visible child process,
+  "just taking forever") reads as slow compilation rather than a hang.
+
 ## Review calibration
 
 A reachable deadlock shape (lock-order inversion, sync-over-async on a context, sequential pipe

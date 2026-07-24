@@ -68,7 +68,7 @@ public static partial class OutlineBuilder
             foreach (var m in en.Members)
             {
                 var sig = m.EqualsValue is { } eq ? $"{m.Identifier.Text} = {eq.Value}" : m.Identifier.Text;
-                members.Add(new MemberEntry("F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true));
+                members.Add(new MemberEntry("F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true, DocSectionTags(m)));
             }
         }
         else if (type is TypeDeclarationSyntax td)
@@ -96,7 +96,7 @@ public static partial class OutlineBuilder
                 members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), EndLine(td), true));
         }
 
-        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true));
+        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true), DocSectionTags(type));
     }
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
@@ -106,7 +106,7 @@ public static partial class OutlineBuilder
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
         return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
-            [sigMember], [], IsPublic(del.Modifiers, containerHasNamespaceOnly: true));
+            [sigMember], [], IsPublic(del.Modifiers, containerHasNamespaceOnly: true), DocSectionTags(del));
     }
 
     private static MemberEntry? BuildMember(MemberDeclarationSyntax member, bool isInterface)
@@ -119,42 +119,42 @@ public static partial class OutlineBuilder
                 var name = m.Identifier.Text + (m.TypeParameterList?.ToString() ?? "");
                 return new MemberEntry("M", m.Identifier.Text,
                     $"{name}{RenderParams(m.ParameterList)} -> {m.ReturnType}",
-                    DocSummary(m), Line(m), EndLine(m), isPublic);
+                    DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m));
             }
             case ConstructorDeclarationSyntax c:
                 return new MemberEntry("K", c.Identifier.Text,
                     $"{c.Identifier.Text}{RenderParams(c.ParameterList)}",
-                    DocSummary(c), Line(c), EndLine(c), isPublic);
+                    DocSummary(c), Line(c), EndLine(c), isPublic, DocSectionTags(c));
             case PropertyDeclarationSyntax p:
                 return new MemberEntry("P", p.Identifier.Text,
                     $"{p.Identifier.Text}: {p.Type} {Accessors(p)}",
-                    DocSummary(p), Line(p), EndLine(p), isPublic);
+                    DocSummary(p), Line(p), EndLine(p), isPublic, DocSectionTags(p));
             case IndexerDeclarationSyntax ix:
                 return new MemberEntry("P", "this[]",
                     $"this[{RenderParamList(ix.ParameterList.Parameters)}]: {ix.Type}",
-                    DocSummary(ix), Line(ix), EndLine(ix), isPublic);
+                    DocSummary(ix), Line(ix), EndLine(ix), isPublic, DocSectionTags(ix));
             case FieldDeclarationSyntax f:
             {
                 var v = f.Declaration.Variables.First();
                 return new MemberEntry("F", v.Identifier.Text,
                     $"{v.Identifier.Text}: {f.Declaration.Type}",
-                    DocSummary(f), Line(f), EndLine(f), isPublic);
+                    DocSummary(f), Line(f), EndLine(f), isPublic, DocSectionTags(f));
             }
             case EventFieldDeclarationSyntax ef:
             {
                 var v = ef.Declaration.Variables.First();
                 return new MemberEntry("V", v.Identifier.Text,
                     $"{v.Identifier.Text}: {ef.Declaration.Type}",
-                    DocSummary(ef), Line(ef), EndLine(ef), isPublic);
+                    DocSummary(ef), Line(ef), EndLine(ef), isPublic, DocSectionTags(ef));
             }
             case EventDeclarationSyntax e:
                 return new MemberEntry("V", e.Identifier.Text,
                     $"{e.Identifier.Text}: {e.Type}",
-                    DocSummary(e), Line(e), EndLine(e), isPublic);
+                    DocSummary(e), Line(e), EndLine(e), isPublic, DocSectionTags(e));
             case OperatorDeclarationSyntax op:
                 return new MemberEntry("M", $"operator {op.OperatorToken.Text}",
                     $"operator {op.OperatorToken.Text}{RenderParams(op.ParameterList)} -> {op.ReturnType}",
-                    DocSummary(op), Line(op), EndLine(op), isPublic);
+                    DocSummary(op), Line(op), EndLine(op), isPublic, DocSectionTags(op));
             default:
                 return null;
         }
@@ -210,6 +210,37 @@ public static partial class OutlineBuilder
             .OfType<DocumentationCommentTriviaSyntax>()
             .FirstOrDefault();
         return trivia is null ? null : SummaryFromXml(trivia.ToFullString());
+    }
+
+    /// <summary>
+    /// Comma-joined list of XML doc tags present on a declaration's doc comment beyond plain
+    /// summary text — e.g. "summary,remarks,returns" — the presence signal search_index's xmlDoc
+    /// filter checks against. Null when the doc comment has none of the recognized tags, same
+    /// absent-means-absent convention as <see cref="DocSummary"/>.
+    /// </summary>
+    internal static string? DocSectionTags(SyntaxNode node)
+    {
+        var trivia = node.GetLeadingTrivia()
+            .Select(t => t.GetStructure())
+            .OfType<DocumentationCommentTriviaSyntax>()
+            .FirstOrDefault();
+        if (trivia is null)
+            return null;
+
+        var sections = SectionsFromXml(trivia.ToFullString());
+        if (sections is null)
+            return null;
+
+        var tags = new List<string>();
+        if (sections.Summary is not null) tags.Add("summary");
+        if (sections.Returns is not null) tags.Add("returns");
+        if (sections.Remarks is not null) tags.Add("remarks");
+        if (sections.Value is not null) tags.Add("value");
+        if (sections.Inheritdoc is true) tags.Add("inheritdoc");
+        if (sections.Params is { Count: > 0 }) tags.Add("params");
+        if (sections.TypeParams is { Count: > 0 }) tags.Add("typeparams");
+        if (sections.Exceptions is { Count: > 0 }) tags.Add("exceptions");
+        return tags.Count == 0 ? null : string.Join(",", tags);
     }
 
     /// <summary>Extracts the &lt;summary&gt; text from raw doc-comment XML (also used for ISymbol docs).</summary>

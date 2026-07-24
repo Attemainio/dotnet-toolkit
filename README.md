@@ -78,29 +78,88 @@ per-tool reference the rule file points at.
 
 ## Install
 
+This plugin isn't in a public Claude Code marketplace yet — the repo itself doubles as the
+install source. Clone it and publish the server once before first use:
+
 ```bash
-git clone <this repo> dotnet-toolkit
+git clone https://github.com/Attemainio/dotnet-toolkit dotnet-toolkit
 cd dotnet-toolkit
 ./scripts/build-plugin.sh          # publishes the server to dist/ (required once, and after updates)
 ```
 
-For a permanent install, register the repo as a marketplace once from any Claude Code
-session, then install from it:
+Then pick one of two ways to load it, depending on whether you want it for one session or
+every session:
+
+**Single session, nothing installed** — pass the path directly:
+
+```bash
+claude --plugin-dir /path/to/dotnet-toolkit
+```
+
+Run this from anywhere; it doesn't matter which repo you `cd` into first, since the target
+repo is whatever `CLAUDE_PROJECT_DIR`/cwd resolves to when Claude Code starts. Nothing is
+written to your global or project Claude Code config — the plugin is only active for that one
+process, and closing it is the entire "uninstall."
+
+**Persistent, every session** — register the clone as a local marketplace once, then install
+from it like any other plugin:
 
 ```
 /plugin marketplace add /path/to/dotnet-toolkit
 /plugin install dotnet-toolkit@dotnet-toolkit-local
 ```
 
-Or load it for a single session, without installing:
-
-```bash
-claude --plugin-dir /path/to/dotnet-toolkit
-```
+This is a genuine install: it's recorded in your Claude Code settings (see "Uninstall" below)
+and the plugin loads automatically in every future session without the `--plugin-dir` flag.
 
 > `build-plugin.sh` republishes over `dist/`, which is what running servers execute. It
-> will disconnect the MCP server in every open session using the plugin. Close them first,
-> or expect to restart them.
+> will disconnect the MCP server in every open session using the plugin — either way you
+> loaded it. Close other sessions first, or expect to restart them, and run
+> `/plugin reload-plugins` (or restart) to pick the rebuilt server up without a full restart.
+
+## Uninstall
+
+What to remove depends on which install path you used:
+
+- **Loaded via `--plugin-dir`**: nothing was recorded anywhere — just stop passing the flag. There is no
+  further step.
+- **Installed from the local marketplace**: reverse the two `/plugin` commands from Install, in order:
+
+  ```
+  /plugin uninstall dotnet-toolkit@dotnet-toolkit-local
+  /plugin marketplace remove dotnet-toolkit-local
+  /plugin reload-plugins
+  ```
+
+  The interactive `/plugin` menu's **Installed** tab does the same thing if you'd rather click through it.
+  Uninstalling from a project-scoped install offers a choice — disable for yourself only (writes an
+  override to that repo's `.claude/settings.local.json`) or uninstall for everyone (removes it from
+  `.claude/settings.json`) — pick whichever matches how it was installed. `/plugin marketplace remove`
+  also uninstalls every plugin that came from that marketplace, which for a repo that only ever added
+  this one marketplace is just this plugin, but is worth knowing if you registered others from the same
+  path. Removing the marketplace without the `uninstall` step first still works — Claude Code uninstalls
+  the plugin along with it — but doing both explicitly is clearer about what changed.
+
+Either way, the MCP server registration and the four `PreToolUse`/`PostToolUse` hooks travel *with* the
+plugin — there is nothing repo-local to hand-remove for those; they stop firing the moment the plugin is
+no longer loaded.
+
+**Per-repo artifacts this plugin creates while in use**, safe to delete independently of the steps above:
+
+- `.claude/dotnet-toolkit/cache/` in any repo you pointed it at — the SQLite knowledge store
+  (symbol index, dev log, telemetry). Self-gitignored and always rebuildable from source; deleting it
+  just forces a rebuild on the next session.
+- If you ran `/dotnet-toolkit-init` in a repo: `.claude/rules/dotnet-toolkit-csharp.md`, the nine
+  standards-file copies it wrote alongside it (`naming.md`, `styling.md`, `best-practices.md`,
+  `antipatterns.md`, `performance.md`, `concurrency.md`, `security.md`, `testing.md`,
+  `xml-documentation.md` — only the ones it actually wrote; it skips any that collided with a file the
+  repo already had), and `.claude/dotnet-toolkit/backups/` (the pre-write backups it made). See
+  `skills/dotnet-toolkit-init/SKILL.md`'s "Undoing this later" section for the exact list — that skill
+  never touches the repo's own `CLAUDE.md`, so there is nothing to restore there.
+- `.claude/dotnet-toolkit/config.json`, if you added one for solution overrides/`excludeGlobs`.
+
+None of the above affects whether the plugin itself is installed — they're just what a repo accumulates
+from using it, and deleting them is independent of (and doesn't require) uninstalling the plugin.
 
 ## How it works
 

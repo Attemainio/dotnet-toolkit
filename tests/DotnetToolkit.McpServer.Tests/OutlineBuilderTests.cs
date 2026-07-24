@@ -48,6 +48,38 @@ public class OutlineBuilderTests
         Assert.False(field.IsPublic);
     }
 
+    /// <summary>
+    /// BuildType/BuildMember populate DocSections with a comma-joined list of every recognized XML
+    /// doc tag present beyond plain summary text — the presence signal search_index's xmlDoc filter
+    /// checks. Null (not empty) when a member has no doc comment at all.
+    /// </summary>
+    [Fact]
+    public void BuildPopulatesDocSectionsWithEveryRecognizedTagPresent()
+    {
+        var entry = Build("""
+            namespace Contoso.Services;
+
+            /// <summary>Coordinates order lifecycle.</summary>
+            /// <remarks>Not thread-safe.</remarks>
+            public sealed class OrderService
+            {
+                /// <returns>The placed order's id.</returns>
+                public int PlaceOrder() => 1;
+
+                public int Cancel() => 0;
+            }
+            """);
+
+        var type = Assert.Single(entry.Types);
+        Assert.Equal("summary,remarks", type.DocSections);
+
+        var placeOrder = type.Members.Single(m => m.Name == "PlaceOrder");
+        Assert.Equal("returns", placeOrder.DocSections);
+
+        var cancel = type.Members.Single(m => m.Name == "Cancel");
+        Assert.Null(cancel.DocSections);
+    }
+
     [Fact]
     public void GenericsInterfacesAndNestedTypes()
     {
