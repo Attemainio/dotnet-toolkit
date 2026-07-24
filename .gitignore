@@ -4,3 +4,4 @@ dist/
 .vs/
 *.user
 .claude/settings.local.json
+.claude/agent-memory/
