@@ -1,5 +1,5 @@
 {
-  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol, and reminds Claude to refresh the workspace after creating a new .cs file",
+  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), and reminds Claude to refresh the workspace after creating a new .cs file",
   "hooks": {
     "PreToolUse": [
       {
@@ -21,6 +21,17 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-read.sh",
             "timeout": 10,
             "statusMessage": "Checking C# read path..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-bash-read.sh",
+            "timeout": 10,
+            "statusMessage": "Checking Bash command for a raw C# read..."
           }
         ]
       }

@@ -16,13 +16,14 @@ public static partial class OutlineBuilder
         var root = CSharpSyntaxTree.ParseText(text).GetCompilationUnitRoot();
         var namespaces = new List<string>();
         var types = new List<TypeEntry>();
-        Collect(root.Members, "", namespaces, types);
+        Collect(root.Members, "", "", namespaces, types);
         return new FileEntry(mtimeTicks, length, namespaces, types);
     }
 
     private static void Collect(
         SyntaxList<MemberDeclarationSyntax> members,
         string containerFq,
+        string ns,
         List<string> namespaces,
         List<TypeEntry> types)
     {
@@ -30,23 +31,23 @@ public static partial class OutlineBuilder
         {
             switch (member)
             {
-                case BaseNamespaceDeclarationSyntax ns:
-                    var nsName = Combine(containerFq, ns.Name.ToString());
+                case BaseNamespaceDeclarationSyntax nsDecl:
+                    var nsName = Combine(containerFq, nsDecl.Name.ToString());
                     if (!namespaces.Contains(nsName))
                         namespaces.Add(nsName);
-                    Collect(ns.Members, nsName, namespaces, types);
+                    Collect(nsDecl.Members, nsName, nsName, namespaces, types);
                     break;
                 case BaseTypeDeclarationSyntax type:
-                    types.Add(BuildType(type, containerFq));
+                    types.Add(BuildType(type, containerFq, ns));
                     break;
                 case DelegateDeclarationSyntax del:
-                    types.Add(BuildDelegate(del, containerFq));
+                    types.Add(BuildDelegate(del, containerFq, ns));
                     break;
             }
         }
     }
 
-    private static TypeEntry BuildType(BaseTypeDeclarationSyntax type, string containerFq)
+    private static TypeEntry BuildType(BaseTypeDeclarationSyntax type, string containerFq, string ns)
     {
         var name = type.Identifier.Text + (type is TypeDeclarationSyntax { TypeParameterList: { } tp } ? tp.ToString() : "");
         var fq = Combine(containerFq, name);
@@ -78,10 +79,10 @@ public static partial class OutlineBuilder
                 switch (m)
                 {
                     case BaseTypeDeclarationSyntax nestedType:
-                        nested.Add(BuildType(nestedType, fq));
+                        nested.Add(BuildType(nestedType, fq, ns));
                         break;
                     case DelegateDeclarationSyntax nestedDel:
-                        nested.Add(BuildDelegate(nestedDel, fq));
+                        nested.Add(BuildDelegate(nestedDel, fq, ns));
                         break;
                     default:
                         var entry = BuildMember(m, isInterface);
@@ -95,16 +96,16 @@ public static partial class OutlineBuilder
                 members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), true));
         }
 
-        return new TypeEntry(kind, name, fq, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true));
+        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true));
     }
 
-    private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq)
+    private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
     {
         var name = del.Identifier.Text + (del.TypeParameterList?.ToString() ?? "");
         var fq = Combine(containerFq, name);
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), true);
-        return new TypeEntry("D", name, fq, DocSummary(del), [], del.Modifiers.ToString(), Line(del),
+        return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del),
             [sigMember], [], IsPublic(del.Modifiers, containerHasNamespaceOnly: true));
     }
 

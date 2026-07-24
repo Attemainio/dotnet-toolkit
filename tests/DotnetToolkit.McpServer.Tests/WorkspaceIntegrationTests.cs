@@ -214,7 +214,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task SearchIndex_MultiWordQuery_FindsSymbolsForEachTerm()
     {
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget"));
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget Gadget", groupBy: "none"));
 
         var names = TableRows(root.GetProperty("items"))
             .Select(i => i["name"].GetString()!).ToList();
@@ -232,7 +233,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_EmittedNameResolvesBackToTheSameSymbol()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", groupBy: "none")).GetProperty("items")).First();
         var name = hit["name"].GetString()!;
 
         // Fully qualified up to the member, but the parameter's namespace is gone.
@@ -365,7 +366,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains("source", root.GetProperty("detail").GetString());
     }
 
-    /// <summary>
+/// <summary>
     /// An outline-equivalent include list used to be built by an early return from its own object
     /// literal, which silently omitted containingType and recentLog. One build path means a component
     /// appears whenever it is asked for, regardless of which other components were requested alongside it.
@@ -379,7 +380,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.NotEmpty(content.GetProperty("members").EnumerateArray());
         Assert.True(content.TryGetProperty("declarationSites", out _));
         Assert.Equal("Type", content.GetProperty("kind").GetString());
-        Assert.True(content.TryGetProperty("accessibility", out _));
+        // modifiers is unconditional, like the skeleton — present here even though it wasn't named.
+        Assert.True(content.TryGetProperty("modifiers", out _));
     }
 
     /// <summary>
@@ -437,7 +439,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(_f.Symbols.HasEdgeCoverageFor("sym_not_a_real_symbol"));
 
         // The fixture's own project does have edges, so real symbols stay measurable.
-        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method"));
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method", groupBy: "none"));
         var id = TableRows(root.GetProperty("items")).First()["symbolId"].GetString()!;
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
@@ -473,7 +475,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_ReturnsResolvableNames_AndAcceptsClassAlias()
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
-            "Widget", kinds: "class", limit: 10));
+            "Widget", kinds: "class", limit: 10, groupBy: "none"));
 
         var items = TableRows(root.GetProperty("items"));
         Assert.NotEmpty(items); // "class" must alias to the stored "Type" kind, case-insensitively
@@ -600,7 +602,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal(2, sites.GetArrayLength());
     }
 
-    /// <summary>
+/// <summary>
     /// Widget.Spin has a /// doc comment on the line directly above its signature. declarationSites and
     /// source must both start AT the comment, not at the signature — otherwise a validate_patch edit
     /// built from declarationSites' own line span has no way to touch the comment at all.
@@ -616,11 +618,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var fileLines = await File.ReadAllLinesAsync(_f.Locator.AbsPath(site.GetProperty("file").GetString()!));
         Assert.Contains("///", fileLines[startLine - 1]);
 
-        // source is prefixed with a "// in <ContainingType>" header line for a member, so the doc
-        // comment is the SECOND line, not the first.
+        // source reads exactly as the file does, no header line prepended — the doc comment is the
+        // first line.
         var sourceLines = content.GetProperty("source").GetString()!.Split('\n');
-        Assert.StartsWith("// in Widget", sourceLines[0]);
-        Assert.Contains("/// <summary>", sourceLines[1]);
+        Assert.Contains("/// <summary>", sourceLines[0]);
     }
 
     // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
@@ -787,7 +788,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", groupBy: "none")).GetProperty("items")).First();
 
         var file = hit["file"].GetString()!;
         var line = hit["line"].GetInt32();
@@ -804,7 +805,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_SummaryHas_ReportsPresenceWithoutText()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "has")).GetProperty("items"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "has", groupBy: "none")).GetProperty("items"))
             .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
 
         Assert.True(hit["hasSummary"].GetBoolean());
@@ -819,7 +820,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_SummaryFull_ReturnsExtractedText()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "full")).GetProperty("items"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "full", groupBy: "none")).GetProperty("items"))
             .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
 
         Assert.Equal("Spins the widget.", hit["summary"].GetString());
@@ -833,7 +834,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_OmittingSummary_AddsNoFields()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", groupBy: "none")).GetProperty("items")).First();
 
         Assert.False(hit.ContainsKey("hasSummary"));
         Assert.False(hit.ContainsKey("summary"));
@@ -848,7 +849,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous")).GetProperty("items")).First();
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous", groupBy: "none")).GetProperty("items")).First();
 
         Assert.False(hit.ContainsKey("file"));
         Assert.False(hit.ContainsKey("line"));
@@ -925,19 +926,42 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         }
     }
 
-    /// <summary>
-    /// The literal C# modifier phrase, declaration-only. HighGear is `public sealed class HighGear :
+/// <summary>
+    /// The literal C# modifier phrase is unconditional, not an opt-in include component: it comes back on
+    /// a default ("standard") call the same as any other. HighGear is `public sealed class HighGear :
     /// GearBase`, so its own modifiers render "public sealed", and its Ratio override renders
-    /// "public override".
+    /// "public override" — there is no separate accessibility field, modifiers already carries it.
     /// </summary>
     [Fact]
     public async Task GetSymbol_Modifiers_RendersLiteralKeywordPhrase()
     {
-        var type = Root(await GetSymbol("Sample.Lib.HighGear", "modifiers"));
+        var type = Root(await GetSymbol("Sample.Lib.HighGear"));
         Assert.Equal("public sealed", type.GetProperty("content").GetProperty("modifiers").GetString());
+        Assert.False(type.GetProperty("content").TryGetProperty("accessibility", out _));
 
-        var method = Root(await GetSymbol("Sample.Lib.HighGear.Ratio", "modifiers"));
+        var method = Root(await GetSymbol("Sample.Lib.HighGear.Ratio"));
         Assert.Equal("public override", method.GetProperty("content").GetProperty("modifiers").GetString());
+    }
+
+/// <summary>
+    /// source suppresses everything that would just restate the declaration's own signature/body as
+    /// structured JSON alongside the text: displayString, modifiers, xmlDoc, attributes, baseType,
+    /// interfaces. usings is NOT suppressed — a symbol's own source span never includes the file's using
+    /// directives, so it stays genuinely new information even next to source.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Source_SuppressesFieldsSourceAlreadyPrintsAsText()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.HighGear", "source,xmlDoc,attributes,baseType,interfaces,usings"));
+        var content = root.GetProperty("content");
+
+        Assert.False(string.IsNullOrEmpty(content.GetProperty("source").GetString()));
+        Assert.False(content.TryGetProperty("displayString", out _));
+        Assert.False(content.TryGetProperty("modifiers", out _));
+        Assert.False(content.TryGetProperty("xmlDoc", out _));
+        Assert.False(content.TryGetProperty("attributes", out _));
+        Assert.False(content.TryGetProperty("baseType", out _));
+        Assert.False(content.TryGetProperty("interfaces", out _));
     }
 
     /// <summary>
@@ -960,12 +984,35 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.False(method.GetProperty("content").TryGetProperty("interfaces", out _));
     }
 
+    /// <summary>
+    /// usings reads straight off the Roslyn syntax tree: a file-scoped-namespace type sees the
+    /// compilation unit's own using directives, a classic block-scoped namespace's type sees usings
+    /// declared inside that namespace block instead, and a symbol with no usings in scope gets null
+    /// rather than an empty array.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Usings_ReadsFileScopedAndNamespaceScopedDirectives()
+    {
+        var fileScoped = Root(await GetSymbol("Sample.Lib.UsingsSample", "usings"));
+        var usings = fileScoped.GetProperty("content").GetProperty("usings");
+        Assert.Contains(usings.EnumerateArray(), u => u.GetString() == "using System;");
+        Assert.Contains(usings.EnumerateArray(), u => u.GetString() == "using System.Collections.Generic;");
+
+        var classic = Root(await GetSymbol("Sample.Lib.Classic.ClassicNamespaceSample", "usings"));
+        var classicUsings = classic.GetProperty("content").GetProperty("usings");
+        var only = Assert.Single(classicUsings.EnumerateArray());
+        Assert.Equal("using System.Text;", only.GetString());
+
+        var noUsings = Root(await GetSymbol("Sample.Lib.Widget", "usings"));
+        Assert.False(noUsings.GetProperty("content").TryGetProperty("usings", out _));
+    }
+
     /// <summary>Bare modifier tokens AND: "public sealed" must match TurboWidget only, not plain Widget.</summary>
     [Fact]
     public async Task SearchIndex_ModifiersFilter_RequiresAllIncludedTokens()
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
-            "Widget", kinds: "class", modifiers: "public sealed", limit: 10));
+            "Widget", kinds: "class", modifiers: "public sealed", limit: 10, groupBy: "none"));
 
         var items = TableRows(root.GetProperty("items"));
         Assert.Single(items);
@@ -977,7 +1024,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_ImplementsFilter_ReturnsDirectImplementersOfTheNamedInterface()
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
-            "Widget", kinds: "class", implements: "IWidget", limit: 10));
+            "Widget", kinds: "class", implements: "IWidget", limit: 10, groupBy: "none"));
 
         var names = TableRows(root.GetProperty("items")).Select(i => i["name"].GetString()).ToList();
         Assert.Contains("Sample.Lib.Widget", names);
@@ -989,9 +1036,146 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task SearchIndex_ImplementsFilter_ExcludesNonImplementers()
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
-            "Gear", kinds: "class", implements: "IWidget", limit: 10));
+            "Gear", kinds: "class", implements: "IWidget", limit: 10, groupBy: "none"));
 
         Assert.Empty(TableRows(root.GetProperty("items")));
+    }
+
+    /// <summary>
+    /// The default groupBy:"namespace" collapses straight to flat namespace/file header fields plus one
+    /// symbols table when the whole result set shares a single namespace and a single file — no wrapper
+    /// arrays for the common single-file search. A leaf's kind column also hoists to a header field
+    /// when every hit in that leaf shares one kind. limit:1 isolates SpinTwice on its own — the bare
+    /// query also fuzzy-matches Spin, which spans a second file and would not collapse. limitedBy is
+    /// omitted entirely (not printed as null) when nothing limited the answer, same as the flat
+    /// groupBy:"none" shape.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_CollapsesToFlatHeader_WhenResultsShareOneNamespaceAndFile()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", limit: 1));
+
+        Assert.False(root.TryGetProperty("limitedBy", out _));
+        Assert.Equal("Sample.Lib", root.GetProperty("namespace").GetString());
+        Assert.EndsWith("Pipeline.cs", root.GetProperty("file").GetString());
+        Assert.Equal("Method", root.GetProperty("kind").GetString());
+        var symbols = TableRows(root.GetProperty("symbols"));
+        var symbol = Assert.Single(symbols);
+        Assert.False(symbol.ContainsKey("kind"));
+        Assert.Equal("WidgetExtensions.SpinTwice(IWidget,int)", symbol["name"].GetString());
+    }
+
+    /// <summary>
+    /// A query spanning several files under one namespace nests namespaces[] -> files[] -> symbols[]
+    /// rather than collapsing, since the file axis still varies — the wrapper array stays even though
+    /// there is only one namespace, matching the file-grouped shape's own per-group array discipline.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_GroupsByNamespaceByDefault_NestingMultipleFilesUnderOneNamespace()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", limit: 10));
+
+        Assert.Equal("namespace", root.GetProperty("groupedBy").GetString());
+        var namespaces = root.GetProperty("namespaces").EnumerateArray().ToList();
+        var ns = Assert.Single(namespaces);
+        Assert.Equal("Sample.Lib", ns.GetProperty("name").GetString());
+        var files = ns.GetProperty("files").EnumerateArray().Select(f => f.GetProperty("path").GetString()).ToList();
+        Assert.Contains(files, f => f!.EndsWith("Widget.cs"));
+        Assert.Contains(files, f => f!.EndsWith("Pipeline.cs"));
+    }
+
+    /// <summary>groupBy:"file" inverts the nesting: files[] -> namespaces[] -> symbols[].</summary>
+    [Fact]
+    public async Task SearchIndex_GroupByFile_NestsNamespaceInsideFile()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", limit: 10, groupBy: "file"));
+
+        Assert.Equal("file", root.GetProperty("groupedBy").GetString());
+        var files = root.GetProperty("files").EnumerateArray().ToList();
+        Assert.True(files.Count >= 2);
+        foreach (var file in files)
+        {
+            var namespaces = file.GetProperty("namespaces").EnumerateArray().ToList();
+            var ns = Assert.Single(namespaces);
+            Assert.Equal("Sample.Lib", ns.GetProperty("name").GetString());
+        }
+    }
+
+    /// <summary>groupBy:"none" keeps the flat items[] list — file/kind repeated per row, no namespace field.</summary>
+    [Fact]
+    public async Task SearchIndex_GroupByNone_ReturnsTheFlatItemsList()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", limit: 10, groupBy: "none"));
+
+        Assert.False(root.TryGetProperty("groupedBy", out _));
+        var hit = TableRows(root.GetProperty("items")).First();
+        Assert.True(hit.ContainsKey("file"));
+        Assert.True(hit.ContainsKey("kind"));
+        Assert.False(hit.ContainsKey("namespace"));
+    }
+
+    /// <summary>
+    /// search_index defaults to origin:"source" — an external symbol discovered only as a call/implements
+    /// target (never declared in this repo) must not appear in a plain query, matching every existing
+    /// caller's expectations unchanged.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_DefaultOrigin_ExcludesExternalSymbols()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "IDisposable", groupBy: "none"));
+
+        Assert.Empty(TableRows(root.GetProperty("items")));
+    }
+
+    /// <summary>
+    /// origin:"external" surfaces a BCL symbol ExternalRefSample references — System.IDisposable via the
+    /// implements edge, System.Linq.Enumerable.Where via a reduced extension-method call — discovered
+    /// only because this repo's own source references them, not as a general library browser.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_ExternalOrigin_FindsCallAndImplementsTargets()
+    {
+        var interfaces = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "IDisposable",
+            kinds: "interface", origin: "external", groupBy: "none")).GetProperty("items"));
+        Assert.Contains(interfaces, i => i["name"].GetString()!.Contains("IDisposable", StringComparison.Ordinal));
+
+        var methods = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Where",
+            kinds: "method", origin: "external", groupBy: "none")).GetProperty("items"));
+        Assert.Contains(methods, m => m["name"].GetString()!.Contains("Where", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// get_symbol resolves a previously-discovered external symbol via its stored documentation-comment
+    /// id: origin reads "external", declarationSites is empty (no source location), and kind comes from
+    /// the live metadata symbol, not a guess.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_ExternalSymbol_ResolvesWithEmptyDeclarationSites()
+    {
+        var hit = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "IDisposable",
+            kinds: "interface", origin: "external", groupBy: "none")).GetProperty("items")).First();
+        var symbolId = hit["symbolId"].GetString()!;
+
+        var resolved = Root(await GetSymbol(symbolId));
+        Assert.Equal("external", resolved.GetProperty("content").GetProperty("origin").GetString());
+        Assert.Equal("Interface", resolved.GetProperty("content").GetProperty("kind").GetString());
+        Assert.Empty(resolved.GetProperty("content").GetProperty("declarationSites").EnumerateArray());
+    }
+
+    /// <summary>A source symbol's origin still reads "source", unaffected by external indexing.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceSymbol_OriginReadsSource()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Widget"));
+        Assert.Equal("source", root.GetProperty("content").GetProperty("origin").GetString());
     }
 
 

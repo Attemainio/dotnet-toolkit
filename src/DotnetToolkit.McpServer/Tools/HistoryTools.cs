@@ -63,7 +63,10 @@ public static class HistoryTools
 [McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
         + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
-        + "Each entry carries logId, date, intent, and tags (a JSON array).")]
+        + "Each entry carries logId, date, intent, and tags (a JSON array, present only when the patch that "
+        + "created the entry actually supplied one — most entries carry none, since validate_patch's tags "
+        + "argument is optional and rarely used). Matching is a free-text LIKE over intent only — there is no "
+        + "tag-based filter.")]
     public static string SearchLog(
         FeatureLogStore featureLog,
         [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
@@ -75,7 +78,10 @@ public static class HistoryTools
             logId = e.LogId,
             date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
             intent = e.Intent,
-            tags = e.Tags,
+            // Absent rather than an empty array when nothing was supplied — an empty TOON array renders as
+            // a dangling "tags[0]:" header with no row beneath it, which reads as a malformed entry rather
+            // than "no tags".
+            tags = e.Tags.Count > 0 ? e.Tags : null,
         });
         return Formats.Render(new { items });
     }

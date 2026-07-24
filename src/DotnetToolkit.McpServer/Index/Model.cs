@@ -17,6 +17,7 @@ public sealed record TypeEntry(
     string Kind,
     string Name,
     string FqName,
+    string Namespace,
     string? Doc,
     string[] Bases,
     string Modifiers,
@@ -33,7 +34,7 @@ public sealed record FileEntry(
 
 public sealed class IndexDocument
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

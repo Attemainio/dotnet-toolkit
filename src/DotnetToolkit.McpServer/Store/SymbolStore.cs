@@ -14,10 +14,11 @@ public sealed class SymbolStore
 
     public bool Available => _store.Available;
 
-public sealed record SymbolRow(
+    public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
-        string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "");
+        string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "",
+        string Origin = "source", string? DocumentationId = null);
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
@@ -232,14 +233,37 @@ public sealed record SymbolRow(
         return cmd.ExecuteScalar() as string;
     }
 
-public IReadOnlyList<SearchHit> Search(
+    /// <summary>
+    /// The stored documentation-comment id for an external symbol — BCL/NuGet code this repo's own
+    /// source calls, implements, or extends, discovered only as an edge target and never declared here.
+    /// Accepts either a <c>sym_…</c> id or a fully-qualified name; null when the handle does not resolve
+    /// to a row, or resolves to a source-origin row (get_symbol's live workspace path already covers that
+    /// case, so this is only ever the external fallback).
+    /// </summary>
+    public string? ExternalDocumentationId(string handle)
+    {
+        if (!_store.Available || string.IsNullOrWhiteSpace(handle))
+            return null;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT documentation_id FROM symbols
+            WHERE (symbol_id = $handle OR fq_name = $handle) AND origin = 'external'
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$handle", handle);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    public IReadOnlyList<SearchHit> Search(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
-        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
+        string origin = "source")
     {
         if (!_store.Available || string.IsNullOrWhiteSpace(query))
             return [];
 
-        var fts = SearchFts(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers);
+        var fts = SearchFts(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers, origin);
         if (fts.Count >= limit)
             return fts;
 
@@ -248,13 +272,14 @@ public IReadOnlyList<SearchHit> Search(
         // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
         // meant a single weak token match suppressed the substring index entirely.
         var seen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
-        var topUp = SearchLike(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers).Where(h => seen.Add(h.SymbolId));
+        var topUp = SearchLike(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers, origin).Where(h => seen.Add(h.SymbolId));
         return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
-private IReadOnlyList<SearchHit> SearchFts(
+    private IReadOnlyList<SearchHit> SearchFts(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
-        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
+        string origin = "source")
     {
         var match = SearchText.ForQuery(query);
         if (match is null)
@@ -264,6 +289,7 @@ private IReadOnlyList<SearchHit> SearchFts(
         using var cmd = connection.CreateCommand();
         var kindFilter = AppendKindFilter(cmd, "s.kind", includeKinds, excludeKinds);
         var modifierFilter = AppendModifierFilter(cmd, "s.modifiers", includeModifiers, excludeModifiers);
+        var originFilter = AppendOriginFilter(cmd, "s.origin", origin);
         // bm25 is negated by convention (more negative = better), so ordering ascending puts the
         // rows matching more of the query's terms first. The exact/prefix cases are still promoted
         // ahead of it so an exact name never loses to a better-scoring partial.
@@ -276,7 +302,7 @@ private IReadOnlyList<SearchHit> SearchFts(
                    END AS rank
             FROM symbols_fts f
             JOIN symbols s ON s.symbol_id = f.symbol_id
-            WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}
+            WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}{originFilter}
             ORDER BY rank, bm25(symbols_fts), length(s.fq_name), s.fq_name
             LIMIT $limit;
             """;
@@ -293,15 +319,17 @@ private IReadOnlyList<SearchHit> SearchFts(
         return ReadHits(cmd);
     }
 
-private IReadOnlyList<SearchHit> SearchLike(
+    private IReadOnlyList<SearchHit> SearchLike(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
-        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null)
+        IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
+        string origin = "source")
     {
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
         // COLLATE NOCASE so callers are not silently punished for "method" vs "Method".
         var kindFilter = AppendKindFilter(cmd, "kind", includeKinds, excludeKinds);
         var modifierFilter = AppendModifierFilter(cmd, "modifiers", includeModifiers, excludeModifiers);
+        var originFilter = AppendOriginFilter(cmd, "origin", origin);
         cmd.CommandText = $"""
             SELECT symbol_id, display_string, kind, fq_name, decl_hash,
                    CASE
@@ -311,7 +339,7 @@ private IReadOnlyList<SearchHit> SearchLike(
                      ELSE 3
                    END AS rank
             FROM symbols
-            WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}
+            WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}{originFilter}
             ORDER BY rank, length(fq_name), fq_name
             LIMIT $limit;
             """;
@@ -321,6 +349,19 @@ private IReadOnlyList<SearchHit> SearchLike(
         cmd.Parameters.AddWithValue("$limit", limit);
 
         return ReadHits(cmd);
+    }
+
+    /// <summary>
+    /// origin: "source" (default — existing behavior, external rows never surface unasked), "external",
+    /// or "all". Unlike kind/modifier filtering this is a single value, not a set, so it needs no
+    /// per-token parameter loop.
+    /// </summary>
+    private static string AppendOriginFilter(SqliteCommand cmd, string columnExpr, string origin)
+    {
+        if (origin is not ("source" or "external"))
+            return "";
+        cmd.Parameters.AddWithValue("$origin", origin);
+        return $" AND {columnExpr} = $origin";
     }
 
 private static string AppendKindFilter(
@@ -591,13 +632,17 @@ private static string AppendKindFilter(
     /// a healthy reload afterwards did not correct a single one.
     ///
     /// Comparing the value itself is what makes the pass self-correcting rather than merely cheap.
+    ///
+    /// An external row has no decl/body hash and no attribute to re-derive, so once written it is never
+    /// considered moved — this index tracks only that the symbol is referenced, never how it changed.
     /// </summary>
     private static bool Moved(ExistingSymbol prior, SymbolRow next) =>
-        prior.DeclHash != next.DeclHash
+        next.Origin != "external" &&
+        (prior.DeclHash != next.DeclHash
         || prior.BodyHash != next.BodyHash
         || prior.RefsHash != next.RefsHash
         || prior.ApiHash != next.ApiHash
-        || prior.IsTest != next.IsTest;
+        || prior.IsTest != next.IsTest);
 
     private static void DeleteSymbol(SqliteConnection connection, SqliteTransaction tx, string id)
     {
@@ -639,7 +684,7 @@ private static string AppendKindFilter(
 
     // ---- shared writers (used by both the full rebuild and the incremental pass) ----------------
 
-private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
+    private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
     {
         if (symbols.Count == 0)
             return;
@@ -648,8 +693,8 @@ private static void WriteSymbols(SqliteConnection connection, SqliteTransaction 
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, embedding, is_test, modifiers)
-            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers);
+                 refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id)
+            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId);
             """;
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var s in symbols)
@@ -668,6 +713,8 @@ private static void WriteSymbols(SqliteConnection connection, SqliteTransaction 
             cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
             cmd.Parameters.AddWithValue("$isTest", s.IsTest ? 1 : 0);
             cmd.Parameters.AddWithValue("$modifiers", " " + s.Modifiers + " ");
+            cmd.Parameters.AddWithValue("$origin", s.Origin);
+            cmd.Parameters.AddWithValue("$docId", (object?)s.DocumentationId ?? DBNull.Value);
             cmd.ExecuteNonQuery();
         }
 

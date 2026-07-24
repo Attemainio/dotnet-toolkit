@@ -9,9 +9,12 @@ namespace DotnetToolkit.McpServer.Contracts;
 /// Component names are exactly the response field names they control, so there is no second vocabulary
 /// to learn: what you ask for is what appears in the JSON.
 ///
-/// The skeleton (kind, displayString, accessibility, containingType, declarationSites) is never optional.
-/// It is the symbol's identity and costs almost nothing; making it removable would buy no tokens worth
-/// having and would let a response come back that no consumer could interpret.
+/// The skeleton (kind, origin, containingType, declarationSites) is never optional — it is the symbol's
+/// identity and costs almost nothing. displayString and modifiers sit one tier below: computed
+/// unconditionally like the skeleton, but suppressed (null) when <see cref="Source"/> is also requested,
+/// since a declaration's own signature line already states both as text. There is no separate
+/// accessibility field — modifiers' literal keyword phrase already carries it ("public sealed" states
+/// both), so a second field saying the same thing would be pure duplication.
 /// </summary>
 public readonly record struct SymbolComponents
 {
@@ -22,15 +25,16 @@ public readonly record struct SymbolComponents
     public const string RecentLog = "recentLog";
     public const string Members = "members";
     public const string Attributes = "attributes";
-    // Declaration-only facts (no semantic-model body walk): the literal modifier phrase, plus the
-    // direct base type/interfaces — type-only, null for anything else, same as Members.
-    public const string Modifiers = "modifiers";
+    // Declaration-only facts (no semantic-model body walk): the direct base type/interfaces — type-only,
+    // null for anything else, same as Members. modifiers is NOT here: it is unconditional (see the type
+    // doc comment), not an opt-in include component.
     public const string BaseType = "baseType";
     public const string Interfaces = "interfaces";
+    public const string Usings = "usings";
 
     public static readonly IReadOnlyList<string> All =
         [Source, XmlDoc, MechanicalFacts, ReferenceCounts, RecentLog, Members, Attributes,
-         Modifiers, BaseType, Interfaces];
+         BaseType, Interfaces, Usings];
 
     private readonly HashSet<string> _set;
 

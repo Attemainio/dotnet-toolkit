@@ -50,16 +50,32 @@ Component names are exactly the response fields they control:
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
-| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute` suffix (e.g. `[Obsolete]` → `"Obsolete"`); `arguments` is a compact rendering of constructor/named arguments, truncated rather than reproduced in full for a long string. Absent when the symbol has no attributes |
-| `modifiers` | The literal C# modifier phrase in declaration order — `"public static readonly"`, `"public sealed"`, `"public override"`, etc. Declaration-only: no semantic-model body walk, same cost tier as `xmlDoc` |
-| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type (not `object` filtered out, not the transitive chain — `get_type_hierarchy` owns that). Absent for anything else, including when a type has no explicit base |
-| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else |
+| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute` suffix (e.g. `[Obsolete]` → `"Obsolete"`); `arguments` is a compact rendering of constructor/named arguments, truncated rather than reproduced in full for a long string. Absent when the symbol has no attributes. Suppressed (absent) when `source` is also requested |
+| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type (not `object` filtered out, not the transitive chain — `get_type_hierarchy` owns that). Absent for anything else, including when a type has no explicit base. Suppressed when `source` is also requested |
+| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else. Suppressed when `source` is also requested |
+| `usings` | This symbol's file-level `using` directives (the compilation unit's own, plus any declared inside an enclosing classic block-scoped namespace), in source order. `null` if there are none. **Not** suppressed by `source` — a symbol's own declaration span never includes the file's `using` directives, so this stays genuinely new information even alongside `source` |
 
-The skeleton — `kind`, `displayString`, `accessibility`, `containingType`, `declarationSites` (`file`,
-`startLine`, `endLine`) — is unconditional: every call gets it regardless of `include`, and those line
-spans are exactly what a `validate_patch` edit takes. When the symbol has a leading `///` XML doc
-comment, `startLine` (and `source`) begin at the comment, not at the attribute/signature line after
-it — so an edit built from `declarationSites` can rewrite the doc comment along with the declaration.
+`modifiers` is not an `include` component at all — it is computed on every call, like the skeleton (see
+below), not opt-in.
+
+The skeleton — `kind`, `origin`, `containingType`, `declarationSites` (`file`, `startLine`, `endLine`) —
+is unconditional: every call gets it regardless of `include`, and those line spans are exactly what a
+`validate_patch` edit takes. `displayString` and `modifiers` sit one tier below the skeleton: computed on
+every call the same way, but suppressed to `null` when `source` is also requested, since a declaration's
+own signature line already states both as text — asking for `source` alongside `xmlDoc`/`attributes`/
+`baseType`/`interfaces`/`displayString`/`modifiers` is not a bigger fetch, it is the same fetch minus the
+duplication. **There is no `accessibility` field** — `modifiers`' literal keyword phrase already carries
+it (`"public sealed"` states both), so a second field saying the same thing would be pure duplication.
+When the symbol has a leading `///` XML doc comment, `startLine` (and `source`) begin at the comment, not
+at the attribute/signature line after it — so an edit built from `declarationSites` can rewrite the doc
+comment along with the declaration. `source` itself reads exactly as the file does — no `"// in
+<ContainingType>"` header line prepended.
+
+`origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a BCL/NuGet
+symbol resolved only because this repo's own code calls, constructs, implements, or extends it (see
+`search_index`'s `origin` argument below for how such a symbol gets discovered in the first place). An
+external symbol's `declarationSites` is always `[]` and `source`/`xmlDoc` are effectively unavailable —
+there is no file in this repo to point at.
 
 Default call, real response:
 
@@ -70,7 +86,7 @@ get_symbol(symbol: "FeatureLogStore.Append")
 ```json
 {"symbolId":"sym_c25d7c88b0e916b0","contentVersion":"decl:ddca3badaba1|refs:532f4bebd9ac",
  "content":{"kind":"Method","displayString":"string FeatureLogStore.Append(LogEntry entry)",
-   "accessibility":"public",
+   "origin":"source","modifiers":"public",
    "containingType":{"symbolId":"sym_fc346a8c5efa6a88","displayString":"FeatureLogStore"},
    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs",
                          "startLine":27,"endLine":78}],
@@ -146,11 +162,13 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 | `pathPrefix` | Optional folder/file scope, e.g. `"src/Tools"` or `"src/Tools/ContextTools.cs"` — relative to the repo root, forward slashes, matched on a full path-segment boundary (`"Tools"` cannot match `"ToolsFoo"`). A hit whose file can't be resolved (an overloaded name) is dropped rather than guessed at, so scoped results can undercount for an overload-heavy query. Ranking still runs over the whole index first, so a query with far more hits outside the prefix than the internal overfetch cap can return fewer than `limit` even though more in-scope matches exist — narrow the query text itself if that happens. |
 | `limit` | Default 10, cap 50. |
 | `summary` | Optional XML doc `<summary>` signal per hit, read from the syntax index (no MSBuild needed, so it works at `index_only` too). `"has"` adds `hasSummary` (bool) — a cheap presence check with no text. `"full"` adds `summary` (string, the extracted text capped at 160 characters with a trailing `…`; absent if the symbol has no `<summary>`). The cap keeps a pathologically long doc comment from dominating a multi-hit response — fetch `get_symbol`'s `xmlDoc.summary` for the untruncated text once you've picked a symbol. Omit `summary` for the pre-existing response, byte-for-byte — no extra field, no extra cost. An unrecognized value is treated as omitted, same precedent as `kinds`' unrecognized tokens. |
+| `groupBy` | How results are nested. `"namespace"` (default) groups namespace → file → symbols; `"file"` groups file → namespace → symbols; `"none"` returns the flat `items[]` list shown below, with `file`/`kind` repeated on every row and no `namespace` field. Whichever axis the whole result set collapses to a single value on additionally collapses its wrapper array to a flat `namespace`/`file` header field instead of a nested array, and a leaf's `kind` column drops out whenever every hit in that leaf shares one kind. An unrecognized value is treated as `"namespace"`. |
+| `origin` | `"source"` (default) searches only symbols this repo's own solution declares — existing callers see no behavior change. `"external"` searches only BCL/NuGet symbols already discovered as a call/construction/implements target from this repo's own source (`search_index(query: "IDisposable", kinds: "interface", origin: "external")` finds `System.IDisposable` once something here implements it) — not a general library browser, only what this repo's code already references. `"all"` searches both. An unrecognized value is treated as `"source"`. |
 
-Real call and response:
+Real call and response, `groupBy: "none"` — the flat shape, `file`/`kind` repeated per row:
 
 ```
-search_index(query: "validate_patch FeatureLogStore", limit: 5)
+search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
 ```
 
 ```json
@@ -164,14 +182,47 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5)
 ```
 
 `name` is directly usable as `get_symbol`'s `symbol` argument. A hit whose name maps to several
-overloads has `file`/`line` absent rather than pointing at the wrong one — resolve it through
+overloads has no `file` at all rather than pointing at the wrong one — resolve it through
 `get_symbol` instead, which separates overloads by parameter list.
+
+The same shape of query with the default `groupBy` omitted — a real capture against the fixture
+solution, `"Spin"` matching four methods across two files under one namespace. The namespace and
+each file are stated once instead of on every row, and `kind` hoists to each file's own header
+since every hit in that file is a `Method`:
+
+```
+search_index(query: "Spin", kinds: "method")
+```
+
+```json
+{"groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
+   {"path":"Lib/Pipeline.cs","kind":"Method","symbols":[
+      {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6}]},
+   {"path":"Lib/Widget.cs","kind":"Method","symbols":[
+      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12},
+      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5},
+      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18}]}]}]}
+```
+
+`groupBy: "file"` inverts the nesting to file → namespace → symbols instead. And when a query's
+whole result set shares one namespace *and* one file — `limit: 1` on the query above, isolating
+just `SpinTwice` — both wrapper arrays collapse to flat header fields, since there is nothing left
+to nest:
+
+```
+search_index(query: "Spin", kinds: "method", limit: 1)
+```
+
+```json
+{"namespace":"Sample.Lib","file":"Lib/Pipeline.cs","kind":"Method",
+ "symbols":[{"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6}]}
+```
 
 Scoped to one folder — `pathPrefix` narrows the same ranked search to a subsystem instead of the
 whole repo:
 
 ```
-search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.McpServer/Store", limit: 5)
+search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.McpServer/Store", limit: 5, groupBy: "none")
 ```
 
 ```json
@@ -186,7 +237,7 @@ Filtering by modifier and by interface — `"Widget"` matches both `Widget` and 
 `modifiers: "public sealed"` (AND, not OR) narrows to the one that is both:
 
 ```
-search_index(query: "Widget", kinds: "class", modifiers: "public sealed", limit: 5)
+search_index(query: "Widget", kinds: "class", modifiers: "public sealed", limit: 5, groupBy: "none")
 ```
 
 ```json
@@ -199,7 +250,7 @@ search_index(query: "Widget", kinds: "class", modifiers: "public sealed", limit:
 `IWidget`, so both come back:
 
 ```
-search_index(query: "Widget", kinds: "class", implements: "IWidget", limit: 5)
+search_index(query: "Widget", kinds: "class", implements: "IWidget", limit: 5, groupBy: "none")
 ```
 
 ```json
@@ -212,7 +263,7 @@ Checking documentation coverage before spending a `get_symbol` call — `summary
 presence check, no text sent:
 
 ```
-search_index(query: "Spin", kinds: "method", summary: "has")
+search_index(query: "Spin", kinds: "method", summary: "has", groupBy: "none")
 ```
 
 ```json
@@ -227,7 +278,7 @@ search_index(query: "Spin", kinds: "method", summary: "has")
 the actual text with `summary: "full"` instead of a follow-up `get_symbol`:
 
 ```
-search_index(query: "Widget.Spin", kinds: "method", summary: "full")
+search_index(query: "Widget.Spin", kinds: "method", summary: "full", groupBy: "none")
 ```
 
 ```json
@@ -496,14 +547,15 @@ search_log(limit: 3)
 ```json
 {"items":[
    {"logId":"log_01KY07FZ...","date":"2026-07-20",
-    "intent":"Fix get_symbol's [Description]: the batch-mode response was documented as an array, but it's actually column-shaped like search_index/get_references",
-    "tags":[]},
+    "intent":"Fix get_symbol's [Description]: the batch-mode response was documented as an array, but it's actually column-shaped like search_index/get_references"},
    {"logId":"log_01KY07F8...","date":"2026-07-20",
-    "intent":"Remove unused toolCallId/patchId/validationAttemptId parameters from Error/StaleBase/BuildResponse, ...",
-    "tags":[]}]}
+    "intent":"Remove unused toolCallId/patchId/validationAttemptId parameters from Error/StaleBase/BuildResponse, ..."}]}
 ```
 
-Each entry carries `logId, date, intent, tags` (`tags` a real JSON array).
+Each entry carries `logId, date, intent`, plus `tags` (a JSON array) only when the patch that created it
+actually supplied one — `validate_patch`'s `tags` argument is optional and rarely used in practice, so
+most entries carry no `tags` field at all rather than an empty array. Matching is a free-text `LIKE` over
+`intent` only — there is no tag-based filter today.
 
 ## Write path
 
@@ -669,10 +721,15 @@ evaluate contribute nothing, and semantic results from it are incomplete or wron
 
 | Arg | Meaning |
 |---|---|
-| `scope` | `index` (re-scan file index) \| `workspace` (re-open the MSBuild solution) \| `all` (default). |
+| `scope` | `index` (re-scan file index) \| `workspace` (re-open the MSBuild solution, then rebuild the SQLite symbol index/project graph) \| `all` (default). |
 
 Call after a large external change the mtime-poller might not have caught yet in time — a `git
-checkout`, a `git pull`, a rebase, or any `.cs` edit made outside `validate_patch`.
+checkout`, a `git pull`, a rebase, or any `.cs` edit made outside `validate_patch`. `workspace`/`all`
+queues a background `SymbolIndexBuilder` rebuild after reopening the solution (the same mechanism a
+successful `validate_patch` apply triggers), so `search_index`/`get_references` catch up on the new
+symbols and edges without waiting for the next periodic full sweep. That rebuild runs in the
+background — `reload_workspace` returns before it finishes; check `workspace_status` if you need to
+confirm it's done.
 
 ## Workspace readiness
 

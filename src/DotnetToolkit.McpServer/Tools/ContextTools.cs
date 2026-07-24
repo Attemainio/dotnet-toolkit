@@ -35,18 +35,23 @@ public static class ContextTools
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
         + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
         + "changed:false when nothing moved, or refetch:true to force content. "
-        + "The response always carries a fixed skeleton — kind, displayString, accessibility, containingType, "
-        + "declarationSites (file + startLine/endLine) — regardless of include, so locating a symbol never "
-        + "needs an extra argument or a second call, and those line spans feed straight into a validate_patch "
-        + "edit. Everything past the skeleton is opt-in and controlled by include:\n"
-        + "  source — full declaration source text.\n"
+        + "The response always carries a fixed skeleton — kind, origin, containingType, declarationSites "
+        + "(file + startLine/endLine) — regardless of include. displayString and modifiers sit one tier "
+        + "below: computed on every call like the skeleton, but suppressed to null when source is also "
+        + "requested, since a declaration's own signature line already states both as text. There is no "
+        + "separate accessibility field — modifiers' literal keyword phrase already carries it (\"public "
+        + "sealed\" states both). Everything else is opt-in and controlled by include:\n"
+        + "  source — full declaration source text. Requesting it also suppresses xmlDoc, attributes, "
+        + "baseType and interfaces even if named alongside it, since source already prints all of them as "
+        + "text — asking for source plus those is not a bigger fetch, it is the same fetch minus duplication.\n"
         + "  xmlDoc — {summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}, each "
         + "XML-stripped to plain text and absent when that tag isn't in the doc comment (xmlDoc itself is "
         + "absent only when none of them are). params/typeParams are arrays of {name, text}, one per "
         + "<param>/<typeparam> tag; exceptions is an array of {type, text}, one per <exception> tag; "
         + "inheritdoc is true when an <inheritdoc/> tag is present (regardless of any other tag).\n"
         + "  mechanicalFacts — server-computed structural facts as opaque JSON; null if the body changed "
-        + "since they were computed.\n"
+        + "since they were computed. Not suppressed by source — this is server-computed analysis, not text "
+        + "already visible by reading the declaration.\n"
         + "  referenceCounts — {implementations, overrides} always; adds {callers, tests} for a member "
         + "(never present for a type, since call edges are recorded against members only).\n"
         + "  recentLog — the last few development-log entries touching this symbol, each carrying "
@@ -57,11 +62,18 @@ public static class ContextTools
         + "strips a trailing \"Attribute\" suffix (e.g. [Obsolete] -> \"Obsolete\"); arguments is a compact "
         + "rendering of constructor/named arguments, with a long string argument truncated rather than "
         + "reproduced in full. Absent when the symbol has no attributes.\n"
+        + "  baseType/interfaces — type-only, direct only (not the transitive chain — get_type_hierarchy owns "
+        + "that); absent for anything else.\n"
+        + "  usings — this symbol's file-level using directives (compilation-unit plus any enclosing "
+        + "classic namespace block), in source order; null if there are none. NOT suppressed by source: a "
+        + "symbol's own declaration span never includes the file's using directives, so this is genuinely "
+        + "new information even alongside source.\n"
         + "include takes exactly one of: omitted or \"standard\" (default) for xmlDoc+referenceCounts+recentLog, "
         + "the set meaningful on nearly every call; \"all\" for every component above; or a comma-separated "
         + "list of component names, which REPLACES the default rather than adding to it — a literal query of "
         + "exactly the columns you want, e.g. include:\"source\" for just the text, or "
-        + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. A "
+        + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. "
+        + "modifiers is not a valid include name — it is always computed, not opt-in (see above). A "
         + "misspelled name is an invalid_component error, not silently dropped. "
         + "For several symbols in one call, use symbols instead of symbol — one include applies to all of "
         + "them, returning one result per symbol instead of issuing the call several times for the same "
@@ -77,8 +89,8 @@ public static class ContextTools
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
             + "names that replaces the default set exactly: source, xmlDoc, mechanicalFacts, "
-            + "referenceCounts, recentLog, members, attributes. See the tool description for what each "
-            + "returns.")] string? include = null,
+            + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings. See the tool "
+            + "description for what each returns, and for why source suppresses several of these.")] string? include = null,
         [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
             + "see symbols.")] string? knownVersion = null,
         [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
@@ -163,7 +175,7 @@ private static async Task<string> GetSymbolOne(
                 knownVersion, refetch, false, null, 0, "index_only", "workspace_loading", loading);
         }
 
-        var (sym, error) = await ResolveAsPlainJsonAsync(solution, ResolveHandle(symbol, symbolStore));
+        var (sym, error) = await ResolveAsPlainJsonAsync(solution, ResolveHandle(symbol, symbolStore), symbolStore);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
                 knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
@@ -220,13 +232,18 @@ private static async Task<string> GetSymbolOne(
     }
 
     /// <summary>Plain-JSON variant of <see cref="ResolveAsync"/> for use inside <see cref="GetSymbolOne"/> only.</summary>
-    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsPlainJsonAsync(Solution solution, string symbol)
+    private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsPlainJsonAsync(
+        Solution solution, string symbol, SymbolStore symbolStore)
     {
         var resolution = await SymbolResolver.ResolveAsync(solution, symbol);
         if (resolution.Symbol is not null)
             return (resolution.Symbol, null);
         if (resolution.Candidates.Count == 0)
+        {
+            if (await ResolveExternalAsync(solution, symbol, symbolStore) is { } external)
+                return (external, null);
             return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
+        }
         return (null, Formats.ToJson(new
         {
             error = "ambiguous_symbol",
@@ -236,6 +253,31 @@ private static async Task<string> GetSymbolOne(
                 displayString = c.ToDisplayString(),
             }),
         }));
+    }
+
+    /// <summary>
+    /// Resolves a name/id that only matches a previously-discovered external symbol row (BCL/NuGet code
+    /// this repo's own source calls, implements, or extends) into a live <c>ISymbol</c> via its stored
+    /// documentation-comment id, so it flows through the same BuildContent/DeclarationSites/VersionOf
+    /// path a source symbol does — those already tolerate a symbol with no source locations. Only ever
+    /// finds symbols SymbolIndexBuilder's edge walk already surfaced; not a general external-library
+    /// browser.
+    /// </summary>
+    private static async Task<ISymbol?> ResolveExternalAsync(Solution solution, string symbol, SymbolStore symbolStore)
+    {
+        var docId = symbolStore.ExternalDocumentationId(symbol);
+        if (docId is null)
+            return null;
+        foreach (var project in solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync();
+            if (compilation is null)
+                continue;
+            var matches = DocumentationCommentId.GetSymbolsForDeclarationId(docId, compilation);
+            if (matches.Length > 0)
+                return matches[0];
+        }
+        return null;
     }
 
 [McpServerTool(Name = "get_references")]
@@ -324,10 +366,10 @@ private static async Task<string> GetSymbolOne(
         + "query:\"fee ledger TryBuy TrySell\" returns the symbols for all four in a single response. Do NOT "
         + "issue one call per word — that is several times the tokens for a worse-ranked result. Partial and "
         + "camel-case-interior terms work too: \"Ledger\" finds FIFOLedger. "
-        + "Each hit carries symbolId, name (the fully-qualified name, directly usable as get_symbol's symbol "
-        + "argument), kind, and the file/line it was found at, so going straight there needs no second call; "
-        + "a hit whose name maps to several declarations (overloads) has file and line as null rather than "
-        + "pointing at the wrong one — follow up with get_symbol, which separates overloads by parameter list. "
+        + "Results are GROUPED by namespace (default) or file via groupBy, so a shared namespace/file is stated "
+        + "once instead of repeated on every row — see the groupBy parameter. A hit whose name maps to several "
+        + "declarations (overloads) has no file — follow up with get_symbol, which separates overloads by "
+        + "parameter list. "
         + "Pass pathPrefix to narrow the ranked results to one folder or file. Pass summary:\"has\" or "
         + "summary:\"full\" to check or read each hit's XML doc <summary> without a follow-up get_symbol call — "
         + "full text is capped short, get_symbol's xmlDoc.summary for the untruncated version. "
@@ -373,12 +415,25 @@ private static async Task<string> GetSymbolOne(
             + "presence check, no text. \"full\": adds summary (string, the extracted <summary> text, capped at "
             + "160 chars with an ellipsis — fetch get_symbol's xmlDoc.summary for the untruncated text; absent if "
             + "none) per item. Omit for today's behavior (no summary fields, no extra cost). An unrecognized "
-            + "value is treated as omitted.")] string? summary = null)
+            + "value is treated as omitted.")] string? summary = null,
+        [Description("How to group results: \"namespace\" (default) nests namespace -> file -> symbols; "
+            + "\"file\" nests file -> namespace -> symbols; \"none\" returns the flat items[] list from before "
+            + "grouping existed, with file/name repeated per row and no namespace field. Whichever axis the "
+            + "whole result set collapses to a single value on additionally collapses its wrapper array to a "
+            + "flat namespace/file header field instead of a nested array, and a leaf's kind column is dropped "
+            + "whenever every hit in that leaf shares one kind. An unrecognized value is treated as "
+            + "\"namespace\".")] string? groupBy = null,
+        [Description("\"source\" (default) searches only symbols this repo's own solution declares. "
+            + "\"external\" searches only BCL/NuGet symbols already discovered as a call/construction/"
+            + "implements target from this repo's source — not a general library browser, only what this "
+            + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
+            + "\"source\".")] string? origin = null)
     {
         var sessionId = Ids.AmbientSession;
         var taskId = sessionId;
         var toolCallId = Ids.ToolCall();
         limit = Math.Clamp(limit, 1, ReferenceCap);
+        var originFilter = origin is "source" or "external" or "all" ? origin : "source";
         var (includeKindTokens, excludeKindTokens) = ParseKindFilter(kinds);
         var includeKinds = NormalizeKinds(includeKindTokens);
         var excludeKinds = includeKindTokens.Length == 0 ? NormalizeKinds(excludeKindTokens) : null;
@@ -402,7 +457,7 @@ private static async Task<string> GetSymbolOne(
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
         var summaryMode = summary is "has" or "full" ? summary : null;
 
-        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods);
+        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
@@ -420,20 +475,48 @@ private static async Task<string> GetSymbolOne(
             resolved = resolved.Where(r => implementorIds.Contains(r.Hit.SymbolId));
         var limited = resolved.Take(limit).ToList();
 
-        object envelope = new
+        var mode = groupBy is "file" or "none" ? groupBy : "namespace";
+        object envelope;
+        if (mode == "none")
         {
-            limitedBy = searchLimitedBy,
-            items = limited.Select(r => new
+            envelope = new
             {
-                symbolId = r.Hit.SymbolId,
-                name = SymbolResolver.CompactName(r.Hit.FqName),
-                kind = r.Hit.Kind,
-                file = r.Site?.File,
-                line = r.Site?.Line,
-                hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
-                summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-            }),
-        };
+                limitedBy = searchLimitedBy,
+                items = limited.Select(r => new
+                {
+                    symbolId = r.Hit.SymbolId,
+                    name = SymbolResolver.CompactName(r.Hit.FqName),
+                    kind = r.Hit.Kind,
+                    file = r.Site?.File,
+                    line = r.Site?.Line,
+                    hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
+                    summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
+                }),
+            };
+        }
+        else
+        {
+            var rows = limited.Select(r =>
+            {
+                var ns = r.Site is null ? "(unresolved)" : r.Site.Namespace;
+                var file = r.Site?.File ?? "(unresolved)";
+                var compact = SymbolResolver.CompactName(r.Hit.FqName);
+                var leafName = ns.Length > 0 && compact.StartsWith(ns + ".", StringComparison.Ordinal)
+                    ? compact[(ns.Length + 1)..]
+                    : compact;
+                return new SymbolGrouping.Row(
+                    r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line,
+                    summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
+                    summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null);
+            }).ToList();
+            var grouped = SymbolGrouping.Build(rows, primaryIsNamespace: mode == "namespace");
+            var withLimit = new Dictionary<string, object?>();
+            if (searchLimitedBy is not null)
+                withLimit["limitedBy"] = searchLimitedBy;
+            foreach (var (key, value) in grouped)
+                withLimit[key] = value;
+            envelope = withLimit;
+        }
 
         var json = Formats.Render(envelope);
         return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
@@ -490,6 +573,11 @@ private static async Task<object> BuildContent(
         ISymbol sym, SymbolComponents components, Solution solution, SolutionLocator locator,
         SymbolStore symbolStore, SymbolIndexBuilder indexBuilder, FeatureLogStore featureLog)
     {
+        // source already prints the declaration's own signature line as text, so anything that would
+        // just restate what that line already says gets suppressed rather than duplicated: displayString,
+        // modifiers (accessibility included), xmlDoc, attributes, baseType, interfaces.
+        var hasSource = components.Has(SymbolComponents.Source);
+
         // referenceCounts is the one component with a real latency cost — it awaits the semantic model —
         // so it is computed only when asked for, rather than computed and then thrown away.
         var counts = components.Has(SymbolComponents.ReferenceCounts) && indexBuilder.Ready
@@ -512,10 +600,10 @@ private static async Task<object> BuildContent(
         // Direct only (BaseType/Interfaces, not AllInterfaces): a one-hop pointer, not a hierarchy walk —
         // get_type_hierarchy already owns the transitive chain.
         var namedType = sym as INamedTypeSymbol;
-        var baseType = components.Has(SymbolComponents.BaseType) && namedType?.BaseType is { } bt
+        var baseType = !hasSource && components.Has(SymbolComponents.BaseType) && namedType?.BaseType is { } bt
             ? TypeRef(bt)
             : null;
-        var interfaces = components.Has(SymbolComponents.Interfaces) && namedType is not null
+        var interfaces = !hasSource && components.Has(SymbolComponents.Interfaces) && namedType is not null
             ? namedType.Interfaces.Select(TypeRef).ToArray()
             : null;
 
@@ -524,27 +612,34 @@ private static async Task<object> BuildContent(
         return new
         {
             kind = SymbolKey.KindOf(sym),
-            displayString = sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            accessibility = sym.DeclaredAccessibility.ToString().ToLowerInvariant(),
+            displayString = hasSource ? null : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            // "external": no location in this repo's own solution — a BCL/NuGet symbol resolved via its
+            // stored documentation-comment id (see ResolveExternalAsync), never a declaration this repo
+            // walked. Unconditional: cheap, and callers need it to know why declarationSites/source/xmlDoc
+            // came back empty rather than assuming a lookup bug.
+            origin = sym.Locations.Any(l => l.IsInSource) ? "source" : "external",
             containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
-            source = components.Has(SymbolComponents.Source) ? SourceOf(sym) : null,
-            xmlDoc = components.Has(SymbolComponents.XmlDoc)
+            source = hasSource ? SourceOf(sym) : null,
+            xmlDoc = !hasSource && components.Has(SymbolComponents.XmlDoc)
                 ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
-            // Body-derived facts, served only while the body hash they were computed from still holds.
+            // Body-derived facts, served only while the body hash they were computed from still holds. Not
+            // source-suppressed: this is server-computed analysis, not something visible by reading source.
             mechanicalFacts = components.Has(SymbolComponents.MechanicalFacts)
                 ? MechanicalFactsFor(sym, symbolStore)
                 : null,
             referenceCounts = counts,
             members,
-            attributes = components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
-            // Declaration-only: the literal C# modifier phrase, no semantic-model body walk needed.
-            modifiers = components.Has(SymbolComponents.Modifiers)
-                ? DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym)
-                : null,
+            attributes = !hasSource && components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
+            // Unconditional like displayString, not an opt-in include component: the literal modifier
+            // phrase already subsumes accessibility ("public sealed" states both), so there is no separate
+            // accessibility field at all. Suppressed when source is also requested, since source's own
+            // signature line already states the modifiers as text.
+            modifiers = hasSource ? null : DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym),
             baseType,
             interfaces,
+            usings = components.Has(SymbolComponents.Usings) ? UsingsOf(sym) : null,
             // Why this code is the way it is. Entries describing a superseded body are flagged rather
             // than presented as current truth.
             recentLog = components.Has(SymbolComponents.RecentLog) ? RecentLogFor(sym, featureLog) : null,
@@ -681,9 +776,30 @@ private static string? SourceOf(ISymbol sym)
             return null;
         var node = NormalizeDeclNode(reference.GetSyntax());
         var (start, end) = DeclarationBoundsIncludingDocComment(node);
-        var text = node.SyntaxTree!.GetText().ToString(TextSpan.FromBounds(start, end));
-        var header = sym.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-        return header is null ? text : $"// in {header}\n{text}";
+        return node.SyntaxTree!.GetText().ToString(TextSpan.FromBounds(start, end));
+    }
+
+    /// <summary>
+    /// This symbol's file-level <c>using</c> directives: the compilation unit's own, plus any declared
+    /// inside an enclosing classic (block-scoped) namespace. A file-scoped namespace cannot carry its
+    /// own usings — C# requires them before the namespace declaration — so the compilation-unit pass
+    /// already covers that case. Order follows source position.
+    /// </summary>
+    private static string[]? UsingsOf(ISymbol sym)
+    {
+        var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
+        if (reference is null)
+            return null;
+        var node = NormalizeDeclNode(reference.GetSyntax());
+        var usings = new List<string>();
+        if (node.SyntaxTree.GetRoot() is CompilationUnitSyntax root)
+            usings.AddRange(root.Usings.Select(u => u.ToString().Trim()));
+        for (var ancestor = node.Parent; ancestor is not null; ancestor = ancestor.Parent)
+        {
+            if (ancestor is BaseNamespaceDeclarationSyntax ns)
+                usings.AddRange(ns.Usings.Select(u => u.ToString().Trim()));
+        }
+        return usings.Count > 0 ? [.. usings] : null;
     }
 
     private static async Task<object> ReferenceCounts(ISymbol sym, Solution solution, SymbolStore symbolStore)

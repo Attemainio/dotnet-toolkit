@@ -126,6 +126,21 @@ search_index(query: "Widget", kinds: "class", modifiers: "public sealed")   ← 
 search_index(query: "Widget", kinds: "class", implements: "IWidget")        ← direct implementers only
 ```
 
+### Find a BCL/NuGet symbol this repo's own code references
+
+`origin` defaults to `"source"` — only symbols this repo's own solution declares. `origin: "external"`
+searches only BCL/NuGet symbols already discovered as a call, construction, or `implements` target from
+this repo's own source — not a general library browser, only what the code here already references.
+`origin: "all"` searches both.
+
+```
+search_index(query: "IDisposable", kinds: "interface", origin: "external")
+```
+
+A hit found this way carries no `file`/`line` (nothing in this repo declares it) — follow up with
+`get_symbol` on its `symbolId`, whose response carries `origin: "external"` and an empty
+`declarationSites`.
+
 ### Check documentation without a follow-up get_symbol call
 
 Pass `summary` to fold an XML doc `<summary>` signal into the same search response — read from the
@@ -170,10 +185,25 @@ Component names are exactly the response fields they control:
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
-| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none |
-| `modifiers` | The literal C# modifier phrase in declaration order, e.g. `"public sealed"`, `"public override"`, `"public static readonly"`. Declaration-only — same cost tier as `xmlDoc`, no body walk |
-| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type — one hop, not the transitive chain (`get_type_hierarchy` owns that). Absent for anything else |
-| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else |
+| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none. Suppressed when `source` is also requested |
+| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type — one hop, not the transitive chain (`get_type_hierarchy` owns that). Absent for anything else. Suppressed when `source` is also requested |
+| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else. Suppressed when `source` is also requested |
+| `usings` | This symbol's file-level `using` directives (compilation-unit plus any enclosing classic namespace block), in source order. `null` if there are none. **Not** suppressed by `source` — a symbol's own declaration span never includes the file's usings, so it's genuinely new information either way |
+
+`modifiers` is not in this table — it isn't an `include` component at all. It's computed on every call,
+like the skeleton, not opt-in (see below).
+
+The skeleton is `kind`, `origin`, `containingType`, `declarationSites` — unconditional, every call gets
+it. `displayString` and `modifiers` (the literal C# modifier phrase, e.g. `"public sealed"`, `"public
+override"`) sit one tier below: also computed on every call, but suppressed to `null` when `source` is
+also requested, since the declaration's own signature line already states both as text. **There is no
+`accessibility` field** — `modifiers` already carries it, so a second field saying the same thing would
+just be duplication. `source` itself reads exactly as it does in the file, no header line prepended.
+
+`origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a BCL/NuGet
+symbol resolved only because this repo's own code calls, constructs, implements, or extends it —
+`search_index(origin: "external")` is how such a symbol gets found in the first place. An external
+symbol's `declarationSites` is always `[]`.
 
 Examples:
 
@@ -192,9 +222,10 @@ misspelled name is an `invalid_component` error rather than being silently dropp
 ### Location is always there
 
 Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` —
-regardless of `include`. It is part of the unconditional skeleton (`kind`, `displayString`,
-`accessibility`, `containingType`, `declarationSites`), and the spans are computed live rather
-than read from a cache, so they are correct even for a symbol split across partial-class files.
+regardless of `include`. It is part of the unconditional skeleton (`kind`, `origin`, `containingType`,
+`declarationSites` — plus `displayString`/`modifiers`, computed the same way but suppressed when
+`source` is also requested), and the spans are computed live rather than read from a cache, so they are
+correct even for a symbol split across partial-class files.
 
 That means **"where does this live?" never costs a second call or an extra component**, and those
 spans are exactly what a `validate_patch` edit takes. Do not reach for `include: "all"` just to
@@ -474,6 +505,14 @@ lease: hold it, and pass it back later as `knownVersion`.
 
 The layers are meaningful: same `decl` with a different `body` means the API is unchanged
 and only the implementation moved.
+
+**Before a single-symbol `get_symbol` call, check whether this exact symbol was already fetched
+earlier in this conversation.** If so, pass `knownVersion` with the version you already hold —
+don't re-fetch full content just because several other calls happened in between.
+`get_retrieval_metrics`'s `repeat_fetch_without_lease` names exactly this: fetching the same
+symbol several times across a long session without ever leasing is a real, measured cost, not a
+theoretical one. This does not apply to the `symbols` batch form (see above — it always returns
+full content, by design) or to a symbol you are fetching for the first time.
 
 ### After context compaction
 

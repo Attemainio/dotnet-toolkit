@@ -34,4 +34,22 @@ public static class SymbolKey
         IEventSymbol => "Event",
         _ => symbol.Kind.ToString(),
     };
+
+    /// <summary>
+    /// Reduces a symbol to whatever <see cref="IdOf"/> should actually hash: the unreduced declaration
+    /// behind a reduced extension-method call (<c>values.Where(...)</c> binds to a reduced form whose own
+    /// <c>OriginalDefinition</c> stays reduced, never reaching the static method), then the open
+    /// generic definition behind any constructed type or method (<c>List&lt;int&gt;</c>,
+    /// <c>Foo.Bar&lt;string&gt;()</c>). A non-generic, non-reduced symbol passes through unchanged.
+    /// </summary>
+    public static ISymbol Canonicalize(ISymbol symbol) =>
+        (symbol is IMethodSymbol { ReducedFrom: { } reducedFrom } ? reducedFrom : symbol).OriginalDefinition;
+
+    /// <summary>
+    /// The raw documentation-comment id <see cref="IdOf"/> hashes into a symbolId — stored alongside an
+    /// external symbol row so it can be resolved back into a live <c>ISymbol</c> later via
+    /// <c>DocumentationCommentId.GetSymbolsForDeclarationId</c> without reverse-engineering it from the
+    /// hash. Null only for the rare symbol kind Roslyn cannot mint a doc-comment id for at all.
+    /// </summary>
+    public static string? DocumentationIdOf(ISymbol symbol) => symbol.GetDocumentationCommentId();
 }

@@ -80,7 +80,9 @@ Definitions and the full standard live in `concurrency.md`; these are the catalo
   shared method. Flag once per duplicated shape, listing every occurrence.
 - **Dead code** — a type, method, field, or property with zero references anywhere in the solution
   (verified via `get_references`, never guessed from a text search). Includes commented-out code blocks
-  left "just in case."
+  left "just in case." Never applies to a symbol `get_symbol`/`search_index` reports `origin: "external"`
+  — that is a BCL/NuGet symbol this repo's own source calls, implements, or extends, not something this
+  repo declares or could remove.
 - **Orphaned single-caller abstraction** — an interface or abstract base with exactly one implementer and
   one caller, added for a flexibility need that never materialized. Not every single-implementer
   interface is wrong (some exist for testability); flag ones with no evidence of that intent.

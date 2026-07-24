@@ -41,8 +41,18 @@ the same files afterward, but writing to the standard beats fixing to it.
    `<remarks>` not `<summary>`. This isn't optional cleanup — an edit that leaves a touched public
    symbol undocumented is not a finished edit.
 4. **Submit one patch** covering the symbol *and* every call site you already know needs
-   updating.
+   updating, with `applyOnSuccess: true` set from the start (see below — do not dry-run first).
 5. **Read the verdict** (below). Fix and resubmit, or you're done.
+
+**Do not call `validate_patch` twice — once with `applyOnSuccess: false`, then again with
+`applyOnSuccess: true` and the identical `baseVersions`/`edits` — when you already intend to make
+the change.** The validation ladder (fork → compile → escalate) runs byte-for-byte identically
+either way; `applyOnSuccess` only gates whether a *sufficient, successful* result is written to
+disk. A dry run then an apply re-runs the same in-memory compile twice and resends the same payload
+twice, for zero additional information — `applyOnSuccess: true` already reports the full verdict in
+one call, and writes nothing if the result isn't sufficient. Only dry-run (`applyOnSuccess: false`)
+when you are genuinely undecided whether to make the change at all and want the blast radius before
+committing to it — that's the rare case, not the default path.
 
 ## Required fields
 
@@ -54,9 +64,11 @@ the same files afterward, but writing to the standard beats fixing to it.
   `baseVersions` covers the symbols you are changing, **not the rest of the file**. An apply
   writes the whole document text back, so a file that moved on disk since the workspace read
   it is refused outright with `error: "stale_workspace"` — otherwise the patch would revert
-  every other change in that file while reporting success. Recover with `reload_workspace`,
-  then re-read the symbol (its line spans will have moved) and rebuild the patch. Expect this
-  after a `git checkout`, a `git pull`, a rebase, or any `.cs` edit made with `Edit`.
+  every other change in that file while reporting success. Recover with `reload_workspace`
+  (`scope: "all"` also rebuilds the SQLite symbol index, so `search_index`/`get_references`
+  reflect the new state too, not just the live workspace), then re-read the symbol (its line
+  spans will have moved) and rebuild the patch. Expect this after a `git checkout`, a `git pull`,
+  a rebase, or any `.cs` edit made with `Edit`.
 - **`edits`** — an array of `{ file, startLine, endLine, newText }`, not a single edit. Like
   `search_index`'s multi-term query or `get_symbol`'s `symbols` batch, it takes as many hunks
   as the task actually needs in one call, so a known multi-edit task never gets split into one
@@ -82,10 +94,6 @@ the same files afterward, but writing to the standard beats fixing to it.
   terms ("Add cancellation support to training"), not *what* (the diff already says that).
   Reuse the task's intent across its patches. Omitting it is rejected before validation
   even runs.
-
-Send `applyOnSuccess: true` from the start. It is safe: nothing is written unless the
-result is sufficient **and** successful. A separate dry run is only worth it when you want
-the blast radius *before deciding whether to make the change at all*.
 
 ## Reading the verdict — the only definition of "done"
 

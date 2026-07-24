@@ -33,7 +33,7 @@ public sealed class SymbolIndexBuilder
 
     public void Start() => _ = Task.Run(RebuildAsync);
 
-    public async Task RebuildAsync()
+public async Task RebuildAsync()
     {
         if (!_symbols.Available)
             return;
@@ -73,7 +73,7 @@ public sealed class SymbolIndexBuilder
 
                     foreach (var node in root.DescendantNodes().Where(IsDeclaration))
                         IndexDeclaration(node, model, project.Name, symbols, edges, facts);
-                    IndexTopLevelStatements(root, model, edges);
+                    IndexTopLevelStatements(root, model, edges, symbols);
                 }
             }
 
@@ -146,7 +146,7 @@ private void IndexDeclaration(
         {
             var owner = declared[0];
             var ownerId = SymbolKey.IdOf(owner);
-            CollectCallEdges(node, owner, model, ownerId, edges);
+            CollectCallEdges(node, owner, model, ownerId, edges, symbols);
 
             if (body is not null && MechanicalFactsExtractor.Extract(node, owner, model) is { } extracted)
                 facts.Add(new SymbolStore.FactsRow(ownerId, JsonSerializer.Serialize(extracted), body));
@@ -154,12 +154,20 @@ private void IndexDeclaration(
 
         // search_index's implements filter (interfaces only, direct — matches get_symbol's interfaces
         // component). Reuses the generic reference_edges table with a new edge_kind rather than a
-        // dedicated table, the same way call edges already do.
+        // dedicated table, the same way call edges already do. Canonicalized the same way a call target
+        // is, so a constructed interface (IEnumerable<int>, not the open IEnumerable<T>) resolves to the
+        // same symbolId as any other reference to that interface, and an external interface (IDisposable)
+        // gets a minimal row instead of leaving this edge pointing at nothing in the symbols table.
         if (node is BaseTypeDeclarationSyntax && declared[0] is INamedTypeSymbol namedType)
         {
             var ownerId = SymbolKey.IdOf(namedType);
             foreach (var iface in namedType.Interfaces)
-                edges.Add(new SymbolStore.EdgeRow(ownerId, SymbolKey.IdOf(iface), "implements", null, null));
+            {
+                var canonical = SymbolKey.Canonicalize(iface);
+                var ifaceId = SymbolKey.IdOf(canonical);
+                edges.Add(new SymbolStore.EdgeRow(ownerId, ifaceId, "implements", null, null));
+                RecordExternalIfNeeded(canonical, ifaceId, symbols);
+            }
         }
     }
 
@@ -190,14 +198,9 @@ private void IndexDeclaration(
     }
 
 
-    /// <summary>
-    /// Top-level statements are <see cref="GlobalStatementSyntax"/>, not member declarations, so the
-    /// ordinary declaration walk never visits them. Without this, every call made from a Program.cs
-    /// entry point is invisible to the edge cache and <c>referenceCounts.callers</c> under-reports —
-    /// which matters because a false zero tells the agent to skip an expansion it needs (P1.4).
-    /// </summary>
-    private static void IndexTopLevelStatements(
-        SyntaxNode root, SemanticModel model, HashSet<SymbolStore.EdgeRow> edges)
+private static void IndexTopLevelStatements(
+        SyntaxNode root, SemanticModel model, HashSet<SymbolStore.EdgeRow> edges,
+        Dictionary<string, SymbolStore.SymbolRow> symbols)
     {
         if (root is not CompilationUnitSyntax unit)
             return;
@@ -211,13 +214,13 @@ private void IndexDeclaration(
 
         var entryId = SymbolKey.IdOf(entry);
         foreach (var statement in statements)
-            CollectCallEdges(statement, entry, model, entryId, edges);
+            CollectCallEdges(statement, entry, model, entryId, edges, symbols);
     }
 
-    /// <summary>Records call edges from a member body via the semantic model (spec §18 call edges).</summary>
+/// <summary>Records call edges from a member body via the semantic model (spec §18 call edges).</summary>
     private static void CollectCallEdges(
         SyntaxNode member, ISymbol from, SemanticModel model, string fromId,
-        HashSet<SymbolStore.EdgeRow> edges)
+        HashSet<SymbolStore.EdgeRow> edges, Dictionary<string, SymbolStore.SymbolRow> symbols)
     {
         foreach (var expr in member.DescendantNodes().OfType<ExpressionSyntax>())
         {
@@ -228,16 +231,45 @@ private void IndexDeclaration(
             var target = model.GetSymbolInfo(expr).Symbol;
             if (target is not (IMethodSymbol or IPropertySymbol or IEventSymbol or IFieldSymbol))
                 continue;
-            if (!target.Locations.Any(l => l.IsInSource))
+            // A genuinely broken binding (unresolved API, typo) surfaces as an error-typed symbol rather
+            // than a null Symbol in some shapes — reject those explicitly now that IsInSource no longer
+            // does it as a side effect of filtering out everything without a source location.
+            if (target is IErrorTypeSymbol || target.ContainingType?.TypeKind == TypeKind.Error)
                 continue;
             if (SymbolEqualityComparer.Default.Equals(target.ContainingSymbol, from))
                 continue;
 
+            var canonical = SymbolKey.Canonicalize(target);
             var line = expr.SyntaxTree.GetLineSpan(expr.Span).StartLinePosition.Line + 1;
             var file = expr.SyntaxTree.FilePath;
-            var toId = SymbolKey.IdOf(target.OriginalDefinition);
+            var toId = SymbolKey.IdOf(canonical);
             edges.Add(new SymbolStore.EdgeRow(fromId, toId, "call", file, line));
+            RecordExternalIfNeeded(canonical, toId, symbols);
         }
+    }
+
+    /// <summary>
+    /// Mints a minimal row for a symbol discovered only as an edge target — never as a declaration this
+    /// pass walked — because it lives outside this repo's own solution (BCL, a NuGet package, another
+    /// assembly). No decl/body hash and no owning project, matching Store/Schema.cs's SymbolOriginColumn
+    /// migration: origin marks a referenced identity, not something this repo declares or re-derives from
+    /// source, so there is nothing here for a later pass to invalidate against.
+    /// </summary>
+    private static void RecordExternalIfNeeded(
+        ISymbol target, string id, Dictionary<string, SymbolStore.SymbolRow> symbols)
+    {
+        if (target.Locations.Any(l => l.IsInSource) || symbols.ContainsKey(id))
+            return;
+        symbols[id] = new SymbolStore.SymbolRow(
+            id,
+            target.ToDisplayString(),
+            SymbolKey.KindOf(target),
+            Project: "",
+            DeclHash: "",
+            BodyHash: null,
+            DisplayString: target.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Origin: "external",
+            DocumentationId: SymbolKey.DocumentationIdOf(target));
     }
 
 }

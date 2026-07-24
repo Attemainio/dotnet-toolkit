@@ -99,25 +99,27 @@ public static class ServerTools
         return sb.ToString().TrimEnd('\n');
     }
 
-    [McpServerTool(Name = "reload_workspace")]
-    [Description("Force a re-scan after large external changes (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution, 'all' does both.")]
-    public static async Task<string> ReloadWorkspace(
-        ProjectIndex index,
-        WorkspaceHost workspace,
-        [Description("index | workspace | all")] string scope = "all")
-    {
-        var s = scope.Trim().ToLowerInvariant();
-        var actions = new List<string>();
-        if (s is "index" or "all")
+        [McpServerTool(Name = "reload_workspace")]
+        [Description("Force a re-scan after large external changes (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
+        public static async Task<string> ReloadWorkspace(
+            ProjectIndex index,
+            WorkspaceHost workspace,
+            SymbolIndexBuilder indexBuilder,
+            [Description("index | workspace | all")] string scope = "all")
         {
-            await index.ForceRescanAsync();
-            actions.Add($"index re-scanned ({index.FileCount} files, {index.TypeCount} types)");
+            var s = scope.Trim().ToLowerInvariant();
+            var actions = new List<string>();
+            if (s is "index" or "all")
+            {
+                await index.ForceRescanAsync();
+                actions.Add($"index re-scanned ({index.FileCount} files, {index.TypeCount} types)");
+            }
+            if (s is "workspace" or "all")
+            {
+                workspace.TriggerReload();
+                indexBuilder.Start();
+                actions.Add("workspace reload started in background, symbol index rebuild queued (check workspace_status)");
+            }
+            return actions.Count > 0 ? string.Join("; ", actions) : $"unknown scope: {scope} (use index|workspace|all)";
         }
-        if (s is "workspace" or "all")
-        {
-            workspace.TriggerReload();
-            actions.Add("workspace reload started in background (check workspace_status)");
-        }
-        return actions.Count > 0 ? string.Join("; ", actions) : $"unknown scope: {scope} (use index|workspace|all)";
-    }
 }

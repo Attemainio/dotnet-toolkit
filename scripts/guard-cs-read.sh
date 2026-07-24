@@ -8,16 +8,11 @@
 # whether or not the task needs them, at a cost get_symbol (one symbol, or a type's member list) and
 # search_index (ranked hits with file/line, no truncation) do not pay.
 #
-# Solution membership is decided HERE, in the hook, from the filesystem alone - never left to Claude
-# to judge at read time, which is exactly the failure mode a hook exists to remove. A hook is a
-# separate, short-lived process with no access to the MCP stdio pipe, so it cannot ask WorkspaceHost
-# "is this file part of the loaded solution" - that question only has an answer inside the running
-# server. What it CAN check statically: whether a .csproj governs the file's directory at all, and
-# whether that project's own <Compile Remove> globs exclude it anyway (as this repo's own
-# DotnetToolkit.McpServer.Tests.csproj does for fixtures/**). Neither check is a full MSBuild
-# evaluation - conditions, multi-targeting, and unusual glob forms are not handled - so this is a
-# heuristic that is right for the common cases, not a guarantee equivalent to what MSBuild itself
-# would decide.
+# The membership check itself (nearest .csproj, nested-solution exception, <Compile Remove> exclusion)
+# lives in lib-cs-membership.sh, shared with guard-cs-bash-read.sh — the Bash-tool counterpart that
+# closes the gap this script alone leaves open: `cat`/`sed`/`grep`/etc. via Bash read the same bytes
+# but are a different tool name, so a matcher scoped to "Read" alone never sees them. Two scripts
+# asking the same membership question from two tool surfaces must never drift on the answer.
 #
 # A gap this cannot close: a file that IS governed by a project while the server's own workspace is
 # still index_only or degraded. That is runtime state of the running process, invisible to a static,
@@ -29,6 +24,8 @@
 # exits 0 (allow) silently - no stderr, no output, nothing surfaced to the agent or user.
 
 set -uo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/lib-cs-membership.sh"
 
 payload=$(cat)
 
@@ -83,51 +80,10 @@ root="$(cd "$root" 2>/dev/null && pwd -P)" || exit 0
 abs_dir="$(cd "$(dirname "$file")" 2>/dev/null && pwd -P)" || exit 0
 abs_file="$abs_dir/$(basename "$file")"
 
-# Walk upward from the file's own directory, remembering the NEAREST .csproj seen, but also
-# watching for a *.sln/*.slnx at some level strictly between the file and the repo root. Finding one
-# there means the file actually belongs to its own independent, nested solution (e.g. a test
-# fixture's throwaway sample project) rather than the one this repo's own server loads - the nearest
-# .csproj in that case is the wrong project entirely, so allow immediately rather than trusting it.
-# Reaching the repo root itself is the normal case (this repo's own top-level .slnx lives there) and
-# is not treated as "nested".
-dir="$abs_dir"
-csproj=""
-while :; do
-    if [ -z "$csproj" ]; then
-        match=$(find "$dir" -maxdepth 1 -name '*.csproj' 2>/dev/null | head -n1)
-        [ -n "$match" ] && csproj="$match"
-    fi
-    if [ "$dir" != "$root" ]; then
-        sln=$(find "$dir" -maxdepth 1 \( -name '*.slnx' -o -name '*.sln' \) 2>/dev/null | head -n1)
-        [ -n "$sln" ] && exit 0   # nested/independent solution root - not this server's own solution
-    fi
-    [ "$dir" = "$root" ] && break
-    parent="$(dirname "$dir")"
-    [ "$parent" = "$dir" ] && break   # filesystem root, defensive
-    dir="$parent"
-done
+is_governed_cs_file "$abs_file" "$root" || exit 0
 
-[ -n "$csproj" ] || exit 0
-
-# A project governs this file's folder - but check whether its own Compile Remove excludes the file
-# anyway, the same way fixtures/** is excluded from this repo's own test project.
-proj_dir="$(dirname "$csproj")"
-rel="${abs_file#"$proj_dir"/}"
-
-excluded=0
-while IFS= read -r glob; do
-    [ -n "$glob" ] || continue
-    case "$rel" in
-        $glob) excluded=1; break ;;
-    esac
-done < <(grep -o 'Compile[[:space:]]\+Remove="[^"]*"' "$csproj" 2>/dev/null \
-    | sed -E 's/.*Remove="([^"]*)"/\1/' | tr ';' '\n')
-
-[ "$excluded" = "1" ] && exit 0
-
-rel_csproj="${csproj#"$root"/}"
 cat >&2 <<EOF
-Blocked Read on ${file}: it is compiled by ${rel_csproj}, so search_index/get_symbol answer this more
+Blocked Read on ${file}: it is compiled by ${REL_CSPROJ}, so search_index/get_symbol answer this more
 cheaply and completely than a raw file read - no truncation risk, and no irrelevant methods pulled in
 alongside the one you want.
 

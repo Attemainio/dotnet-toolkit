@@ -22,6 +22,7 @@ public static readonly IReadOnlyList<Migration> Migrations =
         new(9, "drop_unread_derived_columns", DropUnreadDerivedColumns),
         new(10, "rename_chain_on_feature_log_symbols", RenameChainOnFeatureLogSymbols),
         new(11, "symbol_modifiers_column", SymbolModifiersColumn),
+        new(12, "symbol_origin_column", SymbolOriginColumn),
     ];
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
@@ -35,6 +36,19 @@ public static readonly IReadOnlyList<Migration> Migrations =
     // tags (extension, indexer, initonly, disposable, asyncdisposable) — populated by
     // ModifierText.Tags at index-build time; existing rows read back NULL until the next full rebuild
     // recomputes them, same as any other newly-added derived column.
+    // External-reference indexing: a symbol discovered only as an edge target (a BCL/NuGet API this
+    // repo calls, implements, or extends), never as a declaration this repo's own solution walks.
+    // origin distinguishes the two; documentation_id is the raw doc-comment id symbolId is hashed from,
+    // stored so an external symbol can be re-resolved into a live ISymbol via
+    // DocumentationCommentId.GetSymbolsForDeclarationId without reverse-engineering it from the hash.
+    // decl_hash/project have no ALTER-TABLE-friendly way to become nullable in SQLite without a full
+    // table rebuild, so an external row uses "" (empty string, not NULL) as its sentinel for both —
+    // "origin='source'" is what actually gates whether decl_hash is meaningful, not its nullability.
+    private const string SymbolOriginColumn = """
+        ALTER TABLE symbols ADD COLUMN origin TEXT NOT NULL DEFAULT 'source';
+        ALTER TABLE symbols ADD COLUMN documentation_id TEXT;
+        """;
+
     private const string SymbolModifiersColumn = """
         ALTER TABLE symbols ADD COLUMN modifiers TEXT;
         """;
