@@ -862,14 +862,14 @@ be rebuilt, not amended — nor when the patch applied, since there is then noth
 Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
 
 ```
-validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
-  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 15, endLine: 15,
+validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2bac28c29969"},
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 16, endLine: 16,
            newText: "    public static string Ping() => ThisTypeDoesNotExist.Value;"}])
 ```
 
 ```json
 {"detectedChanges":[
-   {"symbolId":"sym_7a9d...","changeKinds":["body"],
+   {"symbolId":"sym_7a9d22ff3b68f4ee","changeKinds":["body"],
     "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","apiImpact":"non-breaking",
     "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs",
                          "startLine":14,"endLine":16}]}],
@@ -880,15 +880,19 @@ validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
  "diagnostics":{"rootCauses":[
    {"diagnostic":"CS0103",
     "summary":"CS0103: 1 occurrence(s) — The name 'ThisTypeDoesNotExist' does not exist in the current context",
-    "affectedSymbolId":"sym_7a9d...",
+    "affectedSymbolId":"sym_7a9d22ff3b68f4ee",
     "fixHint":"A name is not in scope here; check the identifier or add the missing member.",
-    "locations":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","line":15,"column":42,
+    "locations":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","line":16,"column":36,
                   "excerpt":"public static string Ping() => ThisTypeDoesNotExist.Value;"}],
-    "suggestedInspection":[{"symbolId":"sym_7a9d...","displayString":"string ServerTools.Ping()"}]}],
+    "suggestedInspection":[{"symbolId":"sym_7a9d22ff3b68f4ee","displayString":"string ServerTools.Ping()"}],
+    "suppressedDiagnostics":0}],
    "totalRaw":1,"totalSuppressed":0},
- "draft":{"draftId":"draft_01KYH...","expiresAt":"2026-07-27T14:31:07+00:00",
-   "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":142}]}}
+ "draft":{"draftId":"draft_01KYHQZHXXKMF2XQE0AHS2KWNJ","expiresAt":"2026-07-27T12:29:48.2540023+00:00",
+   "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":126}]}}
 ```
+
+Note `declarationSites` reports 14–16 while the edit targeted only line 16: the span covers the whole
+declaration including its attributes, exactly as `get_symbol` reports it.
 
 `newVersion` is `null` here because nothing was applied — it only describes reality once the patch is
 actually on disk.
@@ -904,11 +908,27 @@ The fix then costs one line, not the whole patch — `locations[0].line` says wh
 against what:
 
 ```
-validate_patch(draftId: "draft_01KYH...",
-  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 15, endLine: 15,
-           newText: "    public static string Ping() => \"pong\";"}],
-  applyOnSuccess: true, intent: "restore Ping's literal response")
+validate_patch(draftId: "draft_01KYHQZHXXKMF2XQE0AHS2KWNJ",
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 16, endLine: 16,
+           newText: "    public static string Ping() => \"pong\";"}])
 ```
+
+```json
+{"detectedChanges":[
+   {"symbolId":"sym_7a9d22ff3b68f4ee","changeKinds":["body"],
+    "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","apiImpact":"non-breaking",
+    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs",
+                         "startLine":14,"endLine":16}]}],
+ "ladder":{"completedLevel":"project_compile","requiredLevel":"project_compile","isSufficient":true},
+ "succeeded":true,"applied":false,
+ "draft":{"draftId":"draft_01KYHR09F8TVXC81ZRE493X5VX","expiresAt":"2026-07-27T12:30:12.3601156+00:00",
+   "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":126}]}}
+```
+
+One line in, green out — the other 125 lines of the file and the rest of the patch were never
+retransmitted. `applied` is `false` only because this run passed `applyOnSuccess: false`; add
+`applyOnSuccess: true` and an `intent` to commit it. A fresh `draftId` comes back because the result
+still was not applied.
 
 See `skills/dotnet-change/SKILL.md` for the full write loop.
 
