@@ -14,6 +14,13 @@ codebase for the first time, and reports findings without editing anything. Rout
 instead of reviewing inline yourself — it reads the actual standards files that you only have a summary
 of.
 
+**It loads standards selectively.** Six files are read every time (`naming`, `styling`,
+`best-practices`, `xml-documentation`, `antipatterns`, `security`); the other seven are read only when
+the retrieved code matches their "When" condition in `csharp-standards.md`. This keeps each instance's
+baseline down — the cost is paid once per parallel instance, so it dominates a multi-instance run — and
+every report ends with a `Standards:` line naming what was loaded and what was not. Treat an
+untriggered aspect as **not assessed**, not clean.
+
 **Parallelism is by scope, not by aspect.** For anything larger than a handful of files, partition the
 target into disjoint slices and launch one instance per slice in a single message (parallel tool
 calls). Every instance covers every aspect of its slice, so nothing is reviewed twice and no aspect is
@@ -32,11 +39,14 @@ silently skipped.
 State each instance's scope **precisely** — an explicit folder path or file list, never "the rest" or
 "everything else". Scopes must be disjoint: the same file in two scopes produces duplicate,
 possibly-conflicting findings. Each instance stays strictly inside its slice (per
-`docs/agent-reference.md`'s scope-discipline section) and reports anything it notices outside as a
+`agents/dotnet-code-review.md`'s scope-discipline section) and reports anything it notices outside as a
 one-line `Outside scope:` note — check those notes against your partition to see whether another
 instance already covered them.
 
 ## What to tell each instance
+
+Anything you state here is context the instance does not have to re-derive — and because each instance
+starts cold, re-derivation is the expensive part of a parallel run.
 
 - **Scope** (required): the exact folder(s)/file list this instance owns.
 - **`mode`**: `diff` (changed files vs. a stated baseline — say what the baseline is: `main`, last
@@ -67,19 +77,28 @@ letting a review imply it was covered.
 ## Merging results
 
 Every instance returns findings in the same format (aspect tag + 🔴/🟡/🔵, grouped by file, per-aspect
-totals — defined once in `docs/agent-reference.md`). When more than one instance ran:
+totals, then a `Standards:` line — defined once in `agents/dotnet-code-review.md`). When more than one
+instance ran:
 
 - Concatenate by scope — scopes are disjoint, so there is no per-file dedup to do; a reader wants
   everything about `OrderService.cs` together, and exactly one instance produced it.
 - Collect the `Outside scope:` one-liners, drop those already covered by another instance's findings,
   and surface the rest (they point at code no slice owned).
 - Sum the per-aspect totals across instances so the merged report states clean aspects explicitly.
+- **Merge the `Standards:` lines, and don't flatten them into "clean".** Different instances load
+  different triggered files, so an aspect can be assessed in one slice and untriggered in another. In
+  the merged report, an aspect is clean only for the scopes that actually loaded its standard; name the
+  scopes where it went unassessed. If an aspect was untriggered *everywhere* and the user asked for a
+  full review, say so plainly — that is the one failure mode selective loading introduces, and it is
+  only visible at merge time.
 - Preserve each finding's severity, aspect tag, and file:line exactly as reported; don't re-summarize
   away specifics.
 
 ## What this agent will never do
 
-`dotnet-code-review` has no `Edit`/`Write` or `validate_patch` access — it cannot modify code even if
-asked to, and it cannot record log entries. If the user wants findings actually applied, that's your job
-after reviewing what it reported: apply them through `validate_patch` with an `intent`, which both
+`dotnet-code-review` has no `validate_patch` access — it cannot record log entries, and it is
+instructed never to modify code. Note that this is **instruction, not sandboxing**: `memory: project`
+makes the harness grant it `Write`/`Edit` for its own memory namespace, so its resolved tool list does
+include them (see `docs/agent-reference.md`). If the user wants findings actually applied, that's your
+job after reviewing what it reported: apply them through `validate_patch` with an `intent`, which both
 validates the change and records why it was made.

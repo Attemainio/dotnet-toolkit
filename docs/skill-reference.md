@@ -34,7 +34,10 @@ Teaches the main conversation to delegate to the `dotnet-code-review` subagent: 
 **all quality aspects** of one stated scope, and large targets are partitioned into disjoint scopes
 reviewed by parallel instances. Covers how to partition, what context each instance needs (scope,
 `mode`, baseline, the exceptional `focus:` narrowing, hot-path hints), and how to merge per-scope
-results. See `docs/agent-reference.md` for the agent's own process.
+results — including the `Standards:` line each instance reports, since the agent loads a fixed core of
+standards plus only those the scoped code triggers, and an untriggered aspect is not-assessed rather
+than clean. The agent's own process lives in `agents/dotnet-code-review.md` (self-contained);
+`docs/agent-reference.md` documents its design for maintainers.
 
 ## `dotnet-toolkit-init` — wiring a consuming repo
 

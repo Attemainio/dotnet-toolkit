@@ -50,8 +50,13 @@ security — over one precisely stated scope; large targets are partitioned into
 by parallel instances of the same agent. It starts with no prior project context, has the read-side MCP
 toolset, reads the bundled coding standards (`.claude/rules/*.md`, overridable per-repo under
 `.claude/dotnet-toolkit/`), and reports findings without editing code. The same standards files are what
-the main agent reads at write time, so writer and reviewer share one source of truth. See `CLAUDE.md`'s
-Code review section and `docs/agent-reference.md` for details.
+the main agent reads at write time, so writer and reviewer share one source of truth.
+
+Because a parallel run re-pays each instance's startup cost, the agent reads a fixed core of six
+standards every time and loads the other seven only when the code it retrieved matches their trigger
+condition in `.claude/rules/csharp-standards.md`. Every report ends with a `Standards:` line naming what
+was loaded and what was not, so an untriggered aspect reads as *not assessed* rather than clean. See
+`CLAUDE.md`'s Code review section and `docs/agent-reference.md` for details.
 
 ## Making Claude actually prefer these tools
 

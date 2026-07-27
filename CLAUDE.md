@@ -149,8 +149,8 @@ The surface that has to move with the code:
 | `skills/dotnet-code-query/SKILL.md` | the read protocol — every read tool, when to reach for it, escalation, leases, worked examples |
 | `skills/dotnet-change/SKILL.md` | the write protocol — `validate_patch` arguments and the sufficiency rules |
 | `skills/dotnet-review/SKILL.md` | which agent to delegate to, and the tools they rely on |
-| `agents/dotnet-code-review.md` | the agent's `tools:` frontmatter list and its standards-file list — a tool absent from the former is unavailable to it; a standards file absent from the latter is an aspect it never checks |
-| `docs/agent-reference.md` | how the review agent is told to use the read tools (setup, modes, boundaries) |
+| `agents/dotnet-code-review.md` | **the review agent's complete operating instructions** — `tools:` frontmatter, always-loaded standards core, retrieval protocol, evidence bars, modes, output format, boundaries. A tool absent from the frontmatter is unavailable to it; an aspect absent from the evidence bars is one it never checks |
+| `docs/agent-reference.md` | **human-facing only — the agent does not read it.** The review agent's design rationale and token budget; must not drift from the agent file, which is the authority |
 | `docs/tool-reference.md` | the complete per-tool catalog — arguments, a real example call/response, what it replaces — for every shipped tool; what `dotnet-toolkit-init` points a consuming repo at |
 | `docs/hook-reference.md` | the four hooks and their scripts — matchers, allow/deny behavior, limits |
 | `docs/skill-reference.md` | the catalog of shipped skills — one entry per skill, none stale |
@@ -178,16 +178,29 @@ itself. The standards are shared with the main agent (which reads them at write 
 `validate_patch` access, and reviews all quality aspects of one stated scope per invocation —
 parallelism is by scope partition (one instance per disjoint slice), never by aspect.
 
+**The agent file is self-contained and the per-instance token baseline is a design constraint.** Every
+parallel instance re-pays the same fixed startup cost, so it is multiplied by the partition count: seven
+instances once started at ~43k each before reading any reviewed code. Three things hold it down and
+should not be undone casually — selective standards loading (six core files always, the other seven only
+when `csharp-standards.md`'s "When" column matches the retrieved code), no `skills:` grant (the 41.5 KB
+`dotnet-code-query` protocol is written for the main agent's write path, not a reviewer), and batched
+`get_symbol` retrieval over the whole scope instead of per-symbol round-trips. Selective loading trades
+tokens for a coverage risk, paid for by the mandatory `Standards:` line on every report — an untriggered
+aspect is **not-assessed**, never reported clean. `docs/agent-reference.md` records the rationale for
+maintainers; the agent no longer reads it.
+
 **Its read-only property is enforced by instruction, not by tool grant.** The `tools:` frontmatter
 omits `Edit`/`Write`, but `memory: project` makes the harness grant them anyway so the agent can
 maintain `.claude/agent-memory/dotnet-toolkit-dotnet-code-review/` — the resolved tool list does
-include `Write` and `Edit`. What keeps it from touching source or standards is
-`docs/agent-reference.md`'s memory section, not a capability boundary. Don't reason about this agent
-as if it were sandboxed.
+include `Write` and `Edit`. What keeps it from touching source or standards is the agent file's own
+Memory and Boundaries sections, not a capability boundary. Don't reason about this agent as if it were
+sandboxed.
 
-**Process, review modes, aspect tags/evidence bars, output format, and boundaries live in
-`docs/agent-reference.md` and the agent's own file — not restated here.** Adding a new aspect is a new
-`.claude/rules/*.md` file plus one line in the agent's standards list, never a new agent file.
+**Process, review modes, aspect tags/evidence bars, output format, and boundaries all live in
+`agents/dotnet-code-review.md` — not restated here.** Adding a new aspect is a new `.claude/rules/*.md`
+file, a row in `csharp-standards.md`'s index stating its trigger as an observable property of the code,
+and one entry in the agent's evidence bars — never a new agent file. Decide explicitly whether it joins
+the always-loaded core or the triggered set.
 
 A consuming repo can override any standards file by placing its own copy at
 `.claude/dotnet-toolkit/<name>.md` (`dotnet-toolkit-init` can instead copy the whole set into the repo's

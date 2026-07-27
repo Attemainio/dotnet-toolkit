@@ -61,12 +61,12 @@ missing (a tool that exists but appears nowhere in it):
 | `docs/tool-reference.md` | complete per-tool catalog: arguments, one real example call/response, what it replaces |
 | `CLAUDE.md`'s "Working in this repo" table (`Instead of / Use`) | one row per read/write tool a session would otherwise reach for Grep/Read/`find` instead of |
 | `CLAUDE.md`'s Architecture section, `Tools/` bullet | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new clause |
-| `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/` (nothing missing, nothing stale), and its `validate_patch` line must match the current write path |
+| `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/` (nothing missing, nothing stale), and its `validate_patch` line must match the current write path. That table's "When" column doubles as the **reviewer's trigger table**, so each row's condition must be an *observable property of the code* (awaits/locks, hot path, public surface change), not a vague topic a reviewer can't match against retrieved source; and the always-loaded core it names must match `agents/dotnet-code-review.md`'s list exactly |
 | `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
 | every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
 | `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently |
-| `agents/dotnet-code-review.md` | `tools:` frontmatter list matches Step 0 exactly for whatever subset the agent should have — every read-side MCP tool the agent needs for efficient orientation (not a stale subset missing a tool added since); its standards-file list and per-aspect fold-ins (e.g. which files feed `[correctness]`) still resolve to real files in `.claude/rules/` |
-| `docs/agent-reference.md` | every tool named in it (setup steps, boundaries) still exists and is still described accurately (e.g. what `workspace_status` signals, what a zero-hit from a semantic tool does and doesn't prove); its aspect list matches the agent file's |
+| `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. Check: `tools:` frontmatter matches Step 0 for the read-side subset it should have (not a stale subset missing a tool added since, and still excluding `get_project_graph`/`detect_circular_dependencies`, which are deliberately withheld as out of a scope slice's reach); every tool it names in Process, evidence bars, and Boundaries is granted in that frontmatter *and* still behaves as described; its always-loaded standards core and per-aspect fold-ins (e.g. which files feed `[correctness]`) still resolve to real files in `.claude/rules/`; it still requires the `Standards:` line in its output format; and it does **not** re-acquire a `skills:` grant or a directive to read `docs/agent-reference.md` — both were removed to hold the per-instance token baseline down |
+| `docs/agent-reference.md` | **human-facing only; the agent must not be told to read it.** Check it does not contradict the agent file (which is authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists and is described accurately. A statement here that duplicates the agent file is drift waiting to happen — prefer a pointer |
 | `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
 | `docs/skill-reference.md` | one entry per skill under `skills/`, none stale, none missing |
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
@@ -87,17 +87,17 @@ registered in `hooks/hooks.json`). Specifically:
      packaging" section is a finding (see Step 6).
    - `hooks/hooks.json`'s matchers key on tool name only (`Edit|Write|NotebookEdit`, `Read`), not on which
      agent issues the call — they fire identically whether the tool call comes from the main agent or a
-     subagent invocation of `dotnet-code-review`. That agent is granted `Read` (for the cases
-     `docs/agent-reference.md`'s Setup step 3 allows — judging specific lines `get_symbol` didn't already
-     give it), so confirm two things stay true together: (a) `agents/dotnet-code-review.md`'s `tools:` list
-     does not grant it `Edit`/`Write`/`NotebookEdit` at all — the guard for those exists but the agent
-     should never need it, since `docs/agent-reference.md`'s Boundaries section states it never modifies
-     code; and (b) `docs/agent-reference.md`'s Setup step 3 still tells it to reach for `search_index`/
-     `get_symbol` first and only `Read` a file when a symbol lookup didn't give it the lines — i.e. its
-     `Read` grant is a narrow, guarded fallback that `guard-cs-read.sh` still enforces on every call, not an
-     unguarded escape hatch from the MCP tools. If either drifts — the agent gains `Edit`/`Write`, or
-     `agent-reference.md` stops steering it toward symbol retrieval first — that's a finding here, not just
-     in Step 4's table.
+     subagent invocation of `dotnet-code-review`. That agent is granted `Read` for the narrow case its
+     Process step 2 allows — judging specific lines `get_symbol` didn't already give it — so confirm two
+     things stay true together: (a) `agents/dotnet-code-review.md`'s `tools:` list does not grant it
+     `Edit`/`Write`/`NotebookEdit` at all (the guard for those exists but the agent should never need it,
+     since its Boundaries section states it never modifies code — note `memory: project` makes the harness
+     grant them anyway, which is why the instruction has to carry the weight); and (b) its Process step 2
+     still tells it to reach for `search_index`/`get_symbol` first and only `Read` a file when a symbol
+     lookup didn't give it the lines — i.e. its `Read` grant is a narrow, guarded fallback that
+     `guard-cs-read.sh` still enforces on every call, not an unguarded escape hatch from the MCP tools. If
+     either drifts — the agent gains `Edit`/`Write`, or the agent file stops steering it toward symbol
+     retrieval first — that's a finding here, not just in Step 4's table.
 
 **6. New or modified files nothing else references.** This is the drift-detection step, not just a
 per-file check: `git status`/`git diff --stat` (or `git log -p` for a stated commit range) against the

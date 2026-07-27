@@ -2,140 +2,81 @@
 
 This plugin ships one review subagent, `dotnet-code-review` (`agents/dotnet-code-review.md`) — a
 read-only **validation layer** that checks code against the standards in `.claude/rules/`, not a source
-of standards itself. Each invocation reviews **all quality aspects at once** — correctness, naming,
-styling, best practices, performance, concurrency, security, testing, XML documentation, and
-cleanup/duplication — over **one precisely stated scope**. Parallelism comes from scope partitioning,
-not aspect splitting: a large target is divided into disjoint slices (per folder, per project, per
-changed-file cluster) and one instance of the same agent is launched per slice, all in a single
-message. Each instance covers everything about its slice; together they cover everything about the
-target, with no file reviewed twice.
+of standards itself.
+
+**This document is human-facing. The agent does not read it.** `agents/dotnet-code-review.md` is
+self-contained: process, standards-loading rule, evidence bars, review modes, scope discipline, output
+format, boundaries, and memory discipline all live there, and that file is the authority. This one
+describes the design for maintainers — if the two disagree, the agent file is right and this one is
+stale.
+
+It used to be a mandatory second read for the agent (~2.7k tokens on top of its own file, which the
+harness already puts in the system prompt), duplicating the agent file on scope discipline and the
+standards list. Folding it in removed a read and a round-trip per instance.
+
+## Design
+
+Each invocation reviews **all quality aspects at once** — correctness, naming, styling, best practices,
+performance, concurrency, security, testing, XML documentation, and cleanup/duplication — over **one
+precisely stated scope**. Parallelism comes from scope partitioning, not aspect splitting: a large
+target is divided into disjoint slices (per folder, per project, per changed-file cluster) and one
+instance of the same agent is launched per slice, all in a single message. Each instance covers
+everything about its slice; together they cover everything about the target, with no file reviewed
+twice.
 
 The standards are shared: the main agent reads the same `.claude/rules/` files at write time (per
-`csharp-standards.md`'s index), so writer and reviewer work from one source of truth. The
-`dotnet-review` skill teaches the main conversation how to partition scope, what to tell each
+`csharp-standards.md`'s index), so writer and reviewer work from one source of truth. A consuming repo
+overrides any file by placing its own copy at `.claude/dotnet-toolkit/<name>.md`; the agent checks for
+that override before falling back to the bundled default, and a repo-local file fully replaces the
+bundled one rather than blending with it.
+
+The `dotnet-review` skill teaches the main conversation how to partition scope, what to tell each
 instance, and how to merge their output.
 
-## Setup — before reviewing anything
+## Token budget — why the agent is shaped the way it is
 
-1. **Read the standards** — all files listed in `csharp-standards.md`'s index (or only the `focus:` aspects' files when the invoking
-   prompt explicitly narrows), each checked for a repo-local override first:
-   `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
-   `${CLAUDE_PLUGIN_ROOT}/.claude/rules/<name>.md`. A repo-local file fully replaces the bundled
-   default for that file — don't blend the two.
-2. **Call `workspace_status` before trusting a semantic result, not just when a tool errors.** It reports
-   whether the MSBuild workspace is fully loaded, still `index_only`, or degraded. `get_references`,
-   `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`, and
-   `detect_circular_dependencies` all depend on the loaded workspace for full accuracy — a zero-hit or
-   empty result from any of them while the workspace is not yet `loaded` is workspace state, not evidence
-   of absence, and must be reported as such rather than asserted as a finding (see the zero-callers note
-   under Boundaries below).
-3. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
-   members with `get_symbol` (`include: "members"`) and a specific symbol's source with
-   `include: "all"`. When you need only part of a long declaration — a region a diagnostic or an earlier
-   fetch already pointed you at — narrow it with `include: "source:code@120-160"` rather than re-reading
-   the whole member; the response's `sourceLines` states what you got against the whole span. On a long,
-   unfamiliar member where the right region isn't known yet, `include: "bodyOutline"` maps its
-   control-flow landmarks (`switch`/`case`, `if`, loops, `catch`) with line spans first, cheaply, so the
-   follow-up slice targets the right lines instead of guessing. Only `Read`
-   a file in full when you're about to judge specific lines and no `get_symbol` fetch, sliced or whole,
-   gave you them. Trace callers, implementations and overrides with `get_references`
-   rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
-   Three more tools answer questions symbol lookup cannot, and each replaces a guess with a fact:
-   `get_scope` (what is actually callable at a line, including extension methods — use it before
-   claiming a helper doesn't exist or that one should be added), `get_call_slice` (the shortest call
-   path between two symbols — use it to establish whether something is reachable, or how a value gets
-   somewhere, instead of walking outwards with repeated `get_references`), and `get_semantic_diff`
-   (what a range of commits changed semantically, with API impact per symbol).
-4. **Check for a prior recorded decision before asserting a violation.** `search_log` queries the
-   development log — the intents recorded when past changes were applied. A pattern that looks wrong
-   may be a deliberate, previously-reasoned choice. Search it whenever a finding could plausibly be
-   an intentional tradeoff. If the log records the decision, cite it and drop the finding or reframe
-   it as a question. The log only covers changes applied through `validate_patch`, so an empty result
-   is not proof of absence: it means nothing was recorded, not that nothing was decided — mark such
-   findings lower-confidence rather than asserting a violation.
+Seven parallel instances each filled to ~160k tokens, starting at ~43k before reading any reviewed
+code, because every instance re-pays an identical fixed cost. Three properties of the agent file exist
+to hold that down, and changing them without understanding the trade re-inflates it:
 
-## Review modes
+- **Tiered standards loading.** Six core files always; the other seven only when
+  `csharp-standards.md`'s "When" column matches the retrieved code (~19k → ~7.8k). The cost is that an
+  aspect can go unexamined, so the agent must end every report with a `Standards:` line naming what it
+  loaded and skipped, and an untriggered aspect is reported **not-assessed**, never clean.
+- **No `skills:` grant.** `dotnet-code-query` (41.5 KB) carries the *main agent's* read protocol —
+  session/task ids, leases, expansion gating, refetch-after-compaction — none of which a read-only
+  reviewer uses. The retrieval guidance it does need is inline in the agent file instead.
+- **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
+  declaration-layer → body-layer → references per symbol.
 
-The invoking agent states the `mode`; default to **diff** when a baseline is stated or implied by the
-request, **scope** when handed a folder/project.
+A related constraint: `guard-cs-read.sh` blocks `Read` on `.cs` files a project compiles, and
+`PreToolUse` hooks fire for subagents too. The agent cannot be told to "just read whole files" — MCP
+retrieval is the only available path for in-scope C#, which is why the batching above matters.
 
-- **Diff mode** — review changed files against a stated baseline (`main`, last commit, uncommitted
-  working tree). Start with `get_semantic_diff` against that baseline: it reports exactly which symbols
-  moved and which are breaking, and it is trivia-blind, so a formatting- or comment-only commit reports
-  no change and needs no correctness review at all. Then use `get_references` on every changed public
-  symbol to find callers, and check those call sites too — a change is only correct relative to how it's
-  actually used. `get_semantic_diff` works from git refs, so it cannot see uncommitted work; fall back
-  to the stated file list when the baseline is the working tree.
-- **Scope mode** — review a whole folder/project as a cohesive unit regardless of what changed.
-  Cross-file inconsistency within scope is in-bounds here even where no single file is wrong alone.
-  Dead-code claims are most reliable in scope mode, where the wide view exists.
+## Tool grant
 
-## Scope discipline — the contract that makes parallelism work
+The agent has `Read`, `Grep`, `Glob`, and the read-side MCP tools: `search_index`, `get_symbol`,
+`get_references`, `search_log`, `get_scope`, `get_call_slice`, `get_call_hierarchy`,
+`get_type_hierarchy`, `get_semantic_diff`, `workspace_status`.
 
-Each instance owns exactly the scope stated in its prompt, and other instances may own neighboring
-scopes in the same run:
+`get_project_graph` and `detect_circular_dependencies` are deliberately **not** granted: they answer
+solution-wide architecture questions (project dependency direction, reference cycles) that a single
+disjoint scope slice structurally cannot ask, so they cost schema tokens in every instance while being
+unusable in almost all of them. Solution-wide architecture review belongs to the main agent. The agent
+raises such a suspicion as a note rather than a finding.
 
-- **Report findings only about code inside your scope.** Following evidence *outward* is fine and often
-  necessary (a caller in another folder, a lock's other acquisition site, a test project elsewhere) —
-  but the finding it supports must anchor to a file:line inside your scope.
-- **Something clearly wrong outside your scope** gets one line at the end of your report
-  (`Outside scope: <file:line> — <one clause>`), not a review — the invoking agent decides whether
-  another instance already covers it.
-- **Never widen a vague scope yourself.** If the stated scope is ambiguous, state your narrowest
-  reasonable reading in one line and proceed with it.
+## Read-only is by instruction, not by capability
 
-## Output format
+The `tools:` frontmatter omits `Edit`/`Write`, but `memory: project` makes the harness grant them
+anyway so the agent can maintain `.claude/agent-memory/dotnet-toolkit-dotnet-code-review/` — the
+resolved tool list *does* include `Write` and `Edit`. What keeps it from touching source, standards,
+docs, or config is the Memory and Boundaries sections of the agent file, not a capability boundary.
+Don't reason about this agent as if it were sandboxed.
 
-For each finding:
-- **File and line**: `path/to/File.cs:42`
-- **Aspect**: `[correctness]` `[performance]` `[concurrency]` `[cleanup]` `[docs]` `[testing]`
-  `[security]` — the standards file the finding derives from.
-- **Severity**: 🔴 Bug/must-fix, 🟡 Convention violation or needs verification, 🔵 Suggestion.
-- **What**: the issue, concisely.
-- **Why**: why it matters in this code specifically — not generic advice restating the standard.
-- **Fix**: describe the remedy; a short snippet when the fix is unambiguous.
-- **How to verify** *(performance 🟡 findings only)*: a specific counter, trace, or benchmark setup.
+## Adding an aspect
 
-Group findings by file, ordered 🔴 → 🟡 → 🔵. End with a totals line (overall and per aspect — an
-aspect with zero findings is stated as clean, so silence is never ambiguous). If the whole scope is
-clean, say so in one sentence — don't pad with praise, and don't manufacture findings to justify having
-run.
-
-## Boundaries — every invocation
-
-- **Never modify code.** `dotnet-code-review` has no `Edit`/`Write` tool access — this is enforced
-  structurally, not just by instruction. Report findings for the main agent (or the user) to act on.
-- **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
-  text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
-  guess — say "uncertain, verify" rather than assert. A race/deadlock claim names the two call paths that
-  overlap, traced with `get_references`/`get_call_hierarchy`, not just the pattern.
-- **Zero callers is not proof of dead code.** Rule out an unready workspace first, per the `workspace_status`
-  step above — a zero-hit while the workspace is `index_only` or still loading is workspace state, not a
-  finding. Once the workspace is confirmed loaded, the count is of *static call sites in the loaded solution*,
-  so anything a framework invokes reports only whatever happens to call it by name as well: reflection-
-  registered entry points, DI-resolved implementations, serialization targets, `[Theory]` data, event
-  handlers wired by attribute. The count is then incidental rather than meaningful — in this plugin,
-  `HistoryTools.SearchLog` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely because tests
-  invoke one directly and not the other. Both are equally live, and neither number says so. A registration
-  attribute on the symbol (or on its type) is the signal that the count is not the answer. Before claiming
-  removal, check whether something reaches it another way — `get_call_slice` from a plausible entry point,
-  or such an attribute — and if it is framework-invoked, say so and drop the finding.
-- **Stay in your stated scope.** Defer everything else per "Scope discipline" above.
-- **Don't flag pure preference** outside what the standards actually state.
-
-## Memory
-
-`dotnet-code-review` has persistent, project-scoped memory (`memory: project` — one namespace per
-consuming repo, shared across all parallel instances since every instance is the same agent). Prefix
-every note with the aspect it applies to (e.g. `[performance] ...`). Record concise, factual notes on:
-project-specific conventions confirmed intentional (via a `search_log` hit or repeated deliberate
-pattern) so you stop re-flagging them, recurring finding classes, and anything the standards don't
-cover that this project has clearly standardized on.
-
-**The `Write`/`Edit` you have exist for this memory namespace and nothing else.** `memory: project`
-is why the harness grants them at all — the agent's `tools:` frontmatter does not list them. They
-authorize writing under `.claude/agent-memory/dotnet-toolkit-dotnet-code-review/` only. Never write
-or edit anything else: not `.cs` files (fixes go back to the invoking agent as findings — you have
-no `validate_patch` and must not route around it), not `.claude/rules/` (standards changes stay with
-the main agent and the user), not docs, skills, or config. Your deliverable is the review, never a
-patch. Nothing in this file's tool grant makes you a writer; if a finding needs a change, report it.
+A new aspect is a new `.claude/rules/*.md` file, a row in `csharp-standards.md`'s index (with a "When"
+condition stated as an observable property of the code, so the reviewer's trigger matching can use it),
+and one entry in the agent file's per-aspect evidence disciplines — never a new agent file. Decide
+explicitly whether it joins the always-loaded core or the triggered set; the core should only grow for
+something both cheap and high-cost-if-missed, which is why `security.md` is in it.

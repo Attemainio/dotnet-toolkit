@@ -28,9 +28,18 @@ not automatically — before writing or editing C#, read the ones relevant to th
 | `testing.md` | writing or modifying tests |
 | `antipatterns.md` | the shared catalog — skim once per session; cited by name everywhere else |
 
-`dotnet-code-review` validates the same files as a second pass — every aspect in one invocation, with
-large targets partitioned into parallel per-scope instances — so the standards are shared, not
-review-only. Consuming repos override any file via
+**The "When" column above is also the `dotnet-code-review` agent's load rule.** That agent reads a
+fixed core — `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`, `antipatterns.md`,
+`security.md` — on every invocation, then matches the remaining rows' "When" conditions against the
+code it actually retrieved and loads only those that fire. Reading all thirteen every time cost ~19k
+tokens per instance, paid again by each parallel instance; this table is what makes the rest
+conditional. So a row's "When" cell has to state an **observable property of the code** (it awaits, it
+is a hot path, it is a public surface change), not a vague topic — a row that can't be matched against
+retrieved source is a row the reviewer will skip or over-load. The agent reports which files it loaded
+and which it skipped, and an untriggered aspect is reported as not-assessed rather than clean.
+
+Everything else about that agent — its process, evidence bars, output format, boundaries — lives in
+`agents/dotnet-code-review.md`, which is self-contained. Consuming repos override any file here via
 `.claude/dotnet-toolkit/<name>.md`.
 
 ## Write-time checklist — the highest-cost-if-caught-late items
