@@ -975,6 +975,15 @@ it was just changed — a lease there returns `changed: true` with the full cont
 nothing to save. If you are refetching only to recover a shifted line span after an apply,
 `validate_patch` already returns `declarationSites` and no refetch is needed.
 
+**One thing this flag cannot see is _who_ fetched.** `Ids.AmbientSession` is one id per server process and
+MCP carries no caller identity, so a parent agent and every subagent it spawns all record under the same
+`session_id`. Subagents fetching the same symbol is the **intended** workflow — each runs on a fresh
+context and genuinely holds nothing, so there is no lease it could have passed — but it is
+indistinguishable here from one agent refetching its own content. Expect this flag to fire whenever
+`dotnet-review` partitions a target across parallel instances that share a base type or interface, and
+read it as evidence to weigh rather than a verdict. Within a single agent's own context it is exactly what
+it says.
+
 `validate_patch` writes to a separate raw-events table (`patch_events`, not `retrieval_events`) since it
 records validation-ladder fields no read tool has (`completedLevel`, `isSufficient`, …). `totals` and the
 default `tool` grouping fold its calls/tokens in alongside the read tools; `validationAttempts` above

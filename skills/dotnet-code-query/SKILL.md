@@ -567,10 +567,17 @@ earlier in this conversation.** If so, pass `knownVersion` with the version you 
 don't re-fetch full content just because several other calls happened in between.
 `get_retrieval_metrics`'s `repeat_fetch_without_lease` names exactly this: fetching the same
 symbol several times across a long session without ever leasing is a real, measured cost, not a
-theoretical one. It counts only fetches that returned a version you had already been handed, so it
-stays quiet when a symbol legitimately changed between fetches. This does not apply to the `symbols`
+theoretical one. It counts only fetches that returned a version already returned once, so it stays
+quiet when a symbol legitimately changed between fetches. This does not apply to the `symbols`
 batch form (see above — it always returns full content, by design) or to a symbol you are fetching
 for the first time.
+
+**"Already fetched" means *in your own context*, not anywhere in the session.** One session id covers
+a parent agent and every subagent it spawns, so that flag also counts sibling agents fetching the same
+symbol. That is intended and unavoidable — a subagent starts on a fresh context and holds no version
+to lease against, so its first fetch of a shared symbol is a first fetch however the telemetry groups
+it. Never skip a fetch because some *other* agent already made it; you would be reasoning about
+content you do not have.
 
 **After changing a symbol, don't refetch it just to get its new line span.** `validate_patch` returns
 `declarationSites` for every symbol it changed, in the same shape and with the same bounds this tool

@@ -83,6 +83,13 @@ scopes in the same run:
   another instance already covers it.
 - **Never widen a vague scope yourself.** If the stated scope is ambiguous, state your narrowest
   reasonable reading in one line and proceed with it.
+- **Scope partitions what you *report*, not what you *read*.** Fetch any symbol you need, including one
+  a sibling instance is certainly fetching too — a shared base type, an interface, a common helper. You
+  run on a fresh context and hold nothing another instance fetched, so there is no duplication to avoid
+  and nothing to lease against. `get_retrieval_metrics` will show those shared fetches under
+  `repeat_fetch_without_lease` because one session id spans every subagent; that is a limitation of the
+  telemetry, not a signal to read less. Never skip a fetch on the theory that another agent already made
+  it.
 
 ## Output format
 

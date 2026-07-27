@@ -218,11 +218,17 @@ public sealed class MetricsReader
     {
         var flags = new List<Flag>();
         using var cmd = connection.CreateCommand();
-        // Count only fetches that returned a version the caller had already been handed -- those are the
-        // ones a knownVersion lease would have collapsed. Grouping by content_version as well is what keeps
-        // a write-heavy session quiet: refetching a symbol you just CHANGED returns a different version
+        // Count only fetches that returned a version already returned once -- those are the ones a
+        // knownVersion lease could have collapsed. Grouping by content_version as well is what keeps a
+        // write-heavy session quiet: refetching a symbol you just CHANGED returns a different version
         // every time and is not avoidable by leasing, yet the older query counted it here all the same and
         // advised a lease that would have saved nothing.
+        //
+        // What this still cannot separate is WHO fetched. Ids.AmbientSession is one id per server process
+        // and MCP carries no caller identity, so parallel subagents all land under one session_id. Sibling
+        // agents fetching the same symbol is the intended workflow -- each runs on a fresh context and
+        // genuinely holds nothing -- but it is indistinguishable here from one agent refetching its own
+        // content. Hence the deliberately conditional hint below: this is evidence to weigh, not a verdict.
         cmd.CommandText = $"""
             SELECT symbol_id, SUM(repeats - 1) AS redundant
             FROM (
@@ -242,7 +248,8 @@ public sealed class MetricsReader
                 "repeat_fetch_without_lease",
                 reader.GetString(0),
                 reader.GetInt32(1),
-                "Supply knownVersion for this symbol; these fetches returned a version you already held."));
+                "Same version fetched more than once under one session id, which spans every subagent. "
+                + "Supply knownVersion for repeats within one context; expected when sibling agents share a symbol."));
         }
         return flags;
     }
