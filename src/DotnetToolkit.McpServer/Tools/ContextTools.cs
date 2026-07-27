@@ -203,27 +203,34 @@ private static async Task<string> GetSymbolOne(
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
-            // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
-            await index.EnsureFreshAsync();
-            var fallback = IndexSymbol(index, locator, symbol, include);
-            if (fallback is { } fb)
+            // A reload in progress after a previous successful load means a live answer is imminent (or
+            // already timed out waiting for one) -- minting an index-only id here would only diverge
+            // from the live one moments later (see Ids.IndexOnlySymbolId). Only fall back to the syntax
+            // index when no live answer has ever existed yet.
+            var reloadInProgress = workspace.State == WorkspaceState.Loading && workspace.HasLoadedOnce;
+            if (!reloadInProgress)
             {
-                var indexLease = Lease.Evaluate(ContentVersion.Parse(fb.Version), knownVersion, refetch);
-                object indexEnvelope = indexLease.OmitContent
-                    ? new
-                    {
-                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = false, heldVersion = indexLease.HeldVersion, limitedBy = "index_only",
-                        content = (object?)null, refetchHint = Lease.RefetchHint,
-                    }
-                    : new
-                    {
-                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
-                    };
-                var indexJson = Formats.ToJson(indexEnvelope);
-                return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
-                    knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
+                await index.EnsureFreshAsync();
+                var fallback = IndexSymbol(index, locator, symbol, include);
+                if (fallback is { } fb)
+                {
+                    var indexLease = Lease.Evaluate(ContentVersion.Parse(fb.Version), knownVersion, refetch);
+                    object indexEnvelope = indexLease.OmitContent
+                        ? new
+                        {
+                            contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
+                            changed = false, heldVersion = indexLease.HeldVersion, limitedBy = "index_only",
+                            content = (object?)null, refetchHint = Lease.RefetchHint,
+                        }
+                        : new
+                        {
+                            contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
+                            changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
+                        };
+                    var indexJson = Formats.ToJson(indexEnvelope);
+                    return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
+                        knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
+                }
             }
 
             var loading = Formats.ToJson(new { error = workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace" });
@@ -353,9 +360,13 @@ private static async Task<string> GetSymbolOne(
             var entryPoint = compilation?.GetEntryPoint(CancellationToken.None);
             if (entryPoint is null)
                 continue;
+            var typeName = entryPoint.ContainingType?.Name ?? "Program";
             if (SymbolKey.IdOf(entryPoint) == handle
                 || entryPoint.ToDisplayString() == handle
-                || entryPoint.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == handle)
+                || entryPoint.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == handle
+                || handle.Equals(typeName, StringComparison.OrdinalIgnoreCase)
+                || handle.Equals("Main", StringComparison.OrdinalIgnoreCase)
+                || handle.Equals($"{typeName}.Main", StringComparison.OrdinalIgnoreCase))
                 return entryPoint;
         }
         return null;
@@ -1420,7 +1431,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
             xmlDoc = hit.Doc,
             referenceCounts = (object?)null,
         };
-        return (content, version, Ids.SymbolId(hit.FqName, ""));
+        return (content, version, Ids.IndexOnlySymbolId(hit.FqName));
     }
 
     private static bool IsIndexableDeclaration(SyntaxNode node) => node

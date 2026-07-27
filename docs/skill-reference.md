@@ -19,9 +19,10 @@ a fraction of the tokens.
 **When**: changing C# — editing a method or type, changing a signature, renaming, fixing a compile
 error.
 
-Carries the `validate_patch` protocol: `baseVersions` from `get_symbol`'s `contentVersion`, the
-`applyOnSuccess: false` dry run, the sufficiency triple, the required `intent`, and batching from
-`suggestedInspection`. Also carries the pre-edit standards step: before the first C# edit of a session,
+Carries the `validate_patch` protocol: `baseVersions` from `get_symbol`'s `contentVersion`, applying
+straight through with `applyOnSuccess: true` rather than dry-running first, the sufficiency triple, the
+required `intent`, batching from `suggestedInspection`, and amending a failed patch through its
+`draftId` instead of resubmitting it. Also carries the pre-edit standards step: before the first C# edit of a session,
 read the relevant `.claude/rules/` standards per `csharp-standards.md`'s index, and give any touched
 symbol lacking a `<summary>` one in the same edit.
 

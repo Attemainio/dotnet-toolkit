@@ -221,7 +221,7 @@ private static void IndexTopLevelStatements(
         {
             symbols[entryId] = new SymbolStore.SymbolRow(
                 entryId,
-                entry.ToDisplayString(),
+                $"{entry.ContainingType?.Name ?? "Program"}.Main",
                 SymbolKey.KindOf(entry),
                 Project: "",
                 DeclHash: SyntaxFingerprint.Compute(unit).Decl,

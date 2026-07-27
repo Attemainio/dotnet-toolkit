@@ -583,7 +583,12 @@ it was built on.
 
 - **absent** — fully informed. Silence is the healthy case.
 - **`index_only`** — answered from the syntax tier, or before the semantic index finished its
-  first pass. Reference counts and semantic resolution are unavailable, **not zero**.
+  first pass. Reference counts and semantic resolution are unavailable, **not zero**. Its
+  `symbolId` carries a `symidx_` prefix, not `sym_` — a deliberately distinct, provisional id that
+  will not match what the live tier later computes for the same symbol. Never hold onto one across
+  a `validate_patch` call; re-fetch via `get_symbol` once the workspace is ready. Any `symbolId` not
+  starting with `sym_` (also `symfb_`, minted when a symbol has no doc-comment id at all) is the same
+  kind of provisional id and gets the same treatment.
 - **`stale`** — the file this symbol was served from has changed on disk since the workspace read
   it, so the content is behind what is actually there. Call `reload_workspace`, then re-read: line
   spans will have moved. Do not build a patch on a `stale` response — `validate_patch` refuses it

@@ -38,7 +38,9 @@ uses this" when the truth may be "this project never loaded".
 Every content response carries a layered `contentVersion` you can pass back as
 `knownVersion`, so unchanged content is never re-sent. Edits go through `validate_patch`,
 which runs the cheapest sufficient level of a validation ladder and reports honestly
-whether that level was sufficient for the kind of change made.
+whether that level was sufficient for the kind of change made. A patch that fails is kept
+as a **draft**: the response says which line of your proposed text broke, and you correct
+just that line through the returned `draftId` instead of resubmitting the whole edit.
 
 `search_index` OR-es and ranks its terms, so one call answers for several names:
 `query: "fee ledger TryBuy TrySell"` returns the symbols for all four. Names are indexed

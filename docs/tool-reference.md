@@ -802,11 +802,13 @@ actually needs — writes to disk only when it does, and only when you ask it to
 
 | Arg | Meaning |
 |---|---|
-| `baseVersions` | Required. `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A mismatch is `error: "stale_base"` with current versions — refetch and rebuild. |
-| `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. |
+| `baseVersions` | Required, **except with `draftId`** (a draft carries its own). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A mismatch is `error: "stale_base"` with current versions — refetch and rebuild. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
+| `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. With `draftId`, the spans address the **draft's** proposed text instead, and the array may be empty. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
 | `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — this is the only thing that writes to the development log. |
+| `tags` | Optional `string[]` stored alongside the development-log entry. Rarely used; `search_log` has no tag filter today, so a tag is descriptive metadata rather than a retrieval key. |
+| `draftId` | Amend a previous unapplied patch instead of resubmitting it — see "Amending instead of resubmitting" below. |
 
 The response carries `completedLevel`, `requiredLevel`, `isSufficient`, `succeeded`, `applied`. Done
 means all of: `isSufficient: true`, `succeeded: true`, `applied: true` (or a deliberate choice not to
@@ -818,8 +820,44 @@ raised). Never report a partial as done.
 cause is pre-distilled — one entry per root cause, not one per compiler error — carrying
 `suggestedInspection` (symbol ids to fetch before revising, a nested array of `{symbolId, displayString}`
 objects), `suppressedDiagnostics` (downstream errors that vanish once the root cause is fixed, so don't
-chase them), and `fixHint`. Fetch everything suggested and submit one revised patch; never resubmit
+chase them), `fixHint`, and `locations` (up to three `{file, line, column, excerpt}` entries saying
+exactly where the error landed). Fetch everything suggested and submit one revised patch; never resubmit
 unchanged or fix causes one at a time.
+
+#### Amending instead of resubmitting
+
+Every response that was **not applied** also carries a `draft`:
+
+```json
+"draft":{"draftId":"draft_01KYH…","expiresAt":"2026-07-27T14:31:07+00:00",
+         "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":142}]}
+```
+
+The server has kept the exact text your patch proposed. Pass that `draftId` back with **only the lines
+you are correcting** rather than resending the whole patch — `baseVersions` is inherited, and the edits'
+line spans address the draft's proposed text, which is the same coordinate space `locations` reports in.
+The `files` array is what tells you which files are in draft coordinates; a diagnostic in any other file
+reports ordinary on-disk line numbers.
+
+Two things this is for:
+
+- **A small mistake in a large patch.** A missing brace in a 300-line `newText` costs one line to fix,
+  not 300.
+- **A `succeeded: true, isSufficient: false` verdict.** Resend the `draftId` with `requestedLevel` raised
+  and an **empty** `edits` array — the text is unchanged, so there is no reason to transmit it again. An
+  empty `edits` array is legal only with a `draftId`; without one it is `error: "no_edits"`.
+
+Each amend that still fails mints a **new** `draftId`; drafts are immutable. They live 15 minutes and
+only the 8 most recent are kept.
+
+| Error | Meaning |
+|---|---|
+| `unknown_draft` | Expired, evicted, or never existed. Refetch with `get_symbol` and submit a full patch. |
+| `draft_base_versions_conflict` | Both `draftId` and a non-empty `baseVersions` were sent. Omit `baseVersions` when amending. |
+| `draft_stale` | A file moved in the workspace since the draft forked from it, so its line numbers no longer mean anything. The draft is dropped; rebuild from a fresh `get_symbol`. |
+
+A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — those patches have to
+be rebuilt, not amended — nor when the patch applied, since there is then nothing left to correct.
 
 Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
 
@@ -842,12 +880,26 @@ validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
     "summary":"CS0103: 1 occurrence(s) — The name 'ThisTypeDoesNotExist' does not exist in the current context",
     "affectedSymbolId":"sym_7a9d...",
     "fixHint":"A name is not in scope here; check the identifier or add the missing member.",
+    "locations":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","line":15,"column":42,
+                  "excerpt":"public static string Ping() => ThisTypeDoesNotExist.Value;"}],
     "suggestedInspection":[{"symbolId":"sym_7a9d...","displayString":"string ServerTools.Ping()"}]}],
-   "totalRaw":1,"totalSuppressed":0}}
+   "totalRaw":1,"totalSuppressed":0},
+ "draft":{"draftId":"draft_01KYH...","expiresAt":"2026-07-27T14:31:07+00:00",
+   "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":142}]}}
 ```
 
 `newVersion` is `null` here because nothing was applied — it only describes reality once the patch is
 actually on disk.
+
+The fix then costs one line, not the whole patch — `locations[0].line` says where, and `draftId` says
+against what:
+
+```
+validate_patch(draftId: "draft_01KYH...",
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 15, endLine: 15,
+           newText: "    public static string Ping() => \"pong\";"}],
+  applyOnSuccess: true, intent: "restore Ping's literal response")
+```
 
 See `skills/dotnet-change/SKILL.md` for the full write loop.
 
@@ -973,7 +1025,15 @@ mtime-polled before every query.
 
 - **absent** — fully informed. The healthy case costs no tokens to say so.
 - **`index_only`** — served from the syntax tier; the MSBuild workspace wasn't ready yet.
-  `referenceCounts` and semantic resolution are unavailable, **not zero**.
+  `referenceCounts` and semantic resolution are unavailable, **not zero**. Its `symbolId` carries a
+  distinct `symidx_` prefix (vs. the live tier's `sym_`) — a provisional id computed with no semantic
+  model at all, so it never equals what the live tier will later compute for the same symbol. (A
+  symbol Roslyn can't mint a documentation-comment id for at all gets a third, similarly disjoint
+  `symfb_` id from `SymbolKey.IdOf`'s own fallback — same rationale, one level deeper in the live tier.)
+  `validate_patch` rejects any non-`sym_` id in `baseVersions` outright (`stale_index_only_id`) rather
+  than letting it cascade into a confusing per-symbol `stale_base` mismatch — re-fetch via `get_symbol`
+  once the workspace has finished loading (`workspace_status`) and rebuild `baseVersions` from that
+  response.
 - **`stale`** — the file this answer was served from has changed on disk since the workspace read it.
   Call `reload_workspace`, then re-read — line spans will have moved. `validate_patch` refuses a patch
   built on a `stale` response outright (`stale_workspace`), since applying it would revert whatever else

@@ -30,6 +30,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public TargetedTests TargetedTests { get; private set; } = null!;
     public CallSlice CallSlice { get; private set; } = null!;
     public TelemetryRecorder Telemetry { get; private set; } = null!;
+    public PatchDraftStore Drafts { get; } = new(TimeProvider.System);
 
     private KnowledgeStore _store = null!;
     private string _workDir = "";
@@ -170,6 +171,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         items.EnumerateArray()
             .Select(item => item.EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.Ordinal))
             .ToList();
+
+    /// <summary>The first source line a symbol is declared on, so a patch test never hard-codes a fixture line number.</summary>
+    private static int StartLine(JsonElement symbol) =>
+        symbol.GetProperty("content").GetProperty("declarationSites")[0].GetProperty("startLine").GetInt32();
 
     /// <summary>Identity pass-through, kept so call sites written against the old hoisted-"rest" shape
     /// (ctx-contract/3.6, since removed) don't all need editing — there is no more rest object to merge.</summary>
@@ -1076,7 +1081,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var before = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
             new Dictionary<string, string> { [symbolId] = version }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
@@ -1085,6 +1090,120 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
         Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
+    }
+
+    [Fact]
+    public async Task ValidatePatch_FailedPatch_ReturnsADraftLocatingTheOffendingLine()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Undocumented", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        // Undocumented is the last member of Widget.cs; expanding it into a four-line body whose third line
+        // does not compile makes the draft's line numbers genuinely differ from the file's.
+        var declaredAt = StartLine(sym);
+        var broken = new[]
+        {
+            new PatchEditInput("Lib/Widget.cs", declaredAt, declaredAt,
+                "    public static int Undocumented()\n    {\n        return nosuchvalue;\n    }"),
+        };
+        var first = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = version }, broken,
+            applyOnSuccess: true, intent: "give Undocumented a statement body"));
+
+        Assert.False(first.GetProperty("succeeded").GetBoolean(), first.GetRawText());
+        Assert.False(first.GetProperty("applied").GetBoolean());
+
+        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
+        Assert.StartsWith("draft_", draftId);
+        var files = TableRows(first.GetProperty("draft").GetProperty("files"));
+        Assert.Contains(files, f => f["file"].GetString()!.Contains("Widget.cs", StringComparison.Ordinal));
+
+        // The diagnostic points into the proposed text, not the file on disk: the offending line is the third
+        // of the four the draft put where one line used to be — a line number the file itself does not have.
+        var locations = TableRows(first.GetProperty("diagnostics").GetProperty("rootCauses"))[0]["locations"];
+        Assert.True(locations.GetArrayLength() > 0, first.GetRawText());
+        var brokenLine = locations[0].GetProperty("line").GetInt32();
+        Assert.Equal(declaredAt + 2, brokenLine);
+        Assert.Contains("nosuchvalue", locations[0].GetProperty("excerpt").GetString()!);
+
+        // Correct that one line against the draft, resending none of the rest of the patch.
+        var amended = Root(await ContextToolsAmend(draftId,
+            [new PatchEditInput("Lib/Widget.cs", brokenLine, brokenLine, "        return 0;")],
+            applyOnSuccess: true, intent: "give Undocumented a statement body"));
+
+        Assert.True(amended.GetProperty("ladder").GetProperty("isSufficient").GetBoolean(), amended.GetRawText());
+        Assert.True(amended.GetProperty("applied").GetBoolean(), amended.GetRawText());
+        Assert.Contains("return 0;", await File.ReadAllTextAsync(_f.Locator.AbsPath("Lib/Widget.cs")));
+    }
+
+    [Fact]
+    public async Task ValidatePatch_AppliedPatch_ReturnsNoDraft()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        var spinAt = StartLine(sym);
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * 6;") };
+        var root = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = version }, edits,
+            applyOnSuccess: true, intent: "retune the turbo factor"));
+
+        Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+        // Nothing is left to amend once the text is on disk.
+        Assert.False(root.TryGetProperty("draft", out var draft) && draft.ValueKind != JsonValueKind.Null,
+            root.GetRawText());
+    }
+
+    [Fact]
+    public async Task ValidatePatch_AmendWithNoEdits_RevalidatesTheDraftRatherThanRejectingIt()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        var spinAt = StartLine(sym);
+        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * missing;") };
+        var first = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = version }, broken, applyOnSuccess: false, intent: null));
+        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
+
+        // An empty edits array is legal only with a draftId — this is how a succeeded-but-insufficient
+        // verdict is re-run at a higher level without resending a line of the patch.
+        var again = Root(await ContextToolsAmend(draftId, [], applyOnSuccess: false, intent: null));
+
+        Assert.False(again.TryGetProperty("error", out _), again.GetRawText());
+        Assert.False(again.GetProperty("succeeded").GetBoolean(), again.GetRawText());
+        Assert.NotEqual(draftId, again.GetProperty("draft").GetProperty("draftId").GetString());
+    }
+
+    [Fact]
+    public async Task ValidatePatch_UnknownDraftId_IsRejectedBeforeValidation()
+    {
+        var root = Root(await ContextToolsAmend("draft_doesnotexist", [], applyOnSuccess: false, intent: null));
+
+        Assert.Equal("unknown_draft", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task ValidatePatch_DraftIdTogetherWithBaseVersions_IsRejected()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        var spinAt = StartLine(sym);
+        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * absent;") };
+        var first = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = version }, broken, applyOnSuccess: false, intent: null));
+        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
+
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
+            new Dictionary<string, string> { [symbolId] = version }, [], requestedLevel: null,
+            applyOnSuccess: false, intent: null, tags: null, draftId: draftId));
+
+        Assert.Equal("draft_base_versions_conflict", root.GetProperty("error").GetString());
     }
 
     /// <summary>
@@ -1518,6 +1637,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
 
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
-        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
             baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);
+
+    private Task<string> ContextToolsAmend(string draftId, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
+        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
+            new Dictionary<string, string>(), edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null,
+            draftId: draftId);
 }

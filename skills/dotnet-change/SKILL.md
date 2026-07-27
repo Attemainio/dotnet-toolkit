@@ -66,6 +66,14 @@ committing to it — that's the rare case, not the default path.
   current content. A mismatch returns `error: "stale_base"` with the current versions;
   refetch those symbols, rebuild the edit, resubmit.
 
+  A `symbolId` not starting with `sym_` — `symidx_` (from `get_symbol`'s syntax-tier fallback,
+  `limitedBy: "index_only"`) or `symfb_` (from `SymbolKey.IdOf`'s own no-doc-comment-id fallback) —
+  is provisional and never equal to the live semantic tier's id for the same symbol. `validate_patch`
+  rejects it outright with `error: "stale_index_only_id"` rather than letting it cascade into a
+  confusing `stale_base` mismatch across every symbol in the file. Fix: call `get_symbol` again once
+  the workspace has finished loading (check `workspace_status`) and rebuild `baseVersions` from that
+  response's `sym_`-prefixed id.
+
   `baseVersions` covers the symbols you are changing, **not the rest of the file**. An apply
   writes the whole document text back, so a file that moved on disk since the workspace read
   it is refused outright with `error: "stale_workspace"` — otherwise the patch would revert
@@ -135,8 +143,46 @@ compiler error. For each:
   is fixed. Do not chase them.
 - **`fixHint`** says what the fix shape is.
 
+- **`locations`** gives up to three `{file, line, column, excerpt}` entries saying exactly
+  where the error landed — in the coordinate space of the text you *proposed*, not the file on
+  disk. This is what you aim the correction at.
+
 Then **batch**: fetch everything suggested, and submit ONE revised patch covering all of it.
 Never resubmit an identical patch, and don't fix root causes one call at a time.
+
+## Amend the draft — do not resend the patch
+
+**Every unapplied response also carries `draft: {draftId, expiresAt, files}`.** The server kept
+the exact text your patch proposed. Send `draftId` back with **only the lines you are
+correcting**:
+
+```
+validate_patch(draftId: "draft_01KYH...",
+  edits: [{file: "...", startLine: 43, endLine: 43, newText: "        return 0;"}],
+  applyOnSuccess: true, intent: <the same intent as before>)
+```
+
+- `baseVersions` is **inherited** from the draft — sending it too is
+  `error: "draft_base_versions_conflict"`.
+- The edits' line spans address the **draft's** text, which is the same coordinate space
+  `locations` reports in. `files` lists which files are in that space; a diagnostic in any
+  other file carries ordinary on-disk line numbers.
+- `intent` is still required to apply. Amending does not weaken the log contract.
+
+Reach for this whenever the correction is small relative to the patch — a missing brace in a
+200-line `newText` costs one line, not 200. **It also replaces the resubmit in the partial-green
+case**: for `succeeded: true, isSufficient: false`, send the `draftId` with `requestedLevel`
+raised and an **empty** `edits` array, since the text has not changed. (An empty `edits` array is
+legal only with a `draftId`; without one it is `error: "no_edits"`.)
+
+Each amend that still fails mints a new `draftId` — drafts are immutable. They live 15 minutes
+and only the 8 most recent are kept; `error: "unknown_draft"` means yours aged out, so refetch
+with `get_symbol` and send a full patch. `error: "draft_stale"` means the file moved in the
+workspace underneath the draft, so its line numbers no longer mean anything — rebuild from a
+fresh `get_symbol`.
+
+Rebuild from scratch, not by amending, after `stale_base`, `invalid_edit`, or `stale_workspace` —
+those responses carry no draft, because the patch itself is built on something that moved.
 
 ## What gets recorded
 

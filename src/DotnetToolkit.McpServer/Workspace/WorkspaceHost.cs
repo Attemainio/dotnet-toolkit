@@ -41,6 +41,12 @@ public sealed class WorkspaceHost : IDisposable
     // request threads without holding _gate — the swap must be visible, not just atomic.
     private volatile Task _loadTask = Task.CompletedTask;
     private int _reloading;
+    // True once State has reached Loaded at least once; stays true through every subsequent reload.
+    // Lets a caller distinguish "no live answer has ever existed" (a syntax-index fallback is the only
+    // possible answer) from "a live answer existed and a reload is temporarily hiding it" (minting a
+    // fresh index-only id here would only diverge from the live one moments later -- see
+    // ContextTools.GetSymbolOne and Ids.IndexOnlySymbolId).
+    private bool _hasLoadedOnce;
 
     // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk, AND the
     // brief swap-in-new-generation step of LoadAsync (used by both the initial load and TriggerReload).
@@ -91,6 +97,13 @@ public sealed class WorkspaceHost : IDisposable
     {
         get { lock (_gate) return State == WorkspaceState.Loaded && _loadDiagnostics.Count > 0; }
     }
+
+    /// <summary>
+    /// True once <see cref="State"/> has reached <see cref="WorkspaceState.Loaded"/> at least once and
+    /// stays true through every subsequent reload -- distinct from checking <c>State == Loaded</c>,
+    /// which flips back to <see cref="WorkspaceState.Loading"/> for the reload's duration.
+    /// </summary>
+    public bool HasLoadedOnce { get { lock (_gate) return _hasLoadedOnce; } }
 
     public int ProjectCount
     {
@@ -202,6 +215,7 @@ public sealed class WorkspaceHost : IDisposable
             lock (_gate)
             {
                 State = WorkspaceState.Loaded;
+                _hasLoadedOnce = true;
                 DrainPendingChanges();
             }
             _log.LogInformation("Workspace loaded: {Projects} projects in {Elapsed:F1}s",

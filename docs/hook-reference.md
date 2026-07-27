@@ -65,10 +65,21 @@ Fires when a `Write` creates a brand-new `.cs` file (the one case the edit guard
 knowledge tiers are mtime-polling, not filesystem watchers, so a new file is invisible to the syntax
 index and the MSBuild workspace until a sweep and reload complete — a `validate_patch`/`get_symbol` call
 against it before then fails deterministically with `invalid_edit: file is not part of the loaded
-solution`. The hook cannot call `reload_workspace` itself (no MCP pipe access), so it injects an
-`additionalContext` reminder telling Claude to call `reload_workspace(scope: "all")` before the next
-call touches the new file — the reminder lands at file-creation time rather than after a confusing
-failure.
+solution`.
+
+A hook process has no access to the MCP stdio pipe, so it cannot call `reload_workspace` through the
+running session — but the server also exposes `Control/ControlServer.cs`, a loopback TCP listener on
+`127.0.0.1` started alongside the other background services, whose port is published as plain text at
+`CacheDir/control.port`. This hook reads that port, sends `rescan` (synchronous — a syntax-index sweep,
+no MSBuild — the hook waits for the result) and then `reload` (fire-and-forget — starts the background
+MSBuildWorkspace reload and returns immediately, since that can run far longer than the hook's timeout),
+and reports both results in the injected `additionalContext`, telling Claude to check `workspace_status`
+before the next `validate_patch`/`get_symbol` call on the new file.
+
+Falls back to the old reminder-only text — "call `reload_workspace(scope: "all")` and wait for
+`workspace_status`" — if the control channel is unreachable for any reason (a server built before this
+feature existed, a missing port file, a refused connection, no response within the timeout). Fails open
+the same way every other hook here does.
 
 The JSON reply is built by the same interpreter that parsed the payload rather than hand-interpolated,
 since `file_path` is caller-controlled text (a Windows path's backslashes) that has no business near
