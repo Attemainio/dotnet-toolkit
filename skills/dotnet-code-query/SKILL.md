@@ -567,8 +567,15 @@ earlier in this conversation.** If so, pass `knownVersion` with the version you 
 don't re-fetch full content just because several other calls happened in between.
 `get_retrieval_metrics`'s `repeat_fetch_without_lease` names exactly this: fetching the same
 symbol several times across a long session without ever leasing is a real, measured cost, not a
-theoretical one. This does not apply to the `symbols` batch form (see above — it always returns
-full content, by design) or to a symbol you are fetching for the first time.
+theoretical one. It counts only fetches that returned a version you had already been handed, so it
+stays quiet when a symbol legitimately changed between fetches. This does not apply to the `symbols`
+batch form (see above — it always returns full content, by design) or to a symbol you are fetching
+for the first time.
+
+**After changing a symbol, don't refetch it just to get its new line span.** `validate_patch` returns
+`declarationSites` for every symbol it changed, in the same shape and with the same bounds this tool
+produces — so a follow-up edit to that symbol already has both halves it needs (`newVersion` for
+`baseVersions`, `declarationSites` for the span) with no round trip.
 
 ### After context compaction
 

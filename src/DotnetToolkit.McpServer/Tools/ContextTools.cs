@@ -891,7 +891,13 @@ private static object? ContainingType(ISymbol sym)
         displayString = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
     };
 
-private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
+    /// <summary>Flat file/startLine/endLine sites for a symbol's declarations, one per partial part.</summary>
+    /// <remarks>
+    /// Internal rather than private because <c>validate_patch</c> returns the same shape for the symbols a
+    /// patch changed. Both paths must produce byte-identical spans — a caller is meant to feed either one
+    /// straight back into an edit — so they share this method rather than each computing bounds.
+    /// </remarks>
+    internal static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
         sym.DeclaringSyntaxReferences.Select(r =>
         {
             var node = NormalizeDeclNode(r.GetSyntax());

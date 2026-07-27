@@ -870,7 +870,9 @@ validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
 ```json
 {"detectedChanges":[
    {"symbolId":"sym_7a9d...","changeKinds":["body"],
-    "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","apiImpact":"non-breaking"}],
+    "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","apiImpact":"non-breaking",
+    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs",
+                         "startLine":14,"endLine":16}]}],
  "ladder":{"completedLevel":"semantic_bind","requiredLevel":"project_compile","isSufficient":false,
    "reason":"Validation failed at semantic_bind.",
    "nextAction":"Fetch the suggested symbols, revise the patch, and resubmit."},
@@ -890,6 +892,13 @@ validate_patch(baseVersions: {"sym_7a9d...": "decl:7c76e9eba9da"},
 
 `newVersion` is `null` here because nothing was applied — it only describes reality once the patch is
 actually on disk.
+
+Each `detectedChanges` entry also carries `declarationSites` — `[{file, startLine, endLine}]`, the same
+shape and the same bounds `get_symbol` returns, describing where that declaration sits **in the text this
+call produced**: the file itself once applied, otherwise the draft. Together with `newVersion` that is
+everything a follow-up edit to the same symbol needs, so **editing a symbol twice in a row costs one
+`validate_patch` call, not a `validate_patch` and then a `get_symbol` to recover the shifted span**. It is
+`null` for a removal, which has no new declaration to point at.
 
 The fix then costs one line, not the whole patch — `locations[0].line` says where, and `draftId` says
 against what:
@@ -932,12 +941,19 @@ get_retrieval_metrics(scope: "global", groupBy: "tool")
    {"key":"validate_patch","calls":6,"tokensReturned":1595}],
  "flags":[
    {"kind":"repeat_fetch_without_lease","symbolId":"sym_21b0...","count":6,
-    "hint":"Supply knownVersion for this symbol."}]}
+    "hint":"Supply knownVersion for this symbol; these fetches returned a version you already held."}]}
 ```
 
 `flags` calls out exactly what to fix: a symbol fetched repeatedly without ever passing `knownVersion`
 back is paying for the same content over and over. `leaseHits`/`tokensSavedByLeases` being low relative
 to `toolCalls` is itself a signal to start leasing.
+
+`count` is the number of **avoidable** refetches, not the number of fetches: repeats are counted per
+`(symbol, contentVersion)` pair, so six fetches that each returned a *different* version are not flagged
+at all. That distinction matters in a write-heavy session, where a symbol is refetched precisely because
+it was just changed — a lease there returns `changed: true` with the full content anyway, so there is
+nothing to save. If you are refetching only to recover a shifted line span after an apply,
+`validate_patch` already returns `declarationSites` and no refetch is needed.
 
 `validate_patch` writes to a separate raw-events table (`patch_events`, not `retrieval_events`) since it
 records validation-ladder fields no read tool has (`completedLevel`, `isSufficient`, …). `totals` and the

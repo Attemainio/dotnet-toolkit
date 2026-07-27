@@ -15,9 +15,11 @@ namespace DotnetToolkit.McpServer.Validation;
 /// </summary>
 public static class ChangeClassifier
 {
+    /// <summary>One symbol the patch changed, with the versions and identity a caller needs to follow it up.</summary>
+    /// <param name="NewSymbol">The changed declaration as it exists in the forked solution, or null for a removal. Carried so the caller can be told where the declaration now sits without a follow-up get_symbol.</param>
     public sealed record Change(
         string SymbolId, string OldSymbolId, string DisplayString, IReadOnlyList<ChangeKind> Kinds, string Detail,
-        string OldVersion, string NewVersion, string ApiImpact);
+        string OldVersion, string NewVersion, string ApiImpact, ISymbol? NewSymbol = null);
 
     public static async Task<List<Change>> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs)
     {
@@ -159,7 +161,8 @@ public static class ChangeClassifier
             Describe(kinds),
             Contracts.ContentVersion.Of(oldDecl, oldBody).ToString(),
             Contracts.ContentVersion.Of(newDecl, newBody).ToString(),
-            ApiImpactOf(kinds, symbol)));
+            ApiImpactOf(kinds, symbol),
+            symbol));
     }
 
     /// <summary>
@@ -398,7 +401,8 @@ public static class ChangeClassifier
             symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             [ChangeKind.Added], "added",
             oldVersion, newVersion,
-            ApiImpactOf([ChangeKind.Added], symbol)));
+            ApiImpactOf([ChangeKind.Added], symbol),
+            symbol));
     }
 
     private static void AddRemovedChange(List<Change> changes, SemanticModel? baseModel, SyntaxNode old)

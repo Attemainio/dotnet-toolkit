@@ -176,6 +176,10 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     private static int StartLine(JsonElement symbol) =>
         symbol.GetProperty("content").GetProperty("declarationSites")[0].GetProperty("startLine").GetInt32();
 
+    /// <summary>The last source line of a symbol's declaration, so an edit replaces the whole thing however many lines it currently spans.</summary>
+    private static int EndLine(JsonElement symbol) =>
+        symbol.GetProperty("content").GetProperty("declarationSites")[0].GetProperty("endLine").GetInt32();
+
     /// <summary>Identity pass-through, kept so call sites written against the old hoisted-"rest" shape
     /// (ctx-contract/3.6, since removed) don't all need editing — there is no more rest object to merge.</summary>
     private static Dictionary<string, JsonElement> MergedRow(Dictionary<string, JsonElement> row) => row;
@@ -1145,7 +1149,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var version = sym.GetProperty("contentVersion").GetString()!;
 
         var spinAt = StartLine(sym);
-        var edits = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * 6;") };
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, EndLine(sym), "    public int Spin(int turns) => turns * 6;") };
         var root = Root(await ContextToolsValidate(
             new Dictionary<string, string> { [symbolId] = version }, edits,
             applyOnSuccess: true, intent: "retune the turbo factor"));
@@ -1164,7 +1168,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var version = sym.GetProperty("contentVersion").GetString()!;
 
         var spinAt = StartLine(sym);
-        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * missing;") };
+        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, EndLine(sym), "    public int Spin(int turns) => turns * missing;") };
         var first = Root(await ContextToolsValidate(
             new Dictionary<string, string> { [symbolId] = version }, broken, applyOnSuccess: false, intent: null));
         var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
@@ -1194,7 +1198,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var version = sym.GetProperty("contentVersion").GetString()!;
 
         var spinAt = StartLine(sym);
-        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, spinAt, "    public int Spin(int turns) => turns * absent;") };
+        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, EndLine(sym), "    public int Spin(int turns) => turns * absent;") };
         var first = Root(await ContextToolsValidate(
             new Dictionary<string, string> { [symbolId] = version }, broken, applyOnSuccess: false, intent: null));
         var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
@@ -1204,6 +1208,35 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
             applyOnSuccess: false, intent: null, tags: null, draftId: draftId));
 
         Assert.Equal("draft_base_versions_conflict", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task ValidatePatch_AppliedChange_ReturnsTheDeclarationsNewSpan()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+        var spinAt = StartLine(sym);
+
+        // Two lines where one used to be, so a span echoed back unchanged would not match.
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, EndLine(sym),
+            "    public int Spin(int turns)\n        => turns * 8;") };
+        var root = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = version }, edits,
+            applyOnSuccess: true, intent: "spread the turbo spin over two lines"));
+
+        Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+
+        var change = TableRows(root.GetProperty("detectedChanges"))[0];
+        var site = TableRows(change["declarationSites"])[0];
+        Assert.Equal(spinAt, site["startLine"].GetInt32());
+        Assert.Equal(spinAt + 1, site["endLine"].GetInt32());
+
+        // The whole point: this span is what a follow-up edit uses, and it agrees with what a refetch
+        // would have cost a round trip to learn.
+        var refetched = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
+        Assert.Equal(StartLine(refetched), site["startLine"].GetInt32());
+        Assert.Equal(EndLine(refetched), site["endLine"].GetInt32());
     }
 
     /// <summary>

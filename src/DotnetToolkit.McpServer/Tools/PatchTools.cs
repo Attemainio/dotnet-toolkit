@@ -173,7 +173,7 @@ public static class PatchTools
                 };
             }
 
-            var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation, draftInfo);
+            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo);
             var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -244,6 +244,7 @@ public static class PatchTools
     }
 
     private static object BuildResponse(
+        SolutionLocator locator,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
         ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation,
         object? draft)
@@ -258,6 +259,10 @@ public static class PatchTools
                 oldVersion = c.OldVersion,
                 newVersion = applied ? c.NewVersion : null,
                 apiImpact = c.ApiImpact,
+                // Where the declaration sits in the text this call produced: the file itself once applied,
+                // otherwise the draft. Same shape and same bounds as get_symbol's declarationSites, so a
+                // follow-up edit to this symbol needs no refetch just to recover its shifted line span.
+                declarationSites = c.NewSymbol is null ? null : ContextTools.DeclarationSites(c.NewSymbol, locator),
             }),
             ladder = new
             {

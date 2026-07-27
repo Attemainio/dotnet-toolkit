@@ -218,11 +218,21 @@ public sealed class MetricsReader
     {
         var flags = new List<Flag>();
         using var cmd = connection.CreateCommand();
+        // Count only fetches that returned a version the caller had already been handed -- those are the
+        // ones a knownVersion lease would have collapsed. Grouping by content_version as well is what keeps
+        // a write-heavy session quiet: refetching a symbol you just CHANGED returns a different version
+        // every time and is not avoidable by leasing, yet the older query counted it here all the same and
+        // advised a lease that would have saved nothing.
         cmd.CommandText = $"""
-            SELECT symbol_id, COUNT(*) AS c
-            FROM retrieval_events
-            WHERE {where} AND symbol_id IS NOT NULL AND lease_hit = 0 AND refetch = 0
-            GROUP BY symbol_id HAVING c > 1 ORDER BY c DESC LIMIT 20;
+            SELECT symbol_id, SUM(repeats - 1) AS redundant
+            FROM (
+                SELECT symbol_id, COUNT(*) AS repeats
+                FROM retrieval_events
+                WHERE {where} AND symbol_id IS NOT NULL AND lease_hit = 0 AND refetch = 0
+                      AND content_version IS NOT NULL
+                GROUP BY symbol_id, content_version
+            )
+            GROUP BY symbol_id HAVING redundant > 0 ORDER BY redundant DESC LIMIT 20;
             """;
         Bind(cmd, parameters);
         using var reader = cmd.ExecuteReader();
@@ -232,7 +242,7 @@ public sealed class MetricsReader
                 "repeat_fetch_without_lease",
                 reader.GetString(0),
                 reader.GetInt32(1),
-                "Supply knownVersion for this symbol."));
+                "Supply knownVersion for this symbol; these fetches returned a version you already held."));
         }
         return flags;
     }

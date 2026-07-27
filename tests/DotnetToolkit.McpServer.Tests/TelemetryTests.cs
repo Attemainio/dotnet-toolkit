@@ -93,16 +93,27 @@ public sealed class TelemetryTests : IDisposable
     }
 
     [Fact]
-    public void RepeatFetchWithoutLeaseIsFlagged()
+    public void RepeatFetchOfTheSameVersionWithoutLeaseIsFlagged()
     {
-        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc"));
-        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc"));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc", version: "decl:aaaa"));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc", version: "decl:aaaa"));
 
         var flags = _metrics.Read("global", null, null, null, "none").Flags;
         var flag = Assert.Single(flags);
         Assert.Equal("repeat_fetch_without_lease", flag.Kind);
         Assert.Equal("sym_abc", flag.SymbolId);
-        Assert.Equal(2, flag.Count);
+        Assert.Equal(1, flag.Count);   // one avoidable refetch, not two fetches
+    }
+
+    [Fact]
+    public void RefetchAfterTheVersionChangedIsNotFlagged()
+    {
+        // A write-heavy session refetches a symbol precisely because it just changed; a lease would have
+        // returned changed:true with the full content anyway, so there is nothing to advise here.
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc", version: "decl:aaaa"));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc", version: "decl:bbbb"));
+
+        Assert.Empty(_metrics.Read("global", null, null, null, "none").Flags);
     }
 
     // Conformance C6: UPDATE on a raw telemetry table raises; append succeeds.
@@ -122,7 +133,8 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(2, _metrics.Read("global", null, null, null, "none").Totals.ToolCalls);
     }
 
-    private static RetrievalEvent Sample(string session, string task, string tool, int tokens, string? symbolId = null) =>
+    private static RetrievalEvent Sample(
+        string session, string task, string tool, int tokens, string? symbolId = null, string? version = null) =>
         new()
         {
             ToolCallId = Ids.ToolCall(),
@@ -130,6 +142,7 @@ public sealed class TelemetryTests : IDisposable
             TaskId = task,
             ToolName = tool,
             SymbolId = symbolId,
+            ContentVersion = version,
             ReturnedTokens = tokens,
         };
 
