@@ -61,11 +61,11 @@ missing (a tool that exists but appears nowhere in it):
 | `docs/tool-reference.md` | complete per-tool catalog: arguments, one real example call/response, what it replaces |
 | `CLAUDE.md`'s "Working in this repo" table (`Instead of / Use`) | one row per read/write tool a session would otherwise reach for Grep/Read/`find` instead of |
 | `CLAUDE.md`'s Architecture section, `Tools/` bullet | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new clause |
-| `CLAUDE.md`'s Code review section (aspect list + read-side toolset paragraph) | the review agent's actual granted tool list, not a stale subset |
-| `.claude/rules/csharp-standards.md` | the always-loaded standards index — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/`, and its `validate_patch` line must match the current write path |
-| the nine standards files in `.claude/rules/` (`naming`, `styling`, `best-practices`, `antipatterns`, `performance`, `concurrency`, `security`, `testing`, `xml-documentation`) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
+| `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/` (nothing missing, nothing stale), and its `validate_patch` line must match the current write path |
+| `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
+| every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
 | `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently |
-| `agents/dotnet-code-review.md` | `tools:` frontmatter list matches Step 0 exactly for whatever subset the agent should have — every read-side MCP tool the agent needs for efficient orientation (not a stale subset missing a tool added since); its standards-file list (all nine) still resolves to real files in `.claude/rules/` |
+| `agents/dotnet-code-review.md` | `tools:` frontmatter list matches Step 0 exactly for whatever subset the agent should have — every read-side MCP tool the agent needs for efficient orientation (not a stale subset missing a tool added since); its standards-file list and per-aspect fold-ins (e.g. which files feed `[correctness]`) still resolve to real files in `.claude/rules/` |
 | `docs/agent-reference.md` | every tool named in it (setup steps, boundaries) still exists and is still described accurately (e.g. what `workspace_status` signals, what a zero-hit from a semantic tool does and doesn't prove); its aspect list matches the agent file's |
 | `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
 | `docs/skill-reference.md` | one entry per skill under `skills/`, none stale, none missing |
@@ -105,8 +105,8 @@ last time this audit ran, or against a stated baseline, and ask — for every ad
 file under `src/`, `docs/`, `skills/`, `agents/`, `hooks/`, `scripts/`, `.claude/rules/` — does *something*
 in Steps 3–5's tables now mention it? A new `Tools/*.cs` file, a new `docs/*.md` reference doc, a new
 skill, a new hook script that shipped without a corresponding row anywhere is exactly the kind of gap
-CLAUDE.md's own "Changing the tool surface" section warns about (it names `get_scope`, `get_call_slice`,
-and `get_semantic_diff` as a real past instance of this).
+CLAUDE.md's own "Changing the tool surface" section warns about — `get_scope`, `get_call_slice`, and
+`get_semantic_diff` were a real past instance of this: shipped in the code but named in none of the docs.
 
 **7. The skills' own instructions.** Once Steps 1–6 have surfaced concrete drift, the fix usually touches
 a skill file itself, not just a table row — e.g. a new tool needs a new "when to reach for this" paragraph

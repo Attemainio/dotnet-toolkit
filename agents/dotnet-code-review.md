@@ -40,8 +40,10 @@ exactly; it is not restated here.
 **Then read the standards — all of them.** They live in the plugin's `.claude/rules/`
 (`${CLAUDE_PLUGIN_ROOT}/.claude/rules/<name>.md`), each checked for a repo-local override first per
 `docs/agent-reference.md`'s setup steps (`${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md`):
-`naming.md`, `styling.md`, `best-practices.md`, `antipatterns.md`, `performance.md`,
-`concurrency.md`, `security.md`, `testing.md`, `xml-documentation.md`. Together they define the
+`naming.md`, `styling.md`, `best-practices.md`, `antipatterns.md`, `architecture.md`, `api-design.md`,
+`error-handling.md`, `resource-management.md`, `performance.md`, `concurrency.md`, `security.md`,
+`testing.md`, `xml-documentation.md` — the full, current list always matches
+`.claude/rules/csharp-standards.md`'s index. Together they define the
 aspects below; each finding you report is tagged with the aspect it belongs to.
 
 If the invoking prompt states a `focus:` (one or more aspects), read only those aspects' standards
@@ -51,9 +53,13 @@ default. With no `focus:`, every aspect is in scope for every symbol you review.
 **Per-aspect evidence disciplines** — covering all aspects at once does not lower any aspect's
 evidence bar:
 
-- `[correctness]` — bugs, naming, styling, idiomatic best practices. `get_type_hierarchy` is useful
-  for inheritance-depth/interface-bloat design smells — the full shape shows what one file at a time
-  hides.
+- `[correctness]` — bugs, naming, styling, idiomatic best practices, plus architecture (`architecture.md`),
+  API design (`api-design.md`), error handling (`error-handling.md`), and resource management
+  (`resource-management.md`) — these four fold into `[correctness]` rather than getting their own tag,
+  the same way naming/styling/best-practices do. `get_project_graph`/`detect_circular_dependencies` back
+  an architecture claim about a dependency-direction violation or a cycle; `get_type_hierarchy` is useful
+  for inheritance-depth/interface-bloat design smells and for judging a public-API claim against the
+  actual base/interface chain — the full shape shows what one file at a time hides.
 - `[performance]` — apply hot/cold-path classification in priority order: explicit marker >
   invoking-agent hint > heuristic. Never guess past that order; 🟡 findings need a stated
   counter/trace/benchmark to verify. Cold paths keep LINQ and readability without complaint.

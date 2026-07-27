@@ -13,6 +13,9 @@ consuming repo overrides it via `.claude/dotnet-toolkit/antipatterns.md`.
 
 ## Correctness & design (correctness)
 
+Design entries below are catalog names; the full standards live in `architecture.md`, `api-design.md`,
+`error-handling.md`, and `resource-management.md`.
+
 - **Swallowed exceptions** — `catch { }` or `catch (Exception) { /* nothing */ }` that discards the
   failure; the caller proceeds as if the operation succeeded. Logging without rethrowing is only correct
   when the caller can genuinely continue with degraded/missing state.

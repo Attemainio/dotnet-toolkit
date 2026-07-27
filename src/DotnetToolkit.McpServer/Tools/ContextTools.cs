@@ -38,12 +38,39 @@ public static class ContextTools
         + "The response always carries a fixed skeleton — kind, origin, containingType, declarationSites "
         + "(file + startLine/endLine) — regardless of include. displayString and modifiers sit one tier "
         + "below: computed on every call like the skeleton, but suppressed to null when source is also "
-        + "requested, since a declaration's own signature line already states both as text. There is no "
-        + "separate accessibility field — modifiers' literal keyword phrase already carries it (\"public "
+        + "requested, since a declaration's own signature line already states both as text — except for a "
+        + "line-sliced source (see @ below), which usually cuts that line out, so both come back. There is "
+        + "no separate accessibility field — modifiers' literal keyword phrase already carries it (\"public "
         + "sealed\" states both). Everything else is opt-in and controlled by include:\n"
-        + "  source — full declaration source text. Requesting it also suppresses xmlDoc, attributes, "
-        + "baseType and interfaces even if named alongside it, since source already prints all of them as "
-        + "text — asking for source plus those is not a bigger fetch, it is the same fetch minus duplication.\n"
+        + "  source — full declaration source text; source:code for the same span minus the leading /// "
+        + "doc comment (attributes and the body are unchanged) — plain \"source\" is equivalent to "
+        + "\"source:full\". Either mode also accepts subtractive -modifier suffixes on top of its own "
+        + "default: source:full-remarks-attributes drops the <remarks> tag and all attributes from the "
+        + "otherwise-full text; source:code-comments additionally drops // comments from the "
+        + "already-doc-comment-stripped code text. Modifier names are source:full-only doc tags "
+        + "(summary, remarks, returns, value, inheritdoc, params, typeParams, exceptions — matching "
+        + "xmlDoc's own field names) plus attributes/comments, valid under either mode. A doc-tag modifier "
+        + "under source:code is rejected (code already excludes every tag by default, so subtracting one "
+        + "again is always a no-op); there is no additive +tag form — a query only ever subtracts from its "
+        + "mode's own default. attributes/comments only strip an attribute or // comment that occupies its "
+        + "own whole line — one sharing a line with real code (e.g. \"[Fact] public void Foo()\", or a "
+        + "trailing // comment) is left untouched rather than partially rewriting that line. Either mode "
+        + "also suppresses xmlDoc, attributes, baseType and interfaces even if named alongside it, since "
+        + "source already prints all of them as text — asking for source plus those is not a bigger "
+        + "fetch, it is the same fetch minus duplication.\n"
+        + "  source @lines — append @ plus line ranges to return ONLY those lines of the declaration, for "
+        + "reading one region of a long member instead of all of it: source@46-76, source:code@46-76;79-83, "
+        + "source:code-comments@60- (line 60 to the declaration's end), source@-50 (its start through 50), "
+        + "source@52 (one line). Ranges are ABSOLUTE file line numbers, the same ones declarationSites and "
+        + "every rendered line's own NN: gutter report, so a span read off an earlier response is directly "
+        + "reusable; separate several with ';' (not ',', which already separates include's component "
+        + "names). Selection is a pure filter that never renumbers a line, so it composes with the "
+        + "-modifiers above in either order — a line those dropped stays dropped even if a range names it. "
+        + "A range running past the declaration clamps to it; one entirely outside it returns no lines "
+        + "rather than an error. Whenever @ is used the response adds sourceLines: \"kept/whole\" (e.g. "
+        + "\"46-76/38-96\", or \"none/38-96\" when the ranges missed) — read it, because contentVersion "
+        + "still covers the WHOLE symbol, so a lease taken from a slice must not be mistaken for having "
+        + "seen all of it. Not valid with symbols (batch): one line span cannot apply to several files.\n"
         + "  xmlDoc — {summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}, each "
         + "XML-stripped to plain text and absent when that tag isn't in the doc comment (xmlDoc itself is "
         + "absent only when none of them are). params/typeParams are arrays of {name, text}, one per "
@@ -52,6 +79,15 @@ public static class ContextTools
         + "  mechanicalFacts — server-computed structural facts as opaque JSON; null if the body changed "
         + "since they were computed. Not suppressed by source — this is server-computed analysis, not text "
         + "already visible by reading the declaration.\n"
+        + "  bodyOutline — control-flow landmarks inside a method-like body as [{text, startLine, endLine, "
+        + "depth}], for navigating a long body without reading it: switch/case, if, foreach/for/while/do, "
+        + "catch, using, lock. Anonymous constructs (bare try, else, finally) are omitted — infer their span "
+        + "from the parent row. text is a short label (e.g. \"switch(node)\", \"if (StateMemberOf..)\"), "
+        + "truncated to a fixed character budget, not a semantic summary. Computed purely from syntax, so it "
+        + "costs the same tier as source rather than mechanicalFacts' semantic-model tier. Null for a symbol "
+        + "with no body of its own (a type, a field, an auto-property). A sibling bodyOutlineNote string "
+        + "appears when the declaration is short enough (<40 lines) that source:code is likely cheaper than "
+        + "the outline — advisory only, the rows are still returned.\n"
         + "  referenceCounts — {implementations, overrides} always; adds {callers, tests} for a member "
         + "(never present for a type, since call edges are recorded against members only).\n"
         + "  recentLog — the last few development-log entries touching this symbol, each carrying "
@@ -71,7 +107,8 @@ public static class ContextTools
         + "include takes exactly one of: omitted or \"standard\" (default) for xmlDoc+referenceCounts+recentLog, "
         + "the set meaningful on nearly every call; \"all\" for every component above; or a comma-separated "
         + "list of component names, which REPLACES the default rather than adding to it — a literal query of "
-        + "exactly the columns you want, e.g. include:\"source\" for just the text, or "
+        + "exactly the columns you want, e.g. include:\"source\" for just the text, include:\"source:code\" for "
+        + "the same without its leading doc comment, include:\"source:code@46-76\" for one region of it, or "
         + "include:\"xmlDoc,mechanicalFacts,referenceCounts,recentLog\" for everything except source. "
         + "modifiers is not a valid include name — it is always computed, not opt-in (see above). A "
         + "misspelled name is an invalid_component error, not silently dropped. "
@@ -88,9 +125,14 @@ public static class ContextTools
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
-            + "names that replaces the default set exactly: source, xmlDoc, mechanicalFacts, "
-            + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings. See the tool "
-            + "description for what each returns, and for why source suppresses several of these.")] string? include = null,
+            + "names that replaces the default set exactly: source (optionally source:code, or either mode "
+            + "with -tag/-attributes/-comments modifiers subtracted, e.g. source:full-remarks-attributes or "
+            + "source:code-comments, and/or an @ line selection returning only those absolute file lines, "
+            + "e.g. source@46-76 or source:code@46-76;79-83), xmlDoc, mechanicalFacts, bodyOutline, referenceCounts, "
+            + "recentLog, members, attributes, baseType, interfaces, usings. See the tool description for "
+            + "what each returns, for the full @ grammar, and for why source suppresses several of "
+            + "these.")] string? include = null,
+
         [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
             + "see symbols.")] string? knownVersion = null,
         [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
@@ -98,7 +140,9 @@ public static class ContextTools
         [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
             + "every entry. knownVersion/refetch are ignored here — leasing needs one token per symbol, "
             + "which a single knownVersion cannot express, so every batch result carries full content "
-            + "regardless of what the caller already holds. Exactly one of symbol or symbols is required.")]
+            + "regardless of what the caller already holds. A source @line selection is rejected here, "
+            + "since one span of file lines cannot apply to several symbols. Exactly one of symbol or "
+            + "symbols is required.")]
             string[]? symbols = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -108,6 +152,18 @@ public static class ContextTools
         var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
         if (targets is not { Length: > 0 })
             return Formats.Render(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." });
+
+        // A line selection names a span in one specific file, so applying the same include unchanged to
+        // every entry would slice each symbol by another one's line numbers. Rejected rather than
+        // silently returning fragments that look like real answers.
+        if (symbols is { Length: > 0 } && SymbolComponents.Resolve(include, out _) is { HasSlicedSource: true })
+        {
+            return Formats.Render(new
+            {
+                error = "lines_with_batch",
+                detail = "A source @line selection applies to one symbol's own file lines; fetch it with symbol, not symbols.",
+            });
+        }
 
         if (targets is [var only] && symbols is null)
         {
@@ -619,6 +675,11 @@ private static async Task<object> BuildContent(
         // modifiers (accessibility included), xmlDoc, attributes, baseType, interfaces.
         var hasSource = components.Has(SymbolComponents.Source);
 
+        // ...except when source was narrowed to specific lines, which usually cut the signature line out
+        // of the response entirely. Restating it then is not duplication, it is the only thing saying
+        // what member the fragment belongs to, so displayString/modifiers come back.
+        var restatesSignature = hasSource && !components.HasSlicedSource;
+
         // referenceCounts is the one component with a real latency cost — it awaits the semantic model —
         // so it is computed only when asked for, rather than computed and then thrown away.
         var counts = components.Has(SymbolComponents.ReferenceCounts) && indexBuilder.Ready
@@ -648,12 +709,19 @@ private static async Task<object> BuildContent(
             ? namedType.Interfaces.Select(TypeRef).ToArray()
             : null;
 
+        // The whole declaration first, then the caller's line selection over it: the unsliced list is
+        // what the reported span is measured against, so both come from one render rather than two.
+        var declarationSource = hasSource ? SourceOf(sym, components.SourceQuery) : null;
+        var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
+
+        var outline = components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
+
         // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
         // unpopulated field is pure overhead until it carries data.
         return new
         {
             kind = SymbolKey.KindOf(sym),
-            displayString = hasSource ? null : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            displayString = restatesSignature ? null : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             // "external": no location in this repo's own solution — a BCL/NuGet symbol resolved via its
             // stored documentation-comment id (see ResolveExternalAsync), never a declaration this repo
             // walked. Unconditional: cheap, and callers need it to know why declarationSites/source/xmlDoc
@@ -661,7 +729,14 @@ private static async Task<object> BuildContent(
             origin = sym.Locations.Any(l => l.IsInSource) ? "source" : "external",
             containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
-            source = hasSource ? SourceOf(sym) : null,
+            source,
+            // Emitted only for a slice, because only a slice can mislead: contentVersion is fingerprinted
+            // over the whole symbol, so a caller leasing off a fragment would otherwise hold a token for
+            // content it never saw. "kept/whole", or "none/whole" when the ranges missed the declaration
+            // entirely — which also states the range that would have worked.
+            sourceLines = components.HasSlicedSource && declarationSource is { Count: > 0 }
+                ? $"{LineSpan(source)}/{declarationSource[0].Line}-{declarationSource[^1].Line}"
+                : null,
             xmlDoc = !hasSource && components.Has(SymbolComponents.XmlDoc)
                 ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
@@ -670,14 +745,26 @@ private static async Task<object> BuildContent(
             mechanicalFacts = components.Has(SymbolComponents.MechanicalFacts)
                 ? MechanicalFactsFor(sym, symbolStore)
                 : null,
+            // Control-flow landmarks, computed purely from syntax like source rather than the semantic
+            // model mechanicalFacts needs — null for a symbol with no executable body of its own (a type,
+            // a field, an auto-property). bodyOutlineNote is an advisory, not an error, for a declaration
+            // short enough that source:code would likely cost fewer tokens than this.
+            bodyOutline = outline?.Rows.Select(r => (object)new
+            {
+                text = r.Text,
+                startLine = r.StartLine,
+                endLine = r.EndLine,
+                depth = r.Depth,
+            }).ToArray(),
+            bodyOutlineNote = outline?.Note,
             referenceCounts = counts,
             members,
             attributes = !hasSource && components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
             // Unconditional like displayString, not an opt-in include component: the literal modifier
             // phrase already subsumes accessibility ("public sealed" states both), so there is no separate
             // accessibility field at all. Suppressed when source is also requested, since source's own
-            // signature line already states the modifiers as text.
-            modifiers = hasSource ? null : DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym),
+            // signature line already states the modifiers as text — unless that line was sliced away.
+            modifiers = restatesSignature ? null : DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym),
             baseType,
             interfaces,
             usings = components.Has(SymbolComponents.Usings) ? UsingsOf(sym) : null,
@@ -821,17 +908,174 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
             .Select((line, i) => new SourceLine(startLine + i, line))
             .ToArray();
 
-    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym)
+    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SourceQuery? query = null)
     {
         var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)
             return null;
         var node = NormalizeDeclNode(reference.GetSyntax());
+        return SourceLinesOf(node, query ?? SourceQuery.Full);
+    }
+
+    /// <summary>
+    /// Control-flow landmarks for one member's body (spec §9 <c>bodyOutline</c>), plus an advisory note
+    /// when the declaration is short enough that <c>source:code</c> is likely cheaper than the outline.
+    /// Null for anything without a syntax reference, or without an executable body of its own (a type, a
+    /// field, an auto-property).
+    /// </summary>
+    private static (IReadOnlyList<OutlineRow> Rows, string? Note)? BodyOutlineFor(ISymbol sym)
+    {
+        const int minWorthwhileLines = 40;
+        if (sym is not IMethodSymbol)
+            return null;
+        var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
+        if (reference is null)
+            return null;
+
+        var node = NormalizeDeclNode(reference.GetSyntax());
+        var rows = BodyOutlineExtractor.Extract(node);
+        // Doc-comment-inclusive bounds, matching declarationSites/SourceLinesOf's SourceMode.Full span —
+        // node.Span alone excludes leading trivia and would undercount a well-documented short method as
+        // shorter than the source fetch its own declarationSites promises.
         var (start, end) = DeclarationBoundsIncludingDocComment(node);
+        var lineSpan = node.SyntaxTree!.GetLineSpan(TextSpan.FromBounds(start, end));
+        var lineCount = lineSpan.EndLinePosition.Line - lineSpan.StartLinePosition.Line + 1;
+        var note = lineCount < minWorthwhileLines
+            ? $"declaration is {lineCount} lines (<{minWorthwhileLines}) - source:code is likely cheaper than this outline"
+            : null;
+        return (rows, note);
+    }
+
+    /// <summary>
+    /// Slices <paramref name="node"/>'s own source text for the <c>source</c> component per
+    /// <paramref name="query"/> — <see cref="SourceMode.Full"/> widens the start to include a leading doc
+    /// comment (see <see cref="DeclarationBoundsIncludingDocComment"/>); <see cref="SourceMode.Code"/> uses
+    /// the node's own <see cref="SyntaxNode.Span"/>, which already excludes all leading trivia including
+    /// that comment. <see cref="ExcludedLines"/> then drops whatever <paramref name="query"/> subtracts on
+    /// top of that: every nested doc comment under <see cref="SourceMode.Code"/>, specific doc-comment tags
+    /// under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under either, whenever they
+    /// occupy a whole standalone line.
+    /// </summary>
+    private static IReadOnlyList<SourceLine> SourceLinesOf(SyntaxNode node, SourceQuery query)
+    {
+        var (start, end) = query.Mode == SourceMode.Code
+            ? (node.SpanStart, node.Span.End)
+            : DeclarationBoundsIncludingDocComment(node);
         var tree = node.SyntaxTree!;
+        var text = tree.GetText();
         var span = TextSpan.FromBounds(start, end);
         var startLine = tree.GetLineSpan(span).StartLinePosition.Line + 1;
-        return SplitLines(tree.GetText().ToString(span), startLine);
+        var lines = SplitLines(text.ToString(span), startLine);
+
+        var excluded = ExcludedLines(node, text, query);
+        return excluded.Count == 0 ? lines : lines.Where(l => !excluded.Contains(l.Line)).ToArray();
+    }
+
+    /// <summary>
+    /// Narrows already-rendered source lines to the query's <c>@</c> ranges, or returns them untouched
+    /// when the query selected none.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a filter over the absolute line numbers <see cref="SourceLinesOf"/> already assigned,
+    /// never a re-slice of the text: that is what lets a range and a <c>-modifier</c> exclusion compose
+    /// in either order, and what keeps every surviving line's number directly usable as a
+    /// validate_patch startLine/endLine. A range reaching past the declaration therefore clamps to it on
+    /// its own, and one entirely outside it yields no lines rather than an error — the <c>sourceLines</c>
+    /// span reported alongside says which happened.
+    /// </remarks>
+    /// <param name="lines">The declaration's lines, already stripped per the query's modifiers.</param>
+    /// <param name="query">The resolved source query whose <see cref="SourceQuery.Lines"/> to apply.</param>
+    /// <returns>The lines falling inside at least one requested range, in their original order.</returns>
+    private static IReadOnlyList<SourceLine> SelectLines(IReadOnlyList<SourceLine> lines, SourceQuery query) =>
+        query.Lines.Count == 0
+            ? lines
+            : lines.Where(l => query.Lines.Any(r => r.Contains(l.Line))).ToArray();
+
+    /// <summary>Renders a line list's own extent as <c>"first-last"</c>, or <c>"none"</c> when empty.</summary>
+    /// <param name="lines">The lines to describe.</param>
+    /// <returns>A compact span string for the <c>sourceLines</c> field.</returns>
+    private static string LineSpan(IReadOnlyList<SourceLine>? lines) =>
+        lines is { Count: > 0 } ? $"{lines[0].Line}-{lines[^1].Line}" : "none";
+
+    /// <summary>
+    /// Absolute 1-based file lines to drop from <paramref name="node"/>'s rendered source per
+    /// <paramref name="query"/>: the whole doc comment under <see cref="SourceMode.Code"/> (a member's own
+    /// <c>///</c> block, not just the requested symbol's leading one — already excluded via its span
+    /// start), specific tags under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under
+    /// either — always whole standalone lines (<see cref="IsWholeLine"/>), never a line shared with code.
+    /// </summary>
+    private static HashSet<int> ExcludedLines(SyntaxNode node, SourceText text, SourceQuery query)
+    {
+        var lines = new HashSet<int>();
+
+        foreach (var trivia in node.DescendantTrivia())
+        {
+            if (trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
+                trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))
+            {
+                if (query.Mode == SourceMode.Code)
+                    AddSpan(lines, trivia.Span, text);
+                else if (query.ExcludedTags.Count > 0 && trivia.GetStructure() is DocumentationCommentTriviaSyntax doc)
+                    foreach (var xmlNode in doc.Content)
+                        if (TagNameOf(xmlNode) is { } tagName && query.ExcludedTags.Contains(tagName))
+                            AddSpan(lines, xmlNode.Span, text);
+                continue;
+            }
+
+            if (query.ExcludeComments &&
+                (trivia.IsKind(SyntaxKind.SingleLineCommentTrivia) || trivia.IsKind(SyntaxKind.MultiLineCommentTrivia)) &&
+                IsWholeLine(trivia.Span, text))
+            {
+                AddSpan(lines, trivia.Span, text);
+            }
+        }
+
+        if (query.ExcludeAttributes)
+            foreach (var attributeList in node.DescendantNodes().OfType<AttributeListSyntax>())
+                if (IsWholeLine(attributeList.Span, text))
+                    AddSpan(lines, attributeList.Span, text);
+
+        return lines;
+    }
+
+    /// <summary>The doc-comment element's own XML local tag name (e.g. <c>"remarks"</c>, <c>"exception"</c>).</summary>
+    private static string? TagNameOf(XmlNodeSyntax xmlNode) => xmlNode switch
+    {
+        XmlElementSyntax element => element.StartTag.Name.LocalName.Text,
+        XmlEmptyElementSyntax empty => empty.Name.LocalName.Text,
+        _ => null,
+    };
+
+    /// <summary>
+    /// True when nothing but whitespace shares <paramref name="span"/>'s first and last line with it — the
+    /// bar for a whole-line removal. An attribute or comment inline with real code (e.g.
+    /// <c>[Fact] public void Foo()</c>, or a trailing <c>// comment</c>) is left untouched rather than
+    /// partially rewriting that line's text.
+    /// </summary>
+    private static bool IsWholeLine(TextSpan span, SourceText text)
+    {
+        var startLine = text.Lines.GetLineFromPosition(span.Start);
+        if (!string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(startLine.Start, span.Start))))
+            return false;
+
+        var endLine = text.Lines.GetLineFromPosition(Math.Max(span.Start, span.End - 1));
+        return string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(span.End, endLine.End)));
+    }
+
+    /// <summary>
+    /// Adds every absolute 1-based line <paramref name="span"/> touches to <paramref name="lines"/>. Uses
+    /// <c>Span.End - 1</c>, not the raw end position, since a trivia span's end often lands at column 0 of
+    /// the FOLLOWING line (its trailing newline is part of its own span) — the raw end would then wrongly
+    /// mark that next line (real code) as covered too.
+    /// </summary>
+    private static void AddSpan(HashSet<int> lines, TextSpan span, SourceText text)
+    {
+        if (span.IsEmpty)
+            return;
+        var startLine = text.Lines.GetLineFromPosition(span.Start).LineNumber;
+        var endLine = text.Lines.GetLineFromPosition(Math.Max(span.Start, span.End - 1)).LineNumber;
+        for (var line = startLine; line <= endLine; line++)
+            lines.Add(line + 1);
     }
 
     /// <summary>
@@ -1155,10 +1399,11 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 .FirstOrDefault(n => n.SyntaxTree.GetLineSpan(n.Span).StartLinePosition.Line + 1 == hit.Line);
             if (node is not null)
             {
-                var (decl, body) = SyntaxFingerprint.Compute(NormalizeDeclNode(node));
+                var normalized = NormalizeDeclNode(node);
+                var (decl, body) = SyntaxFingerprint.Compute(normalized);
                 version = ContentVersion.Of(decl, body).ToString();
                 if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
-                    source = SplitLines(node.ToString(), hit.Line);
+                    source = SourceLinesOf(normalized, parts.SourceQuery);
             }
         }
         catch

@@ -113,6 +113,9 @@ Do this instead:
     symbolId, file, and line, all in one call.
   - Know the type/member name: get_symbol(symbol: "...", include: "members") to enumerate a type, or
     the default include for one member's declaration, xmlDoc, and reference counts.
+  - Only need certain lines of a long member (what sed -n '120,160p' would have done):
+    get_symbol(symbol: "...", include: "source:code@120-160") returns just those absolute file lines,
+    ';'-separate several ranges; the response's sourceLines says what you got vs the whole span.
   - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
     declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
     equivalent yet - say so and ask the user to allow the Bash command explicitly.

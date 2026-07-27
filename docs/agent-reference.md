@@ -17,7 +17,7 @@ instance, and how to merge their output.
 
 ## Setup — before reviewing anything
 
-1. **Read the standards** — all nine files (or only the `focus:` aspects' files when the invoking
+1. **Read the standards** — all files listed in `csharp-standards.md`'s index (or only the `focus:` aspects' files when the invoking
    prompt explicitly narrows), each checked for a repo-local override first:
    `${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else
    `${CLAUDE_PLUGIN_ROOT}/.claude/rules/<name>.md`. A repo-local file fully replaces the bundled
@@ -31,8 +31,14 @@ instance, and how to merge their output.
    under Boundaries below).
 3. **Orient with symbol retrieval, not file reads.** Locate things with `search_index`; get a type's
    members with `get_symbol` (`include: "members"`) and a specific symbol's source with
-   `include: "all"`. Only `Read` a file in full when you're about to judge specific lines and
-   `get_symbol` didn't give you them. Trace callers, implementations and overrides with `get_references`
+   `include: "all"`. When you need only part of a long declaration — a region a diagnostic or an earlier
+   fetch already pointed you at — narrow it with `include: "source:code@120-160"` rather than re-reading
+   the whole member; the response's `sourceLines` states what you got against the whole span. On a long,
+   unfamiliar member where the right region isn't known yet, `include: "bodyOutline"` maps its
+   control-flow landmarks (`switch`/`case`, `if`, loops, `catch`) with line spans first, cheaply, so the
+   follow-up slice targets the right lines instead of guessing. Only `Read`
+   a file in full when you're about to judge specific lines and no `get_symbol` fetch, sliced or whole,
+   gave you them. Trace callers, implementations and overrides with `get_references`
    rather than grepping — a text search misses interface and virtual dispatch and returns comment hits.
    Three more tools answer questions symbol lookup cannot, and each replaces a guess with a fact:
    `get_scope` (what is actually callable at a line, including extension methods — use it before
@@ -124,5 +130,12 @@ consuming repo, shared across all parallel instances since every instance is the
 every note with the aspect it applies to (e.g. `[performance] ...`). Record concise, factual notes on:
 project-specific conventions confirmed intentional (via a `search_log` hit or repeated deliberate
 pattern) so you stop re-flagging them, recurring finding classes, and anything the standards don't
-cover that this project has clearly standardized on. Memory does not authorize editing anything in
-`.claude/rules/` — standards changes stay with the main agent and the user.
+cover that this project has clearly standardized on.
+
+**The `Write`/`Edit` you have exist for this memory namespace and nothing else.** `memory: project`
+is why the harness grants them at all — the agent's `tools:` frontmatter does not list them. They
+authorize writing under `.claude/agent-memory/dotnet-toolkit-dotnet-code-review/` only. Never write
+or edit anything else: not `.cs` files (fixes go back to the invoking agent as findings — you have
+no `validate_patch` and must not route around it), not `.claude/rules/` (standards changes stay with
+the main agent and the user), not docs, skills, or config. Your deliverable is the review, never a
+patch. Nothing in this file's tool grant makes you a writer; if a finding needs a change, report it.

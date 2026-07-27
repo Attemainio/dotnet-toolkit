@@ -1,6 +1,6 @@
 ---
 name: dotnet-toolkit-init
-description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Writes an always-loaded protocol rule into .claude/rules/ that mandates the MCP tools over Grep/Read/find for C#, and copies the plugin's nine coding-standards files alongside it, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
+description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Writes an always-loaded protocol rule into .claude/rules/ that mandates the MCP tools over Grep/Read/find for C#, and copies the plugin's coding-standards files (the full list lives in .claude/rules/csharp-standards.md's index) alongside it, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
 ---
 
 # Wiring dotnet-toolkit into a project
@@ -39,7 +39,7 @@ exact content and wait for a yes.
 | File(s) | Content |
 | --- | --- |
 | `.claude/rules/dotnet-toolkit-csharp.md` | the protocol rule (template below): tool table, write path, standards index, write-time checklist. **Always-loaded** — no `paths:` frontmatter. |
-| `.claude/rules/{naming,styling,best-practices,antipatterns,performance,concurrency,security,testing,xml-documentation}.md` | verbatim copies of the plugin's nine standards files from `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` — the repo owns editable copies; re-running this skill refreshes them (diffed, backed up) |
+| `.claude/rules/{naming,styling,best-practices,antipatterns,architecture,api-design,error-handling,resource-management,performance,concurrency,security,testing,xml-documentation}.md` | verbatim copies of the plugin's standards files from `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` (the current list always matches `csharp-standards.md`'s index) — the repo owns editable copies; re-running this skill refreshes them (diffed, backed up) |
 
 The standards are copied rather than referenced so the repo can edit them into its own convention set.
 A repo that would rather track the plugin's versions can decline the copies in Step 5 and rely on
@@ -58,7 +58,7 @@ Read `CLAUDE.md` if present (read-only, for Step 3's conflict check — it is ne
 `.claude/rules/`. The project's own conventions take priority over anything this skill adds. Concretely:
 
 - Never reorder, reword, or remove anything already in `.claude/rules/`.
-- **Name collisions**: if the repo already has a `.claude/rules/naming.md` (or any of the nine names),
+- **Name collisions**: if the repo already has a `.claude/rules/naming.md` (or any of the standards names, per `csharp-standards.md`'s index),
   that file is the repo's own — do not overwrite it. Surface the collision in Step 3 and propose either
   skipping that copy or writing ours under a `dotnet-toolkit-` prefix, the user's call.
 - If an existing rule already covers tool usage, code search, or "how to explore this codebase," read it
@@ -68,7 +68,7 @@ Read `CLAUDE.md` if present (read-only, for Step 3's conflict check — it is ne
 
 - `.mcp.json` at the repo root — other MCP servers registered, and what they cover.
 - `.claude/settings.json` / `.claude/settings.local.json` — enabled plugins, existing permissions.
-- `.claude/rules/*.md` — always-loaded rules that would sit in context alongside ours, any of the nine
+- `.claude/rules/*.md` — always-loaded rules that would sit in context alongside ours, any of the
   standards names already taken, and any existing security/testing coding-standards rule our checklist
   would overlap.
 - The CLAUDE.md text — any instruction of the shape "use X instead of grep/Read" for *any* language, or
@@ -145,7 +145,10 @@ The standards live beside this rule in `.claude/rules/` and are **read on demand
 session, read the relevant ones (the `dotnet-change` skill makes this a required step):
 
 - **always**: `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`
-- endpoints/auth/SQL/config/logging/crypto: `security.md` · hot paths/buffers/SIMD/`unsafe`:
+- project/namespace boundaries, new abstraction: `architecture.md` · public/internal signature change:
+  `api-design.md` · exceptions/retries/timeouts: `error-handling.md` ·
+  `IDisposable`/streams/pooling: `resource-management.md` ·
+  endpoints/auth/SQL/config/logging/crypto: `security.md` · hot paths/buffers/SIMD/`unsafe`:
   `performance.md` · awaits/locks/tasks/shared state: `concurrency.md` · tests: `testing.md` ·
   shared catalog: `antipatterns.md`
 
@@ -172,7 +175,7 @@ don't restate the other plugin's docs.
 
 Show the user, in chat (not applied yet):
 - The full protocol-rule content and its path.
-- The list of the nine standards files to be copied (titles + one line each, not full contents — offer
+- The list of standards files to be copied, per `csharp-standards.md`'s index (titles + one line each, not full contents — offer
   to show any in full), and the skip-copies alternative from "What gets written".
 - One line on what Step 3 found, and how it was handled (collisions included).
 - One line stating plainly that the protocol rule is always-loaded (rules load independently of
@@ -207,7 +210,7 @@ alongside the refresh (see "Undoing this later"), since the rule files alone are
 
 ## Undoing this later
 
-- **Remove everything**: delete `.claude/rules/dotnet-toolkit-csharp.md` and the nine standards copies
+- **Remove everything**: delete `.claude/rules/dotnet-toolkit-csharp.md` and the standards copies
   (or restore from `.claude/dotnet-toolkit/backups/`). That's the whole uninstall.
 - **If an old CLAUDE.md marker block exists from a prior version of this skill**: delete everything from
   `<!-- dotnet-toolkit:start -->` to `<!-- dotnet-toolkit:end -->` inclusive, or restore the newest

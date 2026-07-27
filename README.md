@@ -22,7 +22,7 @@ fraction of the tokens.
 
 | Domain | Tools | What it replaces |
 |---|---|---|
-| Symbol retrieval | `get_symbol`, `search_index` | Read over .cs files, ls/Glob to learn a codebase |
+| Symbol retrieval | `get_symbol`, `search_index` | Read over .cs files, ls/Glob to learn a codebase; `sed`/line-range reads to reach one region of a long member (`include: "source:code@120-160"`) |
 | Relationships | `get_references`, `get_call_slice`, `get_scope`, `get_call_hierarchy`, `get_type_hierarchy` | Grep for usages; guessing what is callable where; manually tracing callers/overrides across files |
 | Project structure | `get_project_graph`, `detect_circular_dependencies` | Reading `.csproj`/`.sln` references by hand to map project dependencies |
 | History | `get_semantic_diff`, `search_log` | Reading textual diffs; re-proposing rejected designs |
@@ -59,7 +59,8 @@ Installing the plugin makes the tools *available*; it doesn't make a fresh sessi
 *prefer* them over Grep/Read/`dotnet build`, and it can't auto-load the coding standards (plugins have
 no mechanism for that). Run `/dotnet-toolkit-init` once per repo to fix both: it drafts an additive,
 always-loaded `.claude/rules/dotnet-toolkit-csharp.md` protocol rule (backing off if another plugin
-already governs code search there) plus copies of the nine standards files, shows you the exact plan,
+already governs code search there) plus copies of the standards files (list in
+`.claude/rules/csharp-standards.md`'s index), shows you the exact plan,
 and writes only after you approve — backing up anything it replaces so it's fully reversible. It never
 modifies your `CLAUDE.md`: `.claude/rules/` loads independently, so the rule files stand on their own.
 See `skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
@@ -149,11 +150,12 @@ no longer loaded.
 - `.claude/dotnet-toolkit/cache/` in any repo you pointed it at — the SQLite knowledge store
   (symbol index, dev log, telemetry). Self-gitignored and always rebuildable from source; deleting it
   just forces a rebuild on the next session.
-- If you ran `/dotnet-toolkit-init` in a repo: `.claude/rules/dotnet-toolkit-csharp.md`, the nine
+- If you ran `/dotnet-toolkit-init` in a repo: `.claude/rules/dotnet-toolkit-csharp.md`, the
   standards-file copies it wrote alongside it (`naming.md`, `styling.md`, `best-practices.md`,
-  `antipatterns.md`, `performance.md`, `concurrency.md`, `security.md`, `testing.md`,
-  `xml-documentation.md` — only the ones it actually wrote; it skips any that collided with a file the
-  repo already had), and `.claude/dotnet-toolkit/backups/` (the pre-write backups it made). See
+  `antipatterns.md`, `architecture.md`, `api-design.md`, `error-handling.md`, `resource-management.md`,
+  `performance.md`, `concurrency.md`, `security.md`, `testing.md`, `xml-documentation.md` — only the
+  ones it actually wrote; it skips any that collided with a file the repo already had), and
+  `.claude/dotnet-toolkit/backups/` (the pre-write backups it made). See
   `skills/dotnet-toolkit-init/SKILL.md`'s "Undoing this later" section for the exact list — that skill
   never touches the repo's own `CLAUDE.md`, so there is nothing to restore there.
 - `.claude/dotnet-toolkit/config.json`, if you added one for solution overrides/`excludeGlobs`.

@@ -17,6 +17,7 @@ about the tool, not a reason to fall back to shell.
 | --- | --- |
 | `grep`/Grep for a type or member name | `search_index` (FTS-ranked, many terms per call) |
 | `Read` on a `.cs` file to see a type or method | `get_symbol` (declaration/body layers, no whole-file read) |
+| `Read`/`sed` to reach one region of a long member | `get_symbol` with `include: "source:code@120-160"` (absolute file lines; `;`-separate ranges) |
 | `grep` for callers, or guessing who implements an interface | `get_references` (Roslyn semantic model — sees interface, virtual, and delegate dispatch) |
 | `find`/`ls`/Glob to map a subsystem | `get_scope` |
 | Manually tracing a call chain across files | `get_call_slice` |
@@ -116,39 +117,22 @@ Caches for a target repo live in `.claude/dotnet-toolkit/cache/` under that repo
 
 `.claude-plugin/plugin.json` is the plugin manifest; `.mcp.json` registers the MCP server, launching it via `scripts/run-server.sh`, which prefers a user-local `~/.dotnet` install (needed on systems where the system-wide `dotnet` predates net10.0) over falling back to `dotnet` on `PATH`. The published server in `dist/` is what actually runs — after editing anything under `src/`, re-run `./scripts/build-plugin.sh` for a `claude --plugin-dir` session to see the change.
 
-`hooks/hooks.json` ships four hooks, fully documented in `docs/hook-reference.md` (matchers, allow/deny
-cases, the solution-membership heuristic, limits): `scripts/guard-cs-edit.sh` (PreToolUse on
-`Edit`/`Write`/`NotebookEdit` — blocks an existing `.cs` file, returning the `validate_patch` procedure),
-`scripts/guard-cs-read.sh` (PreToolUse on `Read` — blocks a `.cs` file a project actually compiles, in
-favor of `search_index`/`get_symbol`), `scripts/guard-cs-bash-read.sh` (PreToolUse on `Bash` — closes the
-same gap from the shell side: a `cat`/`sed`/`grep`/etc. command reading a governed `.cs` file's raw bytes
-is blocked the same way a `Read` on it would be, since a matcher scoped to the `Read` tool name alone
-never sees a Bash command doing the same thing), and `scripts/hint-reload-new-cs-file.sh` (PostToolUse on
-`Write` — a brand-new `.cs` file is invisible to both mtime-polling tiers, so it injects a reminder to
-call `reload_workspace(scope: "all")` before the next call touches the file). The two read guards decide
-solution membership statically from the filesystem (nearest `.csproj`, a nested `.sln`/`.slnx` exception
-for a throwaway fixture solution, `<Compile Remove>` exclusions) via one shared `scripts/lib-cs-membership.sh`,
-so they can never drift apart on the answer — a hook has no MCP pipe access, so it cannot ask the running
-server's `WorkspaceHost` directly. All four travel with the plugin — a consuming repo gets enforcement
-from installation alone — read their JSON payload through whichever of `node`/`python3`/`jq` is present,
-and fail open when none is.
+`hooks/hooks.json` ships four hooks — `guard-cs-edit.sh`, `guard-cs-read.sh`, `guard-cs-bash-read.sh`,
+`hint-reload-new-cs-file.sh` — fully documented in `docs/hook-reference.md` (matchers, allow/deny cases,
+the solution-membership heuristic, limits). They travel with the plugin, so a consuming repo gets the
+enforcement from installation alone; they read their JSON payload through whichever of `node`/`python3`/`jq`
+is present and fail open when none is.
 
-`.claude/rules/` is the **coding-standards home**, restructured 2026-07 around a verified fact: a
-path-scoped rule fires only when the built-in `Read` tool touches a matching file, and in this repo `.cs`
-contact goes through the MCP tools or is blocked by the guards — so path-scoping `**/*.cs` almost never
-fires here. The layout that follows from that:
+`.claude/rules/csharp-standards.md` is the **master index** for coding standards, restructured 2026-07
+around a verified fact: a path-scoped rule fires only when the built-in `Read` tool touches a matching
+file, and in this repo `.cs` contact goes through the MCP tools or is blocked by the guards — so
+path-scoping `**/*.cs` almost never fires here. It is the one **always-loaded** rule (no `paths:`
+frontmatter, deliberately short) and indexes every other file in `.claude/rules/`, each read
+**explicitly, on demand** by the main agent (write time, via the index and the `dotnet-change` skill's
+pre-edit step) and the review agent (all of them, per invocation). Those files' `paths: ["**/*.cs"]`
+frontmatter exists only to keep them out of the launch context, not as a load mechanism.
 
-- `csharp-standards.md` — the one **always-loaded** rule (no `paths:` frontmatter, deliberately short):
-  the read-before-writing index over the standards files, the highest-cost write-time checklist, and a
-  `validate_patch` reinforcement. It doesn't repeat the tool table above — rules load *alongside*
-  CLAUDE.md with the same priority, so a second copy would cost tokens and buy nothing.
-- Nine standards files (`naming`, `styling`, `best-practices`, `antipatterns`, `performance`,
-  `concurrency`, `security`, `testing`, `xml-documentation`) — the canonical standards both the main
-  agent (write time, via the index and the `dotnet-change` skill's pre-edit step) and the review agent
-  (all of them, per invocation) read **explicitly, on demand**. Their `paths: ["**/*.cs"]` frontmatter exists only to
-  keep them out of the launch context, not as a load mechanism.
-
-`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`, `dotnet-toolkit-init`, `dotnet-toolkit-consistency`) are the plugin's own skills, shipped to consumers — cataloged in `docs/skill-reference.md`. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`) plus the pre-edit standards-reading step; `dotnet-review` says when to delegate to the review agent below; `dotnet-toolkit-init` writes an additive, approval-gated tool-usage *and coding-standards* rule (always-loaded protocol rule *and copies of the nine standards files*) into a *consuming* repo's own `.claude/rules/` (backed up first, undoable) and never touches that repo's CLAUDE.md — `.claude/rules/` loads independently of CLAUDE.md, not appended into it, so the rule file is self-sufficient. It exists because a plugin can ship `docs/*.md`/rule files for explicit reads (`${CLAUDE_PLUGIN_ROOT}/...`), but has no manifest field to make the harness auto-load a rule the way a consuming repo's own `.claude/rules/` gets scanned — installing the plugin makes the tools available, this skill is what makes a fresh session in that repo actually prefer them and follow the security/testing checklist at write time. `dotnet-toolkit-consistency` is this repo's own internal audit — it checks `Tools/*.cs` against every file listed in "Changing the tool surface" below and fixes whatever has drifted; it ships to consumers too, but its primary use is on this repo itself.
+`skills/` (`dotnet-code-query`, `dotnet-change`, `dotnet-review`, `dotnet-toolkit-init`, `dotnet-toolkit-consistency`) are the plugin's own skills, shipped to consumers — cataloged in `docs/skill-reference.md`. `dotnet-code-query` carries the retrieval protocol (session/task ids, resolution escalation, expansion gating, leases, refetch-after-compaction); `dotnet-change` carries the write protocol (baseVersions, required intent, the sufficiency triple, batching from `suggestedInspection`) plus the pre-edit standards-reading step; `dotnet-review` says when to delegate to the review agent below; `dotnet-toolkit-init` writes an additive, approval-gated tool-usage *and coding-standards* rule (always-loaded protocol rule *and copies of the standards files*) into a *consuming* repo's own `.claude/rules/` (backed up first, undoable) and never touches that repo's CLAUDE.md — `.claude/rules/` loads independently of CLAUDE.md, not appended into it, so the rule file is self-sufficient. It exists because a plugin can ship `docs/*.md`/rule files for explicit reads (`${CLAUDE_PLUGIN_ROOT}/...`), but has no manifest field to make the harness auto-load a rule the way a consuming repo's own `.claude/rules/` gets scanned — installing the plugin makes the tools available, this skill is what makes a fresh session in that repo actually prefer them and follow the security/testing checklist at write time. `dotnet-toolkit-consistency` is this repo's own internal audit — it checks `Tools/*.cs` against every file listed in "Changing the tool surface" below and fixes whatever has drifted; it ships to consumers too, but its primary use is on this repo itself.
 
 **Invoke `dotnet-toolkit-consistency` whenever you notice — or suspect — that this plugin's own docs, skills, agent, rules, hooks, or `CLAUDE.md`/`README.md` are out of sync with the actual tool surface.** Concretely: after any tool addition/removal/rename/signature change, after editing a hook or script, after adding a new `docs/*.md` or `skills/*` file, or any time you catch a stale tool name, a missing row in one of the tables below, or a doc describing behavior the code no longer has. Don't silently patch one file and move on — run the skill so the fix is checked against every file that describes the same surface, not just the one you happened to be looking at.
 
@@ -171,7 +155,7 @@ The surface that has to move with the code:
 | `docs/hook-reference.md` | the four hooks and their scripts — matchers, allow/deny behavior, limits |
 | `docs/skill-reference.md` | the catalog of shipped skills — one entry per skill, none stale |
 | `.claude/rules/csharp-standards.md` | the always-loaded standards index — its file list must match the standards actually in `.claude/rules/`, and its `validate_patch` line must match the current write path |
-| the nine standards files in `.claude/rules/` | any MCP tool named in their review-calibration sections must still exist with the described behavior |
+| the standards files in `.claude/rules/` (list in `csharp-standards.md`'s index) | any MCP tool named in their review-calibration sections must still exist with the described behavior |
 | `skills/dotnet-toolkit-init/SKILL.md` | the rule-file template written into *consuming* repos, which embeds its own copies of the tool table and the standards-file list |
 | `scripts/guard-cs-edit.sh` | the deny message a blocked `Edit` returns — it restates the `validate_patch` procedure, so a wrong signature here teaches the wrong call at the worst moment |
 | `scripts/guard-cs-read.sh` | the deny message a blocked `Read` returns — it restates the `search_index`/`get_symbol` alternatives, so a stale tool description here teaches the wrong call at the worst moment |
@@ -179,13 +163,9 @@ The surface that has to move with the code:
 | the `[Description]` attributes in `Tools/*.cs` | what the model sees before it has read any skill — the first and often only description it gets |
 | `skills/dotnet-toolkit-consistency/SKILL.md` | the audit itself — its Step 4 table is a second copy of this table's row list, so a row added here needs the matching row added there too |
 
-For each change, make sure the docs still carry:
-
-- **the tool list** — every shipped tool appears somewhere a caller will look, and nothing appears that no longer exists;
-- **usage** — what question the tool answers and when to prefer it over the alternative;
-- **examples** — at least one real invocation with realistic arguments. Run it and use what it actually returned; an invented example that does not match the current signature is worse than none.
-
-A concrete instance of this going wrong: `get_scope`, `get_call_slice`, and `get_semantic_diff` shipped in `FlowTools.cs`/`HistoryTools.cs` and are named in **none** of the files above, so no skill or agent has ever told anyone they exist.
+For each change, make sure the docs still carry the tool list, usage guidance (what question it answers,
+when to prefer it), and at least one real, run-and-verified invocation — an invented example that doesn't
+match the current signature is worse than none.
 
 Tool signature changes are also breaking for in-process callers (the tests call these methods positionally), and any change to response shape or lease behaviour needs `Contracts/Contract.cs` bumped. After editing anything under `src/`, re-run `./scripts/build-plugin.sh` or `dist/` still serves the old surface.
 
@@ -195,57 +175,23 @@ Tool signature changes are also breaking for in-process callers (the tests call 
 a validation layer that checks code against the standards in `.claude/rules/`, not a source of standards
 itself. The standards are shared with the main agent (which reads them at write time per
 `csharp-standards.md`'s index), so writer and reviewer work from one source of truth. The agent has no
-`Edit`/`Write` or `validate_patch` access.
+`validate_patch` access, and reviews all quality aspects of one stated scope per invocation —
+parallelism is by scope partition (one instance per disjoint slice), never by aspect.
 
-**Each invocation reviews all quality aspects of one stated scope; parallelism is by scope partition,
-not by aspect.** A large target is divided into disjoint slices (per subsystem folder, per project, per
-changed-file cluster) and one instance is launched per slice in a single message — every instance covers
-every aspect of its slice, so a full review never silently skips an aspect and no file is reviewed
-twice. An optional `focus:` narrows an instance to named aspects only when the user explicitly asked for
-a narrow review. Each finding carries an aspect tag; the aspects and their evidence bars:
+**Its read-only property is enforced by instruction, not by tool grant.** The `tools:` frontmatter
+omits `Edit`/`Write`, but `memory: project` makes the harness grant them anyway so the agent can
+maintain `.claude/agent-memory/dotnet-toolkit-dotnet-code-review/` — the resolved tool list does
+include `Write` and `Edit`. What keeps it from touching source or standards is
+`docs/agent-reference.md`'s memory section, not a capability boundary. Don't reason about this agent
+as if it were sandboxed.
 
-- **`[correctness]`** — bugs, naming conventions, styling, idiomatic best practices.
-- **`[performance]`** — hot/cold-path performance: allocations, boxing, LINQ-in-hot-path,
-  buffers/`stackalloc`, SIMD, `unsafe`, performance attributes, nested-loop shapes, caching.
-- **`[concurrency]`** — async correctness, sync-over-async, locks/semaphores, `Interlocked`, shared
-  state, deadlock shapes, process-stream draining. A race/deadlock claim names the concrete
-  interleaving, traced with `get_references`/`get_call_hierarchy` — never just the pattern.
-- **`[cleanup]`** — dead code and duplication, every dead-code claim backed by a stated `get_references`
-  zero-hit check, never a guess. Reports removal candidates only.
-- **`[docs]`** — XML documentation completeness/accuracy and inline-comment quality on public API surface.
-  Unlike PandaAI's equivalent `doc-reviewer` agent (which has `Edit`/`Write` and fixes docs itself), this
-  only reports gaps — consistent with the agent's report-only design. Uses `get_symbol`'s
-  `xmlDoc` component (`null` when a `<summary>` is absent) as the missing-doc signal, not a raw file read.
-- **`[testing]`** — test coverage signal and test quality. Every coverage-gap claim is backed by a stated
-  `get_references` check for a test-project caller, the same zero-hit discipline `[cleanup]` applies to
-  dead code — never a guess from "this looks untested."
-- **`[security]`** — secrets, injection, auth explicitness, CORS/transport, PII logging, data protection.
-  No dedicated static scanner backs this aspect (no CVE/dependency check, no taint tracking) — findings
-  come from reading source via `get_symbol` and tracing usage via `get_references`, same as every other
-  aspect, and `.claude/rules/security.md` says so explicitly rather than implying broader coverage
-  than it has.
-
-**The agent's own file is deliberately thin** — frontmatter, the standards-file list, the per-aspect
-evidence disciplines, and the scope-discipline contract. All *process* (setup steps, diff/scope review
-modes, output format, severity and aspect tags, boundaries, memory discipline) lives in one shared
-`docs/agent-reference.md`. All *content* (what to actually check) lives in the nine standards files —
-the agent file only references them, never restates them, which keeps the standards a single source of
-truth rather than a reviewer-side fork of the same rules. Adding a new aspect is a new
-`.claude/rules/*.md` file plus one line in the agent's standards list — never a new agent file.
-
-It has the read-side MCP toolset — `search_index`, `get_symbol`, `get_references`, `search_log`,
-`get_scope`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`,
-`detect_circular_dependencies`, `get_semantic_diff`, `workspace_status`. The point is that it traces
-callers and implementations semantically rather than grepping, establishes reachability instead of
-assuming it, and can check whether an apparent violation was a deliberately recorded decision before
-asserting it. The log only covers changes applied through `validate_patch`, so
-`docs/agent-reference.md` tells it an empty result is not proof of absence and to mark such findings
-lower-confidence rather than asserting a violation.
+**Process, review modes, aspect tags/evidence bars, output format, and boundaries live in
+`docs/agent-reference.md` and the agent's own file — not restated here.** Adding a new aspect is a new
+`.claude/rules/*.md` file plus one line in the agent's standards list, never a new agent file.
 
 A consuming repo can override any standards file by placing its own copy at
-`.claude/dotnet-toolkit/<name>.md` — the agent prefers that over the plugin's bundled default for that
-file (and `dotnet-toolkit-init` can instead copy the whole set into the repo's own `.claude/rules/` for
-local ownership). The `dotnet-review` skill teaches the main conversation how to partition a target into
-scopes, what to tell each instance, and how to merge their output. These standards are default guidance
-for **consuming repos** installing this plugin, not a description of this repo's own style specifically —
+`.claude/dotnet-toolkit/<name>.md` (`dotnet-toolkit-init` can instead copy the whole set into the repo's
+own `.claude/rules/` for local ownership). The `dotnet-review` skill teaches the main conversation how to
+partition a target into scopes and merge instances' output. These standards are default guidance for
+**consuming repos** installing this plugin, not a description of this repo's own style specifically —
 though this repo's own code happens to follow them.

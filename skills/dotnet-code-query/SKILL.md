@@ -91,7 +91,9 @@ written. **A name that maps to several declarations (overloads) omits both field
 `get_symbol`, which separates overloads by parameter list and always returns exact spans.
 `endLine` is the declaration's own last line (trailing trivia excluded) — a cheap signal for
 whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
-whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration.
+whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration, or
+whether a large `endLine - line` span is worth mapping with `bodyOutline` first (see "When to reach
+for `bodyOutline`" below) before deciding how much of `source` to fetch.
 
 Only split into separate calls when you need different `kinds` filters.
 
@@ -194,9 +196,11 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine`. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine` — surviving lines keep their real file number even after a modifier below drops others, never renumbered. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. Suffix the component name with `:code` (`"source:code"`) to drop every `///` doc comment (the requested symbol's own and, for a type, each member's) and get just attributes + body — cheaper when you're about to edit and already have (or don't need) `xmlDoc`. Bare `"source"` is `"source:full"`. Either mode also takes `-modifier` suffixes to subtract further, e.g. `"source:full-remarks-attributes"` (drop just the `<remarks>` tag and all attributes, keep everything else) or `"source:code-comments"` (also drop `//` comments). Doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — same names as `xmlDoc`'s fields) only work under `full`; `attributes`/`comments` work under either. No `+tag` exists — a query only ever subtracts from its mode's default, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. Either mode also takes an `@` line selector — see the row below. |
+| `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), returning only those lines. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (to the declaration's end), `"source@-50"` (from its start), `"source@52"` (one line). Ranges are **absolute file line numbers**, the same ones `declarationSites` and each line's own number report, so a span from any earlier response is reusable as-is; separate several with `;`, **not** `,` (that already separates component names). It is a pure filter — a line a `-modifier` dropped stays dropped even if a range names it, and nothing is ever renumbered. Past the declaration it clamps; entirely outside it returns no lines rather than erroring. A slice adds `sourceLines`: `"kept/whole"` (`"46-76/38-96"`, or `"none/38-96"` on a miss) and restores `displayString`/`modifiers`, since the signature line is usually not in the slice. Rejected with `symbols` (batch) as `lines_with_batch`. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
+| `bodyOutline` | Control-flow landmarks inside a method-like body — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` — for navigating a long body before deciding what to fetch. Purely syntactic (same cost tier as `source`, not `mechanicalFacts`' semantic-model tier). Under the default `toon` format this renders as a raw indented block, same treatment `source` gets: one `text,startLine,endLine` line per landmark, indented two spaces per nesting level instead of carrying a `depth` number — `format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` array instead, since plain JSON has no indentation of its own to lean on. A bare `try`/`else`/`finally` has no name/condition of its own and is omitted; infer its span from the parent row. `text` is truncated to 28 characters with a trailing `..`, not summarized. Nesting counts among other landmark rows only, not raw syntax depth. `null` for anything without an executable body of its own. A sibling `bodyOutlineNote` string appears (rows still returned) when the declaration is under 40 lines — see below. |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
@@ -211,7 +215,8 @@ like the skeleton, not opt-in (see below).
 The skeleton is `kind`, `origin`, `containingType`, `declarationSites` — unconditional, every call gets
 it. `displayString` and `modifiers` (the literal C# modifier phrase, e.g. `"public sealed"`, `"public
 override"`) sit one tier below: also computed on every call, but suppressed to `null` when `source` is
-also requested, since the declaration's own signature line already states both as text. **There is no
+also requested, since the declaration's own signature line already states both as text — **unless the
+source was line-sliced** (`@`), which usually cuts that line out, so both come back. **There is no
 `accessibility` field** — `modifiers` already carries it, so a second field saying the same thing would
 just be duplication. `source` itself reads exactly as it does in the file, no header line prepended.
 
@@ -230,16 +235,52 @@ Examples:
   no `referenceCounts` latency cost (it waits on the semantic model) and no history lookup.
 - `include: "attributes"` — check `[Authorize]`/`[AllowAnonymous]`/`[Obsolete]` presence on a
   member without a `source` fetch; the review agent's `[security]` and `[docs]` aspects use this.
+- `include: "source:code@120-160"` — one region of a long member. See below for when that pays.
 
 An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
 misspelled name is an `invalid_component` error rather than being silently dropped.
+
+### When to slice `source` with `@`, and when not to
+
+An `@` selection is worth it when you already know **where** in a long declaration you need to look and
+the rest is dead weight — a stack frame or diagnostic naming a line, a span you noted from an earlier
+fetch, or a second pass into a member you have already read once. Two hundred lines fetched to read
+thirty is the case it exists for.
+
+It is **not** worth it as a default. Below roughly 40–60 lines a whole declaration costs less than the
+slice plus the follow-up you will issue when the slice turns out to be the wrong region — you pay two
+round trips for one answer. Fetch the member whole the first time; slice on the way back in.
+
+Two things to hold when you do slice:
+
+- **The lease still covers the whole symbol.** `contentVersion` is fingerprinted over the entire
+  declaration, not the lines you received, so holding it never means you have seen all of it. `sourceLines`
+  (`"92-93/90-94"`) is the field that says what you actually got — read it rather than assuming the
+  response is the member.
+- **A miss is silent by design.** Ranges outside the declaration return `"source":[]` with
+  `"sourceLines":"none/90-94"` instead of an error, because the response still carries the skeleton and
+  the real span. If you get `none`, re-read the denominator and ask again — don't conclude the symbol has
+  no body.
+
+### When to reach for `bodyOutline`
+
+Use it as a **map before a fetch**, not a replacement for one: a long, unfamiliar member where you don't
+yet know which region to slice with `source@`. A `switch` with a dozen cases, or a member `search_index`'s
+`endLine - line` flags as large, is the shape it pays off on — the rows tell you which case/branch to
+slice next instead of guessing a line range or reading the whole thing.
+
+It is **not** worth it below roughly 40 lines (doc-comment-inclusive, the same bound `declarationSites`
+reports) — `bodyOutlineNote` says so explicitly rather than silently degrading to something else, but the
+rows still come back so the response is never a dead end. And it is not a substitute for reading the
+region once you've located it: `text` is a truncated label for navigation, not a summary you can reason
+from in place of the actual condition/expression.
 
 ### Location is always there
 
 Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` —
 regardless of `include`. It is part of the unconditional skeleton (`kind`, `origin`, `containingType`,
 `declarationSites` — plus `displayString`/`modifiers`, computed the same way but suppressed when
-`source` is also requested), and the spans are computed live rather than read from a cache, so they are
+an unsliced `source` is also requested), and the spans are computed live rather than read from a cache, so they are
 correct even for a symbol split across partial-class files.
 
 That means **"where does this live?" never costs a second call or an extra component**, and those

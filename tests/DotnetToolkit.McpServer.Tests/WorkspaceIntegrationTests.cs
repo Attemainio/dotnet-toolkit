@@ -628,6 +628,310 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal(fileLines[startLine - 1], sourceLines[0].GetProperty("text").GetString());
     }
 
+    /// <summary>
+    /// source:code renders the same declaration minus its leading doc comment — the signature line
+    /// itself, not the comment above it, is where source:code's own span starts.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceCode_ExcludesLeadingDocComment()
+    {
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source"));
+        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code"));
+
+        var fullFirstLine = full.GetProperty("content").GetProperty("source")[0];
+        var codeSource = code.GetProperty("content").GetProperty("source");
+
+        Assert.Contains("/// <summary>", fullFirstLine.GetProperty("text").GetString());
+        Assert.DoesNotContain(
+            codeSource.EnumerateArray(),
+            line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
+        Assert.True(codeSource[0].GetProperty("line").GetInt32() > fullFirstLine.GetProperty("line").GetInt32());
+    }
+
+    /// <summary>
+    /// source:code on a whole type also strips each MEMBER's own doc comment, not just the type's own —
+    /// otherwise a type-level fetch would still carry every member's /// block untouched.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceCode_ExcludesMemberLevelDocCommentsToo()
+    {
+        var full = Root(await GetSymbol("Sample.Lib.Widget", "source"));
+        var code = Root(await GetSymbol("Sample.Lib.Widget", "source:code"));
+
+        var fullSource = full.GetProperty("content").GetProperty("source");
+        var codeSource = code.GetProperty("content").GetProperty("source");
+
+        Assert.Contains(
+            fullSource.EnumerateArray(),
+            line => line.GetProperty("text").GetString()!.Contains("Spins the widget"));
+
+        Assert.DoesNotContain(
+            codeSource.EnumerateArray(),
+            line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
+        Assert.Contains(
+            codeSource.EnumerateArray(),
+            line => line.GetProperty("text").GetString()!.Contains("public int Spin(int turns)"));
+    }
+
+    /// <summary>A -tag modifier drops only that doc-comment tag, leaving the rest of the comment intact.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceFullMinusRemarks_KeepsReturnsDropsRemarks()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", "source:full-remarks"));
+        var lines = root.GetProperty("content").GetProperty("source");
+
+        Assert.Contains(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("Always zero"));
+        Assert.DoesNotContain(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("returns and remarks"));
+    }
+
+    /// <summary>
+    /// -attributes drops an attribute that occupies its own whole line, but leaves one sharing a line
+    /// with real code alone — fetching the whole type (not one member) is what makes both cases visible
+    /// in a single response.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceFullMinusAttributes_DropsWholeLineButKeepsInlineAttribute()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes"));
+        var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
+
+        Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
+        Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
+        Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("WithOwnLineAttribute"));
+        Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("WithInlineAttribute"));
+    }
+
+    /// <summary>-attributes strips attributes under source:code too, not just source:full.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceCodeMinusAttributes_DropsAttributesInCodeModeToo()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", "source:code-attributes"));
+        var lines = root.GetProperty("content").GetProperty("source");
+
+        Assert.DoesNotContain(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
+        Assert.Contains(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("WithOwnLineAttribute"));
+    }
+
+    /// <summary>
+    /// -comments drops a standalone // line but leaves a trailing // comment sharing a line with code
+    /// alone — same whole-type framing as the attributes test above.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceFullMinusComments_DropsStandaloneButKeepsTrailingComment()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-comments"));
+        var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
+
+        Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
+        Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("trailing comment"));
+        Assert.Equal(2, lines.Count(l => l.GetProperty("text").GetString()!.Contains("[Obsolete]")));
+    }
+
+    /// <summary>
+    /// An attribute or // comment sharing a line with real code is left untouched even when both
+    /// -attributes and -comments are requested — whole-line removal only, never a partial-line rewrite.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceFullMinusAttributesMinusComments_InlineContentSurvivesBoth()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-comments"));
+        var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
+
+        Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
+        Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
+        Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("trailing comment"));
+    }
+
+    /// <summary>A doc-tag modifier under code is always redundant (code already excludes every tag) and rejected.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceCodeMinusRemarks_IsInvalidComponent()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", include: "source:code-remarks"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("source:code-remarks", root.GetProperty("detail").GetString());
+    }
+
+    /// <summary>An unrecognized modifier name is rejected the same way an unrecognized component is.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceFullBogusModifier_IsInvalidComponent()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", include: "source:full-bogus"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("source:full-bogus", root.GetProperty("detail").GetString());
+    }
+
+    /// <summary>An unrecognized source suffix is rejected the same way an unrecognized component is.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceBadSuffix_IsInvalidComponent()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", include: "source:bogus"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("source:bogus", root.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// An @ selector narrows source to the named absolute file lines, and reports the kept span against
+    /// the declaration's whole span so the caller can see it is holding a fragment.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceLineRange_ReturnsOnlyThoseLines()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10")).GetProperty("content");
+
+        Assert.Equal(new[] { 9, 10 }, SourceLineNumbers(content));
+        Assert.Equal("9-10/5-13", content.GetProperty("sourceLines").GetString());
+    }
+
+    /// <summary>
+    /// A slice usually cuts the signature line out, so displayString/modifiers — suppressed alongside a
+    /// whole source — come back rather than leaving a fragment that never says what it belongs to.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SlicedSource_RestoresDisplayStringAndModifiers()
+    {
+        var whole = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source")).GetProperty("content");
+        var sliced = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10")).GetProperty("content");
+
+        Assert.True(IsAbsentOrNull(whole, "displayString"));
+        Assert.True(IsAbsentOrNull(whole, "modifiers"));
+        Assert.Equal("SourceQueryFixture", sliced.GetProperty("displayString").GetString());
+        Assert.Contains("static", sliced.GetProperty("modifiers").GetString());
+    }
+
+    /// <summary>
+    /// A range and a -modifier exclusion are both filters over the same absolute line numbers, so a line
+    /// the exclusion dropped stays dropped even when a range names it.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_LineRange_ComposesWithModifierExclusions()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code@5-13")).GetProperty("content");
+
+        // Line 5 is the type's doc comment, which source:code already removed.
+        Assert.DoesNotContain(5, SourceLineNumbers(content));
+        Assert.Equal("6-13/6-13", content.GetProperty("sourceLines").GetString());
+    }
+
+    /// <summary>Disjoint ranges are separated by ';', since ',' already separates include's components.</summary>
+    [Fact]
+    public async Task GetSymbol_SeveralLineRanges_AreSemicolonSeparated()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@6;9-10")).GetProperty("content");
+
+        Assert.Equal(new[] { 6, 9, 10 }, SourceLineNumbers(content));
+    }
+
+    /// <summary>An open-ended range clamps to the declaration rather than erroring or running past it.</summary>
+    [Fact]
+    public async Task GetSymbol_OpenEndedLineRange_ClampsToTheDeclaration()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@10-")).GetProperty("content");
+
+        Assert.Equal(new[] { 10, 11, 12, 13 }, SourceLineNumbers(content));
+        Assert.Equal("10-13/5-13", content.GetProperty("sourceLines").GetString());
+    }
+
+    /// <summary>
+    /// A range missing the declaration entirely yields no lines rather than an error — sourceLines states
+    /// both that nothing was kept and which span would have worked.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_LineRangeOutsideDeclaration_ReturnsNoLinesAndNamesTheRealSpan()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@900-910")).GetProperty("content");
+
+        Assert.Empty(content.GetProperty("source").EnumerateArray());
+        Assert.Equal("none/5-13", content.GetProperty("sourceLines").GetString());
+    }
+
+    /// <summary>sourceLines is a slice-only field — an unsliced source pays nothing for it.</summary>
+    [Fact]
+    public async Task GetSymbol_UnslicedSource_OmitsSourceLines()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source")).GetProperty("content");
+
+        Assert.True(IsAbsentOrNull(content, "sourceLines"));
+    }
+
+    /// <summary>A malformed range is rejected the same way an unrecognized modifier is.</summary>
+    [Fact]
+    public async Task GetSymbol_MalformedLineRange_IsInvalidComponent()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@nope"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("source@nope", root.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// One include applies to every batch entry, but a line span belongs to one symbol's own file — so
+    /// the combination is rejected instead of slicing each symbol by another's line numbers.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_LineRangeWithBatch_IsRejected()
+    {
+        var root = Root(await GetSymbols(["Sample.Lib.Widget.Spin", "Sample.Lib.SourceQueryFixture"], include: "source@9-10"));
+
+        Assert.Equal("lines_with_batch", root.GetProperty("error").GetString());
+    }
+
+    /// <summary>
+    /// bodyOutline emits one row per control-flow landmark with text, span, and nesting depth among other
+    /// landmarks; anonymous try/finally are omitted since their span is inferable from neighboring rows.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_BodyOutline_ReturnsControlFlowLandmarks()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.Classify", include: "bodyOutline")).GetProperty("content");
+        var rows = content.GetProperty("bodyOutline").EnumerateArray().ToArray();
+
+        Assert.Equal(7, rows.Length);
+        Assert.Equal(("switch(node)", 13, 24, 0), Row(rows[0]));
+        Assert.Equal(("case int", 15, 17, 1), Row(rows[1]));
+        Assert.Equal(("case int", 18, 20, 1), Row(rows[2]));
+        Assert.Equal(("case default", 21, 23, 1), Row(rows[3]));
+        Assert.Equal(("foreach(name)", 26, 32, 0), Row(rows[4]));
+        Assert.Equal(("if (name.Length > 3)", 28, 31, 1), Row(rows[5]));
+        Assert.Equal(("catch(InvalidOperationException e..", 38, 41, 0), Row(rows[6]));
+        Assert.True(IsAbsentOrNull(content, "bodyOutlineNote"));
+    }
+
+    /// <summary>
+    /// A declaration short enough that fetching source directly is likely cheaper gets an advisory note
+    /// alongside its (possibly empty) rows, never an error or a substituted component.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_BodyOutline_NotesShortDeclarationRatherThanDegrading()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline", include: "bodyOutline")).GetProperty("content");
+
+        Assert.Empty(content.GetProperty("bodyOutline").EnumerateArray());
+        Assert.Contains("2 lines", content.GetProperty("bodyOutlineNote").GetString());
+    }
+
+    /// <summary>bodyOutline is method-only, like mechanicalFacts's semantic-model facts — null for a type.</summary>
+    [Fact]
+    public async Task GetSymbol_BodyOutline_NullForNonMethodSymbol()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture", include: "bodyOutline")).GetProperty("content");
+
+        Assert.True(IsAbsentOrNull(content, "bodyOutline"));
+        Assert.True(IsAbsentOrNull(content, "bodyOutlineNote"));
+    }
+
+    private static int[] SourceLineNumbers(JsonElement content) =>
+        [.. content.GetProperty("source").EnumerateArray().Select(l => l.GetProperty("line").GetInt32())];
+
+    private static bool IsAbsentOrNull(JsonElement element, string property) =>
+        !element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null;
+
+    private static (string Text, int StartLine, int EndLine, int Depth) Row(JsonElement row) =>
+        (row.GetProperty("text").GetString()!, row.GetProperty("startLine").GetInt32(),
+         row.GetProperty("endLine").GetInt32(), row.GetProperty("depth").GetInt32());
+
     // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
     [Fact]
     public async Task GetSymbol_LeaseHit_OmitsContent_C4()
@@ -776,8 +1080,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
             new Dictionary<string, string> { [symbolId] = version }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
-        Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean());
-        Assert.True(root.GetProperty("applied").GetBoolean());
+        Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean(), root.GetRawText());
+        Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
 
         var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
         Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol

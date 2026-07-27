@@ -93,6 +93,9 @@ Do this instead:
   - Know the type/member name: get_symbol(symbol: "...", include: "members") to enumerate a type, or
     the default include for one member's declaration, xmlDoc, and reference counts. Its source
     component includes the symbol's own leading /// doc comment now, not just the signature/body.
+  - Only need certain lines of a long member: get_symbol(symbol: "...", include: "source:code@120-160")
+    returns just those absolute file lines, ';'-separate several ranges. This is the replacement for
+    reading a file to reach one region - the response's sourceLines says what you got vs the whole span.
   - Orienting in a folder you already know: search_index(query: "...", pathPrefix: "path/to/folder")
     scopes ranked results to one file or directory.
 

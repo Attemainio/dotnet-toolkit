@@ -88,15 +88,15 @@ public static class Formats
     {
         var node = JsonNode.Parse(ToJson(envelope))!;
         var blocks = new List<(string Key, string Raw)>();
-        ExtractSourceLineBlocks(node, blocks);
-        var toon = ToonEncoder.Encode(node.Deserialize<JsonElement>());
+        ExtractRawBlocks(node, blocks);
+        var toon = ToonEncoder.Encode(node.Deserialize<JsonElement>(JsonOptions));
         if (blocks.Count == 0)
             return toon;
 
         var lines = toon.Split('\n').ToList();
         for (var i = 0; i < blocks.Count; i++)
         {
-            var idx = lines.FindIndex(l => l.Contains(SourceBlockToken(i)));
+            var idx = lines.FindIndex(l => l.Contains(RawBlockToken(i)));
             if (idx < 0)
                 continue;
             var indent = lines[idx][..(lines[idx].Length - lines[idx].TrimStart().Length)];
@@ -107,35 +107,35 @@ public static class Formats
         return string.Join('\n', lines);
     }
 
-    private static string SourceBlockToken(int index) => $"__DOTNET_TOOLKIT_SRC_BLOCK_{index}__";
+    private static string RawBlockToken(int index) => $"__DOTNET_TOOLKIT_RAW_BLOCK_{index}__";
 
-    private static void ExtractSourceLineBlocks(JsonNode? node, List<(string Key, string Raw)> blocks)
+    private static void ExtractRawBlocks(JsonNode? node, List<(string Key, string Raw)> blocks)
     {
         switch (node)
         {
             case JsonObject obj:
                 foreach (var key in obj.Select(kv => kv.Key).ToList())
                 {
-                    if (TryRenderSourceLineArray(obj[key], out var raw))
+                    if (TryRenderSourceLineArray(obj[key], out var raw) || TryRenderOutlineArray(obj[key], out raw))
                     {
-                        obj[key] = SourceBlockToken(blocks.Count);
+                        obj[key] = RawBlockToken(blocks.Count);
                         blocks.Add((key, raw));
                     }
                     else
                     {
-                        ExtractSourceLineBlocks(obj[key], blocks);
+                        ExtractRawBlocks(obj[key], blocks);
                     }
                 }
                 break;
             case JsonArray arr:
                 foreach (var item in arr)
-                    ExtractSourceLineBlocks(item, blocks);
+                    ExtractRawBlocks(item, blocks);
                 break;
         }
     }
 
     /// <summary>True (with the rendered block) only for an array whose every element is exactly a
-    /// <c>{line: number, text: string}</c> pair — the shape <see cref="ContextTools.SourceLine"/>
+    /// {line: number, text: string} pair — the shape <see cref="ContextTools.SourceLine"/>
     /// serializes to — never misfiring on an unrelated array that merely has a numeric and a string
     /// field under different names.</summary>
     private static bool TryRenderSourceLineArray(JsonNode? node, out string raw)
@@ -151,6 +151,35 @@ public static class Formats
                 || o["text"] is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
                 return false;
             sb.Append(line).Append(": ").Append((string)textVal!).Append('\n');
+        }
+        if (sb.Length > 0)
+            sb.Length--;
+        raw = sb.ToString();
+        return true;
+    }
+
+    /// <summary>True (with the rendered block) only for an array whose every element is exactly a
+    /// {text: string, startLine: number, endLine: number, depth: number} object — get_symbol's
+    /// bodyOutline shape. Rendered as one "text,startLine,endLine" line per row, indented two spaces
+    /// per depth level so the nesting reads from indentation the way every other nested TOON structure
+    /// already conveys it, instead of carrying depth as a redundant fourth column next to a visual cue
+    /// that says the same thing. JSON/compact keep the flat {text,startLine,endLine,depth} shape —
+    /// plain JSON has no indentation convention of its own to lean on instead.</summary>
+    private static bool TryRenderOutlineArray(JsonNode? node, out string raw)
+    {
+        raw = "";
+        if (node is not JsonArray arr || arr.Count == 0)
+            return false;
+        var sb = new StringBuilder();
+        foreach (var item in arr)
+        {
+            if (item is not JsonObject o || o.Count != 4
+                || o["text"] is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String
+                || o["startLine"] is not JsonValue startVal || !startVal.TryGetValue<int>(out var start)
+                || o["endLine"] is not JsonValue endVal || !endVal.TryGetValue<int>(out var end)
+                || o["depth"] is not JsonValue depthVal || !depthVal.TryGetValue<int>(out var depth))
+                return false;
+            sb.Append(' ', depth * 2).Append((string)textVal!).Append(',').Append(start).Append(',').Append(end).Append('\n');
         }
         if (sb.Length > 0)
             sb.Length--;

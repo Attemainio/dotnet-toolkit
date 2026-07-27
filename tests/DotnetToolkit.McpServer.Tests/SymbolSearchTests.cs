@@ -269,4 +269,34 @@ public class JsonEncodingTests
         Assert.Contains("\\\"hi\\\"", json);
         Assert.DoesNotContain("\\u0022", json);
     }
+
+    /// <summary>Regression: RenderToon's JsonNode-to-JsonElement round trip must reuse the relaxed
+    /// encoder, or a quoted TOON cell (forced by the embedded comma) bakes in strict Unicode escapes.</summary>
+    [Fact]
+    public void ToonQuotedCellsAreNotUnicodeEscaped()
+    {
+        var previous = Formats.Current;
+        Formats.Current = OutputFormat.Toon;
+        try
+        {
+            var toon = Formats.Render(new
+            {
+                items = new[]
+                {
+                    new { text = "SymbolComponents(HashSet<string>, SourceQuery?)" },
+                    new { text = "it's fine" },
+                },
+            });
+
+            Assert.Contains("HashSet<string>", toon);
+            Assert.Contains("it's fine", toon);
+            Assert.DoesNotContain("\\u003C", toon);
+            Assert.DoesNotContain("\\u003E", toon);
+            Assert.DoesNotContain("\\u0027", toon);
+        }
+        finally
+        {
+            Formats.Current = previous;
+        }
+    }
 }

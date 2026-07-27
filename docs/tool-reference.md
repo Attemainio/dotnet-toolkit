@@ -35,8 +35,8 @@ files with no signal the rest exists, and costs the whole file's tokens for the 
 
 | Arg | Meaning |
 |---|---|
-| `symbol` / `symbols` | Fully-qualified name, unique suffix, `Name(ParamType)` to pick an overload, or a `sym_…` id from any earlier response. Exactly one of the two. `symbols` batches several under one `include`. |
-| `include` | Omitted/`"standard"` (default: `xmlDoc, referenceCounts, recentLog`) \| `"all"` (every component) \| a comma list that REPLACES the default, e.g. `"source,members"`. |
+| `symbol` / `symbols` | Fully-qualified name, unique suffix, `Name(ParamType)` to pick an overload, or a `sym_…` id from any earlier response. Exactly one of the two. `symbols` batches several under one `include` — but an `@` line selection (below) is rejected there with `lines_with_batch`, since one span of file lines cannot apply to several symbols. |
+| `include` | Omitted/`"standard"` (default: `xmlDoc, referenceCounts, recentLog`) \| `"all"` (every component) \| a comma list that REPLACES the default, e.g. `"source,members"`, `"source:code,members"`, or `"source:code@46-76"`. |
 | `knownVersion` | A held `contentVersion` to lease against — single-symbol only. |
 | `refetch` | Force content even if the lease would otherwise say `changed:false`. |
 
@@ -44,9 +44,11 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup, even after modifiers below drop some lines: surviving entries keep their true file line number, never renumbered to close the gap. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. Takes an optional `:full`\|`:code` mode suffix on the component name itself — `"source"`/`"source:full"` (the default) include the declaration's leading `///` doc comment; `"source:code"` is the same span minus that comment (attributes and the body are unchanged), for a caller that only needs enough to modify the code and already has `xmlDoc` or doesn't need it. Either mode additionally accepts subtractive `-modifier` suffixes concatenated onto it, e.g. `"source:full-remarks-attributes"` or `"source:code-comments"`: `full`-only doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — matching `xmlDoc`'s own field names) drop that specific tag from an otherwise-full comment; `attributes`/`comments` (valid under either mode) drop C# attributes / `//` comments. There is no additive `+tag` — a query only ever subtracts from its mode's own default (everything, for `full`; no doc tags but attributes/comments still on, for `code`), so a doc-tag modifier under `code` is rejected as redundant rather than silently accepted. Every subtraction is **whole-line only**: an attribute or comment sharing a line with real code (`[Fact] public void Foo()`, or a trailing `// why`) is left untouched rather than partially rewriting that line. An unrecognized suffix (`"source:bogus"`, `"source:code-remarks"`, `"source@nope"`) is an `invalid_component` error, same as a misspelled component name. Finally, either mode accepts an **`@` line selector** returning only part of the declaration — see the row below. |
+| `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), narrowing the returned lines to those ranges — for reading one region of a long member instead of all of it. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (line 60 to the declaration's last line), `"source@-50"` (its first line through 50), `"source@52"` (one line). Ranges are **absolute file line numbers** — the same ones `declarationSites` and each rendered line's own `NN:` gutter report — so a span read off any earlier response is directly reusable; separate several with `;`, **not** `,`, which already separates `include`'s component names. Selection is a pure filter that never renumbers a line, so it commutes with the `-modifier` subtractions above: a line those dropped stays dropped even when a range names it. A range running past the declaration clamps to it; one entirely outside it returns no lines rather than erroring. Whenever `@` is used the response adds **`sourceLines`**, a `"kept/whole"` span (`"46-76/38-96"`, or `"none/38-96"` when the ranges missed the declaration entirely — which also states the span that would have worked). Read it: `contentVersion` is still fingerprinted over the **whole** symbol, so a lease taken from a slice must not be mistaken for having seen all of it. Not valid alongside `symbols` (batch) — see the `symbol`/`symbols` row. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
+| `bodyOutline` | Control-flow landmarks inside a method-like body as `[{text, startLine, endLine, depth}]` in `format:"json"`/`"compact"` — under the default `toon` format, `depth` is dropped and nesting instead reads from two-space-per-level indentation on a raw `text,startLine,endLine` block (see below), the same raw-block treatment `source` gets and for the same reason. Purely syntactic (no semantic model, so it costs the same tier as `source`, not `mechanicalFacts`' semantic-model tier) — for navigating a long body without reading it. Covers `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock`; a bare `try`/`else`/`finally` carries no name or condition of its own and is omitted — its span is inferable from the parent row. `text` is a short label (e.g. `"switch(node)"`, `"if (name.Length > 3)"`), truncated to a 28-character budget with a trailing `..`, not a semantic summary. `depth` (or indentation, under `toon`) counts nesting among *other landmark rows only*, not raw syntax depth — a landmark buried inside several plain blocks isn't deeper than one actually nested inside another landmark. `null` for anything without an executable body of its own (a type, a field, an auto-property). A sibling **`bodyOutlineNote`** string appears when the declaration (doc-comment-inclusive, matching `declarationSites`) is under 40 lines — advisory only ("`source:code` is likely cheaper than this outline"), the rows are still returned regardless |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
@@ -64,12 +66,16 @@ is unconditional: every call gets it regardless of `include`, and those line spa
 every call the same way, but suppressed to `null` when `source` is also requested, since a declaration's
 own signature line already states both as text — asking for `source` alongside `xmlDoc`/`attributes`/
 `baseType`/`interfaces`/`displayString`/`modifiers` is not a bigger fetch, it is the same fetch minus the
-duplication. **There is no `accessibility` field** — `modifiers`' literal keyword phrase already carries
+duplication. **A line-sliced `source` (`@`, above) is the exception**: a slice usually cuts the signature
+line out, so `displayString`/`modifiers` are restored rather than leaving a fragment that never says what
+member it belongs to. They stay suppressed for an unsliced `source`, and the slice-only `sourceLines`
+field appears alongside them. **There is no `accessibility` field** — `modifiers`' literal keyword phrase already carries
 it (`"public sealed"` states both), so a second field saying the same thing would be pure duplication.
-When the symbol has a leading `///` XML doc comment, `startLine` (and `source`) begin at the comment, not
-at the attribute/signature line after it — so an edit built from `declarationSites` can rewrite the doc
-comment along with the declaration. `source` itself reads exactly as the file does — no `"// in
-<ContainingType>"` header line prepended.
+When the symbol has a leading `///` XML doc comment, `startLine` (and `source`/`source:full`) begin at the
+comment, not at the attribute/signature line after it — so an edit built from `declarationSites` can
+rewrite the doc comment along with the declaration. `source:code` begins at the attribute/signature line
+instead, skipping the comment. Either mode reads exactly as the file does — no `"// in <ContainingType>"`
+header line prepended.
 
 `origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a BCL/NuGet
 symbol resolved only because this repo's own code calls, constructs, implements, or extends it (see
@@ -107,6 +113,99 @@ Each entry's `line` is directly usable as a `validate_patch` `startLine`/`endLin
 `get_symbol` round trip to learn where inside a large declaration a particular statement sits.
 `get_references`' `includeBodies:true` content carries the identical `[{line, text}]` shape.
 
+The same call with `include: "source:code"` instead drops the doc comment (lines 86–89 above) and starts
+at the signature:
+
+```json
+"source":[
+  {"line":90,"text":"    public static string NameWithoutParameters(string fqName)"},
+  {"line":91,"text":"    {"},
+  {"line":92,"text":"        var paren = fqName.IndexOf('(');"},
+  {"line":93,"text":"        return paren < 0 ? fqName : fqName[..paren];"},
+  {"line":94,"text":"    }"}]
+```
+
+`source:code` also strips a *nested* doc comment when the fetched symbol is a type — every member's own
+`///` block, not just the type's. And either mode's `-modifier` suffixes subtract further: fetching a
+whole type with `include: "source:full-remarks"` keeps every member's `<summary>`/`<returns>` but drops
+just the `<remarks>` tag's lines, wherever they occur — `line` values still jump straight to their real
+file position (e.g. `51 → 55`), never renumbered to hide the gap.
+
+Appending `@` narrows the same call to part of the declaration. Against the identical symbol, asking for
+only the two body statements — note `displayString`/`modifiers` coming back, since the signature line is
+no longer in the result, and `sourceLines` stating the kept span against the whole one:
+
+```
+get_symbol(symbol: "SymbolResolver.NameWithoutParameters", include: "source:code@92-93")
+```
+
+```json
+{"symbolId":"sym_3ea06da32ed71107","contentVersion":"decl:2b96b2c51e23|body:76ef6255ae6b",
+ "components":["source"],
+ "content":{"kind":"Method","displayString":"string SymbolResolver.NameWithoutParameters(string fqName)",
+   "origin":"source",
+   "containingType":{"symbolId":"sym_914205117b4bda00","displayString":"SymbolResolver"},
+   "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Workspace/SymbolResolver.cs",
+                         "startLine":86,"endLine":94}],
+   "source":[
+     {"line":92,"text":"        var paren = fqName.IndexOf('(');"},
+     {"line":93,"text":"        return paren < 0 ? fqName : fqName[..paren];"}],
+   "sourceLines":"92-93/90-94","modifiers":"public static"}}
+```
+
+`sourceLines`' denominator is the span of the *mode's* own text, not `declarationSites` — here
+`source:code` starts at line 90, so the whole is `90-94` while `declarationSites` still reports `86-94`
+including the doc comment. A range that misses entirely returns `"source":[]` with
+`"sourceLines":"none/90-94"`, which is why an out-of-range selection is not an error: the response
+already says both that nothing was kept and what would have worked.
+
+`include: "bodyOutline"` against `MechanicalFactsExtractor.Extract` — a real 60-line method with a
+`foreach` over a `switch`, five `case` labels each guarding an `if`, and a second `foreach`/`if` pair.
+`depth` counts nesting among landmark rows only (the outer `foreach` is `0`, the `switch` inside it is
+`1`, each `case` is `2`, the `if` inside each `case` is `3`), and a `case` label's text is its pattern's
+type name with the redundant `Syntax` suffix stripped:
+
+```
+get_symbol(symbol: "MechanicalFactsExtractor.Extract", include: "bodyOutline")
+```
+
+```json
+{"content":{"kind":"Method","bodyOutline":[
+  {"text":"foreach(node)","startLine":46,"endLine":76,"depth":0},
+  {"text":"switch(node)","startLine":48,"endLine":75,"depth":1},
+  {"text":"case ThrowStatementSyntax { Expre..","startLine":50,"endLine":53,"depth":2},
+  {"text":"if (model.GetTypeInfo(thrown).Ty..)","startLine":51,"endLine":52,"depth":3},
+  {"text":"case ThrowExpression","startLine":55,"endLine":58,"depth":2},
+  {"text":"if (model.GetTypeInfo(throwExpr...)","startLine":56,"endLine":57,"depth":3},
+  {"text":"case AwaitExpression","startLine":60,"endLine":63,"depth":2},
+  {"text":"if (model.GetSymbolInfo(awaited...)","startLine":61,"endLine":62,"depth":3},
+  {"text":"case LockStatement","startLine":65,"endLine":68,"depth":2},
+  {"text":"if (model.GetSymbolInfo(locked.E..)","startLine":66,"endLine":67,"depth":3},
+  {"text":"case AssignmentExpression","startLine":70,"endLine":74,"depth":2},
+  {"text":"if (StateMemberOf(assignment.Lef..)","startLine":72,"endLine":73,"depth":3},
+  {"text":"foreach(identifier)","startLine":79,"endLine":83,"depth":0},
+  {"text":"if (StateMemberOf(identifier, mo..)","startLine":81,"endLine":82,"depth":1}]}}
+```
+
+(The first `case` row is itself truncated to 28 characters — the label reads
+`ThrowStatementSyntax { Expression: { } thrown }` in full — which is why the `StripSyntaxSuffix` heuristic
+only shows through on the shorter labels below it.)
+
+A declaration under 40 lines (doc-comment-inclusive, here `BodyOutlineExtractor.Extract` itself) still
+returns its rows plus the advisory `bodyOutlineNote`, never an error or a substituted component:
+
+```
+get_symbol(symbol: "BodyOutlineExtractor.Extract", include: "bodyOutline")
+```
+
+```json
+{"content":{"kind":"Method","bodyOutline":[
+  {"text":"foreach(node)","startLine":30,"endLine":34,"depth":0},
+  {"text":"if (LandmarkText(node) is { } te..)","startLine":32,"endLine":33,"depth":1},
+  {"text":"foreach(var (node, text))","startLine":41,"endLine":46,"depth":0}],
+  "bodyOutlineNote":"declaration is 23 lines (<40) - source:code is likely cheaper than this outline"}}
+```
+
 **Under the default `toon` format, `source`/`content` render differently.** TOON's normal tabular
 array-of-objects encoding would quote/escape every line containing a comma or a literal `"` — which is
 nearly every real C# line — turning a method into a wall of `\"` noise. Instead, `Formats.Render`
@@ -129,6 +228,34 @@ source:
 
 `format:"json"`/`"compact"` always keep the structured `[{line, text}]` array shown above — a caller
 that needs `source` to stay strictly machine-parseable should use one of those, not the TOON default.
+
+**`bodyOutline` gets the identical raw-block treatment**, for the identical reason: nesting is
+information a flat, quoted array can only carry as a redundant `depth` number, when TOON already has a
+convention for showing nesting — indentation. Under `toon`, each row renders as `text,startLine,endLine`
+indented two spaces per depth level, `depth` itself dropped rather than repeated as text next to the
+indentation that already says it. The `MechanicalFactsExtractor.Extract` call above renders as:
+
+```
+bodyOutline:
+  foreach(node),46,76
+    switch(node),48,75
+      case ThrowStatementSyntax { Expre..,50,53
+        if (model.GetTypeInfo(thrown).Ty..),51,52
+      case ThrowExpression,55,58
+        if (model.GetTypeInfo(throwExpr...,56,57
+      case AwaitExpression,60,63
+        if (model.GetSymbolInfo(awaited...,61,62
+      case LockStatement,65,68
+        if (model.GetSymbolInfo(locked.E..,66,67
+      case AssignmentExpression,70,74
+        if (StateMemberOf(assignment.Lef..,72,73
+  foreach(identifier),79,83
+    if (StateMemberOf(identifier, mo..,81,82
+```
+
+`format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` shape shown in the JSON
+examples above — plain JSON has no indentation convention of its own to lean on instead, so `depth`
+stays explicit there.
 
 Default call, real response:
 

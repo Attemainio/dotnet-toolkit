@@ -20,9 +20,14 @@ them; a repo-local override at `.claude/dotnet-toolkit/<name>.md` wins per file)
 auto-loaded — this step is what loads them. Per `csharp-standards.md`'s index, read before editing:
 
 - **always**: `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`;
-- **when the change touches** endpoints/auth/SQL/config/logging/crypto: `security.md`;
+- **when the change touches** project/namespace boundaries or a new abstraction: `architecture.md`;
+  a public/internal signature: `api-design.md`; exceptions, retries, or timeouts: `error-handling.md`;
+  `IDisposable`/streams/pooling: `resource-management.md`;
+  endpoints/auth/SQL/config/logging/crypto: `security.md`;
   hot paths, buffers, SIMD, `unsafe`: `performance.md`; awaits/locks/tasks/shared state:
-  `concurrency.md`; tests: `testing.md`.
+  `concurrency.md`; tests: `testing.md`;
+- **skim once per session**: `antipatterns.md` — the shared catalog the other files cite by name, so a
+  rule that says "avoid the X antipattern" resolves to something you've actually read.
 
 Once per session is enough — hold them; don't re-read per edit. `dotnet-code-review` validates against
 the same files afterward, but writing to the standard beats fixing to it.

@@ -43,8 +43,9 @@ results. See `docs/agent-reference.md` for the agent's own process.
 Installing the plugin makes the tools *available*; nothing makes a fresh session in a consuming repo
 *prefer* them or follow the standards — plugins cannot ship auto-loading rules, only a repo's own
 `.claude/rules/` is scanned. This skill writes that guidance into the target repo: an always-loaded
-protocol rule (tool table, write path, standards index, write-time checklist) plus copies of the nine
-standards files into the repo's `.claude/rules/`. Approval-gated, backed up, additive — it never touches
+protocol rule (tool table, write path, standards index, write-time checklist) plus copies of the
+standards files (list in `.claude/rules/csharp-standards.md`'s index) into the repo's `.claude/rules/`.
+Approval-gated, backed up, additive — it never touches
 the repo's CLAUDE.md, and uninstall is deleting the listed files.
 
 ## `dotnet-toolkit-consistency` — the self-audit
