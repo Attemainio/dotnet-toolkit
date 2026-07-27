@@ -110,8 +110,11 @@ run.
 
 ## Boundaries — every invocation
 
-- **Never modify code.** `dotnet-code-review` has no `Edit`/`Write` tool access — this is enforced
-  structurally, not just by instruction. Report findings for the main agent (or the user) to act on.
+- **Never modify code.** This is enforced **by instruction, not by tool grant** — do not treat it as a
+  capability boundary. The agent's `tools:` frontmatter omits `Edit`/`Write`, but `memory: project`
+  makes the harness grant them anyway (see Memory below), so the resolved tool list does include both.
+  Nothing stops an `Edit` on a `.cs` file except this line and `guard-cs-edit.sh`. Report findings for
+  the main agent (or the user) to act on.
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not a
   text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an assumed
   guess — say "uncertain, verify" rather than assert. A race/deadlock claim names the two call paths that

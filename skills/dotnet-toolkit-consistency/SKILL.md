@@ -22,13 +22,31 @@ Before anything else, get the current, complete list directly from the source (d
 existing tool list, including this skill's own examples below, since that's exactly the kind of claim
 being audited):
 
-```bash
-grep -rn 'McpServerTool(Name = "' src/DotnetToolkit.McpServer/Tools/*.cs
+Use the MCP tools, not `grep` — `scripts/guard-cs-bash-read.sh` blocks a shell `grep` over
+`Tools/*.cs`, so a text search for `McpServerTool(Name = "` is denied before it runs. That guard is
+this plugin's own, and this audit is not exempt from it.
+
+First, the tool *groups* — one `Tools/*.cs` file per group:
+
+```
+search_index(query: "Tools", pathPrefix: "src/DotnetToolkit.McpServer/Tools", kinds: "class", limit: 20)
 ```
 
-This gives every tool name, its containing file, and its line — the fixed reference point for every step
-that follows. Note the file each tool lives in; a new `Tools/*.cs` file (a new tool *group*, not just a
-new tool) is itself a finding — see Step 6.
+Then every tool in them, in one batch, from the `symbolId`s that returned:
+
+```
+get_symbol(symbols: ["<each Tools class id>"], include: "members")
+```
+
+`members` gives each tool method's `symbolId`, `displayString` (the full parameter list, defaults
+included) and `contentVersion` — the fixed reference point for every step that follows. It does **not**
+give the `[McpServerTool(Name = ...)]` wire name or the `[Description]` text; Step 1/2 gets those with
+`include: "source"` per tool method, which is where they are needed anyway.
+
+Note the file each tool lives in; a new `Tools/*.cs` file (a new tool *group*, not just a new tool) is
+itself a finding — see Step 6. Watch for a non-tool helper among the members (`ContextTools`
+`DeclarationSites`, for one) — a public method with no `[McpServerTool]` attribute is not part of the
+surface and must not be audited as one.
 
 ## The audit, step by step
 

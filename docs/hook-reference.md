@@ -59,6 +59,14 @@ under-detection is deliberate (same fail-open posture as the other guards), not 
 to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are never touched, so
 `git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
 
+**The built-in `Grep` tool is not covered by either read guard.** `hooks/hooks.json` matches on tool
+name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `Bash` — `Grep` and `Glob`
+are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode returns `.cs` source with
+nothing intercepting it. This is a real hole in read enforcement, not a case the membership check
+allows: `search_index` is still the right tool for finding a declared symbol, and the standing
+instruction in CLAUDE.md covers it, but no hook enforces that here. It matters most for
+`dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright.
+
 ## `hint-reload-new-cs-file.sh` — PostToolUse on `Write`
 
 Fires when a `Write` creates a brand-new `.cs` file (the one case the edit guard allows through). Both

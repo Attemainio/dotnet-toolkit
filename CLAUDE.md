@@ -166,6 +166,7 @@ The surface that has to move with the code:
 | `docs/tool-reference.md` | the complete per-tool catalog — arguments, a real example call/response, what it replaces — for every shipped tool; what `dotnet-toolkit-init` points a consuming repo at |
 | `docs/hook-reference.md` | the four hooks and their scripts — matchers, allow/deny behavior, limits |
 | `docs/skill-reference.md` | the catalog of shipped skills — one entry per skill, none stale |
+| `README.md`'s Features table | the first thing a new user reads — every tool must appear in some row, and no row may name a tool that no longer exists |
 | `.claude/rules/csharp-standards.md` | the always-loaded standards index — its file list must match the standards actually in `.claude/rules/`, and its `validate_patch` line must match the current write path |
 | the standards files in `.claude/rules/` (list in `csharp-standards.md`'s index) | any MCP tool named in their review-calibration sections must still exist with the described behavior |
 | `skills/dotnet-toolkit-init/SKILL.md` | the rule-file template written into *consuming* repos, which embeds its own copies of the tool table and the standards-file list |
