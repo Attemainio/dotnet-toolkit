@@ -60,7 +60,7 @@ public static class HistoryTools
         });
     }
 
-[McpServerTool(Name = "search_log")]
+    [McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
         + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
         + "Each entry carries logId, date, intent, and tags (a JSON array, present only when the patch that "

@@ -20,11 +20,14 @@ public sealed class SolutionLocator
 
     public string Root { get; }
     public ToolkitConfig Config => _state.Config;
+    /// <value>The resolved solution/project path, or null when none was found or more than one candidate is ambiguous (see <see cref="IsAmbiguous"/>).</value>
     public string? WorkspaceEntry => _state.WorkspaceEntry;
+    /// <value>Every candidate solution/project found under the root; populated only when resolution is ambiguous (see <see cref="IsAmbiguous"/>).</value>
     public IReadOnlyList<string> Candidates => _state.Candidates;
 
     public string ToolkitDir => Path.Combine(Root, ".claude", "dotnet-toolkit");
     public string CacheDir => Path.Combine(ToolkitDir, "cache");
+    /// <value>True when more than one solution/project candidate was found under the root and none was chosen, so <see cref="WorkspaceEntry"/> is null.</value>
     public bool IsAmbiguous
     {
         get
@@ -135,7 +138,7 @@ public sealed class SolutionLocator
     public string AbsPath(string relative)
     {
         var abs = Path.GetFullPath(Path.Combine(Root, relative));
-        if (!abs.StartsWith(Root, StringComparison.Ordinal))
+        if (abs != Root && !abs.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new ArgumentException($"Path escapes the project root: {relative}");
         return abs;
     }

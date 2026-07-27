@@ -34,6 +34,9 @@ public static class Formats
     /// </summary>
     public static OutputFormat Current { get; set; } = OutputFormat.Toon;
 
+    /// <summary>Parses a response wire-format name.</summary>
+    /// <param name="format">Case-insensitive: "compact" or "json"; anything else, including null, resolves to <see cref="OutputFormat.Toon"/>.</param>
+    /// <returns>The matched format, defaulting to <see cref="OutputFormat.Toon"/> rather than throwing.</returns>
     public static OutputFormat Parse(string? format) => format?.Trim().ToLowerInvariant() switch
     {
         "compact" => OutputFormat.Compact,

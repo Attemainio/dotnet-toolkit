@@ -117,10 +117,6 @@ public sealed class DevlogStore
         }
     }
 
-    public int TotalMatching(
-        string? query, string? affectedClass, string? domain, string? tag, string? status,
-        DateOnly? from, DateOnly? to)
-        => Search(query, affectedClass, domain, tag, status, from, to, int.MaxValue).Count;
 
     /// <summary>Full markdown of a single entry (metadata comment stripped).</summary>
     public string? Get(string id)
@@ -139,10 +135,6 @@ public sealed class DevlogStore
         }
     }
 
-    public int EntryCount
-    {
-        get { lock (_gate) { EnsureFreshLocked(); return _index!.Entries.Count; } }
-    }
 
     private void EnsureFreshLocked()
     {

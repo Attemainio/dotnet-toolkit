@@ -15,6 +15,7 @@ public sealed record MemberEntry(
     bool IsPublic,
     string? DocSections = null);
 
+/// <summary>A syntax-only outline of one type declaration, produced by <see cref="OutlineBuilder"/>.</summary>
 public sealed record TypeEntry(
     string Kind,
     string Name,
@@ -30,12 +31,14 @@ public sealed record TypeEntry(
     bool IsPublic,
     string? DocSections = null);
 
+/// <summary>A cached, syntax-only outline of one source file's namespaces and types.</summary>
 public sealed record FileEntry(
     long MtimeTicks,
     long Length,
     List<string> Namespaces,
     List<TypeEntry> Types);
 
+/// <summary>The on-disk cache of every file's <see cref="Indexing.FileEntry"/>, keyed by absolute path.</summary>
 public sealed class IndexDocument
 {
     public const int CurrentVersion = 3;

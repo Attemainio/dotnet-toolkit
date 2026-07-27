@@ -31,6 +31,7 @@ public sealed class GitAnalyzer
     /// <summary>Resolves a ref (branch, tag, sha, HEAD~2) to a full commit sha.</summary>
     public async Task<string?> ResolveRefAsync(string reference, CancellationToken ct = default)
     {
+        ValidateRef(reference);
         var result = await RunAsync(["rev-parse", "--verify", $"{reference}^{{commit}}"], ct);
         return result.Ok ? result.Output.Trim() : null;
     }
@@ -38,6 +39,8 @@ public sealed class GitAnalyzer
     /// <summary>Number of commits in <c>from..to</c>.</summary>
     public async Task<int> CommitCountAsync(string fromRef, string toRef, CancellationToken ct = default)
     {
+        ValidateRef(fromRef);
+        ValidateRef(toRef);
         var result = await RunAsync(["rev-list", "--count", $"{fromRef}..{toRef}"], ct);
         return result.Ok && int.TryParse(result.Output.Trim(), out var count) ? count : 0;
     }
@@ -45,6 +48,8 @@ public sealed class GitAnalyzer
     /// <summary>C# files that differ between two refs, with their git status letter.</summary>
     public async Task<IReadOnlyList<ChangedFile>> ChangedCSharpFilesAsync(string fromRef, string toRef, CancellationToken ct = default)
     {
+        ValidateRef(fromRef);
+        ValidateRef(toRef);
         var result = await RunAsync(["diff", "--name-status", "-M", fromRef, toRef], ct);
         if (!result.Ok)
             return [];
@@ -55,7 +60,7 @@ public sealed class GitAnalyzer
             var parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2)
                 continue;
-            // Rename entries are "R100\told\tnew" — the destination is the last field.
+            // Rename entries are "R100\told\tnew" -- the destination is the last field.
             var path = parts[^1].Trim();
             if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                 files.Add(new ChangedFile(path, parts[0].Trim()));
@@ -66,9 +71,24 @@ public sealed class GitAnalyzer
     /// <summary>File content at a ref, or null when the path did not exist there.</summary>
     public async Task<string?> FileAtRefAsync(string reference, string relativePath, CancellationToken ct = default)
     {
+        ValidateRef(reference);
         var result = await RunAsync(["show", $"{reference}:{relativePath}"], ct);
         return result.Ok ? result.Output : null;
     }
+
+    /// <summary>
+    /// Rejects a ref that looks like a CLI option rather than a ref name -- an unvalidated ref reaching
+    /// git's positional-argument parser as e.g. <c>--output=/some/path</c> is interpreted as a flag,
+    /// not a ref, giving whoever controls it an argument-injection primitive under this process's
+    /// permissions.
+    /// </summary>
+    /// <exception cref="ArgumentException">The ref is empty or starts with '-'.</exception>
+    private static void ValidateRef(string reference)
+    {
+        if (reference.Length == 0 || reference[0] == '-')
+            throw new ArgumentException($"Invalid git ref: {reference}");
+    }
+
 
     private async Task<(bool Ok, string Output)> RunAsync(IReadOnlyList<string> args, CancellationToken ct)
     {

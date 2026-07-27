@@ -19,6 +19,11 @@ public static class DiagnosticDistiller
 
     public sealed record Distillation(IReadOnlyList<RootCause> RootCauses, int TotalRaw, int TotalSuppressed);
 
+    /// <summary>Groups a failing level's raw diagnostics by diagnostic id into one root cause each.</summary>
+    /// <param name="forked">The forked solution the diagnostics were produced against.</param>
+    /// <param name="errors">The raw compiler diagnostics to distil.</param>
+    /// <param name="changedSymbols">Symbols the patch changed; used as the inspection fallback when a diagnostic's location can't be resolved to an enclosing symbol.</param>
+    /// <returns>One <see cref="RootCause"/> per diagnostic id, plus the raw/suppressed diagnostic counts.</returns>
     public static async Task<Distillation> DistillAsync(
         Solution forked, IReadOnlyList<Diagnostic> errors,
         IReadOnlyList<(string SymbolId, string DisplayString)> changedSymbols)
@@ -47,7 +52,7 @@ public static class DiagnosticDistiller
             causes.Add(new RootCause(
                 group.Key,
                 $"{group.Key}: {count} occurrence(s) — {group.First().GetMessage()}",
-                changedSymbols.Count > 0 ? changedSymbols[0].SymbolId : inspections[0].SymbolId,
+                inspections[0].SymbolId,
                 FixHintFor(group.Key),
                 inspections,
                 Math.Max(0, count - inspections.Count)));

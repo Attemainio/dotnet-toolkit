@@ -19,6 +19,14 @@ namespace DotnetToolkit.McpServer.Telemetry;
 ///                             re-fetch of content you already had is waste.
 ///   4. verdict precedence   — contributing &gt; navigational &gt; wasted_reread &gt; unused.
 /// </summary>
+/// <remarks>
+/// Registered in DI but not yet invoked by anything in this server — no tool, hosted service, or timer
+/// calls <see cref="RebuildForTask"/>/<see cref="RebuildAll"/>, and <c>get_retrieval_metrics</c>'s
+/// <c>MetricsReader</c> reads straight from <c>retrieval_events</c>/<c>patch_events</c> rather than the
+/// derived tables this job populates. Deliberately unwired pending a later phase that decides the
+/// trigger policy (per-task, on a timer, or on-demand) — not a bug, but the derived tables stay empty
+/// until that phase lands.
+/// </remarks>
 public sealed class AttributionJob
 {
     public const string Version = "attr-v1";

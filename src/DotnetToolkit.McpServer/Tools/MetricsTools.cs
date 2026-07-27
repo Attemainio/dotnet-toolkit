@@ -8,6 +8,7 @@ using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
 
+/// <summary>Retrieval and patch-validation telemetry aggregated for <c>get_retrieval_metrics</c>.</summary>
 [McpServerToolType]
 public static class MetricsTools
 {

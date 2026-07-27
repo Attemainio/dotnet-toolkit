@@ -33,7 +33,7 @@ public sealed class SymbolIndexBuilder
 
     public void Start() => _ = Task.Run(RebuildAsync);
 
-public async Task RebuildAsync()
+    public async Task RebuildAsync()
     {
         if (!_symbols.Available)
             return;
@@ -99,7 +99,7 @@ public async Task RebuildAsync()
         is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax or BaseMethodDeclarationSyntax
         or PropertyDeclarationSyntax or EventDeclarationSyntax or BaseFieldDeclarationSyntax;
 
-private void IndexDeclaration(
+    private void IndexDeclaration(
         SyntaxNode node, SemanticModel model, string project,
         Dictionary<string, SymbolStore.SymbolRow> symbols,
         HashSet<SymbolStore.EdgeRow> edges,
@@ -198,7 +198,7 @@ private void IndexDeclaration(
     }
 
 
-private static void IndexTopLevelStatements(
+    private static void IndexTopLevelStatements(
         SyntaxNode root, SemanticModel model, HashSet<SymbolStore.EdgeRow> edges,
         Dictionary<string, SymbolStore.SymbolRow> symbols)
     {
@@ -232,7 +232,7 @@ private static void IndexTopLevelStatements(
             CollectCallEdges(statement, entry, model, entryId, edges, symbols);
     }
 
-/// <summary>Records call edges from a member body via the semantic model (spec §18 call edges).</summary>
+    /// <summary>Records call edges from a member body via the semantic model (spec §18 call edges).</summary>
     private static void CollectCallEdges(
         SyntaxNode member, ISymbol from, SemanticModel model, string fromId,
         HashSet<SymbolStore.EdgeRow> edges, Dictionary<string, SymbolStore.SymbolRow> symbols)
@@ -263,7 +263,7 @@ private static void IndexTopLevelStatements(
         }
     }
 
-/// <summary>
+    /// <summary>
     /// Mints a minimal row for a symbol discovered only as an edge target — never as a declaration this
     /// pass walked — because it lives outside this repo's own solution (BCL, a NuGet package, another
     /// assembly). No decl/body hash and no owning project, matching Store/Schema.cs's SymbolOriginColumn

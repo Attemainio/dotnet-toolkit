@@ -11,6 +11,7 @@ namespace DotnetToolkit.McpServer.Validation;
 public sealed class TargetedTests
 {
     private static readonly TimeSpan RunTimeout = TimeSpan.FromMinutes(5);
+    private const int MaxFilteredTests = 50;
 
     private readonly SolutionLocator _locator;
     private readonly ILogger<TargetedTests> _log;
@@ -32,7 +33,7 @@ public sealed class TargetedTests
 
         // vstest's filter is an OR of fully-qualified name matches; cap the expression so a very wide
         // change does not build an unusable command line.
-        var selected = testFqNames.Distinct(StringComparer.Ordinal).Take(50).ToList();
+        var selected = testFqNames.Distinct(StringComparer.Ordinal).Take(MaxFilteredTests).ToList();
         var filter = string.Join('|', selected.Select(n => $"FullyQualifiedName~{n}"));
 
         var psi = new ProcessStartInfo("dotnet")
@@ -41,6 +42,11 @@ public sealed class TargetedTests
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        // Prevent long-lived MSBuild worker nodes from inheriting these redirected pipes -- otherwise
+        // the direct child can exit while a worker node still holds the pipe open, and ReadToEndAsync
+        // never sees EOF (the process hangs even though WaitForExitAsync already returned).
+        psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
         psi.ArgumentList.Add("test");
         psi.ArgumentList.Add("--nologo");
         psi.ArgumentList.Add("--filter");

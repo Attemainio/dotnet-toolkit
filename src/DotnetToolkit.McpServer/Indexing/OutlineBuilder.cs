@@ -96,7 +96,7 @@ public static partial class OutlineBuilder
                 members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), EndLine(td), true));
         }
 
-        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers, containerHasNamespaceOnly: true), DocSectionTags(type));
+        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers), DocSectionTags(type));
     }
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
@@ -106,7 +106,7 @@ public static partial class OutlineBuilder
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
         return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
-            [sigMember], [], IsPublic(del.Modifiers, containerHasNamespaceOnly: true), DocSectionTags(del));
+            [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del));
     }
 
     private static MemberEntry? BuildMember(MemberDeclarationSyntax member, bool isInterface)
@@ -194,10 +194,11 @@ public static partial class OutlineBuilder
     private static string Combine(string container, string name) =>
         container.Length == 0 ? name : $"{container}.{name}";
 
-    private static bool IsPublic(SyntaxTokenList modifiers, bool containerHasNamespaceOnly) =>
-        modifiers.Any(t => t.IsKind(SyntaxKind.PublicKeyword))
-        || (containerHasNamespaceOnly && !modifiers.Any(t =>
-            t.IsKind(SyntaxKind.PrivateKeyword) || t.IsKind(SyntaxKind.InternalKeyword)));
+    // A type with no explicit access modifier defaults to internal at namespace scope and private when
+    // nested (C# language default, ECMA-334 15.3.6) -- neither case is public, so this is a plain check
+    // for an explicit `public` keyword rather than any container-dependent fallback.
+    private static bool IsPublic(SyntaxTokenList modifiers) =>
+        modifiers.Any(t => t.IsKind(SyntaxKind.PublicKeyword));
 
     private static bool IsPublicOrProtected(SyntaxTokenList modifiers) =>
         modifiers.Any(t => t.IsKind(SyntaxKind.PublicKeyword) || t.IsKind(SyntaxKind.ProtectedKeyword));

@@ -187,8 +187,9 @@ public sealed class ProjectIndex
                 files = Directory.GetFiles(dir, "*.cs");
                 subdirs = Directory.GetDirectories(dir);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                _log.LogWarning(ex, "Failed to enumerate {Dir} while sweeping for .cs files", dir);
                 continue;
             }
             foreach (var f in files)
@@ -228,8 +229,9 @@ public sealed class ProjectIndex
                 files = Directory.GetFiles(dir);
                 subdirs = Directory.GetDirectories(dir);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                _log.LogWarning(ex, "Failed to enumerate {Dir} while sweeping for project files", dir);
                 continue;
             }
             foreach (var f in files)

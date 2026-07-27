@@ -8,6 +8,7 @@ using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
 
+/// <summary>Process-level tools: health check, output-format selection, and workspace/index lifecycle.</summary>
 [McpServerToolType]
 public static class ServerTools
 {
@@ -99,14 +100,14 @@ public static class ServerTools
         return sb.ToString().TrimEnd('\n');
     }
 
-        [McpServerTool(Name = "reload_workspace")]
-        [Description("Force a re-scan after large external changes (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
-        public static async Task<string> ReloadWorkspace(
-            ProjectIndex index,
-            WorkspaceHost workspace,
-            SymbolIndexBuilder indexBuilder,
-            [Description("index | workspace | all")] string scope = "all")
-        {
+    [McpServerTool(Name = "reload_workspace")]
+    [Description("Force a re-scan after large external changes (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
+    public static async Task<string> ReloadWorkspace(
+        ProjectIndex index,
+        WorkspaceHost workspace,
+        SymbolIndexBuilder indexBuilder,
+        [Description("index | workspace | all")] string scope = "all")
+    {
             var s = scope.Trim().ToLowerInvariant();
             var actions = new List<string>();
             if (s is "index" or "all")

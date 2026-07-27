@@ -101,8 +101,6 @@ public static class MechanicalFactsExtractor
         var target = model.GetSymbolInfo(expression).Symbol;
         if (target is not (IFieldSymbol or IPropertySymbol))
             return null;
-        if (target.IsStatic && !SymbolEqualityComparer.Default.Equals(target.ContainingType, owner.ContainingType))
-            return null;
         // Only the containing type's own state counts; other objects' members are calls, not state.
         return SymbolEqualityComparer.Default.Equals(target.ContainingType, owner.ContainingType)
             ? target.Name

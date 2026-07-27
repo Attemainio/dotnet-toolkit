@@ -14,7 +14,7 @@ public sealed class SymbolStore
 
     public bool Available => _store.Available;
 
-public sealed record SymbolRow(
+    public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
         string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "",
@@ -215,7 +215,7 @@ public sealed record SymbolRow(
         return tests;
     }
 
-public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank, string? Namespace = null);
+    public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank, string? Namespace = null);
 
     /// <summary>
     /// Resolves a <c>sym_…</c> identifier back to its fully-qualified name. symbolId is a one-way hash,
@@ -255,6 +255,15 @@ public sealed record SearchHit(string SymbolId, string DisplayString, string Kin
         return cmd.ExecuteScalar() as string;
     }
 
+    /// <summary>Full-text symbol search, topped up with a substring fallback when FTS returns too few hits.</summary>
+    /// <param name="query">Free-text query over symbol names.</param>
+    /// <param name="includeKinds">Symbol kinds to include; null/empty means no kind filtering.</param>
+    /// <param name="excludeKinds">Symbol kinds to exclude.</param>
+    /// <param name="limit">Maximum hits to return.</param>
+    /// <param name="includeModifiers">Modifiers a hit must have.</param>
+    /// <param name="excludeModifiers">Modifiers a hit must not have.</param>
+    /// <param name="origin">"source" (this repo's own symbols) or "external" (BCL/NuGet symbols referenced from it).</param>
+    /// <returns>Up to <paramref name="limit"/> hits: FTS matches first, then LIKE-matched hits FTS missed, deduplicated by symbol id. Empty when the store is unavailable or the query is blank.</returns>
     public IReadOnlyList<SearchHit> Search(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
@@ -276,7 +285,7 @@ public sealed record SearchHit(string SymbolId, string DisplayString, string Kin
         return [.. fts, .. topUp.Take(limit - fts.Count)];
     }
 
-private IReadOnlyList<SearchHit> SearchFts(
+    private IReadOnlyList<SearchHit> SearchFts(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
         string origin = "source")
@@ -320,7 +329,7 @@ private IReadOnlyList<SearchHit> SearchFts(
         return ReadHits(cmd);
     }
 
-private IReadOnlyList<SearchHit> SearchLike(
+    private IReadOnlyList<SearchHit> SearchLike(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
         string origin = "source")
@@ -366,7 +375,7 @@ private IReadOnlyList<SearchHit> SearchLike(
         return $" AND {columnExpr} = $origin";
     }
 
-private static string AppendKindFilter(
+    private static string AppendKindFilter(
         SqliteCommand cmd, string columnExpr,
         IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds)
     {
@@ -547,6 +556,7 @@ private static string AppendKindFilter(
     /// <summary>Outcome of an incremental pass, so the caller can report how much work was skipped.</summary>
     public sealed record UpdateStats(int Updated, int Removed, int Unchanged);
 
+    /// <summary>Current per-layer hashes and test flag for every stored symbol, used to diff against an incoming rebuild.</summary>
     public IReadOnlyDictionary<string, ExistingSymbol> ExistingSymbols()
     {
         var existing = new Dictionary<string, ExistingSymbol>(StringComparer.Ordinal);
@@ -693,7 +703,7 @@ private static string AppendKindFilter(
 
     // ---- shared writers (used by both the full rebuild and the incremental pass) ----------------
 
-private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
+    private static void WriteSymbols(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SymbolRow> symbols)
     {
         if (symbols.Count == 0)
             return;
@@ -705,7 +715,7 @@ private static void WriteSymbols(SqliteConnection connection, SqliteTransaction 
                  refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id, namespace)
             VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId, $ns);
             """;
-        var now = DateTimeOffset.UtcNow.ToString("O");
+
         foreach (var s in symbols)
         {
             cmd.Parameters.Clear();
@@ -718,8 +728,7 @@ private static void WriteSymbols(SqliteConnection connection, SqliteTransaction 
             cmd.Parameters.AddWithValue("$refs", (object?)s.RefsHash ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$api", (object?)s.ApiHash ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$disp", s.DisplayString);
-            cmd.Parameters.AddWithValue("$ts", now);
-            cmd.Parameters.AddWithValue("$search", SearchText.ForIndex(s.FqName));
+
             cmd.Parameters.AddWithValue("$isTest", s.IsTest ? 1 : 0);
             cmd.Parameters.AddWithValue("$modifiers", " " + s.Modifiers + " ");
             cmd.Parameters.AddWithValue("$origin", s.Origin);

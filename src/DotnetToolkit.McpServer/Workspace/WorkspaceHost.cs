@@ -474,5 +474,9 @@ public sealed class WorkspaceHost : IDisposable
         });
     }
 
-    public void Dispose() => _workspace?.Dispose();
+    public void Dispose()
+    {
+        _workspace?.Dispose();
+        _applyGate.Dispose();
+    }
 }

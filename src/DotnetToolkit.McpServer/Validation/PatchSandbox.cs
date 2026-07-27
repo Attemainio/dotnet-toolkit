@@ -23,6 +23,16 @@ public static class PatchSandbox
     public sealed record Result(
         Solution Forked, IReadOnlyList<DocumentId> ChangedDocuments, string? Error, bool Stale = false);
 
+    /// <summary>Applies edits to a forked solution's in-memory documents, without touching disk.</summary>
+    /// <param name="solution">The solution to fork from.</param>
+    /// <param name="locator">Resolves each edit's file to an absolute, root-contained path.</param>
+    /// <param name="edits">The edits to apply, grouped and applied per file.</param>
+    /// <returns>The forked solution with edits applied, the changed document ids, or an error when a file is unknown, drifted from disk, or an edit is malformed.</returns>
+    /// <remarks>
+    /// Rewrites each touched document's whole text, not just the edited span, so a fork whose copy has
+    /// drifted from disk is refused outright (<see cref="Result.Stale"/>) rather than silently reverting
+    /// the untouched remainder of the file.
+    /// </remarks>
     public static async Task<Result> ApplyAsync(Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits)
     {
         var forked = solution;

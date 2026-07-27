@@ -19,6 +19,11 @@ public static class ChangeClassifier
         string SymbolId, string OldSymbolId, string DisplayString, IReadOnlyList<ChangeKind> Kinds, string Detail,
         string OldVersion, string NewVersion, string ApiImpact);
 
+    /// <summary>Diffs each changed document's syntax tree against its base version into a list of declaration-level changes.</summary>
+    /// <param name="baseSolution">The solution before the patch.</param>
+    /// <param name="forked">The solution with the patch applied.</param>
+    /// <param name="changedDocs">Documents to diff.</param>
+    /// <returns>One <see cref="Change"/> per paired, added, or removed declaration — exact-key matches first, then arity/signature pairing, then rename pairing, then pure additions and removals.</returns>
     public static async Task<List<Change>> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs)
     {
         var changes = new List<Change>();

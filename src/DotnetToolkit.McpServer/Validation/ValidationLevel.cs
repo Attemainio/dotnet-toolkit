@@ -52,5 +52,7 @@ public static class ValidationLevelExtensions
         _ => level.ToString().ToLowerInvariant(),
     };
 
-    public static string Wire(this ChangeKind kind) => kind.ToString().ToLowerInvariant();
+    /// <summary>The lowercase snake_case name used in responses and telemetry (spec §13.2), matching <see cref="ValidationLevelExtensions.Wire(ValidationLevel)"/>'s convention.</summary>
+    public static string Wire(this ChangeKind kind) =>
+        string.Concat(kind.ToString().Select((c, i) => i > 0 && char.IsUpper(c) ? "_" + c : c.ToString())).ToLowerInvariant();
 }

@@ -208,7 +208,7 @@ public sealed class FeatureLogStore
     }
 
     /// <summary>Free-text search over recorded intents — the read path for "why is this like this".</summary>
-public IReadOnlyList<(string LogId, string CreatedAt, string Intent, IReadOnlyList<string> Tags)> SearchIntents(string? query, int limit = 10)
+    public IReadOnlyList<(string LogId, string CreatedAt, string Intent, IReadOnlyList<string> Tags)> SearchIntents(string? query, int limit = 10)
     {
         if (!_store.Available)
             return [];
