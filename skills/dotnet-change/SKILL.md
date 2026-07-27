@@ -162,8 +162,8 @@ validate_patch(draftId: "draft_01KYH...",
   applyOnSuccess: true, intent: <the same intent as before>)
 ```
 
-- `baseVersions` is **inherited** from the draft — sending it too is
-  `error: "draft_base_versions_conflict"`.
+- `baseVersions` is **inherited** from the draft, and anything you send alongside a `draftId` is
+  **merged into** it rather than replacing it. That is the fix for `unheld_symbol` (below).
 - The edits' line spans address the **draft's** text, which is the same coordinate space
   `locations` reports in. `files` lists which files are in that space; a diagnostic in any
   other file carries ordinary on-disk line numbers.
@@ -180,6 +180,26 @@ and only the 8 most recent are kept; `error: "unknown_draft"` means yours aged o
 with `get_symbol` and send a full patch. `error: "draft_stale"` means the file moved in the
 workspace underneath the draft, so its line numbers no longer mean anything — rebuild from a
 fresh `get_symbol`.
+
+## `unheld_symbol` — a missing version, not a stale patch
+
+`baseVersions` must cover every symbol the **classifier** attributes a change to, which is not always
+the set you edited. The usual surprise: **adding a member anchors the change to its containing type**,
+so inserting a method into `Foo` requires `Foo`'s version, not just the neighbouring member's.
+
+When an entry is missing you get `error: "unheld_symbol"` listing the `{symbolId, currentVersion}`
+you're short — **and a draft**, because nothing is wrong with your text. Fix it without resending a
+line:
+
+```
+validate_patch(draftId: "draft_01KYH...",
+  baseVersions: {"sym_thecontainingtype": "decl:..."},   // merged into the draft's own map
+  edits: [],                                             // the text was never the problem
+  applyOnSuccess: true, intent: <same intent>)
+```
+
+Contrast with `stale_base`, which means a version you sent **disagrees** with the current one. There
+your text was built on content that has since moved, so it gets no draft and must be rebuilt.
 
 Rebuild from scratch, not by amending, after `stale_base`, `invalid_edit`, or `stale_workspace` —
 those responses carry no draft, because the patch itself is built on something that moved.

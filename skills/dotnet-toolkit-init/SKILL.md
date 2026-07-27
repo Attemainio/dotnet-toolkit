@@ -136,7 +136,8 @@ recover it and the next session re-derives or silently contradicts it.
 3. If it fails, amend rather than resubmit: the response carries
    `diagnostics.rootCauses[].locations` (where each error landed in the text you proposed) and a
    `draft: {draftId}`. Send that `draftId` back with only the lines you are correcting —
-   `baseVersions` is inherited, and the edits' spans address the draft's text.
+   `baseVersions` is inherited (anything you send is merged in), and the edits' spans address the
+   draft's text.
 
 "Too large or too interleaved to decompose" is not a reason to fall back to `Edit`. Split it into
 more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is

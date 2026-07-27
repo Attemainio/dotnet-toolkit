@@ -42,13 +42,13 @@ public static class PatchTools
         TargetedTests targetedTests,
         TelemetryRecorder telemetry,
         PatchDraftStore drafts,
-        [Description("Map of symbolId -> held contentVersion the patch was built against. Required, except with draftId (a draft carries its own).")] Dictionary<string, string> baseVersions,
+        [Description("Map of symbolId -> held contentVersion the patch was built against. Required, except with draftId, whose draft carries its own -- entries sent alongside a draftId are MERGED into it, which is how unheld_symbol is resolved.")] Dictionary<string, string> baseVersions,
         [Description("The edits to apply. Line spans address the file as the workspace holds it -- or, with draftId, the draft's proposed text. May be empty ONLY with draftId, which re-runs validation on the draft unchanged.")] PatchEditInput[] edits,
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
         [Description("Optional tags.")] string[]? tags = null,
-        [Description("Amend a previous unapplied patch instead of resubmitting it. Pass the draftId from that response's draft field; edits then address the DRAFT's line numbers -- the same coordinates the diagnostics' locations report -- and baseVersions is inherited. Send only the lines you are correcting.")] string? draftId = null)
+        [Description("Amend a previous unapplied patch instead of resubmitting it. Pass the draftId from that response's draft field; edits then address the DRAFT's line numbers -- the same coordinates the diagnostics' locations report -- and baseVersions is inherited, with anything you send merged in. Send only the lines you are correcting.")] string? draftId = null)
     {
         var sessionId = Ids.AmbientSession;
         var taskId = sessionId;
@@ -67,9 +67,6 @@ public static class PatchTools
                     + $"{PatchDraftStore.Capacity} most recent are kept, so this one expired or was evicted. "
                     + "Refetch the symbol with get_symbol and submit a full patch instead.");
 
-            if (baseVersions is { Count: > 0 })
-                return Error("draft_base_versions_conflict",
-                    "An amend inherits baseVersions from the draft it corrects; omit baseVersions when passing draftId.");
         }
 
         // An amend is allowed to carry no edits at all: that is how a patch already reported succeeded but
@@ -81,7 +78,22 @@ public static class PatchTools
             return Error("intent_required",
                 "applyOnSuccess requires a non-empty intent describing the why.");
 
-        IReadOnlyDictionary<string, string>? inherited = draft?.BaseVersions ?? baseVersions;
+        IReadOnlyDictionary<string, string>? inherited = baseVersions;
+        if (draft is not null)
+        {
+            // An amend inherits the draft's map and may ADD to it. That is the cheap way out of
+            // unheld_symbol below: resend the draftId with only the missing versions and no edits, rather
+            // than retransmitting text that was never what the server objected to.
+            var merged = new Dictionary<string, string>(draft.BaseVersions, StringComparer.Ordinal);
+            if (baseVersions is not null)
+            {
+                foreach (var (id, version) in baseVersions)
+                    merged[id] = version;
+            }
+
+            inherited = merged;
+        }
+
         if (inherited is null)
             return Error("missing_base_versions",
                 "baseVersions is required so patches from stale context are rejected.");
@@ -118,12 +130,23 @@ public static class PatchTools
 
             var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
 
-            var stale = detected
-                .Where(c => !heldVersions.TryGetValue(c.OldSymbolId, out var held)
-                            || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
+            // Two different failures used to share one error, and both were denied a draft. A version that
+            // DISAGREES means the content moved under the patch: its text is built on assumptions that no
+            // longer hold, so it must be rebuilt and offering a cheap retry would only tempt the caller to
+            // re-apply it. A version that is merely ABSENT means the classifier attributed a change to a
+            // symbol the caller did not anticipate -- an added member anchors to its containing type, the
+            // usual cause -- and the proposed text is perfectly good. Keeping that text as a draft makes
+            // the fix cost one map entry instead of the whole patch.
+            var disagreeing = detected
+                .Where(c => heldVersions.TryGetValue(c.OldSymbolId, out var held)
+                            && !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
                 .ToList();
-            if (stale.Count > 0)
-                return StaleBase(stale);
+            if (disagreeing.Count > 0)
+                return StaleBase(disagreeing);
+
+            var unheld = detected.Where(c => !heldVersions.ContainsKey(c.OldSymbolId)).ToList();
+            if (unheld.Count > 0)
+                return UnheldSymbol(unheld, await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator));
 
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
             var affectedTests = symbolStore.TestsReferencing(changedIds);
@@ -159,19 +182,7 @@ public static class PatchTools
 
             // Nothing reached disk, so the caller has to come back. Retain the proposed text under a handle
             // they can correct a few lines of, instead of making them resend the whole patch to fix one.
-            object? draftInfo = null;
-            if (!applied)
-            {
-                var stored = drafts.Put(await PatchSandbox.DraftOfAsync(sandbox, solution, heldVersions));
-                draftInfo = new
-                {
-                    draftId = stored.Id,
-                    expiresAt = stored.ExpiresAt,
-                    files = stored.Proposed
-                        .Select(kv => new { file = locator.RelPath(kv.Key), lineCount = kv.Value.Lines.Count })
-                        .ToList(),
-                };
-            }
+            var draftInfo = applied ? null : await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator);
 
             var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo);
             var json = Formats.Render(response);
@@ -321,6 +332,34 @@ public static class PatchTools
         };
         return (ValidationLevel)Math.Max((int)computed, (int)requested);
     }
+
+    /// <summary>Stores a fork as an amendable draft and renders the handle the caller sends back.</summary>
+    private static async Task<object> DraftInfoAsync(
+        PatchDraftStore drafts, PatchSandbox.Result sandbox, Solution solution,
+        IReadOnlyDictionary<string, string> heldVersions, SolutionLocator locator)
+    {
+        var stored = drafts.Put(await PatchSandbox.DraftOfAsync(sandbox, solution, heldVersions));
+        return new
+        {
+            draftId = stored.Id,
+            expiresAt = stored.ExpiresAt,
+            files = stored.Proposed
+                .Select(kv => new { file = locator.RelPath(kv.Key), lineCount = kv.Value.Lines.Count })
+                .ToList(),
+        };
+    }
+
+    private static string UnheldSymbol(IReadOnlyList<ChangeClassifier.Change> unheld, object draft) =>
+        Formats.Render(new
+        {
+            error = "unheld_symbol",
+            message = "This patch changes symbols no baseVersions entry covers -- an added member anchors to "
+                + "its containing type, which is the usual cause. Nothing is wrong with the proposed text, so "
+                + "it is kept as a draft: resend its draftId with these versions in baseVersions and an empty "
+                + "edits array, rather than retransmitting the patch.",
+            current = unheld.Select(c => new { symbolId = c.OldSymbolId, currentVersion = c.OldVersion }),
+            draft,
+        });
 
     private static string StaleBase(IReadOnlyList<ChangeClassifier.Change> stale) =>
         Formats.Render(new

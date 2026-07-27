@@ -86,7 +86,8 @@ Do this instead:
      there is no reason to dry-run with applyOnSuccess false first.
   3. If it fails, the response carries diagnostics.rootCauses[].locations (where the error landed
      in the text you proposed) and a draft {draftId}. Send that draftId back with ONLY the lines
-     you are correcting — baseVersions is inherited and the spans address the draft. Do not
+     you are correcting — baseVersions is inherited (anything you send is merged in) and the
+     spans address the draft. Do not
      resubmit the whole patch.
 
 A change that feels too large or too interleaved to decompose is still not a reason to fall back to

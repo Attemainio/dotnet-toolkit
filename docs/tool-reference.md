@@ -802,7 +802,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 
 | Arg | Meaning |
 |---|---|
-| `baseVersions` | Required, **except with `draftId`** (a draft carries its own). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A mismatch is `error: "stale_base"` with current versions — refetch and rebuild. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
+| `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
 | `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. With `draftId`, the spans address the **draft's** proposed text instead, and the array may be empty. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
@@ -834,7 +834,8 @@ Every response that was **not applied** also carries a `draft`:
 ```
 
 The server has kept the exact text your patch proposed. Pass that `draftId` back with **only the lines
-you are correcting** rather than resending the whole patch — `baseVersions` is inherited, and the edits'
+you are correcting** rather than resending the whole patch — `baseVersions` is inherited (anything you
+send alongside a `draftId` is **merged into** the draft's map, which is how `unheld_symbol` is fixed), and the edits'
 line spans address the draft's proposed text, which is the same coordinate space `locations` reports in.
 The `files` array is what tells you which files are in draft coordinates; a diagnostic in any other file
 reports ordinary on-disk line numbers.
@@ -853,11 +854,21 @@ only the 8 most recent are kept.
 | Error | Meaning |
 |---|---|
 | `unknown_draft` | Expired, evicted, or never existed. Refetch with `get_symbol` and submit a full patch. |
-| `draft_base_versions_conflict` | Both `draftId` and a non-empty `baseVersions` were sent. Omit `baseVersions` when amending. |
+| `unheld_symbol` | The patch changes a symbol no `baseVersions` entry covers — an added member anchors to its **containing type**, which is the usual cause. Nothing is wrong with the text, so a draft **is** issued: resend its `draftId` with the reported versions in `baseVersions` and an empty `edits` array. |
 | `draft_stale` | A file moved in the workspace since the draft forked from it, so its line numbers no longer mean anything. The draft is dropped; rebuild from a fresh `get_symbol`. |
 
-A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — those patches have to
-be rebuilt, not amended — nor when the patch applied, since there is then nothing left to correct.
+A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — nor when the patch
+applied, since there is then nothing left to correct. The distinction is whether the **text** is still
+trustworthy:
+
+- `invalid_edit` / `stale_workspace` — the fork was never built, so there is no proposed text to keep.
+- `stale_base` — a version you sent **disagrees** with the current one. Your text was built on content
+  that has since moved, so it must be rebuilt; making the retry cheap would only tempt you to re-apply
+  reasoning that no longer holds.
+- `unheld_symbol` — a version is simply **absent**. Nothing moved and the text is fine, so it is kept.
+
+That last split is the useful one: a missing map entry is a metadata gap, not a stale patch, and it used
+to cost a full resend to fix.
 
 Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
 

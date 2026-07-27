@@ -36,7 +36,8 @@
       "Bash(find / -maxdepth 6 -iname \"MSBuildWorkspace*.dll\")",
       "Bash(xargs -I{} echo {})",
       "Bash(xargs -I{} wc -l {})",
-      "mcp__plugin_dotnet-toolkit_dotnet__search_log"
+      "mcp__plugin_dotnet-toolkit_dotnet__search_log",
+      "Bash(bash -n scripts/guard-cs-edit.sh)"
     ]
   },
   "disabledMcpjsonServers": [

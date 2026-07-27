@@ -68,7 +68,9 @@ A worked call, start to finish:
    `diagnostics.rootCauses[].locations` (where each error landed in the text you proposed) and a
    `draft: {draftId}`. Send that `draftId` back with only the lines you are correcting;
    `baseVersions` is inherited and the edits' spans address the draft's text. The same handle
-   re-runs a partial green at a higher `requestedLevel` with an empty `edits` array.
+   re-runs a partial green at a higher `requestedLevel` with an empty `edits` array, and resolves
+   `unheld_symbol` (a symbol the classifier attributed a change to that your `baseVersions` did not
+   cover — usually the *containing type* of an added member) by merging in just that entry.
 
 Read `skills/dotnet-change/SKILL.md` before the first C# edit of a session for `baseVersions`, the
 sufficiency triple, and how to batch from `suggestedInspection` — and read the relevant coding standards

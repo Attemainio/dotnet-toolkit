@@ -1191,23 +1191,50 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     [Fact]
-    public async Task ValidatePatch_DraftIdTogetherWithBaseVersions_IsRejected()
+    public async Task ValidatePatch_SymbolWithNoBaseVersionEntry_KeepsTheTextAsAnAmendableDraft()
+    {
+        var member = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Undocumented", "all"));
+        var memberId = member.GetProperty("symbolId").GetString()!;
+        var memberVersion = member.GetProperty("contentVersion").GetString()!;
+
+        // Adding a member anchors the change to its CONTAINING TYPE, whose version is deliberately absent
+        // here. Nothing about the text is wrong, so it must survive as a draft.
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", StartLine(member), EndLine(member),
+            "    public static int Undocumented() => 0;\n\n    public static int AddedByTest() => 1;") };
+        var first = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [memberId] = memberVersion }, edits,
+            applyOnSuccess: false, intent: null));
+
+        Assert.Equal("unheld_symbol", first.GetProperty("error").GetString());
+
+        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
+        var missing = TableRows(first.GetProperty("current"))[0];
+
+        // The whole fix: one map entry merged into the draft's own, and not one line of text resent.
+        var amended = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
+            new Dictionary<string, string> { [missing["symbolId"].GetString()!] = missing["currentVersion"].GetString()! },
+            [], requestedLevel: null, applyOnSuccess: false, intent: null, tags: null, draftId: draftId));
+
+        Assert.False(amended.TryGetProperty("error", out _), amended.GetRawText());
+        Assert.True(amended.GetProperty("succeeded").GetBoolean(), amended.GetRawText());
+    }
+
+    [Fact]
+    public async Task ValidatePatch_VersionThatDisagrees_IsStaleBaseWithNoDraft()
     {
         var sym = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
 
-        var spinAt = StartLine(sym);
-        var broken = new[] { new PatchEditInput("Lib/Widget.cs", spinAt, EndLine(sym), "    public int Spin(int turns) => turns * absent;") };
-        var first = Root(await ContextToolsValidate(
-            new Dictionary<string, string> { [symbolId] = version }, broken, applyOnSuccess: false, intent: null));
-        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", StartLine(sym), EndLine(sym),
+            "    public int Spin(int turns) => turns * 11;") };
+        var root = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = "decl:000000000000|body:000000000000" }, edits,
+            applyOnSuccess: false, intent: null));
 
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry, _f.Drafts,
-            new Dictionary<string, string> { [symbolId] = version }, [], requestedLevel: null,
-            applyOnSuccess: false, intent: null, tags: null, draftId: draftId));
-
-        Assert.Equal("draft_base_versions_conflict", root.GetProperty("error").GetString());
+        Assert.Equal("stale_base", root.GetProperty("error").GetString());
+        // Content moved under the patch, so its text is suspect and there is deliberately nothing to amend.
+        Assert.False(root.TryGetProperty("draft", out var draft) && draft.ValueKind != JsonValueKind.Null,
+            root.GetRawText());
     }
 
     [Fact]
