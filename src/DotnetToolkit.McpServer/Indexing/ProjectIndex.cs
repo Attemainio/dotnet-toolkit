@@ -5,6 +5,11 @@ using Microsoft.Extensions.Logging;
 
 namespace DotnetToolkit.McpServer.Indexing;
 
+/// <summary>
+/// One syntax-index match from <see cref="ProjectIndex.FindSymbol"/>. <paramref name="Kind"/> is the
+/// same single-letter code documented on <see cref="MemberEntry"/> (C class, I interface, S struct,
+/// R record, E enum, D delegate, M method, K constructor, P property/indexer, F field/enum-member, V event).
+/// </summary>
 public sealed record SymbolHit(string Kind, string Name, string FqName, string File, int Line, string? Doc, string? Signature);
 
 /// <summary>
@@ -12,7 +17,7 @@ public sealed record SymbolHit(string Kind, string Name, string FqName, string F
 /// doc summaries. Built without MSBuild so it is available seconds after startup.
 /// Invalidation is mtime-polling based because inotify does not work on /mnt/* (WSL DrvFs).
 /// </summary>
-public sealed class ProjectIndex
+public sealed class ProjectIndex : IDisposable
 {
     private static readonly TimeSpan QuickSweepDebounce = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan FullSweepInterval = TimeSpan.FromSeconds(30);
@@ -34,7 +39,8 @@ public sealed class ProjectIndex
     /// </summary>
     private Dictionary<string, long>? _projectFiles;
 
-    public string State { get; private set; } = "not-started";
+    private volatile string _state = "not-started";
+    public string State => _state;
     public int FileCount => _files.Count;
     public int TypeCount => _files.Values.Sum(f => CountTypes(f.Types));
 
@@ -60,15 +66,15 @@ public sealed class ProjectIndex
     {
         try
         {
-            State = "building";
+            _state = "building";
             LoadCache();
             await SweepAsync(full: true);
-            State = "ready";
+            _state = "ready";
             _log.LogInformation("Index ready: {Files} files, {Types} types", FileCount, TypeCount);
         }
         catch (Exception ex)
         {
-            State = $"failed: {ex.Message}";
+            _state = $"failed: {ex.Message}";
             _log.LogError(ex, "Index initialization failed");
         }
     }
@@ -485,4 +491,6 @@ public sealed class ProjectIndex
         "event" or "v" => "V",
         _ => null,
     };
+
+    public void Dispose() => _sweepGate.Dispose();
 }

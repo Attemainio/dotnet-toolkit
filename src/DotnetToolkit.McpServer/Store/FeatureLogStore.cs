@@ -15,10 +15,12 @@ public sealed class FeatureLogStore
 
     public bool Available => _store.Available;
 
+    /// <summary>One changed symbol within a <see cref="LogEntry"/>. <paramref name="OldSymbolId"/> is set only when this row continues a prior symbol's identity across a rename (see the id-chain resolution this store performs on read).</summary>
     public sealed record LogSymbol(
         string SymbolId, string? OldSymbolId, IReadOnlyList<string> ChangeKinds, string? Detail,
         string? OldVersion, string? NewVersion, string? ApiImpact);
 
+    /// <summary>One applied validate_patch, recorded as an immutable development-log entry with the symbols it touched.</summary>
     public sealed record LogEntry(
         string TaskId, string? PatchId, string? CommitSha, string Intent,
         IReadOnlyList<string> Tags, string? ValidationJson, IReadOnlyList<LogSymbol> Symbols);

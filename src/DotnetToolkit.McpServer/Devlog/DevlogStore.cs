@@ -8,9 +8,10 @@ using Microsoft.Extensions.Logging;
 namespace DotnetToolkit.McpServer.Devlog;
 
 /// <summary>
-/// Development log keeper. Weekly markdown files under the target repo (committed,
-/// human-readable source of truth) plus a rebuildable JSON search index in the cache dir.
-/// The agent interacts only through the devlog_* tools, never by reading the files.
+/// Legacy development-log store — weekly markdown files under the target repo, plus a rebuildable
+/// JSON search index in the cache dir. Retained only so <see cref="DevlogMigration"/> can import
+/// existing entries into feature_log once at startup; no live MCP tool reads or writes through this
+/// class today.
 /// </summary>
 public sealed class DevlogStore
 {

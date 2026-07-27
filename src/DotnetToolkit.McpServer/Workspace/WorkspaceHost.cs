@@ -25,6 +25,8 @@ public enum WorkspaceState
 /// </summary>
 public sealed class WorkspaceHost : IDisposable
 {
+    private static readonly TimeSpan RestoreTimeout = TimeSpan.FromMinutes(3);
+
     private readonly SolutionLocator _locator;
     private readonly ILogger<WorkspaceHost> _log;
     private readonly object _gate = new();
@@ -265,15 +267,32 @@ public sealed class WorkspaceHost : IDisposable
             psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
             psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 
-            using var proc = Process.Start(psi)!;
+            using var proc = Process.Start(psi);
+            if (proc is null)
+            {
+                _log.LogWarning("dotnet restore could not be started before workspace load");
+                return;
+            }
             // Both streams must still be drained concurrently, not just read after the fact: `dotnet
             // restore` writes enough to stdout to fill the pipe buffer, and an unread redirected stream
             // blocks the child from writing to it — so reading only stderr would deadlock the restore
             // (and, upstream, the whole load) even with node reuse disabled.
             var stdout = proc.StandardOutput.ReadToEndAsync();
             var stderr = proc.StandardError.ReadToEndAsync();
+
+            using var timeout = new CancellationTokenSource(RestoreTimeout);
+            try
+            {
+                await proc.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+                _log.LogWarning("dotnet restore timed out after {Timeout} before workspace load", RestoreTimeout);
+                return;
+            }
+
             await Task.WhenAll(stdout, stderr);
-            await proc.WaitForExitAsync();
             if (proc.ExitCode != 0)
                 _log.LogWarning("dotnet restore exited {Code} before workspace load: {Error}", proc.ExitCode, stderr.Result.Trim());
         }
@@ -338,6 +357,8 @@ public sealed class WorkspaceHost : IDisposable
             Document? document;
             lock (_gate)
             {
+                // [0]: assumes one document per file path (no linked/multi-targeted files sharing this
+                // path across projects) -- true for this repo's own project layout today.
                 var ids = _solution?.GetDocumentIdsWithFilePath(abs) ?? [];
                 document = ids.IsEmpty ? null : _solution!.GetDocument(ids[0]);
             }

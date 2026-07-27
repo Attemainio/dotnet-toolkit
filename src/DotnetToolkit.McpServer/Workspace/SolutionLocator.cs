@@ -135,6 +135,7 @@ public sealed class SolutionLocator
     }
 
     /// <summary>Resolves a root-relative path, rejecting escapes above the root.</summary>
+    /// <exception cref="ArgumentException">The resolved path escapes <see cref="Root"/>.</exception>
     public string AbsPath(string relative)
     {
         var abs = Path.GetFullPath(Path.Combine(Root, relative));

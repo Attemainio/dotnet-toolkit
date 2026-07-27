@@ -1,6 +1,6 @@
 using System.ComponentModel;
 using System.Text;
-using DotnetToolkit.McpServer.Devlog;
+
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Workspace;
@@ -108,19 +108,19 @@ public static class ServerTools
         SymbolIndexBuilder indexBuilder,
         [Description("index | workspace | all")] string scope = "all")
     {
-            var s = scope.Trim().ToLowerInvariant();
-            var actions = new List<string>();
-            if (s is "index" or "all")
-            {
-                await index.ForceRescanAsync();
-                actions.Add($"index re-scanned ({index.FileCount} files, {index.TypeCount} types)");
-            }
-            if (s is "workspace" or "all")
-            {
-                workspace.TriggerReload();
-                indexBuilder.Start();
-                actions.Add("workspace reload started in background, symbol index rebuild queued (check workspace_status)");
-            }
-            return actions.Count > 0 ? string.Join("; ", actions) : $"unknown scope: {scope} (use index|workspace|all)";
+        var s = scope.Trim().ToLowerInvariant();
+        var actions = new List<string>();
+        if (s is "index" or "all")
+        {
+            await index.ForceRescanAsync();
+            actions.Add($"index re-scanned ({index.FileCount} files, {index.TypeCount} types)");
         }
+        if (s is "workspace" or "all")
+        {
+            workspace.TriggerReload();
+            indexBuilder.Start();
+            actions.Add("workspace reload started in background, symbol index rebuild queued (check workspace_status)");
+        }
+        return actions.Count > 0 ? string.Join("; ", actions) : $"unknown scope: {scope} (use index|workspace|all)";
+    }
 }

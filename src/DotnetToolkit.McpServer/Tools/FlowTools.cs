@@ -170,7 +170,7 @@ public static class FlowTools
         ProjectIndex index,
         SymbolIndexBuilder indexBuilder,
         [Description("Root symbol: fully-qualified name, unique suffix, or sym_... id.")] string symbol,
-        [Description("callers | callees (default callers). callers walks upward toward entry points; callees walks downward into what this symbol invokes.")] string direction = "callers",
+        [Description("callers | callees (default callers). callers walks upward toward entry points; callees walks downward into what this symbol invokes. An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
         [Description("Maximum tree depth (default 3, clamped 1-8 — deeper trees grow exponentially on a well-connected graph).")] int maxDepth = 3,
         [Description("Maximum children expanded per node before truncating (default 25, clamped 1-200). A node past the cap keeps its own entry but stops expanding, marked truncated:true with omittedChildren.")] int maxChildrenPerNode = 25,
         [Description("Emit the full tree (default true). Set false to return only blastRadius — the cheapest possible answer to 'how much does changing this ripple'.")] bool includeTree = true,

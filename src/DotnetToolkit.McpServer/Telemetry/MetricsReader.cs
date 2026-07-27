@@ -14,14 +14,18 @@ public sealed class MetricsReader
 
     public MetricsReader(KnowledgeStore store) => _store = store;
 
+    /// <summary>Process-wide retrieval-cost totals: tool calls, tokens returned, and lease/validation counters.</summary>
     public sealed record Totals(
         int ToolCalls, long TokensReturned, int LeaseHits, long TokensSavedByLeases, int Refetches,
         int ValidationAttempts, int InsufficientValidations, int FailedValidations);
 
+    /// <summary>One row of a metrics breakdown grouped by tool/session/day (per the request's groupBy), with its own call/token totals and first/last-seen timestamps.</summary>
     public sealed record Group(string Key, int Calls, long TokensReturned, string? FirstSeen = null, string? LastSeen = null);
 
+    /// <summary>A heuristic warning surfaced by the read side (e.g. repeated refetches, a chatty symbol), with a human-readable hint.</summary>
     public sealed record Flag(string Kind, string? SymbolId, int Count, string Hint);
 
+    /// <summary>The full response shape for <c>get_retrieval_metrics</c>: totals, requested groupings, and any flags.</summary>
     public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups, IReadOnlyList<Flag> Flags);
 
     /// <param name="scope">session | global</param>

@@ -33,7 +33,7 @@ public static class PatchSandbox
     /// drifted from disk is refused outright (<see cref="Result.Stale"/>) rather than silently reverting
     /// the untouched remainder of the file.
     /// </remarks>
-    public static async Task<Result> ApplyAsync(Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits)
+    public static async Task<Result> ApplyAsync(Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits, CancellationToken cancellationToken = default)
     {
         var forked = solution;
         var changed = new List<DocumentId>();
@@ -44,9 +44,11 @@ public static class PatchSandbox
             if (docIds.IsEmpty)
                 return new Result(solution, [], $"file is not part of the loaded solution: {group.First().File}");
 
+            // [0]: assumes one document per file path (no linked/multi-targeted files sharing this path
+            // across projects) -- true for this repo's own project layout today.
             var docId = docIds[0];
             var document = forked.GetDocument(docId)!;
-            var text = await document.GetTextAsync();
+            var text = await document.GetTextAsync(cancellationToken);
 
             // Refuse to fork from a copy that no longer matches disk. An apply writes the *whole*
             // document text back, not just the edited span, so a patch built on a lagging copy silently

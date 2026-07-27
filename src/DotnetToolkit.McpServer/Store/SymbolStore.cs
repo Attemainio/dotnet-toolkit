@@ -14,6 +14,12 @@ public sealed class SymbolStore
 
     public bool Available => _store.Available;
 
+    /// <summary>
+    /// A symbol's persisted index row: identity, fingerprint hashes, and origin. <paramref name="Origin"/>
+    /// is "source" for a symbol this repo's solution declares, or "external" for a minimal row minted
+    /// only because some declared symbol references it (BCL/NuGet/another assembly); external rows carry
+    /// no decl/body hash and use <paramref name="DocumentationId"/> (a cref-style id) in place of one.
+    /// </summary>
     public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
@@ -23,6 +29,7 @@ public sealed class SymbolStore
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
 
+    /// <summary>A directed reference edge between two symbols (call, implements, etc.), with an optional call-site location.</summary>
     public sealed record EdgeRow(string From, string To, string EdgeKind, string? File, int? Line);
 
     /// <summary>
@@ -215,6 +222,7 @@ public sealed class SymbolStore
         return tests;
     }
 
+    /// <summary>One ranked result row from a full-text or LIKE search over the symbol index.</summary>
     public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank, string? Namespace = null);
 
     /// <summary>
@@ -456,7 +464,7 @@ public sealed class SymbolStore
         return result;
     }
 
-/// <summary>
+    /// <summary>
     /// Reads hits in rank order, keeping the first row per symbol. The dedupe lives here rather than as
     /// a GROUP BY because FTS5 refuses bm25() in an aggregate context ("unable to use function bm25 in
     /// the requested context") — and that error is swallowed by the degradation catch below, so the
@@ -578,7 +586,7 @@ public sealed class SymbolStore
         return existing;
     }
 
-/// <summary>
+    /// <summary>
     /// Fingerprint-gated update (spec §Maintenance): rows are rewritten only where a version layer
     /// actually moved, and facts only where the body moved. Edge DELETION (pruning a stale edge left
     /// over from a genuine content change) stays gated the same way an owner's row is, but edge

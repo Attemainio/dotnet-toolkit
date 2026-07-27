@@ -1516,6 +1516,114 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal("source", root.GetProperty("content").GetProperty("origin").GetString());
     }
 
+    [Fact]
+    public async Task GetProjectGraph_ReportsProjectsAndTotalCount()
+    {
+        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace));
+
+        var projects = root.GetProperty("projects").EnumerateArray().ToList();
+        Assert.NotEmpty(projects);
+        Assert.Equal(projects.Count, root.GetProperty("totalProjects").GetInt32());
+        Assert.True(projects[0].TryGetProperty("references", out _));
+        Assert.True(projects[0].TryGetProperty("referencedBy", out _));
+    }
+
+    [Fact]
+    public async Task GetProjectGraph_ScopedToUnknownProject_ReportsProjectNotFound()
+    {
+        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, project: "NoSuchProject"));
+
+        Assert.Equal("project_not_found", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task DetectCircularDependencies_AcyclicSample_ReportsNoCycles()
+    {
+        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace));
+
+        Assert.Equal("project", root.GetProperty("scope").GetString());
+        Assert.Equal(0, root.GetProperty("totalCycles").GetInt32());
+        Assert.Empty(root.GetProperty("cycles").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task DetectCircularDependencies_UnsupportedScope_ReturnsError()
+    {
+        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, scope: "type"));
+
+        Assert.Equal("unsupported_scope", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task GetTypeHierarchy_Interface_ListsDirectImplementers()
+    {
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.IWidget"));
+
+        var derivedNames = root.GetProperty("derived").GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.Contains(derivedNames, d => d.Contains("Widget"));
+        Assert.Contains(derivedNames, d => d.Contains("TurboWidget"));
+    }
+
+    [Fact]
+    public async Task GetTypeHierarchy_Class_ReportsBaseChainAndDerived()
+    {
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.GearBase"));
+
+        Assert.Contains(root.GetProperty("baseChain").EnumerateArray(),
+            b => (b.GetProperty("displayString").GetString() ?? "").Contains("object"));
+        var derivedNames = root.GetProperty("derived").GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.Contains(derivedNames, d => d.Contains("HighGear"));
+    }
+
+    [Fact]
+    public async Task GetTypeHierarchy_UnknownSymbol_ReportsSymbolNotFound()
+    {
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.NoSuchType"));
+
+        Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task GetCallHierarchy_Callees_ReachesSpinAndReportsBlastRadius()
+    {
+        var root = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.Pipeline.Start", direction: "callees"));
+
+        Assert.Equal("callees", root.GetProperty("direction").GetString());
+        Assert.True(root.GetProperty("blastRadius").GetProperty("totalUniqueNodes").GetInt32() > 0);
+
+        static bool ContainsSpin(JsonElement node)
+        {
+            if ((node.GetProperty("displayString").GetString() ?? "").Contains("Spin"))
+                return true;
+            return node.TryGetProperty("children", out var children) && children.ValueKind == JsonValueKind.Array
+                && children.EnumerateArray().Any(ContainsSpin);
+        }
+        Assert.True(ContainsSpin(root.GetProperty("tree")));
+    }
+
+    [Fact]
+    public async Task GetCallHierarchy_IncludeTreeFalse_OmitsTreeButKeepsBlastRadius()
+    {
+        var root = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.Pipeline.Start",
+            direction: "callees", includeTree: false));
+
+        Assert.False(root.TryGetProperty("tree", out _));
+        Assert.True(root.GetProperty("blastRadius").GetProperty("totalUniqueNodes").GetInt32() > 0);
+    }
+
+    [Fact]
+    public async Task GetCallHierarchy_UnknownSymbol_ReportsSymbolNotFound()
+    {
+        var root = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.NoSuchMethod"));
+
+        Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
+    }
+
 
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,

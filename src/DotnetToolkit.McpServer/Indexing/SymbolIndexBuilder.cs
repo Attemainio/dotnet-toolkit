@@ -22,7 +22,8 @@ public sealed class SymbolIndexBuilder
     private readonly ILogger<SymbolIndexBuilder> _log;
     private int _running;
 
-    public bool Ready { get; private set; }
+    private volatile bool _ready;
+    public bool Ready => _ready;
 
     public SymbolIndexBuilder(WorkspaceHost workspace, SymbolStore symbols, ILogger<SymbolIndexBuilder> log)
     {
@@ -80,7 +81,7 @@ public sealed class SymbolIndexBuilder
             // Fingerprint-gated: only rows whose version layers actually moved are rewritten, so a
             // formatting-only sweep costs a comparison pass and no semantic writes at all.
             var stats = _symbols.ApplyIncremental([.. symbols.Values], [.. edges], facts);
-            Ready = true;
+            _ready = true;
             _log.LogInformation(
                 "Symbol index updated: {Updated} changed, {Removed} removed, {Unchanged} untouched ({Symbols} symbols, {Edges} edges)",
                 stats.Updated, stats.Removed, stats.Unchanged, symbols.Count, edges.Count);

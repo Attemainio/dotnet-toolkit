@@ -378,7 +378,7 @@ private static async Task<string> GetSymbolOne(
         SymbolStore symbolStore,
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
-        [Description("callers | implementations | overrides (default callers).")] string direction = "callers",
+        [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
         [Description("Include member bodies inline (default false).")] bool includeBodies = false)
     {
         var sessionId = Ids.AmbientSession;

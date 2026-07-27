@@ -44,7 +44,8 @@ public static class PatchTools
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
-        [Description("Optional tags.")] string[]? tags = null)
+        [Description("Optional tags.")] string[]? tags = null,
+        CancellationToken cancellationToken = default)
     {
         var sessionId = Ids.AmbientSession;
         var taskId = sessionId;
@@ -72,11 +73,11 @@ public static class PatchTools
                     "The semantic workspace is not ready; retry shortly.");
 
             var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
-            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits);
+            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits, cancellationToken);
             if (sandbox.Error is not null)
                 return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
 
-            var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
+            var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments, cancellationToken);
 
             var stale = detected
                 .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
@@ -97,13 +98,14 @@ public static class PatchTools
 
             var ladder = await ValidationLadder.RunAsync(
                 sandbox.Forked, sandbox.ChangedDocuments, required,
-                testRunner: ct => targetedTests.RunAsync(affectedTests, ct));
+                testRunner: ct => targetedTests.RunAsync(affectedTests, ct),
+                cancellationToken: cancellationToken);
             var isSufficient = ladder.Succeeded && (int)ladder.Completed >= (int)required;
 
             var distillation = ladder.Succeeded
                 ? new DiagnosticDistiller.Distillation([], 0, 0)
                 : await DiagnosticDistiller.DistillAsync(sandbox.Forked, ladder.FailingDiagnostics,
-                    detected.Select(c => (c.SymbolId, c.DisplayString)).ToList());
+                    detected.Select(c => (c.SymbolId, c.DisplayString)).ToList(), cancellationToken);
 
             var applied = false;
             if (applyOnSuccess && isSufficient && ladder.Succeeded)

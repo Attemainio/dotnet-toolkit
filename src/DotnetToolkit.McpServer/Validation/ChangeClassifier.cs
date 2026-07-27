@@ -24,7 +24,7 @@ public static class ChangeClassifier
     /// <param name="forked">The solution with the patch applied.</param>
     /// <param name="changedDocs">Documents to diff.</param>
     /// <returns>One <see cref="Change"/> per paired, added, or removed declaration — exact-key matches first, then arity/signature pairing, then rename pairing, then pure additions and removals.</returns>
-    public static async Task<List<Change>> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs)
+    public static async Task<List<Change>> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs, CancellationToken cancellationToken = default)
     {
         var changes = new List<Change>();
         foreach (var docId in changedDocs)
@@ -34,12 +34,12 @@ public static class ChangeClassifier
             if (baseDoc is null || newDoc is null)
                 continue;
 
-            var oldRoot = await baseDoc.GetSyntaxRootAsync();
-            var newRoot = await newDoc.GetSyntaxRootAsync();
+            var oldRoot = await baseDoc.GetSyntaxRootAsync(cancellationToken);
+            var newRoot = await newDoc.GetSyntaxRootAsync(cancellationToken);
             if (oldRoot is null || newRoot is null)
                 continue;
-            var model = await newDoc.GetSemanticModelAsync();
-            var baseModel = await baseDoc.GetSemanticModelAsync();
+            var model = await newDoc.GetSemanticModelAsync(cancellationToken);
+            var baseModel = await baseDoc.GetSemanticModelAsync(cancellationToken);
 
             var oldMap = BuildMap(oldRoot);
             var newMap = BuildMap(newRoot);

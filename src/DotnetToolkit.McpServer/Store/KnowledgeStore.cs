@@ -28,6 +28,7 @@ public sealed class KnowledgeStore
             DataSource = DatabasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Pooling = true,
+            ForeignKeys = true,
         }.ToString();
 
         try

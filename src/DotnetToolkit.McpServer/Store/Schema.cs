@@ -9,7 +9,7 @@ internal static class Schema
 {
     public sealed record Migration(int Version, string Name, string Sql);
 
-public static readonly IReadOnlyList<Migration> Migrations =
+    public static readonly IReadOnlyList<Migration> Migrations =
     [
         new(1, "raw_telemetry", RawTelemetry),
         new(2, "symbol_index", SymbolIndex),
@@ -31,7 +31,7 @@ public static readonly IReadOnlyList<Migration> Migrations =
     // linked it to the id the symbol carries after the rename, and get_symbol's recentLog only ever
     // queried the current id. old_symbol_id lets a query walk backward through however many renames a
     // symbol has been through -- see FeatureLogStore.ResolveIdChain.
-// search_index's modifiers/implements filters (get_symbol's matching modifiers/baseType/interfaces
+    // search_index's modifiers/implements filters (get_symbol's matching modifiers/baseType/interfaces
     // components are declaration-only reads and need no storage of their own). modifiers is a
     // space-separated, space-padded tag set — literal C# modifier keywords plus a few cheap derived
     // tags (extension, indexer, initonly, disposable, asyncdisposable) — populated by
@@ -50,7 +50,7 @@ public static readonly IReadOnlyList<Migration> Migrations =
         ALTER TABLE symbols ADD COLUMN documentation_id TEXT;
         """;
 
-private const string SymbolModifiersColumn = """
+    private const string SymbolModifiersColumn = """
         ALTER TABLE symbols ADD COLUMN modifiers TEXT;
         """;
 

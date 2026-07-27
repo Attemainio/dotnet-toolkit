@@ -26,7 +26,8 @@ public static class DiagnosticDistiller
     /// <returns>One <see cref="RootCause"/> per diagnostic id, plus the raw/suppressed diagnostic counts.</returns>
     public static async Task<Distillation> DistillAsync(
         Solution forked, IReadOnlyList<Diagnostic> errors,
-        IReadOnlyList<(string SymbolId, string DisplayString)> changedSymbols)
+        IReadOnlyList<(string SymbolId, string DisplayString)> changedSymbols,
+        CancellationToken cancellationToken = default)
     {
         var causes = new List<RootCause>();
         var totalRaw = errors.Count;
@@ -37,7 +38,7 @@ public static class DiagnosticDistiller
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var diagnostic in group)
             {
-                var enclosing = await EnclosingSymbolAsync(forked, diagnostic.Location);
+                var enclosing = await EnclosingSymbolAsync(forked, diagnostic.Location, cancellationToken);
                 if (enclosing is not null && seen.Add(enclosing.Value.SymbolId))
                     inspections.Add(new Inspection(enclosing.Value.SymbolId, enclosing.Value.DisplayString, "diagnostic origin"));
             }
@@ -62,14 +63,14 @@ public static class DiagnosticDistiller
         return new Distillation(causes, totalRaw, Math.Max(0, totalSuppressed));
     }
 
-    private static async Task<(string SymbolId, string DisplayString)?> EnclosingSymbolAsync(Solution forked, Location location)
+    private static async Task<(string SymbolId, string DisplayString)?> EnclosingSymbolAsync(Solution forked, Location location, CancellationToken cancellationToken)
     {
         if (location.SourceTree is null)
             return null;
         var document = forked.GetDocument(location.SourceTree);
         if (document is null)
             return null;
-        var model = await document.GetSemanticModelAsync();
+        var model = await document.GetSemanticModelAsync(cancellationToken);
         var symbol = model?.GetEnclosingSymbol(location.SourceSpan.Start);
         if (symbol is null || symbol.Kind == SymbolKind.Namespace)
             return null;
