@@ -24,6 +24,7 @@ public static readonly IReadOnlyList<Migration> Migrations =
         new(11, "symbol_modifiers_column", SymbolModifiersColumn),
         new(12, "symbol_origin_column", SymbolOriginColumn),
         new(13, "symbol_namespace_column", SymbolNamespaceColumn),
+        new(14, "drop_attribution", DropAttribution),
     ];
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
@@ -61,6 +62,19 @@ private const string SymbolModifiersColumn = """
     private const string SymbolNamespaceColumn = """
         ALTER TABLE symbols ADD COLUMN namespace TEXT;
         DELETE FROM symbols WHERE origin = 'external';
+        """;
+
+    // The attribution stratum was orphaned by the commit that retired caller-supplied session/task ids
+    // (923decb): it keyed every verdict on a task boundary that no longer exists, since task_id is now
+    // the ambient per-process session id. Nothing ever wrote surfaced_symbols or session_events, nothing
+    // called RebuildAll outside tests, and get_retrieval_metrics reads the raw tables directly. The raw
+    // events these were derived FROM are untouched and immutable, so any future version of this analysis
+    // can be recomputed from full history -- dropping the derived layer discards opinions, not data.
+    private const string DropAttribution = """
+        DROP TABLE IF EXISTS derived_retrieval_attribution;
+        DROP TABLE IF EXISTS derived_task_summary;
+        DROP TABLE IF EXISTS surfaced_symbols;
+        DROP TABLE IF EXISTS session_events;
         """;
 
     private const string RenameChainOnFeatureLogSymbols = """

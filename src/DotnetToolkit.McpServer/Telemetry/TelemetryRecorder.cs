@@ -143,31 +143,4 @@ public sealed class TelemetryRecorder
             _log.LogWarning(ex, "Failed to record patch event for {Patch}", e.PatchId);
         }
     }
-
-    /// <summary>Appends a lifecycle marker (task/session start, compaction signal) — spec §19.1.</summary>
-    public void RecordSession(string sessionId, string? taskId, string kind, string? detail = null)
-    {
-        if (!_store.Available)
-            return;
-        try
-        {
-            using var connection = _store.Connect();
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = """
-                INSERT INTO session_events (event_id, session_id, task_id, kind, detail, created_at)
-                VALUES ($event_id, $session_id, $task_id, $kind, $detail, $created_at);
-                """;
-            cmd.Parameters.AddWithValue("$event_id", Identity.Ids.Event());
-            cmd.Parameters.AddWithValue("$session_id", sessionId);
-            cmd.Parameters.AddWithValue("$task_id", (object?)taskId ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$kind", kind);
-            cmd.Parameters.AddWithValue("$detail", (object?)detail ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$created_at", DateTimeOffset.UtcNow.ToString("O"));
-            cmd.ExecuteNonQuery();
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "Failed to record session event {Kind}", kind);
-        }
-    }
 }
