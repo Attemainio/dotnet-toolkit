@@ -15,9 +15,6 @@ public sealed record RetrievalEvent
     public string? SymbolId { get; init; }
     public string? Resolution { get; init; }
     public string? Direction { get; init; }
-    public string? KnownVersion { get; init; }
-    public bool Refetch { get; init; }
-    public bool LeaseHit { get; init; }
     public string? ContentVersion { get; init; }
     public int ReturnedSymbols { get; init; }
     public int ReturnedTokens { get; init; }

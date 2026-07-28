@@ -148,14 +148,13 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
-    private Task<string> GetSymbol(
-        string symbol, string? include = null, string? knownVersion = null, bool refetch = false) =>
+    private Task<string> GetSymbol(string symbol, string? include = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, include, knownVersion, refetch);
+            symbol, include);
 
     private Task<string> GetSymbols(string[] symbols, string? include = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol: null, include, knownVersion: null, refetch: false, symbols: symbols);
+            symbol: null, include, symbols: symbols);
 
     private Task<string> GetReferences(string symbol, string direction) =>
         ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction);
@@ -552,7 +551,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var site = sym.GetProperty("content").GetProperty("declarationSites")[0];
         var line = site.GetProperty("startLine").GetInt32();
 
-        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator,
+        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
             file: "Lib/Pipeline.cs", line: line, column: 40, receiver: "_widget", filter: "methods"));
 
         var items = root.GetProperty("items").EnumerateArray()
@@ -562,7 +561,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     private Task<string> ContextToolsCallSlice(string from, string to) =>
-        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, from, to);
+        FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, _f.Telemetry, from, to);
 
     // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
     // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
@@ -912,14 +911,15 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains("2 lines", content.GetProperty("bodyOutlineNote").GetString());
     }
 
-    /// <summary>bodyOutline is method-only, like mechanicalFacts's semantic-model facts — null for a type.</summary>
+    /// <summary>bodyOutline is method-only, like mechanicalFacts's semantic-model facts — a type gets an
+    /// explanatory bodyOutlineNote instead of both fields silently disappearing.</summary>
     [Fact]
-    public async Task GetSymbol_BodyOutline_NullForNonMethodSymbol()
+    public async Task GetSymbol_BodyOutline_NotesNonMethodSymbol()
     {
         var content = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture", include: "bodyOutline")).GetProperty("content");
 
         Assert.True(IsAbsentOrNull(content, "bodyOutline"));
-        Assert.True(IsAbsentOrNull(content, "bodyOutlineNote"));
+        Assert.Contains("not applicable", content.GetProperty("bodyOutlineNote").GetString());
     }
 
     private static int[] SourceLineNumbers(JsonElement content) =>
@@ -932,68 +932,6 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         (row.GetProperty("text").GetString()!, row.GetProperty("startLine").GetInt32(),
          row.GetProperty("endLine").GetInt32(), row.GetProperty("depth").GetInt32());
 
-    // Conformance C4: a matching knownVersion yields changed:false with heldVersion + refetchHint.
-    [Fact]
-    public async Task GetSymbol_LeaseHit_OmitsContent_C4()
-    {
-        var first = Root(await GetSymbol("Sample.Lib.Widget"));
-        var version = first.GetProperty("contentVersion").GetString();
-
-        var second = Root(await GetSymbol("Sample.Lib.Widget", knownVersion: version));
-        Assert.False(second.GetProperty("changed").GetBoolean());
-        Assert.Equal(version, second.GetProperty("heldVersion").GetString());
-        Assert.False(string.IsNullOrEmpty(second.GetProperty("refetchHint").GetString()));
-        // Content is omitted on a lease hit (null properties are not serialized).
-        Assert.False(second.TryGetProperty("content", out var content) && content.ValueKind != JsonValueKind.Null);
-
-        // refetch:true overrides the lease and re-sends content.
-        var forced = Root(await GetSymbol("Sample.Lib.Widget", knownVersion: version, refetch: true));
-        Assert.True(forced.TryGetProperty("content", out _));
-        Assert.False(forced.TryGetProperty("changed", out _));
-    }
-
-    // A lease may cover a SUBSET of layers: holding only decl (e.g. from a get_references item that
-    // never carried a body) still yields changed:false. Here heldVersion and contentVersion genuinely
-    // differ — heldVersion states which layers were actually verified, which is why it is not redundant.
-    [Fact]
-    public async Task GetSymbol_PartialLayerLease_ReportsWhichLayersMatched()
-    {
-        // A component set derived from decl alone gets a decl-only token back — the response must not
-        // claim layers whose content it never sent.
-        const string DeclOnlySet = "xmlDoc";
-        var first = Root(await GetSymbol("Sample.Lib.Widget.Spin", DeclOnlySet));
-        var declOnly = first.GetProperty("contentVersion").GetString()!;
-        Assert.DoesNotContain("|", declOnly);
-        Assert.StartsWith("decl:", declOnly);
-
-        // Holding exactly what that response covered leases cleanly.
-        var leased = Root(await GetSymbol(
-            "Sample.Lib.Widget.Spin", DeclOnlySet, knownVersion: declOnly));
-
-        Assert.False(leased.GetProperty("changed").GetBoolean());
-        Assert.Equal(declOnly, leased.GetProperty("heldVersion").GetString());
-    }
-
-    /// <summary>
-    /// Escalating resolution while holding a narrower token must return content, not a lease hit.
-    /// <see cref="ContentVersion.Satisfies"/> compares only the layers the caller supplied, so a token
-    /// from a signature fetch matches on decl and would report changed:false against a request for the
-    /// source — handing back nothing, indistinguishable to the caller from an unchanged symbol. The
-    /// lease therefore also requires the held token to COVER the layers the requested components need.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_EscalatingResolution_DoesNotFalselyLeaseAwayNewContent()
-    {
-        var signature = Root(await GetSymbol("Sample.Lib.Widget.Spin"));
-        var signatureToken = signature.GetProperty("contentVersion").GetString()!;
-        Assert.False(signature.GetProperty("content").TryGetProperty("source", out _));
-
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all", knownVersion: signatureToken));
-
-        Assert.False(full.TryGetProperty("changed", out _));
-        Assert.True(
-            full.GetProperty("content").GetProperty("source").GetArrayLength() > 0);
-    }
 
     [Fact]
     public async Task GetReferences_Implementations_FindsBothWidgets()
@@ -1085,6 +1023,30 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
         Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
+    }
+
+    /// <summary>
+    /// An identity edit (newText identical to what's already on disk) makes ChangeClassifier report no
+    /// Change for the touched symbol, since nothing differs -- that used to mean the stale-base check
+    /// (which only iterated detected changes) had nothing to compare a bogus baseVersions token against,
+    /// so it silently passed. Now DetectAsync also reports the current version of every touched-but-
+    /// unchanged symbol, so a bogus token is still caught even though the edit is a genuine no-op.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_IdentityEdit_WithBogusBaseVersion_ReturnsStaleBase()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+
+        var path = _f.Locator.AbsPath("Lib/Widget.cs");
+        var currentLine = (await File.ReadAllLinesAsync(path))[11]; // line 12, whatever it currently reads
+
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, currentLine) };
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new Dictionary<string, string> { [symbolId] = "decl:0000deadbeef|body:0000deadbeef" }, edits,
+            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
+
+        Assert.Equal("stale_base", root.GetProperty("error").GetString());
     }
 
     /// <summary>
@@ -1380,19 +1342,21 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
-    /// The default groupBy:"namespace" collapses straight to flat namespace/file header fields plus one
+    /// groupBy:"namespace" collapses straight to flat namespace/file header fields plus one
     /// symbols table when the whole result set shares a single namespace and a single file — no wrapper
     /// arrays for the common single-file search. A leaf's kind column also hoists to a header field
     /// when every hit in that leaf shares one kind. limit:1 isolates SpinTwice on its own — the bare
     /// query also fuzzy-matches Spin, which spans a second file and would not collapse. limitedBy is
     /// omitted entirely (not printed as null) when nothing limited the answer, same as the flat
-    /// groupBy:"none" shape.
+    /// groupBy:"none" shape. Passed explicitly here (rather than relying on the omitted-groupBy default,
+    /// which now auto-picks whichever of flat/namespace-grouped is cheaper) since this test is about the
+    /// grouped shape itself.
     /// </summary>
     [Fact]
     public async Task SearchIndex_CollapsesToFlatHeader_WhenResultsShareOneNamespaceAndFile()
     {
         var root = Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", limit: 1));
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", limit: 1, groupBy: "namespace"));
 
         Assert.False(root.TryGetProperty("limitedBy", out _));
         Assert.Equal("Sample.Lib", root.GetProperty("namespace").GetString());
@@ -1404,16 +1368,19 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal("WidgetExtensions.SpinTwice(IWidget,int)", symbol["name"].GetString());
     }
 
+
     /// <summary>
     /// A query spanning several files under one namespace nests namespaces[] -> files[] -> symbols[]
     /// rather than collapsing, since the file axis still varies — the wrapper array stays even though
     /// there is only one namespace, matching the file-grouped shape's own per-group array discipline.
+    /// groupBy:"namespace" passed explicitly, since the omitted default now auto-picks whichever of
+    /// flat/namespace-grouped is cheaper and this test is about the grouped shape itself.
     /// </summary>
     [Fact]
     public async Task SearchIndex_GroupsByNamespaceByDefault_NestingMultipleFilesUnderOneNamespace()
     {
         var root = Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", limit: 10));
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", limit: 10, groupBy: "namespace"));
 
         Assert.Equal("namespace", root.GetProperty("groupedBy").GetString());
         var namespaces = root.GetProperty("namespaces").EnumerateArray().ToList();
@@ -1423,6 +1390,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains(files, f => f!.EndsWith("Widget.cs"));
         Assert.Contains(files, f => f!.EndsWith("Pipeline.cs"));
     }
+
 
     /// <summary>groupBy:"file" inverts the nesting: files[] -> namespaces[] -> symbols[].</summary>
     [Fact]
@@ -1519,11 +1487,11 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetProjectGraph_ReportsProjectsAndTotalCount()
     {
-        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace));
+        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, _f.Telemetry));
 
         var projects = root.GetProperty("projects").EnumerateArray().ToList();
         Assert.NotEmpty(projects);
-        Assert.Equal(projects.Count, root.GetProperty("totalProjects").GetInt32());
+        Assert.Equal(projects.Count, root.GetProperty("totalProjectsInSolution").GetInt32());
         Assert.True(projects[0].TryGetProperty("references", out _));
         Assert.True(projects[0].TryGetProperty("referencedBy", out _));
     }
@@ -1531,7 +1499,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetProjectGraph_ScopedToUnknownProject_ReportsProjectNotFound()
     {
-        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, project: "NoSuchProject"));
+        var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, _f.Telemetry, project: "NoSuchProject"));
 
         Assert.Equal("project_not_found", root.GetProperty("error").GetString());
     }
@@ -1539,7 +1507,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task DetectCircularDependencies_AcyclicSample_ReportsNoCycles()
     {
-        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace));
+        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, _f.Telemetry));
 
         Assert.Equal("project", root.GetProperty("scope").GetString());
         Assert.Equal(0, root.GetProperty("totalCycles").GetInt32());
@@ -1549,7 +1517,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task DetectCircularDependencies_UnsupportedScope_ReturnsError()
     {
-        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, scope: "type"));
+        var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, _f.Telemetry, scope: "type"));
 
         Assert.Equal("unsupported_scope", root.GetProperty("error").GetString());
     }
@@ -1557,7 +1525,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetTypeHierarchy_Interface_ListsDirectImplementers()
     {
-        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.IWidget"));
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, _f.Telemetry, "Sample.Lib.IWidget"));
 
         var derivedNames = root.GetProperty("derived").GetProperty("items").EnumerateArray()
             .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
@@ -1568,7 +1536,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetTypeHierarchy_Class_ReportsBaseChainAndDerived()
     {
-        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.GearBase"));
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, _f.Telemetry, "Sample.Lib.GearBase"));
 
         Assert.Contains(root.GetProperty("baseChain").EnumerateArray(),
             b => (b.GetProperty("displayString").GetString() ?? "").Contains("object"));
@@ -1580,7 +1548,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     [Fact]
     public async Task GetTypeHierarchy_UnknownSymbol_ReportsSymbolNotFound()
     {
-        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, "Sample.Lib.NoSuchType"));
+        var root = Root(await FlowTools.GetTypeHierarchy(_f.Workspace, _f.Symbols, _f.Telemetry, "Sample.Lib.NoSuchType"));
 
         Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
     }
@@ -1589,7 +1557,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetCallHierarchy_Callees_ReachesSpinAndReportsBlastRadius()
     {
         var root = Root(await FlowTools.GetCallHierarchy(
-            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.Pipeline.Start", direction: "callees"));
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Pipeline.Start", direction: "callees"));
 
         Assert.Equal("callees", root.GetProperty("direction").GetString());
         Assert.True(root.GetProperty("blastRadius").GetProperty("totalUniqueNodes").GetInt32() > 0);
@@ -1608,7 +1576,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetCallHierarchy_IncludeTreeFalse_OmitsTreeButKeepsBlastRadius()
     {
         var root = Root(await FlowTools.GetCallHierarchy(
-            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.Pipeline.Start",
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Pipeline.Start",
             direction: "callees", includeTree: false));
 
         Assert.False(root.TryGetProperty("tree", out _));
@@ -1619,7 +1587,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     public async Task GetCallHierarchy_UnknownSymbol_ReportsSymbolNotFound()
     {
         var root = Root(await FlowTools.GetCallHierarchy(
-            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, "Sample.Lib.NoSuchMethod"));
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.NoSuchMethod"));
 
         Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
     }

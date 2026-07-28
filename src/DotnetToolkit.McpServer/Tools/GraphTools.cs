@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using DotnetToolkit.McpServer.Identity;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
+using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.CodeAnalysis;
 using ModelContextProtocol.Server;
@@ -22,16 +24,31 @@ public static class GraphTools
         + "scope the result to one project's direct references and dependents instead of the whole graph.")]
     public static async Task<string> GetProjectGraph(
         WorkspaceHost workspace,
-        [Description("Optional project name to scope to one project's direct references + dependents. Omit for the full graph.")] string? project = null)
+        TelemetryRecorder telemetry,
+        [Description("Optional project name to scope to one project's direct references + dependents. Omit for the full graph.")] string? project = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+        var requested = project ?? "(all)";
+
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+        {
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_project_graph",
+                requested, Formats.Render(new { error = "workspace_loading" }),
+                limitedBy: "index_only", errorKind: "workspace_loading");
+        }
 
         var (refs, referencedBy) = BuildAdjacency(solution);
 
         if (project is not null && !refs.ContainsKey(project))
-            return Formats.Render(new { error = "project_not_found", project });
+        {
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_project_graph",
+                requested, Formats.Render(new { error = "project_not_found", project }),
+                errorKind: "project_not_found");
+        }
 
         var diags = workspace.LoadDiagnostics;
         IEnumerable<string> names = project is null
@@ -46,12 +63,19 @@ public static class GraphTools
             degraded = diags.Any(d => d.Contains(name, StringComparison.OrdinalIgnoreCase)) ? true : (bool?)null,
         });
 
-        return Formats.Render(new
+        var degradedBy = workspace.IsDegraded ? "degraded" : null;
+        var json = Formats.Render(new
         {
             projects,
-            totalProjects = refs.Count,
-            limitedBy = workspace.IsDegraded ? "degraded" : null,
+            // Always the whole solution's count, even when project scopes the response to one project's
+            // neighborhood — named accordingly so a scoped call's totalProjectsInSolution:3 cannot be
+            // misread as "3 projects matched this scope".
+            totalProjectsInSolution = refs.Count,
+            limitedBy = degradedBy,
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_project_graph",
+            requested, json, returnedSymbols: project is null ? refs.Count : 1, limitedBy: degradedBy);
     }
 
     [McpServerTool(Name = "detect_circular_dependencies")]
@@ -63,30 +87,48 @@ public static class GraphTools
         + "answer.")]
     public static async Task<string> DetectCircularDependencies(
         WorkspaceHost workspace,
-        [Description("project (default) | type (not yet supported, returns unsupported_scope).")] string scope = "project")
+        TelemetryRecorder telemetry,
+        [Description("project (default) | type (not yet supported, returns unsupported_scope).")] string scope = "project",
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+
         var normalized = scope.Trim().ToLowerInvariant();
         if (normalized != "project")
-            return Formats.Render(new
+        {
+            var unsupported = Formats.Render(new
             {
                 error = "unsupported_scope",
                 message = "type-level cycle detection is not yet implemented; use scope: \"project\"",
             });
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask,
+                "detect_circular_dependencies", normalized, unsupported, errorKind: "unsupported_scope");
+        }
 
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+        {
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask,
+                "detect_circular_dependencies", normalized, Formats.Render(new { error = "workspace_loading" }),
+                limitedBy: "index_only", errorKind: "workspace_loading");
+        }
 
         var (refs, _) = BuildAdjacency(solution);
         var cycles = ProjectCycleDetector.FindCycles(refs);
 
-        return Formats.Render(new
+        var degradedBy = workspace.IsDegraded ? "degraded" : null;
+        var json = Formats.Render(new
         {
             scope = "project",
             cycles = cycles.Select(c => new { projects = c, length = c.Count - 1 }),
             totalCycles = cycles.Count,
-            limitedBy = workspace.IsDegraded ? "degraded" : null,
+            limitedBy = degradedBy,
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask,
+            "detect_circular_dependencies", normalized, json, returnedSymbols: cycles.Count, limitedBy: degradedBy);
     }
 
     /// <summary>

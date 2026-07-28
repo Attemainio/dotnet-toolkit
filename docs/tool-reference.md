@@ -7,8 +7,12 @@ defaults or response shape changes (see CLAUDE.md's "Changing the tool surface" 
 one of the surfaces that has to move with the code).
 
 Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__` when called. No tool takes a
-`sessionId`/`taskId` argument — every call in a server process shares one ambient session id
-automatically; see `skills/dotnet-code-query/SKILL.md` and `get_retrieval_metrics` below.
+`sessionId` — every call in a server process shares one ambient session id automatically. Every tool
+that records telemetry does take an optional **`taskId`**, omitted from the per-tool argument tables
+below because it means the same thing everywhere: it attributes the call to a caller you name, so
+`get_retrieval_metrics` can read those calls back on their own. See "Attributing calls to a caller"
+under `get_retrieval_metrics` for the full recipe, and `skills/dotnet-code-query/SKILL.md` for when it
+is worth passing.
 
 Responses are deliberately terse: a field that is absent carries no information and costs no tokens.
 `limitedBy` appears only when something limited the answer (`index_only`, `stale`, `degraded`) — see
@@ -37,18 +41,16 @@ files with no signal the rest exists, and costs the whole file's tokens for the 
 |---|---|
 | `symbol` / `symbols` | Fully-qualified name, unique suffix, `Name(ParamType)` to pick an overload, or a `sym_…` id from any earlier response. Exactly one of the two. `symbols` batches several under one `include` — but an `@` line selection (below) is rejected there with `lines_with_batch`, since one span of file lines cannot apply to several symbols. |
 | `include` | Omitted/`"standard"` (default: `xmlDoc, referenceCounts, recentLog`) \| `"all"` (every component) \| a comma list that REPLACES the default, e.g. `"source,members"`, `"source:code,members"`, or `"source:code@46-76"`. |
-| `knownVersion` | A held `contentVersion` to lease against — single-symbol only. |
-| `refetch` | Force content even if the lease would otherwise say `changed:false`. |
 
 Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
 | `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup, even after modifiers below drop some lines: surviving entries keep their true file line number, never renumbered to close the gap. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. Takes an optional `:full`\|`:code` mode suffix on the component name itself — `"source"`/`"source:full"` (the default) include the declaration's leading `///` doc comment; `"source:code"` is the same span minus that comment (attributes and the body are unchanged), for a caller that only needs enough to modify the code and already has `xmlDoc` or doesn't need it. Either mode additionally accepts subtractive `-modifier` suffixes concatenated onto it, e.g. `"source:full-remarks-attributes"` or `"source:code-comments"`: `full`-only doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — matching `xmlDoc`'s own field names) drop that specific tag from an otherwise-full comment; `attributes`/`comments` (valid under either mode) drop C# attributes / `//` comments. There is no additive `+tag` — a query only ever subtracts from its mode's own default (everything, for `full`; no doc tags but attributes/comments still on, for `code`), so a doc-tag modifier under `code` is rejected as redundant rather than silently accepted. Every subtraction is **whole-line only**: an attribute or comment sharing a line with real code (`[Fact] public void Foo()`, or a trailing `// why`) is left untouched rather than partially rewriting that line. An unrecognized suffix (`"source:bogus"`, `"source:code-remarks"`, `"source@nope"`) is an `invalid_component` error, same as a misspelled component name. Finally, either mode accepts an **`@` line selector** returning only part of the declaration — see the row below. |
-| `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), narrowing the returned lines to those ranges — for reading one region of a long member instead of all of it. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (line 60 to the declaration's last line), `"source@-50"` (its first line through 50), `"source@52"` (one line). Ranges are **absolute file line numbers** — the same ones `declarationSites` and each rendered line's own `NN:` gutter report — so a span read off any earlier response is directly reusable; separate several with `;`, **not** `,`, which already separates `include`'s component names. Selection is a pure filter that never renumbers a line, so it commutes with the `-modifier` subtractions above: a line those dropped stays dropped even when a range names it. A range running past the declaration clamps to it; one entirely outside it returns no lines rather than erroring. Whenever `@` is used the response adds **`sourceLines`**, a `"kept/whole"` span (`"46-76/38-96"`, or `"none/38-96"` when the ranges missed the declaration entirely — which also states the span that would have worked). Read it: `contentVersion` is still fingerprinted over the **whole** symbol, so a lease taken from a slice must not be mistaken for having seen all of it. Not valid alongside `symbols` (batch) — see the `symbol`/`symbols` row. |
+| `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), narrowing the returned lines to those ranges — for reading one region of a long member instead of all of it. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (line 60 to the declaration's last line), `"source@-50"` (its first line through 50), `"source@52"` (one line). Ranges are **absolute file line numbers** — the same ones `declarationSites` and each rendered line's own `NN:` gutter report — so a span read off any earlier response is directly reusable; separate several with `;`, **not** `,`, which already separates `include`'s component names. Selection is a pure filter that never renumbers a line, so it commutes with the `-modifier` subtractions above: a line those dropped stays dropped even when a range names it. A range running past the declaration clamps to it; one entirely outside it returns no lines rather than erroring. Whenever `@` is used the response adds **`sourceLines`**, a `"kept/whole"` span (`"46-76/38-96"`, or `"none/38-96"` when the ranges missed the declaration entirely — which also states the span that would have worked). Read it: `contentVersion` is still fingerprinted over the **whole** symbol, so it should not be mistaken for confirmation that the whole symbol was seen. Not valid alongside `symbols` (batch) — see the `symbol`/`symbols` row. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
-| `bodyOutline` | Control-flow landmarks inside a method-like body as `[{text, startLine, endLine, depth}]` in `format:"json"`/`"compact"` — under the default `toon` format, `depth` is dropped and nesting instead reads from two-space-per-level indentation on a raw `text,startLine,endLine` block (see below), the same raw-block treatment `source` gets and for the same reason. Purely syntactic (no semantic model, so it costs the same tier as `source`, not `mechanicalFacts`' semantic-model tier) — for navigating a long body without reading it. Covers `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock`; a bare `try`/`else`/`finally` carries no name or condition of its own and is omitted — its span is inferable from the parent row. `text` is a short label (e.g. `"switch(node)"`, `"if (name.Length > 3)"`), truncated to a 28-character budget with a trailing `..`, not a semantic summary. `depth` (or indentation, under `toon`) counts nesting among *other landmark rows only*, not raw syntax depth — a landmark buried inside several plain blocks isn't deeper than one actually nested inside another landmark. `null` for anything without an executable body of its own (a type, a field, an auto-property). A sibling **`bodyOutlineNote`** string appears when the declaration (doc-comment-inclusive, matching `declarationSites`) is under 40 lines — advisory only ("`source:code` is likely cheaper than this outline"), the rows are still returned regardless |
+| `bodyOutline` | Control-flow landmarks inside a method-like body as `[{text, startLine, endLine, depth}]` in `format:"json"`/`"compact"` — under the default `toon` format, `depth` is dropped and nesting instead reads from two-space-per-level indentation on a raw `text,startLine,endLine` block (see below), the same raw-block treatment `source` gets and for the same reason. Purely syntactic (no semantic model, so it costs the same tier as `source`, not `mechanicalFacts`' semantic-model tier) — for navigating a long body without reading it. Covers `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock`; a bare `try`/`else`/`finally` carries no name or condition of its own and is omitted — its span is inferable from the parent row. `text` is a short label (e.g. `"switch(node)"`, `"if (name.Length > 3)"`), truncated to a 28-character budget with a trailing `..`, not a semantic summary. `depth` (or indentation, under `toon`) counts nesting among *other landmark rows only*, not raw syntax depth — a landmark buried inside several plain blocks isn't deeper than one actually nested inside another landmark. Absent (with an explanatory **`bodyOutlineNote`**, e.g. `"bodyOutline is not applicable to a Type symbol - only a method has an executable body to outline"`) for anything without an executable body of its own (a type, a field, an auto-property) — rather than both fields silently disappearing. `bodyOutlineNote` also appears — without suppressing the rows — when the declaration (doc-comment-inclusive, matching `declarationSites`) is under 40 lines — advisory only ("`source:code` is likely cheaper than this outline") |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
@@ -288,7 +290,7 @@ single-symbol call for that symbol would have returned — batching is an orches
 different response shape. A symbol that did not resolve has `error` set (`symbol_not_found`,
 `ambiguous_symbol`) instead of `symbolId`/`contentVersion`/`content` — one bad lookup does not fail the
 batch, and the two shapes are told apart by which keys are present, not by a shared fixed column set.
-`knownVersion`/`refetch` do not apply to a batch: every entry carries full content.
+Every entry carries full content — there is no lease mechanism in `get_symbol` to interact with.
 
 ### `get_references` — callers, implementations, overrides
 
@@ -300,6 +302,7 @@ string matches as hits, and silently drops sites when output is truncated.
 | `symbol` | Required. Same addressing as `get_symbol`. |
 | `direction` | `callers` (default) \| `implementations` \| `overrides`. |
 | `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source`, including the `toon`-format raw-block rendering (default `false` — fetch bodies only for the ones you'll actually edit). |
+| `fields` | Comma list of extras beyond the default `symbolId`/`displayString`/`sites`: `contentVersion` (this item's own version, for leasing it independently — rarely needed), `signature` (the full parameter-list `displayString` instead of the default compact name/arity form). |
 
 Real call and response (trimmed):
 
@@ -310,23 +313,25 @@ get_references(symbol: "FeatureLogStore.Append")
 ```json
 {"targetSymbolId":"sym_c25d7c88b0e916b0",
  "items":[
-   {"symbolId":"sym_0e0e...","contentVersion":"decl:66cc...|body:badd...",
-    "displayString":"int DevlogMigration.Run(DevlogStore devlog, FeatureLogStore log, ILogger logger)",
+   {"symbolId":"sym_0e0e...",
+    "displayString":"DevlogMigration.Run/3",
     "sites":[{"file":"src/DotnetToolkit.McpServer/Devlog/DevlogMigration.cs","line":29,
-              "snippet":"log.Append(new FeatureLogStore.LogEntry("}],
-    "dispatchKind":"direct"},
-   {"symbolId":"sym_2b15...","contentVersion":"decl:8c14...|body:785d...",
-    "displayString":"void PatchTools.AppendLog(FeatureLogStore featureLog, ...)",
+              "snippet":"log.Append(new FeatureLogStore.LogEntry("}]},
+   {"symbolId":"sym_2b15...",
+    "displayString":"PatchTools.AppendLog/6",
     "sites":[{"file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":190,
-              "snippet":"featureLog.Append(new FeatureLogStore.LogEntry("}],
-    "dispatchKind":"direct"}],
+              "snippet":"featureLog.Append(new FeatureLogStore.LogEntry("}]}],
+ "dispatchKind":"direct",
  "totalItems":2,"excludedTextMatches":1}
 ```
 
-Each item carries `symbolId, contentVersion, displayString, sites, dispatchKind` on every call;
+`dispatchKind` is reported once at the top level, not per item — it describes the *target* symbol's own
+dispatch (direct/virtual/interface/delegate), which cannot vary across items within one call. Each item
+carries `symbolId, displayString, sites` on every call; `contentVersion` (with `fields:"contentVersion"`),
 `isTest` (emitted only when `true`) and `content` (with `includeBodies:true`) are present only when they
 apply — absent, not `null`, otherwise. `excludedTextMatches` is the count of comment/string matches a
-grep would have wrongly included — 1 here, correctly excluded.
+grep would have wrongly included — 1 here, correctly excluded. `targetSymbolId` is omitted when `symbol`
+was already a `sym_...` id, since it would only restate the input.
 
 `includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (shown
 here as `format:"json"`, trimmed to one caller):
@@ -337,11 +342,10 @@ get_references(symbol: "SearchText.CamelParts", includeBodies: true)
 
 ```json
 {"targetSymbolId":"sym_bfdafc...",
- "items":[{"symbolId":"sym_528271...","contentVersion":"decl:aa2c7b...|body:34e677...",
-   "displayString":"string? SearchText.ForQuery(string query)",
+ "items":[{"symbolId":"sym_528271...",
+   "displayString":"SearchText.ForQuery/1",
    "sites":[{"file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":50,
              "snippet":"foreach (var candidate in new[] { segment }.Concat(CamelParts(segment)))"}],
-   "dispatchKind":"direct",
    "content":[
      {"line":43,"text":"    public static string? ForQuery(string query)"},
      {"line":54,"text":"                // Prefix match, so \"Ledg\" still finds \"Ledger\". Quoted to keep FTS5 from reading a"},
@@ -375,7 +379,7 @@ lines — nothing to hand-filter, no truncation to silently lose hits.
 | `limit` | Default 10, cap 50. |
 | `summary` | Optional XML doc `<summary>` signal per hit, read from the syntax index (no MSBuild needed, so it works at `index_only` too). `"has"` adds `hasSummary` (bool) — a cheap presence check with no text. `"full"` adds `summary` (string, the extracted text capped at 160 characters with a trailing `…`; absent if the symbol has no `<summary>`). The cap keeps a pathologically long doc comment from dominating a multi-hit response — fetch `get_symbol`'s `xmlDoc.summary` for the untruncated text once you've picked a symbol. Omit `summary` for the pre-existing response, byte-for-byte — no extra field, no extra cost. An unrecognized value is treated as omitted, same precedent as `kinds`' unrecognized tokens. |
 | `xmlDoc` | Optional filter on which XML doc sections beyond plain `<summary>` presence a hit's declaration carries (that's what `summary` checks) — space/comma-separated tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions`. Same grammar as `modifiers`: bare tokens AND (a declaration must carry every included section, since a doc comment can carry several tags at once), and a `-`-prefixed token excludes and *combines* with the bare tokens rather than replacing them, e.g. `"returns -remarks"` is has-returns AND NOT has-remarks. Narrows the ranked `query` hits the same way `pathPrefix`/`implements` do — `query` still needs a real search term. Read from the syntax index, so it costs nothing extra and works at `index_only` too. Omit for no doc-section filtering. |
-| `groupBy` | How results are nested. `"namespace"` (default) groups namespace → file → symbols; `"file"` groups file → namespace → symbols; `"none"` returns the flat `items[]` list shown below, with `file`/`kind` repeated on every row and no `namespace` field. Whichever axis the whole result set collapses to a single value on additionally collapses its wrapper array to a flat `namespace`/`file` header field instead of a nested array, and a leaf's `kind` column drops out whenever every hit in that leaf shares one kind. An unrecognized value is treated as `"namespace"`. |
+| `groupBy` | How results are nested. `"namespace"` groups namespace → file → symbols; `"file"` groups file → namespace → symbols; `"none"` returns the flat `items[]` list shown below, with `file`/`kind` repeated on every row and no `namespace` field. **Omit this parameter entirely** (rather than passing `"namespace"` explicitly) to let the server render both the flat and namespace-grouped shapes from the same data and keep whichever actually costs fewer tokens — grouping only pays for itself when hits concentrate onto few namespaces/files; on scattered results the nesting overhead can cost more than it saves. An explicit value is always honored as given, with no comparison. Whichever axis the whole result set collapses to a single value on additionally collapses its wrapper array to a flat `namespace`/`file` header field instead of a nested array, and a leaf's `kind` column drops out whenever every hit in that leaf shares one kind. An unrecognized non-null value is treated as `"namespace"`. |
 | `origin` | `"source"` (default) searches only symbols this repo's own solution declares — existing callers see no behavior change. `"external"` searches only BCL/NuGet symbols already discovered as a call/construction/implements target from this repo's own source (`search_index(query: "IDisposable", kinds: "interface", origin: "external")` finds `System.IDisposable` once something here implements it) — not a general library browser, only what this repo's code already references. `"all"` searches both. An unrecognized value is treated as `"source"`. |
 
 Real call and response, `groupBy: "none"` — the flat shape, `file`/`kind` repeated per row:
@@ -552,16 +556,17 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 182,
 ```json
 {"receiverType":"FeatureLogStore",
  "items":[
-   {"displayString":"string FeatureLogStore.Append(LogEntry entry)","kind":"Method",
-    "origin":"member","definedIn":"FeatureLogStore"},
-   {"displayString":"int FeatureLogStore.EntryCount()","kind":"Method",
-    "origin":"member","definedIn":"FeatureLogStore"},
-   {"displayString":"bool object.Equals(object? obj)","kind":"Method",
+   {"displayString":"Append(LogEntry entry)","kind":"Method","definedIn":"FeatureLogStore"},
+   {"displayString":"EntryCount()","kind":"Method","definedIn":"FeatureLogStore"},
+   {"displayString":"Equals(object? obj)","kind":"Method",
     "origin":"inherited","definedIn":"object"}]}
 ```
 
-`origin` separates what the type itself declares from what it inherits — usually the first thing you
-want to know. Drop `receiver` to see what's in scope at that line generally. (The line number above
+`displayString` has its containing type's prefix stripped — `definedIn` already states it on every row,
+so repeating it in both places was pure repetition. `origin` separates what the type itself declares
+from what it inherits, which is usually the first thing you want to know; it is omitted when it would
+just be `"member"` alongside a `receiverType` header, since `definedIn == receiverType` already says
+that. Drop `receiver` to see what's in scope at that line generally. (The line number above
 tracks a real call site in this file; if a future refactor moves it, re-find the receiver with
 `search_index`/`get_symbol` rather than assuming this line still resolves.)
 
@@ -612,7 +617,7 @@ upward toward entry points; `"callees"` walks downward into what the symbol invo
 | `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
 | `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. |
 | `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." |
-| `fields` | Comma list adding `kind`, `file`, `line` to every node beyond the always-present `symbolId`/`displayString`. |
+| `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default bare name) to every node beyond the always-present `symbolId`/`displayString`. |
 
 Real call and response (trimmed to 4 of 7 children):
 
@@ -621,15 +626,19 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
 ```
 
 ```json
-{"root":{"symbolId":"sym_c25d...","displayString":"string FeatureLogStore.Append(LogEntry entry)"},
+{"root":{"symbolId":"sym_c25d...","displayString":"FeatureLogStore.Append"},
  "direction":"callers",
- "tree":{"symbolId":"sym_c25d...","displayString":"string FeatureLogStore.Append(LogEntry entry)",
+ "tree":{"symbolId":"sym_c25d...","displayString":"FeatureLogStore.Append",
    "children":[
-     {"symbolId":"sym_0e0e...","displayString":"int DevlogMigration.Run(DevlogStore devlog, FeatureLogStore log, ILogger logger)"},
-     {"symbolId":"sym_c3fc...","displayString":"void FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds()"},
-     {"symbolId":"sym_2b15...","displayString":"void PatchTools.AppendLog(...)"}]},
+     {"symbolId":"sym_0e0e...","displayString":"DevlogMigration.Run"},
+     {"symbolId":"sym_c3fc...","displayString":"FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds"},
+     {"symbolId":"sym_2b15...","displayString":"PatchTools.AppendLog"}]},
  "blastRadius":{"totalUniqueNodes":8,"perDepth":[1,7],"depthCapped":true}}
 ```
+
+`displayString` is the bare name with the parameter list dropped — overloads still disambiguate via
+`symbolId`. Pass `fields:"signature"` for the full parameter-list form (e.g.
+`"string FeatureLogStore.Append(LogEntry entry)"`) when the signature itself is what's needed.
 
 `depthCapped:true` means `Append` has callers beyond `maxDepth:1` — raising `maxDepth` reaches
 `PatchTools.ValidatePatch` (the actual MCP tool entry point) three levels up from this root.
@@ -701,7 +710,7 @@ get_project_graph()
 {"projects":[
    {"name":"DotnetToolkit.McpServer","references":[],"referencedBy":["DotnetToolkit.McpServer.Tests"]},
    {"name":"DotnetToolkit.McpServer.Tests","references":["DotnetToolkit.McpServer"],"referencedBy":[]}],
- "totalProjects":2}
+ "totalProjectsInSolution":2}
 ```
 
 A project named in `workspace_status`'s load diagnostics carries `degraded:true` on its own entry, in
@@ -741,6 +750,7 @@ commit correctly reports no change.
 |---|---|
 | `fromRef` | Default `HEAD~1`. |
 | `toRef` | Default `HEAD`. |
+| `limit` | Max entries kept in each of `symbolsAdded`/`symbolsRemoved`/`symbolsChanged`, capped independently. Default 50, cap 200. |
 
 Real call and response (trimmed):
 
@@ -759,8 +769,10 @@ get_semantic_diff(fromRef: "HEAD~1", toRef: "HEAD")
  "apiImpactSummary":{"breaking":1,"nonBreaking":5,"added":11,"removed":1}}
 ```
 
-`apiImpactSummary` is the fastest way to judge whether a commit or branch is safe to build on top of
-without reading a single line of diff.
+A list beyond `limit` also carries its own `symbolsAddedTruncated`/`symbolsRemovedTruncated`/
+`symbolsChangedTruncated`: true — `apiImpactSummary`'s counts are never capped, so it stays the fastest
+way to judge whether a commit or branch is safe to build on top of even when the lists themselves were
+cut off.
 
 ### `search_log` — why past changes were made
 
@@ -770,7 +782,7 @@ happened, just that nothing relevant went through this tool.
 
 | Arg | Meaning |
 |---|---|
-| `query` | Free-text over recorded intents; omit to list the most recent entries. |
+| `query` | Whitespace-separated terms matched against recorded intents; **every** term must appear, in any order. Omit to list the most recent entries. |
 | `limit` | Default 10. |
 
 Real call and response (trimmed to the fields that matter):
@@ -789,8 +801,30 @@ search_log(limit: 3)
 
 Each entry carries `logId, date, intent`, plus `tags` (a JSON array) only when the patch that created it
 actually supplied one — `validate_patch`'s `tags` argument is optional and rarely used in practice, so
-most entries carry no `tags` field at all rather than an empty array. Matching is a free-text `LIKE` over
-`intent` only — there is no tag-based filter today.
+most entries carry no `tags` field at all rather than an empty array. Matching is over `intent` only —
+there is no tag-based filter today.
+
+**Terms are AND-ed, not OR-ed — the opposite of `search_index`.** The query is split on whitespace and
+an entry matches only when its intent contains every term, in any order:
+
+```
+search_log(query: "task id telemetry")   → matches "…attribute this call to its own task id in telemetry"
+search_log(query: "telemetry task id")   → the same entry; order is irrelevant
+search_log(query: "task id parrot")      → no hits; adding a term narrows, never widens
+```
+
+The asymmetry is deliberate. `search_index` ranks its OR-ed hits, so a loose term merely sorts lower;
+`search_log` has no relevance ranking — rows come back newest-first under a `LIMIT` — so an OR would let
+one common word fill the result with recent entries and push the genuinely matching one past the limit.
+
+Until 2026-07-28 this matched the **whole query as one literal substring**, so `"task id telemetry"`
+returned nothing unless those words appeared adjacent in that exact order, while `"task id"` matched
+fine. Zero hits reads as "no such history exists", which is the one answer this tool must never give
+wrongly — see `search_log(query: "search_log match")` for the fix's own entry.
+
+Terms match as **substrings, without stemming**, so a term is effectively a prefix/infix filter: `match`
+finds intents containing "match", "matches" and "matching", while `matching` finds only the last. When a
+query comes back empty, shortening a term to its stem is usually the fix.
 
 ## Write path
 
@@ -859,10 +893,45 @@ Replaces: guessing. Computed from this server's own telemetry.
 
 | Arg | Meaning |
 |---|---|
-| `scope` | `session` \| `global` (default). No more `task` — nothing ever read task-level metrics back through a tool, so it was retired along with the `taskId` argument on every other tool. |
+| `scope` | `session` \| `global` (default). |
 | `sessionIds` | One or more session ids to merge together. Required for `scope: "session"`. Every tool call in this process already shares one ambient session id automatically (no argument needed to set it) — `sessionIds` matters only when you want to combine that with sessions from *other* (past) server processes. |
+| `taskIds` | One or more **caller-supplied** task ids to narrow to — the values passed as `taskId` on the tool calls themselves. Independent of `scope`: a task id names one caller *inside* a session, not a different slice of history. |
 | `since` / `until` | Optional ISO date bounds (`yyyy-MM-dd` only) on `created_at`, inclusive on both ends, usable with either `scope`. |
-| `groupBy` | `tool` \| `symbol` \| `level` \| `session` \| `none` (default `tool`). `session` groups by `session_id` with `firstSeen`/`lastSeen` — since there's no directory of past sessions, this plus `since`/`until` is how you discover which session ids existed in a date range, before feeding them back into `sessionIds`. |
+| `groupBy` | `tool` \| `symbol` \| `level` \| `session` \| `task` \| `none` (default `tool`). `session` groups by `session_id` with `firstSeen`/`lastSeen` — since there's no directory of past sessions, this plus `since`/`until` is how you discover which session ids existed in a date range, before feeding them back into `sessionIds`. `task` does the same for caller-supplied task ids. |
+
+### Attributing calls to a caller: the `taskId` argument
+
+Every tool that records telemetry — `get_symbol`, `search_index`, `get_references`, `get_scope`,
+`get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`,
+`detect_circular_dependencies`, `get_semantic_diff`, `search_log`, `validate_patch` — takes an optional
+`taskId`. Omit it and the call is attributed to the ambient session; supply one and the call can be read
+back on its own.
+
+**This is the only way to tell concurrent callers apart.** The session id is one per *server process*, so
+parallel agents all share it and would otherwise attribute each other's tokens to themselves. It is also
+how you measure a single call's exact cost — snapshot, call, snapshot, subtract that tool's row:
+
+```
+get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
+get_symbol(symbol: "Pipeline.Deep", include: "source", taskId: "eval_flow_20260728T0900")
+get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
+```
+
+Reading one tool's own row (rather than `totals`) keeps the snapshot calls' own cost, and any other
+caller's traffic, out of the number. `groupBy: "task"` then compares whole callers against each other:
+
+```json
+{"groups":[
+   {"key":"eval_flow_20260728T0900","calls":31,"tokensReturned":12904,
+    "firstSeen":"2026-07-28T09:00:04...","lastSeen":"2026-07-28T09:06:51..."},
+   {"key":"eval_history_20260728T0900","calls":12,"tokensReturned":3355,
+    "firstSeen":"2026-07-28T09:00:07...","lastSeen":"2026-07-28T09:02:18..."}]}
+```
+
+Five tools record nothing and never appear in these numbers: `ping`, `workspace_status`,
+`set_output_format` and `reload_workspace` are constant-cost control calls, and `get_retrieval_metrics`
+is excluded deliberately — a metrics tool that recorded its own calls would perturb every delta it is
+used to compute. `skills/dotnet-toolkit-selfeval/SKILL.md` builds its whole probe matrix on this recipe.
 
 Real call and response (trimmed):
 
@@ -871,21 +940,14 @@ get_retrieval_metrics(scope: "global", groupBy: "tool")
 ```
 
 ```json
-{"totals":{"toolCalls":77,"tokensReturned":31450,"leaseHits":1,"tokensSavedByLeases":351,
-           "refetches":0,"validationAttempts":6,"insufficientValidations":0,"failedValidations":0},
+{"totals":{"toolCalls":77,"tokensReturned":31450,
+           "validationAttempts":6,"insufficientValidations":0,"failedValidations":0},
  "groups":[
    {"key":"get_symbol","calls":49,"tokensReturned":21004},
    {"key":"search_index","calls":15,"tokensReturned":5718},
    {"key":"get_references","calls":7,"tokensReturned":3133},
-   {"key":"validate_patch","calls":6,"tokensReturned":1595}],
- "flags":[
-   {"kind":"repeat_fetch_without_lease","symbolId":"sym_21b0...","count":6,
-    "hint":"Supply knownVersion for this symbol."}]}
+   {"key":"validate_patch","calls":6,"tokensReturned":1595}]}
 ```
-
-`flags` calls out exactly what to fix: a symbol fetched repeatedly without ever passing `knownVersion`
-back is paying for the same content over and over. `leaseHits`/`tokensSavedByLeases` being low relative
-to `toolCalls` is itself a signal to start leasing.
 
 `validate_patch` writes to a separate raw-events table (`patch_events`, not `retrieval_events`) since it
 records validation-ladder fields no read tool has (`completedLevel`, `isSufficient`, …). `totals` and the
@@ -907,8 +969,7 @@ get_retrieval_metrics(scope: "global", since: "2026-07-07", until: "2026-07-21",
    {"key":"ses_auto01J...","calls":214,"tokensReturned":98213,
     "firstSeen":"2026-07-19T08:03:11...","lastSeen":"2026-07-19T17:42:05..."},
    {"key":"ses_auto01H...","calls":87,"tokensReturned":31005,
-    "firstSeen":"2026-07-14T09:11:02...","lastSeen":"2026-07-14T12:20:44..."}],
- "flags":[...]}
+    "firstSeen":"2026-07-14T09:11:02...","lastSeen":"2026-07-14T12:20:44..."}]}
 ```
 
 Feed the ids found this way back into `scope: "session"` to merge them:

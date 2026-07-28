@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using DotnetToolkit.McpServer.Identity;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
+using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -24,37 +26,51 @@ public static class FlowTools
         + "Grep cannot answer this: extension methods share no text with the call site. DIFFERENT from get_symbol's "
         + "'members' (a type's static declared list, no position involved) — call this when standing at a cursor "
         + "deciding what to call, before writing a helper that may already exist, or when the receiver's type "
-        + "isn't known yet so get_symbol has no target to query.")]
+        + "isn't known yet so get_symbol has no target to query. Each item's displayString has its containing "
+        + "type's prefix stripped, since definedIn already states it; origin is omitted when it would just be "
+        + "\"member\" alongside a receiverType header (definedIn == receiverType makes that derivable).")]
+
     public static async Task<string> GetScope(
         WorkspaceHost workspace,
         SolutionLocator locator,
+        TelemetryRecorder telemetry,
         [Description("Root-relative path of the .cs file.")] string file,
         [Description("1-based line number.")] int line,
         [Description("1-based column (default 1).")] int column = 1,
         [Description("Optional variable/expression name; results become what is callable ON it, incl. extension methods.")] string? receiver = null,
         [Description("all | methods | properties | locals | types (default all).")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
-        [Description("Max results (default 40).")] int limit = 40)
+        [Description("Max results (default 40).")] int limit = 40,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+        var requested = $"{file}:{line}:{column}";
+
+        string Fail(string kind, object payload, string? limitedBy = null) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_scope",
+                requested, Formats.Render(payload), limitedBy: limitedBy, errorKind: kind);
+
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+            return Fail("workspace_loading", new { error = "workspace_loading" }, limitedBy: "index_only");
 
         var documentId = solution.GetDocumentIdsWithFilePath(locator.AbsPath(file)).FirstOrDefault();
         if (documentId is null)
-            return Formats.Render(new { error = "file_not_in_solution", file });
+            return Fail("file_not_in_solution", new { error = "file_not_in_solution", file });
 
         var document = solution.GetDocument(documentId)!;
         var text = await document.GetTextAsync();
         if (line < 1 || line > text.Lines.Count)
-            return Formats.Render(new { error = "line_out_of_range", line, lines = text.Lines.Count });
+            return Fail("line_out_of_range", new { error = "line_out_of_range", line, lines = text.Lines.Count });
 
         var textLine = text.Lines[line - 1];
         var position = Math.Min(textLine.Start + Math.Max(0, column - 1), textLine.End);
 
         var model = await document.GetSemanticModelAsync();
         if (model is null)
-            return Formats.Render(new { error = "no_semantic_model" });
+            return Fail("no_semantic_model", new { error = "no_semantic_model" });
 
         ITypeSymbol? receiverType = null;
         IEnumerable<ISymbol> symbols;
@@ -63,7 +79,7 @@ public static class FlowTools
         {
             receiverType = ResolveReceiverType(model, textLine.ToString(), receiver, position);
             if (receiverType is null)
-                return Formats.Render(new { error = "receiver_not_resolved", receiver });
+                return Fail("receiver_not_resolved", new { error = "receiver_not_resolved", receiver });
 
             symbols = model.LookupSymbols(position, receiverType, name: null, includeReducedExtensionMethods: true);
         }
@@ -77,23 +93,42 @@ public static class FlowTools
             .Where(s => MatchesFilter(s, filter))
             .Where(s => nameContains is null || s.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
             .DistinctBy(s => s.ToDisplayString())
-            .OrderBy(s => s.Name, StringComparer.Ordinal)
+            .Select(s => (Symbol: s, Origin: OriginOf(s, receiverType)))
+            .OrderBy(t => OriginRank(t.Origin))
+            .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .Take(Math.Clamp(limit, 1, 200))
-            .Select(s => new
+            .Select(t =>
             {
-                displayString = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                kind = SymbolKey.KindOf(s),
-                origin = OriginOf(s, receiverType),
-                definedIn = s.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                var s = t.Symbol;
+                var origin = t.Origin;
+                var definedIn = s.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                var display = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                // definedIn already states the containing type on every row, so a displayString repeating
+                // it as a prefix ("SymbolStore.Callers" alongside definedIn:"SymbolStore") is pure repetition.
+                if (definedIn is not null && display.StartsWith(definedIn + ".", StringComparison.Ordinal))
+                    display = display[(definedIn.Length + 1)..];
+                return new
+                {
+                    displayString = display,
+                    kind = SymbolKey.KindOf(s),
+                    // "member" is derivable once a receiverType header exists: it is the only origin left
+                    // once local/parameter/extension/type/inherited are ruled out, i.e. definedIn == receiverType.
+                    origin = receiverType is not null && origin == "member" ? null : origin,
+                    definedIn,
+                };
             })
             .ToList();
 
-        return Formats.Render(new
+        var json = Formats.Render(new
         {
             position = new { file, line },
             receiverType = receiverType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             items,
         });
+
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_scope",
+            requested, json, returnedSymbols: items.Count);
     }
 
     [McpServerTool(Name = "get_call_slice")]
@@ -105,40 +140,59 @@ public static class FlowTools
         SymbolStore symbolStore,
         CallSlice slice,
         SymbolIndexBuilder indexBuilder,
+        TelemetryRecorder telemetry,
         [Description("Origin symbol: fully-qualified name, unique suffix, or sym_... id.")] string from,
         [Description("Destination symbol: fully-qualified name, unique suffix, or sym_... id.")] string to,
-        [Description("Maximum path length to search (default 8).")] int maxDepth = 8)
+        [Description("Maximum path length to search (default 8).")] int maxDepth = 8,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+        var requested = $"{from} -> {to}";
+
+        string Fail(string kind, object payload, string? limitedBy = null) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_slice",
+                requested, Formats.Render(payload), limitedBy: limitedBy, errorKind: kind);
+
         if (!indexBuilder.Ready)
-            return Formats.Render(new { error = "index_building", message = "The edge cache is still being built." });
+        {
+            return Fail("index_building",
+                new { error = "index_building", message = "The edge cache is still being built." },
+                limitedBy: "index_only");
+        }
 
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+            return Fail("workspace_loading", new { error = "workspace_loading" }, limitedBy: "index_only");
 
         var fromId = await ResolveToIdAsync(solution, symbolStore, from);
         var toId = await ResolveToIdAsync(solution, symbolStore, to);
         if (fromId is null || toId is null)
-            return Formats.Render(new
+        {
+            return Fail("symbol_not_found", new
             {
                 error = "symbol_not_found",
                 message = fromId is null ? $"cannot resolve '{from}'" : $"cannot resolve '{to}'",
             });
+        }
 
         var result = slice.Find(fromId, toId, Math.Clamp(maxDepth, 1, 20));
 
         if (!result.Found)
         {
-            return Formats.Render(new
+            var miss = Formats.Render(new
             {
                 found = false,
                 nodesExplored = result.NodesExplored,
                 forwardFrontier = result.ForwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
                 backwardFrontier = result.BackwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
             });
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_slice",
+                requested, miss, resolution: "not_found");
         }
 
-        return Formats.Render(new
+        var json = Formats.Render(new
         {
             found = true,
             path = result.Path.Select(id => new
@@ -149,43 +203,61 @@ public static class FlowTools
             depth = result.Path.Count - 1,
             nodesExplored = result.NodesExplored,
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_slice",
+            requested, json, symbolId: toId, resolution: "found", returnedSymbols: result.Path.Count);
     }
 
-    [McpServerTool(Name = "get_call_hierarchy")]
+[McpServerTool(Name = "get_call_hierarchy")]
     [Description("An open-ended multi-level call tree from one symbol — 'who eventually calls this, up to the "
         + "entry points' (direction: callers, Visual Studio's View Call Hierarchy) or 'what does this eventually "
         + "call' (direction: callees). Different from get_call_slice: that tool needs both a known from AND a "
         + "known to and returns one shortest path; this tool needs only a root and returns every branch up to "
         + "maxDepth, plus a blastRadius summary (unique nodes reached, per depth) answering 'if I change this, "
         + "how much does it ripple' without paying for the full tree — set includeTree:false for just that "
-        + "summary. Every node always carries symbolId (the join key back to get_symbol) and displayString; add "
-        + "kind, file, line via fields. A symbol reached through two different branches (a diamond) legitimately "
-        + "appears twice in the tree but counts once in blastRadius; true recursion (a symbol reappearing on its "
-        + "own path) stops as a leaf marked recursive:true rather than looping. Internally capped at a few "
-        + "thousand total nodes as a safety net against pathological fan-out — use a lower maxDepth or "
-        + "maxChildrenPerNode for a predictably sized answer on a well-connected graph.")]
+        + "summary. Every node always carries symbolId (the join key back to get_symbol) and displayString — the "
+        + "bare name with its parameter list dropped (overloads still disambiguate via symbolId); add kind, file, "
+        + "line, or the full signature (signature) via fields. A symbol reached through two different branches (a "
+        + "diamond) legitimately appears twice in the tree but counts once in blastRadius; true recursion (a "
+        + "symbol reappearing on its own path) stops as a leaf marked recursive:true rather than looping. "
+        + "Internally capped at a few thousand total nodes as a safety net against pathological fan-out — use a "
+        + "lower maxDepth or maxChildrenPerNode for a predictably sized answer on a well-connected graph.")]
     public static async Task<string> GetCallHierarchy(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
         ProjectIndex index,
         SymbolIndexBuilder indexBuilder,
+        TelemetryRecorder telemetry,
         [Description("Root symbol: fully-qualified name, unique suffix, or sym_... id.")] string symbol,
         [Description("callers | callees (default callers). callers walks upward toward entry points; callees walks downward into what this symbol invokes. An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
         [Description("Maximum tree depth (default 3, clamped 1-8 — deeper trees grow exponentially on a well-connected graph).")] int maxDepth = 3,
         [Description("Maximum children expanded per node before truncating (default 25, clamped 1-200). A node past the cap keeps its own entry but stops expanding, marked truncated:true with omittedChildren.")] int maxChildrenPerNode = 25,
         [Description("Emit the full tree (default true). Set false to return only blastRadius — the cheapest possible answer to 'how much does changing this ripple'.")] bool includeTree = true,
-        [Description("Comma list of extra fields to add to every node beyond the always-present symbolId/displayString: kind, file, line. Omit for just symbolId/displayString.")] string? fields = null)
+        [Description("Comma list of extra fields to add to every node beyond the always-present symbolId/displayString: kind, file, line, signature (the full parameter-list displayString instead of the default bare name). Omit for just symbolId/displayString.")] string? fields = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+
+        string Fail(string kind, object payload, string? limitedBy = null) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_hierarchy",
+                symbol, Formats.Render(payload), limitedBy: limitedBy, errorKind: kind, direction: direction);
+
         if (!indexBuilder.Ready)
-            return Formats.Render(new { error = "index_building", message = "The edge cache is still being built." });
+        {
+            return Fail("index_building",
+                new { error = "index_building", message = "The edge cache is still being built." },
+                limitedBy: "index_only");
+        }
 
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+            return Fail("workspace_loading", new { error = "workspace_loading" }, limitedBy: "index_only");
 
         var rootId = await ResolveToIdAsync(solution, symbolStore, symbol);
         if (rootId is null)
-            return Formats.Render(new { error = "symbol_not_found", message = $"cannot resolve '{symbol}'" });
+            return Fail("symbol_not_found", new { error = "symbol_not_found", message = $"cannot resolve '{symbol}'" });
 
         var callers = direction.Trim().ToLowerInvariant() != "callees";
         maxDepth = Math.Clamp(maxDepth, 1, 8);
@@ -196,6 +268,7 @@ public static class FlowTools
         var wantKind = false;
         var wantFile = false;
         var wantLine = false;
+        var wantSignature = false;
         if (!string.IsNullOrWhiteSpace(fields))
         {
             foreach (var f in fields.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -205,11 +278,20 @@ public static class FlowTools
                     case "kind": wantKind = true; break;
                     case "file": wantFile = true; break;
                     case "line": wantLine = true; break;
+                    case "signature": wantSignature = true; break;
                 }
             }
         }
 
         var rows = symbolStore.RowsFor(CollectIds(result.Root));
+
+        // Default displayString is the bare name (parameter list dropped) — the full signature with types
+        // and default values made an 18-node tree 23x the size of its own blastRadius-only summary for no
+        // reader benefit; symbolId still disambiguates overloads, and fields:"signature" restores it.
+        string DisplayFor(string symbolId, (string? FqName, string? Kind, string? DisplayString) row) =>
+            wantSignature
+                ? row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId
+                : row.FqName is { } fq ? SymbolResolver.NameWithoutParameters(fq) : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
 
         IReadOnlyDictionary<string, ProjectIndex.Site> sites = new Dictionary<string, ProjectIndex.Site>();
         if (wantFile || wantLine)
@@ -222,7 +304,7 @@ public static class FlowTools
         object Project(CallHierarchy.Node node)
         {
             rows.TryGetValue(node.SymbolId, out var row);
-            var display = row.DisplayString ?? symbolStore.DisplayFor(node.SymbolId) ?? node.SymbolId;
+            var display = DisplayFor(node.SymbolId, row);
             var site = (wantFile || wantLine) && row.FqName is not null
                 ? sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(row.FqName))
                 : null;
@@ -241,12 +323,14 @@ public static class FlowTools
             };
         }
 
-        return Formats.Render(new
+        rows.TryGetValue(rootId, out var rootRow);
+        var degradedBy = workspace.IsDegraded ? "degraded" : null;
+        var json = Formats.Render(new
         {
             root = new
             {
                 symbolId = rootId,
-                displayString = rows.TryGetValue(rootId, out var rootRow) ? rootRow.DisplayString : symbolStore.DisplayFor(rootId) ?? rootId,
+                displayString = DisplayFor(rootId, rootRow),
             },
             direction = callers ? "callers" : "callees",
             tree = includeTree ? Project(result.Root) : null,
@@ -256,9 +340,14 @@ public static class FlowTools
                 perDepth = result.PerDepth,
                 depthCapped = result.DepthCapped,
             },
-            limitedBy = workspace.IsDegraded ? "degraded" : null,
+            limitedBy = degradedBy,
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_hierarchy",
+            symbol, json, symbolId: rootId, returnedSymbols: result.TotalUniqueNodes,
+            limitedBy: degradedBy, direction: callers ? "callers" : "callees");
     }
+
 
     [McpServerTool(Name = "get_type_hierarchy")]
     [Description("A type's full base-type chain (up to object), transitive interfaces (tagged direct vs "
@@ -269,20 +358,30 @@ public static class FlowTools
     public static async Task<string> GetTypeHierarchy(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
+        TelemetryRecorder telemetry,
         [Description("Type symbol: fully-qualified name, unique suffix, or sym_... id.")] string symbol,
-        [Description("Max derived types returned (default 40, clamped 1-200).")] int limit = 40)
+        [Description("Max derived types returned (default 40, clamped 1-200).")] int limit = 40,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+
+        string Fail(string kind, object payload, string? limitedBy = null) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_type_hierarchy",
+                symbol, Formats.Render(payload), limitedBy: limitedBy, errorKind: kind);
+
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
-            return Formats.Render(new { error = "workspace_loading" });
+            return Fail("workspace_loading", new { error = "workspace_loading" }, limitedBy: "index_only");
 
         var handle = symbol.StartsWith("sym_", StringComparison.Ordinal) ? symbolStore.FqNameFor(symbol) ?? symbol : symbol;
         var resolution = await SymbolResolver.ResolveAsync(solution, handle);
         if (resolution.Symbol is null)
         {
             return resolution.Candidates.Count == 0
-                ? Formats.Render(new { error = "symbol_not_found", symbol })
-                : Formats.Render(new
+                ? Fail("symbol_not_found", new { error = "symbol_not_found", symbol })
+                : Fail("ambiguous_symbol", new
                 {
                     error = "ambiguous_symbol",
                     candidates = resolution.Candidates.Take(10).Select(c => new
@@ -294,7 +393,7 @@ public static class FlowTools
         }
 
         if (resolution.Symbol is not INamedTypeSymbol type)
-            return Formats.Render(new { error = "not_a_type", message = "symbol is not a class, interface, struct, enum, delegate or record" });
+            return Fail("not_a_type", new { error = "not_a_type", message = "symbol is not a class, interface, struct, enum, delegate or record" });
 
         limit = Math.Clamp(limit, 1, 200);
 
@@ -334,15 +433,20 @@ public static class FlowTools
             };
         }
 
-        return Formats.Render(new
+        var degradedBy = workspace.IsDegraded ? "degraded" : null;
+        var json = Formats.Render(new
         {
             symbolId = SymbolKey.IdOf(type),
             displayString = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             baseChain,
             interfaces,
             derived,
-            limitedBy = workspace.IsDegraded ? "degraded" : null,
+            limitedBy = degradedBy,
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_type_hierarchy",
+            symbol, json, symbolId: SymbolKey.IdOf(type),
+            returnedSymbols: baseChain.Count + interfaces.Count, limitedBy: degradedBy);
     }
 
     private static List<string> CollectIds(CallHierarchy.Node node)
@@ -416,5 +520,22 @@ public static class FlowTools
         _ when receiverType is not null
                && !SymbolEqualityComparer.Default.Equals(symbol.ContainingType, receiverType) => "inherited",
         _ => "member",
+    };
+
+    // get_scope's default filter ("all") mixes locals/parameters/members with the general type universe
+    // reachable from the cursor (every visible BCL/NuGet type). Plain alphabetical order let that
+    // universe dominate the page — a dotnet-toolkit self-evaluation on an external repo found a
+    // default-filter call returning 40 alphabetically-sorted BCL exception types and zero of the
+    // position-relevant locals/parameters/members, because there are always vastly more visible types
+    // than locals. Ranking origin first keeps position-relevant items ahead of the type universe
+    // regardless of alphabetical luck.
+    private static int OriginRank(string origin) => origin switch
+    {
+        "local" => 0,
+        "parameter" => 1,
+        "member" => 2,
+        "inherited" => 3,
+        "extension" => 4,
+        _ => 5,
     };
 }

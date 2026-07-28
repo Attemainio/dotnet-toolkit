@@ -32,9 +32,9 @@ public sealed class AttributionJob
     /// <summary>The attribution ruleset version stamped on every derived row, so rules can evolve without rewriting history.</summary>
     public const string Version = "attr-v1";
 
-    private readonly KnowledgeStore _store;
+    private readonly IKnowledgeStore _store;
 
-    public AttributionJob(KnowledgeStore store) => _store = store;
+    public AttributionJob(IKnowledgeStore store) => _store = store;
 
     private sealed record Event(string EventId, string TaskId, string? SymbolId, string? ContentVersion,
         bool LeaseHit, bool Refetch, long Tokens, string CreatedAt);

@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using DotnetToolkit.McpServer.Git;
+using DotnetToolkit.McpServer.Identity;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
+using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
 using ModelContextProtocol.Server;
 
@@ -17,39 +19,66 @@ public static class HistoryTools
     [McpServerTool(Name = "get_semantic_diff")]
     [Description("What changed SEMANTICALLY between two git refs — symbols added, removed, and changed with "
         + "which version layers moved and the API impact. Formatting- and comment-only commits report no change. "
-        + "Use this instead of reading a textual diff.")]
+        + "Use this instead of reading a textual diff. Each of symbolsAdded/symbolsRemoved/symbolsChanged is "
+        + "capped independently at limit entries; a capped list carries its own *Truncated:true flag alongside it, "
+        + "while apiImpactSummary always reports the true added/removed/changed counts regardless of the cap.")]
     public static async Task<string> GetSemanticDiff(
         GitAnalyzer git,
         SemanticDiff diff,
+        TelemetryRecorder telemetry,
         [Description("Base ref (branch, tag or sha). Default: HEAD~1.")] string fromRef = "HEAD~1",
-        [Description("Target ref. Default: HEAD.")] string toRef = "HEAD")
+        [Description("Target ref. Default: HEAD.")] string toRef = "HEAD",
+        [Description("Max entries kept in each of symbolsAdded/symbolsRemoved/symbolsChanged, capped "
+            + "independently (default 50, cap 200). apiImpactSummary's counts are never capped.")] int limit = 50,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
+
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+        var requested = $"{fromRef}..{toRef}";
+
         if (!await git.IsRepositoryAsync())
-            return Formats.Render(new { error = "not_a_git_repository" });
+        {
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
+                requested, Formats.Render(new { error = "not_a_git_repository" }), errorKind: "not_a_git_repository");
+        }
 
         var from = await git.ResolveRefAsync(fromRef);
         var to = await git.ResolveRefAsync(toRef);
         if (from is null || to is null)
-            return Formats.Render(new
+        {
+            var unresolved = Formats.Render(new
             {
                 error = "unresolved_ref",
                 message = from is null ? $"cannot resolve '{fromRef}'" : $"cannot resolve '{toRef}'",
             });
+            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
+                requested, unresolved, errorKind: "unresolved_ref");
+        }
 
+        limit = Math.Clamp(limit, 1, 200);
         var result = await diff.CompareAsync(from, to);
         var breaking = result.Changed.Count(c => c.ApiImpact.StartsWith("breaking", StringComparison.Ordinal));
 
-        return Formats.Render(new
+        var addedTruncated = result.Added.Count > limit;
+        var removedTruncated = result.Removed.Count > limit;
+        var changedTruncated = result.Changed.Count > limit;
+
+        var json = Formats.Render(new
         {
             range = new { from = fromRef, to = toRef, commits = result.Commits },
-            symbolsAdded = result.Added,
-            symbolsRemoved = result.Removed,
-            symbolsChanged = result.Changed.Select(c => new
+            symbolsAdded = result.Added.Take(limit),
+            symbolsAddedTruncated = addedTruncated ? true : (bool?)null,
+            symbolsRemoved = result.Removed.Take(limit),
+            symbolsRemovedTruncated = removedTruncated ? true : (bool?)null,
+            symbolsChanged = result.Changed.Take(limit).Select(c => new
             {
                 displayString = c.DisplayString,
                 layersChanged = c.LayersChanged,
                 apiImpact = c.ApiImpact,
             }),
+            symbolsChangedTruncated = changedTruncated ? true : (bool?)null,
             apiImpactSummary = new
             {
                 breaking,
@@ -58,20 +87,32 @@ public static class HistoryTools
                 removed = result.Removed.Count,
             },
         });
+
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
+            requested, json, returnedSymbols: result.Added.Count + result.Removed.Count + result.Changed.Count);
     }
+
 
     [McpServerTool(Name = "search_log")]
     [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
         + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
         + "Each entry carries logId, date, intent, and tags (a JSON array, present only when the patch that "
         + "created the entry actually supplied one — most entries carry none, since validate_patch's tags "
-        + "argument is optional and rarely used). Matching is a free-text LIKE over intent only — there is no "
-        + "tag-based filter.")]
+        + "argument is optional and rarely used). Matching is over intent only — there is no tag-based filter. "
+        + "The query is split on whitespace and every term must appear somewhere in the intent, in ANY order "
+        + "(AND, not search_index's ranked OR): \"task id telemetry\" matches an intent containing all three "
+        + "words however they are arranged, and adding a term narrows the result rather than widening it.")]
     public static string SearchLog(
         FeatureLogStore featureLog,
-        [Description("Free-text query over recorded intents; omit to list the most recent entries.")] string? query = null,
-        [Description("Max entries (default 10).")] int limit = 10)
+        TelemetryRecorder telemetry,
+        [Description("Whitespace-separated terms matched against recorded intents; every term must appear, in any order. Omit to list the most recent entries.")] string? query = null,
+        [Description("Max entries (default 10).")] int limit = 10,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
+        var sessionId = Ids.AmbientSession;
+        var attributedTask = Ids.TaskId(taskId);
+        var toolCallId = Ids.ToolCall();
+
         var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
         var items = entries.Select(e => new
         {
@@ -83,6 +124,7 @@ public static class HistoryTools
             // than "no tags".
             tags = e.Tags.Count > 0 ? e.Tags : null,
         });
-        return Formats.Render(new { items });
+        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "search_log",
+            query ?? "(recent)", Formats.Render(new { items }), returnedSymbols: entries.Count());
     }
 }

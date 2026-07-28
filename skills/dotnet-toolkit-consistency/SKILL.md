@@ -22,13 +22,22 @@ Before anything else, get the current, complete list directly from the source (d
 existing tool list, including this skill's own examples below, since that's exactly the kind of claim
 being audited):
 
-```bash
-grep -rn 'McpServerTool(Name = "' src/DotnetToolkit.McpServer/Tools/*.cs
+**Do not reach for `grep` here** — `guard-cs-bash-read.sh` blocks any shell read of a `.cs` file in the
+solution, including this one, and it is right to: the enumeration is a symbol query, not a text search.
+Get it from the tools instead:
+
+```
+get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools",
+                     "PatchTools", "MetricsTools", "ServerTools"], include: "members")
 ```
 
-This gives every tool name, its containing file, and its line — the fixed reference point for every step
-that follows. Note the file each tool lives in; a new `Tools/*.cs` file (a new tool *group*, not just a
-new tool) is itself a finding — see Step 6.
+Each `[McpServerToolType]` class's public methods **are** its tools, one per method, and the response
+gives every parameter with its default — more than the `grep` gave, since signatures come with it.
+Confirm the class list itself first with `search_index(query: "Tools", pathPrefix: "src/DotnetToolkit.McpServer/Tools")`,
+so a **new** tool-group file is caught rather than assumed away by reusing the list above; a new
+`Tools/*.cs` file (a new tool *group*, not just a new tool) is itself a finding — see Step 6. Note that
+not every file under `Tools/` is a tool group: `ToolTelemetry.cs` is a shared internal helper with no
+`[McpServerToolType]`, and belongs in CLAUDE.md's Architecture bullet rather than in any tool list.
 
 ## The audit, step by step
 
@@ -65,6 +74,7 @@ missing (a tool that exists but appears nowhere in it):
 | `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
 | every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
 | `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently |
+| `skills/dotnet-toolkit-selfeval/SKILL.md` | the efficiency probe matrix. Check that its Step 2 families still cover every tool from Step 0; that the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`) are still exactly the ones with no `ToolTelemetry.Record`/`RecordPatch` call; and that its `taskId`/`taskIds`/`groupBy:"task"` measurement recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed there as unmeasurable understates what the evaluation can see |
 | `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. Check: `tools:` frontmatter matches Step 0 for the read-side subset it should have (not a stale subset missing a tool added since, and still excluding `get_project_graph`/`detect_circular_dependencies`, which are deliberately withheld as out of a scope slice's reach); every tool it names in Process, evidence bars, and Boundaries is granted in that frontmatter *and* still behaves as described; its always-loaded standards core and per-aspect fold-ins (e.g. which files feed `[correctness]`) still resolve to real files in `.claude/rules/`; it still requires the `Standards:` line in its output format; and it does **not** re-acquire a `skills:` grant or a directive to read `docs/agent-reference.md` — both were removed to hold the per-instance token baseline down |
 | `docs/agent-reference.md` | **human-facing only; the agent must not be told to read it.** Check it does not contradict the agent file (which is authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists and is described accurately. A statement here that duplicates the agent file is drift waiting to happen — prefer a pointer |
 | `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |

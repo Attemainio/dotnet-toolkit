@@ -10,7 +10,7 @@ namespace DotnetToolkit.McpServer.Store;
 /// file simply forces a rebuild. Connections are pooled by <see cref="SqliteConnection"/>, so
 /// callers open short-lived connections via <see cref="Connect"/> per operation.
 /// </summary>
-public sealed class KnowledgeStore
+public sealed class KnowledgeStore : IKnowledgeStore
 {
     private readonly ILogger<KnowledgeStore> _log;
     private readonly string _connectionString;

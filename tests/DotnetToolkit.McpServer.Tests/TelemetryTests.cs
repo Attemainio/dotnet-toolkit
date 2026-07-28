@@ -92,18 +92,6 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(0, outOfRange.Totals.ToolCalls);
     }
 
-    [Fact]
-    public void RepeatFetchWithoutLeaseIsFlagged()
-    {
-        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc"));
-        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 100, symbolId: "sym_abc"));
-
-        var flags = _metrics.Read("global", null, null, null, "none").Flags;
-        var flag = Assert.Single(flags);
-        Assert.Equal("repeat_fetch_without_lease", flag.Kind);
-        Assert.Equal("sym_abc", flag.SymbolId);
-        Assert.Equal(2, flag.Count);
-    }
 
     // Conformance C6: UPDATE on a raw telemetry table raises; append succeeds.
     [Fact]
@@ -120,6 +108,48 @@ public sealed class TelemetryTests : IDisposable
         // Append still succeeds after the rejected update.
         _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "get_symbol", tokens: 20));
         Assert.Equal(2, _metrics.Read("global", null, null, null, "none").Totals.ToolCalls);
+    }
+
+    [Fact]
+    public void TaskIdsFilterNarrowsToOneCallerWithinASession()
+    {
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_probe", "get_symbol", tokens: 100));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_other", "get_symbol", tokens: 400));
+
+        var result = _metrics.Read("global", null, null, null, "tool", ["tsk_probe"]);
+
+        Assert.Equal(1, result.Totals.ToolCalls);
+        Assert.Equal(100, result.Totals.TokensReturned);
+    }
+
+    [Fact]
+    public void GroupByTaskSeparatesCallersSharingOneSessionId()
+    {
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_a", "get_symbol", tokens: 100));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_b", "search_index", tokens: 50));
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_b", "get_scope", tokens: 25));
+
+        var groups = _metrics.Read("global", null, null, null, "task").Groups;
+
+        Assert.Equal(2, groups.Count);
+        Assert.Equal(100, groups.Single(g => g.Key == "tsk_a").TokensReturned);
+        Assert.Equal(75, groups.Single(g => g.Key == "tsk_b").TokensReturned);
+        Assert.Equal(2, groups.Single(g => g.Key == "tsk_b").Calls);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void UnattributedCallFallsBackToTheAmbientSession(string? supplied)
+    {
+        Assert.Equal(Ids.AmbientSession, Ids.TaskId(supplied));
+    }
+
+    [Fact]
+    public void SuppliedTaskIdIsTrimmedRatherThanUsedVerbatim()
+    {
+        Assert.Equal("tsk_probe", Ids.TaskId("  tsk_probe  "));
     }
 
     private static RetrievalEvent Sample(string session, string task, string tool, int tokens, string? symbolId = null) =>

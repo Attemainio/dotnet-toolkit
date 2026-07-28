@@ -12,11 +12,15 @@
 #
 # What this does NOT try to do: parse the command line like a real shell would. It splits on pipeline/
 # statement separators (| ; && ||), takes each segment's first word as the invoked command, and — for a
-# segment whose command is a known read utility — looks for a bare .cs-suffixed argument token. Quoted
-# paths containing spaces, variable-expanded paths, and heredocs are not recognized; that under-detection
-# is deliberate, matching this file's fail-OPEN posture (see below) rather than a security boundary that
-# needs to be airtight. git/dotnet/find and any command not in the blocklist are never touched, so
-# `git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
+# segment whose command is a known read utility — looks for a .cs-suffixed argument token, stripping one
+# matching pair of leading/trailing quote characters (" or ') from each token first, since `for tok in $seg`
+# word-splits an already-expanded string without re-parsing quotes as shell syntax — a token that arrived
+# as "path/Foo.cs" would otherwise still carry its trailing `"` and silently fail the `*.cs` suffix match.
+# A path containing embedded whitespace inside its quotes still isn't reconstructable by whitespace-based
+# tokenization and remains unrecognized; that narrower under-detection is deliberate, matching this file's
+# fail-OPEN posture (see below) rather than a security boundary that needs to be airtight. git/dotnet/find
+# and any command not in the blocklist are never touched, so `git diff -- Foo.cs`, `git log Foo.cs`, and
+# `find . -name '*.cs'` are all unaffected.
 #
 # Fails OPEN by design, same as guard-cs-read.sh: a missing interpreter, an unparseable payload, or an
 # unresolvable project root must not block a legitimate command, so every uncertain path exits 0 silently.
@@ -84,6 +88,12 @@ while IFS= read -r seg; do
 
     candidate=""
     for tok in $seg; do
+        # Strip one matching pair of surrounding quote characters — see the header comment on why an
+        # already-expanded token can still carry them (e.g. "path/Foo.cs" with the trailing `"` intact).
+        case "$tok" in
+            \"*\") tok="${tok#\"}"; tok="${tok%\"}" ;;
+            \'*\') tok="${tok#\'}"; tok="${tok%\'}" ;;
+        esac
         case "$tok" in
             -*) continue ;;
             *.cs) candidate="$tok" ;;

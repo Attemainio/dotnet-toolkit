@@ -99,6 +99,13 @@ committing to it — that's the rare case, not the default path.
   terms ("Add cancellation support to training"), not *what* (the diff already says that).
   Reuse the task's intent across its patches. Omitting it is rejected before validation
   even runs.
+- **`taskId`** — optional, and the one argument that outlives the call. It attributes the
+  validation to a caller you name in telemetry, **and an applied patch stamps it onto the
+  development-log entry as that entry's task id**, so several patches sharing one `taskId`
+  read back as one piece of work rather than unrelated edits. Omit it and both fall back to
+  the ambient session id, which is what every entry carried before. Worth passing when
+  several agents are editing against the same server, or when you want one task's patches
+  grouped in `get_retrieval_metrics(groupBy: "task")`.
 
 ## Reading the verdict — the only definition of "done"
 

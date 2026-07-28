@@ -1,6 +1,6 @@
 # Skill reference
 
-The plugin ships five skills under `skills/`. Each is a workflow definition the model loads when its
+The plugin ships six skills under `skills/`. Each is a workflow definition the model loads when its
 trigger matches; this page is the catalog of what each one is for and what it reads or writes.
 
 ## `dotnet-code-query` — the read protocol
@@ -9,7 +9,7 @@ trigger matches; this page is the catalog of what each one is for and what it re
 symbol, callers/references, implementations, type shapes.
 
 Carries the retrieval protocol for the read-side MCP tools: session/task ids, resolution escalation,
-expansion gating, leases, and refetch-after-compaction. The reason it exists: Grep and Read give wrong
+and expansion gating. The reason it exists: Grep and Read give wrong
 answers on C# (text search cannot see interface/virtual/delegate dispatch, counts comment matches as
 hits, silently under-reports on truncation), while the MCP tools answer from a Roslyn semantic model at
 a fraction of the tokens.
@@ -59,3 +59,23 @@ adding a new doc/skill/rule file, or whenever something describing the tool surf
 Audits `Tools/*.cs` as ground truth against every file that describes the tool surface — docs, skills,
 the agent definition, rules, hooks, CLAUDE.md, README — and fixes exact drift file by file. Ships to
 consumers but its primary use is on this repo itself.
+
+## `dotnet-toolkit-selfeval` — the efficiency evaluation
+
+**When**: "self-evaluate", "how efficient are these tools here", "audit the MCP responses for
+redundancy", or before/after changing a tool's arguments or return shape.
+
+Runs a fixed probe matrix over every shipped tool **against the repo the server is already pointed at**,
+and measures each call's exact token cost from `get_retrieval_metrics` deltas isolated by a
+caller-supplied `taskId`. Reports where the same outcome was reachable with fewer calls or fewer tokens
+(route efficiency), which response fields restate what the caller already knew, and which outputs carry
+noise — labelled `[bug]` / `[warning]` / `[message]`.
+
+The distinction that makes it useful: the consuming repo is the **specimen**, dotnet-toolkit is the
+**subject**. Findings are always improvements to this plugin, never to the specimen's code; the
+specimen's structural oddities (partial classes, nested types, overload sets, `.slnx` vs `.sln`) matter
+only as the conditions under which a tool underperforms, which is why the run is worth repeating in
+every repo the plugin is installed into. Read-only — `validate_patch` probes run with
+`applyOnSuccess: false` and nothing is ever fixed by the skill itself. Distinct from
+`dotnet-toolkit-consistency`, which checks whether the *docs* match the code; this one checks whether
+the code is *efficient*.

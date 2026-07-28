@@ -45,10 +45,11 @@ public static class PatchTools
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
         [Description("Optional tags.")] string[]? tags = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null,
         CancellationToken cancellationToken = default)
     {
         var sessionId = Ids.AmbientSession;
-        var taskId = sessionId;
+        var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
         var patchId = Ids.Patch();
         var validationAttemptId = Ids.ValidationAttempt();
@@ -77,12 +78,17 @@ public static class PatchTools
             if (sandbox.Error is not null)
                 return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
 
-            var detected = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments, cancellationToken);
+            var (detected, unchangedVersions) = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments, cancellationToken);
 
-            var stale = detected
+            var staleChanged = detected
                 .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
                             || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
-                .ToList();
+                .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion));
+            var staleUnchanged = baseVersions
+                .Where(kv => unchangedVersions.TryGetValue(kv.Key, out var current)
+                             && !ContentVersion.Parse(current).AgreesWith(ContentVersion.Parse(kv.Value)))
+                .Select(kv => (SymbolId: kv.Key, CurrentVersion: unchangedVersions[kv.Key]));
+            var stale = staleChanged.Concat(staleUnchanged).ToList();
             if (stale.Count > 0)
                 return StaleBase(stale);
 
@@ -114,7 +120,7 @@ public static class PatchTools
                 if (applied)
                 {
                     workspace.AdoptAppliedText(sandbox.Forked, sandbox.ChangedDocuments);
-                    AppendLog(featureLog, taskId, patchId, intent!, tags, detected, ladder, required);
+                    AppendLog(featureLog, attributedTask, patchId, intent!, tags, detected, ladder, required);
                     indexBuilder.Start();
                 }
             }
@@ -128,7 +134,7 @@ public static class PatchTools
                 PatchId = patchId,
                 ValidationAttemptId = validationAttemptId,
                 SessionId = sessionId,
-                TaskId = taskId,
+                TaskId = attributedTask,
                 ChangedSymbolIdsJson = JsonSerializer.Serialize(detected.Select(c => c.SymbolId)),
                 ChangeKindsJson = JsonSerializer.Serialize(detected.SelectMany(c => c.Kinds.Select(k => k.Wire())).Distinct()),
                 BaseVersionsJson = JsonSerializer.Serialize(baseVersions),
@@ -260,12 +266,12 @@ public static class PatchTools
         return (ValidationLevel)Math.Max((int)computed, (int)requested);
     }
 
-    private static string StaleBase(IReadOnlyList<ChangeClassifier.Change> stale) =>
+    private static string StaleBase(IReadOnlyList<(string SymbolId, string CurrentVersion)> stale) =>
         Formats.Render(new
         {
             error = "stale_base",
             message = "Patch built against outdated content; refetch these versions and rebuild.",
-            current = stale.Select(c => new { symbolId = c.OldSymbolId, currentVersion = c.OldVersion }),
+            current = stale.Select(c => new { symbolId = c.SymbolId, currentVersion = c.CurrentVersion }),
         });
 
     private static string Error(string kind, string message) =>

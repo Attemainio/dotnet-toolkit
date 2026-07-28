@@ -20,6 +20,20 @@ public static class Ids
     /// </summary>
     public static readonly string AmbientSession = $"ses_auto{Ulid.NewString()}";
 
+    /// <summary>
+    /// Resolves the task id a telemetry row is attributed to: the caller's own id when it supplied one,
+    /// otherwise the ambient session id.
+    /// </summary>
+    /// <param name="supplied">The caller-supplied id, or null/blank when the caller did not attribute the call.</param>
+    /// <returns>The caller's trimmed id, or <see cref="AmbientSession"/> when none was supplied.</returns>
+    /// <remarks>
+    /// Falling back to the session id keeps every row attributed to something groupable, so an
+    /// unattributed caller still aggregates normally instead of writing a null axis. Callers that do
+    /// supply an id (parallel agents measuring their own token cost) are the only ones that can be
+    /// separated from each other, since the session id is per server process and therefore shared.
+    /// </remarks>
+    public static string TaskId(string? supplied) =>
+        string.IsNullOrWhiteSpace(supplied) ? AmbientSession : supplied.Trim();
 
     public static string Event() => $"evt_{Ulid.NewString()}";
     public static string Patch() => $"pch_{Ulid.NewString()}";

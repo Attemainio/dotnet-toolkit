@@ -10,23 +10,20 @@ namespace DotnetToolkit.McpServer.Telemetry;
 /// </summary>
 public sealed class MetricsReader
 {
-    private readonly KnowledgeStore _store;
+    private readonly IKnowledgeStore _store;
 
-    public MetricsReader(KnowledgeStore store) => _store = store;
+    public MetricsReader(IKnowledgeStore store) => _store = store;
 
-    /// <summary>Process-wide retrieval-cost totals: tool calls, tokens returned, and lease/validation counters.</summary>
+    /// <summary>Process-wide retrieval-cost totals: tool calls, tokens returned, and validation counters.</summary>
     public sealed record Totals(
-        int ToolCalls, long TokensReturned, int LeaseHits, long TokensSavedByLeases, int Refetches,
+        int ToolCalls, long TokensReturned,
         int ValidationAttempts, int InsufficientValidations, int FailedValidations);
 
     /// <summary>One row of a metrics breakdown grouped by tool/session/day (per the request's groupBy), with its own call/token totals and first/last-seen timestamps.</summary>
     public sealed record Group(string Key, int Calls, long TokensReturned, string? FirstSeen = null, string? LastSeen = null);
 
-    /// <summary>A heuristic warning surfaced by the read side (e.g. repeated refetches, a chatty symbol), with a human-readable hint.</summary>
-    public sealed record Flag(string Kind, string? SymbolId, int Count, string Hint);
-
-    /// <summary>The full response shape for <c>get_retrieval_metrics</c>: totals, requested groupings, and any flags.</summary>
-    public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups, IReadOnlyList<Flag> Flags);
+    /// <summary>The full response shape for <c>get_retrieval_metrics</c>: totals and requested groupings.</summary>
+    public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups);
 
     /// <param name="scope">session | global</param>
     /// <param name="sessionIds">One or more session ids to merge together; required for scope=session.</param>
@@ -34,41 +31,38 @@ public sealed class MetricsReader
     /// <param name="until">Exclusive bound on created_at, already resolved by the caller to the day AFTER
     /// the last day wanted (an ISO date string compares correctly against created_at's full timestamp only
     /// as a lower bound, so an inclusive "last day" filter needs its upper edge pushed one day out).</param>
-    /// <param name="groupBy">tool | symbol | level | session | none</param>
-    public Metrics Read(string scope, string[]? sessionIds, string? since, string? until, string groupBy)
+    /// <param name="groupBy">tool | symbol | level | session | task | none</param>
+    /// <param name="taskIds">One or more caller-supplied task ids to narrow to. Applied independently of
+    /// <paramref name="scope"/>, since a task id identifies one caller inside a session rather than a
+    /// different slice of history. Optional and last so the existing positional callers of this internal
+    /// API keep compiling unchanged.</param>
+    public Metrics Read(string scope, string[]? sessionIds, string? since, string? until, string groupBy,
+        string[]? taskIds = null)
     {
         if (!_store.Available)
-            return new Metrics(new Totals(0, 0, 0, 0, 0, 0, 0, 0), [], []);
+            return new Metrics(new Totals(0, 0, 0, 0, 0), []);
 
         using var connection = _store.Connect();
-        var (where, parameters) = ScopeFilter(scope, sessionIds, since, until);
+        var (where, parameters) = ScopeFilter(scope, sessionIds, taskIds, since, until);
 
         var totals = ReadTotals(connection, where, parameters);
         var groups = ReadGroups(connection, where, parameters, groupBy);
-        var flags = ReadFlags(connection, where, parameters);
-        return new Metrics(totals, groups, flags);
+        return new Metrics(totals, groups);
     }
 
     private static (string Where, List<(string, object)> Params) ScopeFilter(
-        string scope, string[]? sessionIds, string? since, string? until)
+        string scope, string[]? sessionIds, string[]? taskIds, string? since, string? until)
     {
         var parameters = new List<(string, object)>();
-        var clauses = new List<string>();
+        var clauses = new List<string> { "1=1" };
 
         if (string.Equals(scope.Trim(), "session", StringComparison.OrdinalIgnoreCase) && sessionIds is { Length: > 0 })
-        {
-            var placeholders = new string[sessionIds.Length];
-            for (var i = 0; i < sessionIds.Length; i++)
-            {
-                placeholders[i] = "$sid" + i;
-                parameters.Add(("$sid" + i, sessionIds[i]));
-            }
-            clauses.Add($"session_id IN ({string.Join(',', placeholders)})");
-        }
-        else
-        {
-            clauses.Add("1=1");
-        }
+            clauses.Add(InClause("session_id", "$sid", sessionIds, parameters));
+
+        // Not gated on scope, unlike sessionIds above: a task id names one caller *within* a session, so
+        // narrowing to it is meaningful whether or not specific sessions were also named.
+        if (taskIds is { Length: > 0 })
+            clauses.Add(InClause("task_id", "$tid", taskIds, parameters));
 
         if (since is not null)
         {
@@ -84,15 +78,25 @@ public sealed class MetricsReader
         return (string.Join(" AND ", clauses), parameters);
     }
 
+    private static string InClause(string column, string prefix, string[] values, List<(string, object)> parameters)
+    {
+        var placeholders = new string[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            placeholders[i] = prefix + i;
+            parameters.Add((prefix + i, values[i]));
+        }
+        return $"{column} IN ({string.Join(',', placeholders)})";
+    }
+
     private Totals ReadTotals(SqliteConnection connection, string where, List<(string, object)> parameters)
     {
-        int toolCalls = 0, leaseHits = 0, refetches = 0;
+        int toolCalls = 0;
         long tokensReturned = 0;
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT COUNT(*), COALESCE(SUM(returned_tokens),0),
-                       COALESCE(SUM(lease_hit),0), COALESCE(SUM(refetch),0)
+                SELECT COUNT(*), COALESCE(SUM(returned_tokens),0)
                 FROM retrieval_events WHERE {where};
                 """;
             Bind(cmd, parameters);
@@ -101,29 +105,7 @@ public sealed class MetricsReader
             {
                 toolCalls = reader.GetInt32(0);
                 tokensReturned = reader.GetInt64(1);
-                leaseHits = reader.GetInt32(2);
-                refetches = reader.GetInt32(3);
             }
-        }
-
-        // Tokens saved by leases: each lease hit avoided re-sending content the size of that
-        // symbol's largest prior full fetch in scope. Approximation, documented in §17 spirit.
-        long tokensSaved = 0;
-        using (var cmd = connection.CreateCommand())
-        {
-            cmd.CommandText = $"""
-                SELECT COALESCE(SUM(best.max_tokens), 0)
-                FROM retrieval_events le
-                JOIN (
-                    SELECT symbol_id, MAX(returned_tokens) AS max_tokens
-                    FROM retrieval_events
-                    WHERE {where} AND lease_hit = 0 AND symbol_id IS NOT NULL
-                    GROUP BY symbol_id
-                ) best ON best.symbol_id = le.symbol_id
-                WHERE {where} AND le.lease_hit = 1 AND le.symbol_id IS NOT NULL;
-                """;
-            Bind(cmd, parameters);
-            tokensSaved = Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
         }
 
         int attempts = 0, insufficient = 0, failed = 0;
@@ -155,7 +137,7 @@ public sealed class MetricsReader
         toolCalls += attempts;
         tokensReturned += patchTokens;
 
-        return new Totals(toolCalls, tokensReturned, leaseHits, tokensSaved, refetches, attempts, insufficient, failed);
+        return new Totals(toolCalls, tokensReturned, attempts, insufficient, failed);
     }
 
     private List<Group> ReadGroups(SqliteConnection connection, string where, List<(string, object)> parameters, string groupBy)
@@ -173,6 +155,18 @@ public sealed class MetricsReader
             "level" => $"""
                 SELECT completed_level, COUNT(*), COALESCE(SUM(returned_tokens),0)
                 FROM patch_events WHERE {where} GROUP BY completed_level ORDER BY 2 DESC;
+                """,
+            // Same two-table union as "session" below, for the same reason. This is the axis a caller
+            // measuring its own cost uses: it supplies its own task id per call, then groups by it to get
+            // that probe's totals apart from every other caller sharing the process-wide session id.
+            "task" => $"""
+                SELECT task_id, COUNT(*), COALESCE(SUM(returned_tokens),0), MIN(created_at), MAX(created_at)
+                FROM (
+                    SELECT task_id, returned_tokens, created_at FROM retrieval_events WHERE {where}
+                    UNION ALL
+                    SELECT task_id, returned_tokens, created_at FROM patch_events WHERE {where}
+                )
+                GROUP BY task_id ORDER BY MAX(created_at) DESC;
                 """,
             // A session can write to either table (or both), so merge the two under session_id, same
             // reasoning as the tool-grouped view below. min/max created_at give the session's observed
@@ -218,28 +212,6 @@ public sealed class MetricsReader
         return groups;
     }
 
-    private List<Flag> ReadFlags(SqliteConnection connection, string where, List<(string, object)> parameters)
-    {
-        var flags = new List<Flag>();
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = $"""
-            SELECT symbol_id, COUNT(*) AS c
-            FROM retrieval_events
-            WHERE {where} AND symbol_id IS NOT NULL AND lease_hit = 0 AND refetch = 0
-            GROUP BY symbol_id HAVING c > 1 ORDER BY c DESC LIMIT 20;
-            """;
-        Bind(cmd, parameters);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            flags.Add(new Flag(
-                "repeat_fetch_without_lease",
-                reader.GetString(0),
-                reader.GetInt32(1),
-                "Supply knownVersion for this symbol."));
-        }
-        return flags;
-    }
 
     private static void Bind(SqliteCommand cmd, List<(string Name, object Value)> parameters)
     {

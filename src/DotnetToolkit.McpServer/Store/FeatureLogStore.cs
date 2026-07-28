@@ -9,9 +9,9 @@ namespace DotnetToolkit.McpServer.Store;
 /// </summary>
 public sealed class FeatureLogStore
 {
-    private readonly KnowledgeStore _store;
+    private readonly IKnowledgeStore _store;
 
-    public FeatureLogStore(KnowledgeStore store) => _store = store;
+    public FeatureLogStore(IKnowledgeStore store) => _store = store;
 
     public bool Available => _store.Available;
 
@@ -210,16 +210,34 @@ public sealed class FeatureLogStore
     }
 
     /// <summary>Free-text search over recorded intents — the read path for "why is this like this".</summary>
+    /// <param name="query">Whitespace-separated terms; an entry matches when its intent contains every one
+    /// of them, in any order. Null or blank lists the most recent entries instead.</param>
+    /// <param name="limit">Maximum number of entries to return.</param>
+    /// <returns>Matching entries, newest first; empty when the store is unavailable or nothing matched.</returns>
+    /// <remarks>
+    /// Terms are AND-ed, unlike <c>search_index</c>'s ranked OR over its terms. There is no relevance
+    /// ranking here — rows come back newest-first under a LIMIT — so OR-ing would let one common word fill
+    /// the result with recent entries and push the genuinely matching one past the limit.
+    /// </remarks>
     public IReadOnlyList<(string LogId, string CreatedAt, string Intent, IReadOnlyList<string> Tags)> SearchIntents(string? query, int limit = 10)
     {
         if (!_store.Available)
             return [];
+
+        // Match term by term rather than as one literal substring: a caller trained by search_index to put
+        // every term in one query would otherwise get zero hits unless those words happened to be adjacent,
+        // in that order — and zero hits here reads as "no such history exists", which is the one answer this
+        // tool must never give wrongly.
+        var terms = query?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) ?? [];
+
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
-        var filter = string.IsNullOrWhiteSpace(query) ? "" : " WHERE intent LIKE $q";
+        var filter = terms.Length == 0
+            ? ""
+            : " WHERE " + string.Join(" AND ", terms.Select((_, i) => $"intent LIKE $q{i}"));
         cmd.CommandText = $"SELECT log_id, created_at, intent, tags FROM feature_log{filter} ORDER BY created_at DESC LIMIT $limit;";
-        if (!string.IsNullOrWhiteSpace(query))
-            cmd.Parameters.AddWithValue("$q", "%" + query + "%");
+        for (var i = 0; i < terms.Length; i++)
+            cmd.Parameters.AddWithValue($"$q{i}", "%" + terms[i] + "%");
         cmd.Parameters.AddWithValue("$limit", limit);
 
         var rows = new List<(string, string, string, IReadOnlyList<string>)>();

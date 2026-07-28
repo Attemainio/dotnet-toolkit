@@ -11,10 +11,10 @@ namespace DotnetToolkit.McpServer.Telemetry;
 /// </summary>
 public sealed class TelemetryRecorder
 {
-    private readonly KnowledgeStore _store;
+    private readonly IKnowledgeStore _store;
     private readonly ILogger<TelemetryRecorder> _log;
 
-    public TelemetryRecorder(KnowledgeStore store, ILogger<TelemetryRecorder> log)
+    public TelemetryRecorder(IKnowledgeStore store, ILogger<TelemetryRecorder> log)
     {
         _store = store;
         _log = log;
@@ -39,11 +39,11 @@ public sealed class TelemetryRecorder
             cmd.CommandText = """
                 INSERT INTO retrieval_events
                     (event_id, tool_call_id, session_id, task_id, tool_name, requested_symbol,
-                     symbol_id, resolution, direction, known_version, refetch, lease_hit,
+                     symbol_id, resolution, direction,
                      content_version, returned_symbols, returned_tokens, staleness, error_kind, created_at)
                 VALUES
                     ($event_id, $tool_call_id, $session_id, $task_id, $tool_name, $requested_symbol,
-                     $symbol_id, $resolution, $direction, $known_version, $refetch, $lease_hit,
+                     $symbol_id, $resolution, $direction,
                      $content_version, $returned_symbols, $returned_tokens, $staleness, $error_kind, $created_at);
                 """;
             cmd.Parameters.AddWithValue("$event_id", Identity.Ids.Event());
@@ -55,9 +55,6 @@ public sealed class TelemetryRecorder
             cmd.Parameters.AddWithValue("$symbol_id", (object?)e.SymbolId ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$resolution", (object?)e.Resolution ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$direction", (object?)e.Direction ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$known_version", (object?)e.KnownVersion ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$refetch", e.Refetch ? 1 : 0);
-            cmd.Parameters.AddWithValue("$lease_hit", e.LeaseHit ? 1 : 0);
             cmd.Parameters.AddWithValue("$content_version", (object?)e.ContentVersion ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$returned_symbols", e.ReturnedSymbols);
             cmd.Parameters.AddWithValue("$returned_tokens", e.ReturnedTokens);

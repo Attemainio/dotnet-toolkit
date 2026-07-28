@@ -35,10 +35,10 @@ field is omitted rather than guessed. A caller count is reported only where the 
 cache actually covers that symbol's project, because a confident `0` reads as "nothing
 uses this" when the truth may be "this project never loaded".
 
-Every content response carries a layered `contentVersion` you can pass back as
-`knownVersion`, so unchanged content is never re-sent. Edits go through `validate_patch`,
-which runs the cheapest sufficient level of a validation ladder and reports honestly
-whether that level was sufficient for the kind of change made.
+Every content response carries a layered `contentVersion` for your own manual drift-detection
+across calls. Edits go through `validate_patch`, which runs the cheapest sufficient level of a
+validation ladder and reports honestly whether that level was sufficient for the kind of change
+made.
 
 `search_index` OR-es and ranks its terms, so one call answers for several names:
 `query: "fee ledger TryBuy TrySell"` returns the symbols for all four. Names are indexed
@@ -212,7 +212,9 @@ audit escalating a vulnerability advisory to an error.
 `reload_workspace`. `excludeGlobs` keeps generated code out of the index.
 
 (`devlogDir` is still read, but only by the one-time import of legacy markdown devlogs
-described below. `defaultFormat` is vestigial: responses are JSON.)
+described below. `defaultFormat` sets the wire format a fresh server starts with —
+`toon` (default), `compact` for minified JSON, or `json` for pretty-printed JSON — which
+`set_output_format` can then change for the rest of the session.)
 
 ## Development log
 

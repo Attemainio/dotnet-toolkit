@@ -35,7 +35,11 @@
       "Bash(xargs -I{} sh -c 'python3 -c \"import json; d=json.load\\(open\\(\\\\\"{}\\\\\"\\)\\); print\\(list\\(d[\\\\\"libraries\\\\\"].items\\(\\)\\)[:3]\\)\"')",
       "Bash(find / -maxdepth 6 -iname \"MSBuildWorkspace*.dll\")",
       "Bash(xargs -I{} echo {})",
-      "Bash(xargs -I{} wc -l {})"
+      "Bash(xargs -I{} wc -l {})",
+      "Read(//home/atte/.claude/plugins/data/dotnet-toolkit-inline/**)",
+      "Read(//home/atte/.claude/plugins/**)",
+      "Read(//home/atte/.claude/**)",
+      "Read(//home/atte/**)"
     ]
   },
   "disabledMcpjsonServers": [

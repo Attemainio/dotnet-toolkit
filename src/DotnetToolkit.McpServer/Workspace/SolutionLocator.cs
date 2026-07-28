@@ -147,6 +147,13 @@ public sealed class SolutionLocator
     public static bool ShouldSkipDir(string name) =>
         SkipDirs.Contains(name, StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Whether a root-relative path falls under a directory <see cref="ShouldSkipDir"/> would
+    /// prune (bin, obj, node_modules, .git, .vs, dist) — e.g. a source-generator-produced file under
+    /// obj/, which is regenerated on every build and is not a real declaration site.</summary>
+    public static bool IsGeneratedOrBuildPath(string relPath) =>
+        relPath.Split('/').Any(ShouldSkipDir);
+
+
     /// <summary>
     /// Immutable snapshot of the loaded config and resolved workspace entry, swapped as a single
     /// reference so a concurrent reader never observes Config/WorkspaceEntry/Candidates from two

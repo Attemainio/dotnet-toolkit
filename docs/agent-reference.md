@@ -44,7 +44,7 @@ to hold that down, and changing them without understanding the trade re-inflates
   aspect can go unexamined, so the agent must end every report with a `Standards:` line naming what it
   loaded and skipped, and an untriggered aspect is reported **not-assessed**, never clean.
 - **No `skills:` grant.** `dotnet-code-query` (41.5 KB) carries the *main agent's* read protocol —
-  session/task ids, leases, expansion gating, refetch-after-compaction — none of which a read-only
+  session/task ids, expansion gating — none of which a read-only
   reviewer uses. The retrieval guidance it does need is inline in the agent file instead.
 - **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
   declaration-layer → body-layer → references per symbol.

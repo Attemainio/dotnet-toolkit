@@ -33,10 +33,11 @@ public static class ContextTools
     [Description("Retrieve one or more C# symbols, choosing exactly which fields you get back via include. "
         + "USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when it is split across "
         + "partial-class files (Read gives you one fragment and no signal that the rest exists), and costs a "
-        + "fraction of the tokens of the file. Returns a version token for leasing; pass knownVersion to get "
-        + "changed:false when nothing moved, or refetch:true to force content. "
-        + "The response always carries a fixed skeleton — kind, origin, containingType, declarationSites "
-        + "(file + startLine/endLine) — regardless of include. displayString and modifiers sit one tier "
+        + "fraction of the tokens of the file. Returns a version token (contentVersion) the caller can compare "
+        + "across its own calls to detect drift. "
+        + "(file + startLine/endLine, INCLUDING a leading /// doc comment when present — search_index's "
+        + "line/endLine for the same symbol exclude it, so a span read off search_index should not be reused "
+        + "for a validate_patch edit without confirming it here first) — regardless of include. displayString and modifiers sit one tier "
         + "below: computed on every call like the skeleton, but suppressed to null when source is also "
         + "requested, since a declaration's own signature line already states both as text — except for a "
         + "line-sliced source (see @ below), which usually cuts that line out, so both come back. There is "
@@ -69,9 +70,9 @@ public static class ContextTools
         + "A range running past the declaration clamps to it; one entirely outside it returns no lines "
         + "rather than an error. Whenever @ is used the response adds sourceLines: \"kept/whole\" (e.g. "
         + "\"46-76/38-96\", or \"none/38-96\" when the ranges missed) — read it, because contentVersion "
-        + "still covers the WHOLE symbol, so a lease taken from a slice must not be mistaken for having "
-        + "seen all of it. Not valid with symbols (batch): one line span cannot apply to several files.\n"
-        + "  xmlDoc — {summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}, each "
+        + "\"46-76/38-96\", or \"none/38-96\" when the ranges missed) — read it, because contentVersion "
+        + "always covers the WHOLE symbol regardless of which lines were actually returned, so it should not "
+        + "be mistaken for confirmation that the whole symbol was seen. Not valid with symbols (batch): one line span cannot apply to several files.\n"
         + "XML-stripped to plain text and absent when that tag isn't in the doc comment (xmlDoc itself is "
         + "absent only when none of them are). params/typeParams are arrays of {name, text}, one per "
         + "<param>/<typeparam> tag; exceptions is an array of {type, text}, one per <exception> tag; "
@@ -84,16 +85,22 @@ public static class ContextTools
         + "catch, using, lock. Anonymous constructs (bare try, else, finally) are omitted — infer their span "
         + "from the parent row. text is a short label (e.g. \"switch(node)\", \"if (StateMemberOf..)\"), "
         + "truncated to a fixed character budget, not a semantic summary. Computed purely from syntax, so it "
-        + "costs the same tier as source rather than mechanicalFacts' semantic-model tier. Null for a symbol "
-        + "with no body of its own (a type, a field, an auto-property). A sibling bodyOutlineNote string "
-        + "appears when the declaration is short enough (<40 lines) that source:code is likely cheaper than "
-        + "the outline — advisory only, the rows are still returned.\n"
+        + "  bodyOutline — control-flow landmarks inside a method-like body as [{text, startLine, endLine, "
+        + "depth}], for navigating a long body without reading it: switch/case, if, foreach/for/while/do, "
+        + "catch, using, lock. Anonymous constructs (bare try, else, finally) are omitted — infer their span "
+        + "from the parent row. text is a short label (e.g. \"switch(node)\", \"if (StateMemberOf..)\"), "
+        + "truncated to a fixed character budget, not a semantic summary. Computed purely from syntax, so it "
+        + "costs the same tier as source rather than mechanicalFacts' semantic-model tier. Absent (with an "
+        + "explanatory bodyOutlineNote) for a symbol with no body of its own (a type, a field, an "
+        + "auto-property). A sibling bodyOutlineNote string also appears — without suppressing the rows — "
+        + "when a method's declaration is short enough (<40 lines) that source:code is likely cheaper than "
+        + "the outline; that case is advisory only.\n"
         + "  referenceCounts — {implementations, overrides} always; adds {callers, tests} for a member "
         + "(never present for a type, since call edges are recorded against members only).\n"
         + "  recentLog — the last few development-log entries touching this symbol, each carrying "
         + "current:true/false against the live body so stale history reads as stale, not as fact.\n"
         + "  members — for a type only: [{symbolId, displayString, kind, contentVersion}] per member, "
-        + "each independently leasable without fetching its body; null for a non-type symbol.\n"
+        + "each fetchable independently without pulling its body; null for a non-type symbol.\n"
         + "  attributes — this symbol's own C# attributes (not inherited), as [{name, arguments}]; name "
         + "strips a trailing \"Attribute\" suffix (e.g. [Obsolete] -> \"Obsolete\"); arguments is a compact "
         + "rendering of constructor/named arguments, with a long string argument truncated rather than "
@@ -133,20 +140,15 @@ public static class ContextTools
             + "what each returns, for the full @ grammar, and for why source suppresses several of "
             + "these.")] string? include = null,
 
-        [Description("Held version token to lease against. Not applied when symbols (batch) is used — "
-            + "see symbols.")] string? knownVersion = null,
-        [Description("Force full content even if the version matches. Not applied when symbols (batch) is used.")] bool refetch = false,
-
         [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
-            + "every entry. knownVersion/refetch are ignored here — leasing needs one token per symbol, "
-            + "which a single knownVersion cannot express, so every batch result carries full content "
-            + "regardless of what the caller already holds. A source @line selection is rejected here, "
+            + "every entry, and each entry is a full, independent fetch. A source @line selection is rejected here, "
             + "since one span of file lines cannot apply to several symbols. Exactly one of symbol or "
             + "symbols is required.")]
-            string[]? symbols = null)
+            string[]? symbols = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
-        var taskId = sessionId;
+        var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
 
         var targets = symbols is { Length: > 0 } ? symbols : symbol is not null ? [symbol] : null;
@@ -167,39 +169,48 @@ public static class ContextTools
 
         if (targets is [var only] && symbols is null)
         {
-            var only1Json = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder, telemetry,
-                toolCallId, sessionId, taskId, only, include, knownVersion, refetch);
-            return Formats.Render(JsonSerializer.Deserialize<JsonElement>(only1Json));
+            var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
+                toolCallId, sessionId, attributedTask, only, include);
+            var rendered = Formats.Render(JsonSerializer.Deserialize<JsonElement>(one.Json));
+            return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", only, one.SymbolId,
+                include ?? "standard", one.ContentVersion, 1,
+                one.LimitedBy, one.ErrorKind, rendered);
         }
 
-        // Batch: each entry is a full, independent fetch (see the knownVersion/refetch note above) sharing
-        // one toolCallId, so the telemetry rows this produces read as one tool call over several symbols
-        // rather than several unrelated calls. Each result is the same shape GetSymbolOne already returns
-        // for a single symbol (parsed back out of its own JSON so the batch can build one array), not
-        // hoisted or column-shaped — whichever OutputFormat is active does its own thing with a plain
-        // uniform array of these.
+        // Batch: each entry is a full, independent fetch sharing one toolCallId. Telemetry is recorded
+        // ONCE for the whole batch, against the final rendered text (not each entry's intermediate JSON)
+        // — recording per-entry would both miss the wrapping results[] overhead this response actually
+        // costs, and double-count tokens across the batch's shared toolCallId.
         var results = new List<JsonElement>(targets.Length);
+        string? firstErrorKind = null;
+        string? firstLimitedBy = null;
         foreach (var target in targets)
         {
-            var itemJson = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                telemetry, toolCallId, sessionId, taskId, target, include,
-                knownVersion: null, refetch: false);
-            results.Add(JsonSerializer.Deserialize<JsonElement>(itemJson));
+            var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
+                toolCallId, sessionId, attributedTask, target, include);
+            results.Add(JsonSerializer.Deserialize<JsonElement>(one.Json));
+            firstErrorKind ??= one.ErrorKind;
+            firstLimitedBy ??= one.LimitedBy;
         }
 
-        return Formats.Render(new { results });
+        var batchRendered = Formats.Render(new { results });
+        return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", string.Join(",", targets),
+            null, include ?? "standard", null, targets.Length, firstLimitedBy,
+            firstErrorKind, batchRendered);
     }
 
-private static async Task<string> GetSymbolOne(
+
+private static async Task<SymbolFetchResult> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
-        FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder, TelemetryRecorder telemetry,
+        FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include, string? knownVersion, bool refetch)
+        string symbol, string? include)
     {
         // Every return in this method is PLAIN JSON, regardless of Formats.Current — its result is
         // always re-parsed and re-rendered by its caller (GetSymbol, for both the single-symbol and
-        // batch paths), never returned to an MCP caller directly. Rendering in the active format here
-        // (e.g. TOON) would make that re-parse fail outright.
+        // batch paths), which also records telemetry against that final rendered text rather than this
+        // intermediate JSON. Rendering in the active format here (e.g. TOON) would make that re-parse
+        // fail outright.
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
@@ -208,33 +219,22 @@ private static async Task<string> GetSymbolOne(
             var fallback = IndexSymbol(index, locator, symbol, include);
             if (fallback is { } fb)
             {
-                var indexLease = Lease.Evaluate(ContentVersion.Parse(fb.Version), knownVersion, refetch);
-                object indexEnvelope = indexLease.OmitContent
-                    ? new
-                    {
-                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = false, heldVersion = indexLease.HeldVersion, limitedBy = "index_only",
-                        content = (object?)null, refetchHint = Lease.RefetchHint,
-                    }
-                    : new
-                    {
-                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                        changed = true, heldVersion = (string?)null, limitedBy = "index_only", content = fb.Content,
-                    };
+                var indexEnvelope = new
+                {
+                    contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
+                    limitedBy = "index_only", content = fb.Content,
+                };
                 var indexJson = Formats.ToJson(indexEnvelope);
-                return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, fb.SymbolId, include ?? "standard",
-                    knownVersion, refetch, indexLease.OmitContent, fb.Version, 1, "index_only", null, indexJson);
+                return new SymbolFetchResult(indexJson, fb.SymbolId, fb.Version, "index_only", null);
             }
 
             var loading = Formats.ToJson(new { error = workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace" });
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
-                knownVersion, refetch, false, null, 0, "index_only", "workspace_loading", loading);
+            return new SymbolFetchResult(loading, null, null, "index_only", "workspace_loading");
         }
 
         var (sym, error) = await ResolveAsPlainJsonAsync(solution, ResolveHandle(symbol, symbolStore), symbolStore);
         if (sym is null)
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, null, include ?? "standard",
-                knownVersion, refetch, false, null, 0, "live", "unresolved", error!);
+            return new SymbolFetchResult(error!, null, null, "live", "unresolved");
 
         var symbolId = SymbolKey.IdOf(sym);
 
@@ -246,46 +246,38 @@ private static async Task<string> GetSymbolOne(
                 error = "invalid_component",
                 detail = $"'{invalidComponent}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.",
             });
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
-                knownVersion, refetch, false, null, 0, "live", "invalid_component", badComponent);
+            return new SymbolFetchResult(badComponent, symbolId, null, "live", "invalid_component");
         }
 
         // The token describes only the layers this response's components were derived from, so a caller
-        // that held it can never be told "unchanged" about content it was never sent.
+        // relying on it to detect drift is never told about a layer it never actually received.
         var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
         var limitedBy = await LimitedByAsync(workspace, indexBuilder, SourceFilesOf(sym));
-        var lease = Lease.Evaluate(version, knownVersion, refetch, parts.RequiredLayers);
 
-        object envelope;
-        if (lease.OmitContent)
+        var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
+        var envelope = new
         {
-            envelope = new
-            {
-                symbolId,
-                contentVersion = version.ToString(),
-                changed = false,
-                heldVersion = lease.HeldVersion,
-                limitedBy,
-                refetchHint = Lease.RefetchHint,
-            };
-        }
-        else
-        {
-            var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
-            envelope = new
-            {
-                symbolId,
-                contentVersion = version.ToString(),
-                limitedBy,
-                components = include is null ? null : parts.Resolved,
-                content,
-            };
-        }
+            symbolId,
+            contentVersion = version.ToString(),
+            limitedBy,
+            components = include is null ? null : parts.Resolved,
+            content,
+        };
 
         var json = Formats.ToJson(envelope);
-        return Record(telemetry, toolCallId, sessionId, taskId, "get_symbol", symbol, symbolId, include ?? "standard",
-            knownVersion, refetch, lease.OmitContent, version.ToString(), 1, limitedBy, null, json);
+        return new SymbolFetchResult(json, symbolId, version.ToString(), limitedBy, null);
     }
+
+    // Carries GetSymbolOne's result plus the telemetry fields its caller needs to record against the
+    // FINAL rendered text (GetSymbol re-renders this Json in the active OutputFormat before recording),
+    // not this intermediate JSON.
+    private readonly record struct SymbolFetchResult(
+        string Json,
+        string? SymbolId,
+        string? ContentVersion,
+        string? LimitedBy,
+        string? ErrorKind);
+
 
 /// <summary>Plain-JSON variant of <see cref="ResolveAsync"/> for use inside <see cref="GetSymbolOne"/> only.</summary>
     private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsPlainJsonAsync(
@@ -340,10 +332,12 @@ private static async Task<string> GetSymbolOne(
 
     /// <summary>
     /// Resolves a handle to a project's synthesized top-level-statements entry point when no other path
-    /// finds it. The entry point has no ordinary declaration syntax for SymbolIndexBuilder's declaration
-    /// walk to index (it only appears as an edge owner), so it may reach here either as the raw
-    /// <c>sym_…</c> id (no indexed row) or as that row's stored display text (once indexed) — matched
-    /// against both forms of the live entry-point symbol rather than assuming which one arrived.
+    /// finds it. The entry point has no ordinary declaration syntax for SymbolFinder-based resolution to
+    /// find (SymbolResolver.ResolveAsync's FindSourceDeclarationsAsync misses it, since it has no
+    /// ClassDeclarationSyntax/MethodDeclarationSyntax to walk to), so it may reach here as the raw
+    /// <c>sym_…</c> id, as SymbolIndexBuilder's indexed row text ("{ContainingType}.Main"), or as a bare
+    /// "Program"/"Main"-shaped guess a caller typed without having seen either — matched case-insensitively
+    /// against all of those forms of the live entry-point symbol rather than assuming which one arrived.
     /// </summary>
     private static async Task<ISymbol?> ResolveEntryPointAsync(Solution solution, string handle)
     {
@@ -353,9 +347,13 @@ private static async Task<string> GetSymbolOne(
             var entryPoint = compilation?.GetEntryPoint(CancellationToken.None);
             if (entryPoint is null)
                 continue;
+            var typeName = entryPoint.ContainingType?.Name;
             if (SymbolKey.IdOf(entryPoint) == handle
                 || entryPoint.ToDisplayString() == handle
-                || entryPoint.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == handle)
+                || entryPoint.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == handle
+                || (typeName is { Length: > 0 } && (
+                    string.Equals(typeName, handle, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals($"{typeName}.Main", handle, StringComparison.OrdinalIgnoreCase))))
                 return entryPoint;
         }
         return null;
@@ -367,11 +365,14 @@ private static async Task<string> GetSymbolOne(
         + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
         + "Returns every real call site, no false positives, and reports how many text-only matches it excluded "
         + "as excludedTextMatches (callers direction only). "
-        + "Each item carries symbolId, contentVersion (independent of the target symbol's own version, so an "
-        + "item can be leased on its own), displayString, dispatchKind, and sites — a list of {file, line, "
-        + "snippet}, one entry per call site for that symbol. isTest is present only when true; content (the "
-        + "inline body) only with includeBodies:true. targetSymbolId confirms which overload this answered "
-        + "for; truncated and excludedTextMatches are present only when they apply.")]
+        + "dispatchKind is reported once at the top level, not per item — it describes the TARGET symbol's own "
+        + "dispatch (direct/virtual/interface/delegate), which is identical for every item in one call by "
+        + "construction. Each item carries symbolId, displayString (a compact name/arity form, e.g. "
+        + "\"ContextTools.GetSymbol/13\" — pass fields:\"signature\" for the full parameter list instead), and "
+        + "sites — a list of {file, line, snippet}, one entry per call site for that symbol. isTest is present "
+        + "only when true; content (the inline body) only with includeBodies:true. targetSymbolId confirms which "
+        + "overload this answered for; omitted when the caller already passed a sym_... id, since it would only "
+        + "restate the input. truncated and excludedTextMatches are present only when they apply.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -379,24 +380,43 @@ private static async Task<string> GetSymbolOne(
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
-        [Description("Include member bodies inline (default false).")] bool includeBodies = false)
+        [Description("Include member bodies inline (default false).")] bool includeBodies = false,
+        [Description("Comma list of extra per-item fields: contentVersion (this item's own hash, independent "
+            + "of the target symbol's — useful only for a caller manually diffing this item against a later "
+            + "fetch; almost never used in practice, so it costs real tokens for almost no callers), signature "
+            + "(the full parameter-list displayString instead of the default compact name/arity form). Omit for "
+            + "the cheaper defaults.")] string? fields = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
-        var taskId = sessionId;
+        var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
         var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
+        var wantContentVersion = false;
+        var wantSignature = false;
+        if (!string.IsNullOrWhiteSpace(fields))
+        {
+            foreach (var f in fields.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                switch (f.ToLowerInvariant())
+                {
+                    case "contentversion": wantContentVersion = true; break;
+                    case "signature": wantSignature = true; break;
+                }
+            }
+        }
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
             var loading = Error(toolCallId, "workspace_loading");
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
-                null, false, false, null, 0, "index_only", "workspace_loading", loading, direction);
+            return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, null, null,
+                null, 0, "index_only", "workspace_loading", loading, direction);
         }
 
         var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, symbolStore);
         if (sym is null)
-            return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, null, null,
-                null, false, false, null, 0, "live", "unresolved", error!, direction);
+            return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, null, null,
+                null, 0, "live", "unresolved", error!, direction);
 
         var normalized = direction.Trim().ToLowerInvariant();
         var items = normalized switch
@@ -414,20 +434,24 @@ private static async Task<string> GetSymbolOne(
             ? await CountTextOnlyMatches(solution, sym.Name)
             : 0;
 
+        // dispatchKind describes the TARGET symbol (direct/virtual/interface/delegate), computed once here
+        // rather than per item — Callers/ToItem already stamp the identical value onto every item, so
+        // reporting it per item was pure repetition, never a signal that could vary within one call.
+        var dispatchKind = normalized == "callers" ? DispatchKindOf(sym) : null;
+
         var envelope = new
         {
-            targetSymbolId = SymbolKey.IdOf(sym),
+            targetSymbolId = symbol.StartsWith("sym_", StringComparison.Ordinal) ? null : SymbolKey.IdOf(sym),
             items = shown.Select(i => new
             {
                 symbolId = i.SymbolId,
-                // Per-item version so leases accumulate before any body is fetched (§10).
-                contentVersion = i.Version,
-                displayString = i.DisplayString,
+                contentVersion = wantContentVersion ? i.Version : null,
+                displayString = wantSignature ? i.DisplayString : i.CompactDisplayString,
                 sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet }),
-                dispatchKind = i.DispatchKind,
                 isTest = i.IsTest ? true : (bool?)null,
                 content = i.Body,
             }),
+            dispatchKind,
             totalItems = ordered.Count,
             truncated = truncated ? true : (bool?)null,
             excludedTextMatches = excludedComments > 0 ? excludedComments : (int?)null,
@@ -435,9 +459,10 @@ private static async Task<string> GetSymbolOne(
         };
 
         var json = Formats.Render(envelope);
-        return Record(telemetry, toolCallId, sessionId, taskId, "get_references", symbol, SymbolKey.IdOf(sym), null,
-            null, false, false, null, shown.Count, refLimitedBy, null, json, normalized);
+        return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, SymbolKey.IdOf(sym), null,
+            null, shown.Count, refLimitedBy, null, json, normalized);
     }
+
 
 [McpServerTool(Name = "search_index")]
     [Description("Find C# symbols when you don't know their exact names. "
@@ -456,7 +481,10 @@ private static async Task<string> GetSymbolOne(
         + "full text is capped short, get_symbol's xmlDoc.summary for the untruncated version. "
         + "Pass xmlDoc to filter hits by which XML doc sections beyond <summary> are present — remarks, "
         + "returns, params, typeparams, exceptions, value, inheritdoc — same AND/exclude grammar as modifiers. "
-        + "Follow up with get_symbol when you want the content itself.")]
+        + "Follow up with get_symbol when you want the content itself. A hit's line/endLine mark the "
+        + "signature line only, EXCLUDING any leading /// doc comment — get_symbol's declarationSites for the "
+        + "same symbol include it, so anchor a validate_patch edit on get_symbol's span, not this one.")]
+
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
         ProjectIndex index,
@@ -506,21 +534,27 @@ private static async Task<string> GetSymbolOne(
             + "160 chars with an ellipsis — fetch get_symbol's xmlDoc.summary for the untruncated text; absent if "
             + "none) per item. Omit for today's behavior (no summary fields, no extra cost). An unrecognized "
             + "value is treated as omitted.")] string? summary = null,
-        [Description("How to group results: \"namespace\" (default) nests namespace -> file -> symbols; "
+        [Description("How to group results: \"namespace\" nests namespace -> file -> symbols; "
             + "\"file\" nests file -> namespace -> symbols; \"none\" returns the flat items[] list from before "
-            + "grouping existed, with file/name repeated per row and no namespace field. Whichever axis the "
-            + "whole result set collapses to a single value on additionally collapses its wrapper array to a "
-            + "flat namespace/file header field instead of a nested array, and a leaf's kind column is dropped "
-            + "whenever every hit in that leaf shares one kind. An unrecognized value is treated as "
-            + "\"namespace\".")] string? groupBy = null,
+            + "grouping existed, with file/name repeated per row and no namespace field. Omit this parameter "
+            + "entirely (rather than passing \"namespace\" explicitly) to let the server render both the flat "
+            + "and namespace-grouped shapes from the same data and keep whichever actually costs fewer tokens — "
+            + "grouping only pays for itself when hits concentrate onto few namespaces/files; scattered results "
+            + "make the nesting overhead a net loss. An explicit value is always honored as given (no "
+            + "comparison). Whichever axis the whole result set collapses to a single value on additionally "
+            + "collapses its wrapper array to a flat namespace/file header field instead of a nested array, and "
+            + "a leaf's kind column is dropped whenever every hit in that leaf shares one kind. An unrecognized "
+            + "non-null value is treated as \"namespace\".")] string? groupBy = null,
+
         [Description("\"source\" (default) searches only symbols this repo's own solution declares. "
             + "\"external\" searches only BCL/NuGet symbols already discovered as a call/construction/"
             + "implements target from this repo's source — not a general library browser, only what this "
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
-            + "\"source\".")] string? origin = null)
+            + "\"source\".")] string? origin = null,
+        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
-        var taskId = sessionId;
+        var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var originFilter = origin is "source" or "external" or "all" ? origin : "source";
@@ -571,27 +605,23 @@ private static async Task<string> GetSymbolOne(
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
 
-        var mode = groupBy is "file" or "none" ? groupBy : "namespace";
-        object envelope;
-        if (mode == "none")
+        object BuildFlatEnvelope() => new
         {
-            envelope = new
+            limitedBy = searchLimitedBy,
+            items = limited.Select(r => new
             {
-                limitedBy = searchLimitedBy,
-                items = limited.Select(r => new
-                {
-                    symbolId = r.Hit.SymbolId,
-                    name = SymbolResolver.CompactName(r.Hit.FqName),
-                    kind = r.Hit.Kind,
-                    file = r.Site?.File,
-                    line = r.Site?.Line,
-                    endLine = r.Site?.EndLine,
-                    hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
-                    summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-                }),
-            };
-        }
-        else
+                symbolId = r.Hit.SymbolId,
+                name = SymbolResolver.CompactName(r.Hit.FqName),
+                kind = r.Hit.Kind,
+                file = r.Site?.File,
+                line = r.Site?.Line,
+                endLine = r.Site?.EndLine,
+                hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
+                summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
+            }),
+        };
+
+        object BuildGroupedEnvelope(bool primaryIsNamespace)
         {
             var rows = limited.Select(r =>
             {
@@ -606,19 +636,39 @@ private static async Task<string> GetSymbolOne(
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null);
             }).ToList();
-            var grouped = SymbolGrouping.Build(rows, primaryIsNamespace: mode == "namespace");
+            var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
             if (searchLimitedBy is not null)
                 withLimit["limitedBy"] = searchLimitedBy;
             foreach (var (key, value) in grouped)
                 withLimit[key] = value;
-            envelope = withLimit;
+            return withLimit;
         }
 
-        var json = Formats.Render(envelope);
-        return Record(telemetry, toolCallId, sessionId, taskId, "search_index", query, null, null,
-            null, false, false, null, limited.Count, searchLimitedBy, null, json);
+        string json;
+        if (groupBy is null)
+        {
+            // No explicit request: render both the flat list and the default namespace grouping from the
+            // same data and keep whichever actually costs fewer tokens. Grouping only pays for itself when
+            // hits concentrate onto few namespaces/files; on scattered results the nesting overhead is a
+            // net loss (measured +10% on a 10-hit/4-namespace query).
+            var flatJson = Formats.Render(BuildFlatEnvelope());
+            var groupedJson = Formats.Render(BuildGroupedEnvelope(primaryIsNamespace: true));
+            json = TelemetryRecorder.EstimateTokens(groupedJson) <= TelemetryRecorder.EstimateTokens(flatJson) ? groupedJson : flatJson;
+        }
+        else if (groupBy == "none")
+        {
+            json = Formats.Render(BuildFlatEnvelope());
+        }
+        else
+        {
+            json = Formats.Render(BuildGroupedEnvelope(primaryIsNamespace: groupBy != "file"));
+        }
+
+        return Record(telemetry, toolCallId, sessionId, attributedTask, "search_index", query, null, null,
+            null, limited.Count, searchLimitedBy, null, json);
     }
+
 
 
     /// <summary>
@@ -746,10 +796,12 @@ private static async Task<object> BuildContent(
                 ? MechanicalFactsFor(sym, symbolStore)
                 : null,
             // Control-flow landmarks, computed purely from syntax like source rather than the semantic
-            // model mechanicalFacts needs — null for a symbol with no executable body of its own (a type,
-            // a field, an auto-property). bodyOutlineNote is an advisory, not an error, for a declaration
-            // short enough that source:code would likely cost fewer tokens than this.
-            bodyOutline = outline?.Rows.Select(r => (object)new
+            // model mechanicalFacts needs — absent (with an explanatory bodyOutlineNote) for a symbol with
+            // no executable body of its own (a type, a field, an auto-property), or fully absent (both
+            // fields) when there's no declaration to walk at all. bodyOutlineNote is otherwise an
+            // advisory, not an error, for a declaration short enough that source:code would likely cost
+            // fewer tokens than this.
+            bodyOutline = outline?.Rows?.Select(r => (object)new
             {
                 text = r.Text,
                 startLine = r.StartLine,
@@ -881,7 +933,12 @@ private static object? ContainingType(ISymbol sym)
     };
 
 private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
-        sym.DeclaringSyntaxReferences.Select(r =>
+        sym.DeclaringSyntaxReferences
+            // Exclude source-generator output (obj/**): it is regenerated on every build and not an
+            // editable declaration site, so surfacing it alongside the hand-written partial only offers
+            // a validate_patch caller a span that will be overwritten out from under it.
+            .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
+            .Select(r =>
         {
             var node = NormalizeDeclNode(r.GetSyntax());
             var (start, end) = DeclarationBoundsIncludingDocComment(node);
@@ -896,6 +953,7 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
                 endLine = span.EndLinePosition.Line + 1,
             };
         }).ToArray();
+
 
     /// <summary>One line of a symbol's <c>source</c> component — 1-based absolute file line plus its
     /// text, so a multi-line declaration renders as a real per-line table (TOON/JSON alike) instead of
@@ -920,14 +978,17 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
     /// <summary>
     /// Control-flow landmarks for one member's body (spec §9 <c>bodyOutline</c>), plus an advisory note
     /// when the declaration is short enough that <c>source:code</c> is likely cheaper than the outline.
-    /// Null for anything without a syntax reference, or without an executable body of its own (a type, a
-    /// field, an auto-property).
+    /// Rows is null (bodyOutline stays absent) for a symbol with no executable body of its own (a type,
+    /// a field, an auto-property) or with no syntax reference at all (external/no declaration to walk);
+    /// Note still explains the former case rather than leaving the caller to guess why both fields are
+    /// missing. Rows is an empty (not null) list when the symbol IS a method but its body simply has no
+    /// control-flow landmarks to report — bodyOutline still renders as [] there, same as before.
     /// </summary>
-    private static (IReadOnlyList<OutlineRow> Rows, string? Note)? BodyOutlineFor(ISymbol sym)
+    private static (IReadOnlyList<OutlineRow>? Rows, string? Note)? BodyOutlineFor(ISymbol sym)
     {
         const int minWorthwhileLines = 40;
         if (sym is not IMethodSymbol)
-            return null;
+            return (null, $"bodyOutline is not applicable to a {SymbolKey.KindOf(sym)} symbol - only a method has an executable body to outline");
         var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)
             return null;
@@ -1162,11 +1223,12 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
 
     // ---- reference directions -------------------------------------------------
 
-    private sealed record RefItem(string SymbolId, string Version, string DisplayString,
+private sealed record RefItem(string SymbolId, string Version, string DisplayString, string CompactDisplayString,
         IReadOnlyList<(string File, int Line, string Snippet)> Sites, string? DispatchKind, IReadOnlyList<SourceLine>? Body,
         bool IsTest = false);
 
-    private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
+
+private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
     {
         var dispatch = DispatchKindOf(sym);
         var items = new List<RefItem>();
@@ -1183,6 +1245,7 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
                 SymbolKey.IdOf(caller.CallingSymbol),
                 VersionOf(caller.CallingSymbol).ToString(),
                 caller.CallingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                CompactDisplay(caller.CallingSymbol),
                 sites!,
                 dispatch,
                 includeBodies ? SourceOf(caller.CallingSymbol) : null,
@@ -1190,6 +1253,7 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
         }
         return items;
     }
+
 
     private static async Task<List<RefItem>> Implementations(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
     {
@@ -1208,7 +1272,7 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
         return results.Select(s => ToItem(s, locator, null, includeBodies)).ToList();
     }
 
-    private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispatch, bool includeBodies)
+private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispatch, bool includeBodies)
     {
         var sites = s.Locations.Where(l => l.IsInSource).Select(l =>
         {
@@ -1216,9 +1280,21 @@ private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =
             return (locator.RelPath(span.Path), span.StartLinePosition.Line + 1, s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat));
         }).ToList();
         return new RefItem(SymbolKey.IdOf(s), VersionOf(s).ToString(),
-            s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), sites!, dispatch,
+            s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), CompactDisplay(s), sites!, dispatch,
             includeBodies ? SourceOf(s) : null);
     }
+
+    // The default get_references/get_call_hierarchy displayString: name + arity (e.g.
+    // "ContextTools.GetSymbol/13") rather than the full parameter list with types and default values,
+    // which answers "who/what is this" for a fraction of the tokens; the full form is still one
+    // fields:"signature" away on either tool.
+    private static string CompactDisplay(ISymbol s)
+    {
+        var name = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat
+            .WithParameterOptions(SymbolDisplayParameterOptions.None));
+        return s is IMethodSymbol method ? $"{name}/{method.Parameters.Length}" : name;
+    }
+
 
     private static string DispatchKindOf(ISymbol target)
     {
@@ -1534,31 +1610,21 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
 
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,
-        string requestedSymbol, string? symbolId, string? resolution, string? knownVersion, bool refetch,
-        bool leaseHit, string? contentVersion, int returnedSymbols, string? limitedBy, string? errorKind, string result,
+        string requestedSymbol, string? symbolId, string? resolution, string? contentVersion,
+        int returnedSymbols, string? limitedBy, string? errorKind, string result,
         string? direction = null)
     {
-        telemetry.RecordRetrieval(new RetrievalEvent
-        {
-            ToolCallId = toolCallId,
-            SessionId = sessionId,
-            TaskId = taskId,
-            ToolName = tool,
-            RequestedSymbol = requestedSymbol,
-            SymbolId = symbolId,
-            Resolution = resolution,
-            Direction = direction,
-            KnownVersion = knownVersion,
-            Refetch = refetch,
-            LeaseHit = leaseHit,
-            ContentVersion = contentVersion,
-            ReturnedSymbols = returnedSymbols,
-            ReturnedTokens = TelemetryRecorder.EstimateTokens(result),
-            // Telemetry keeps the pre-3.0 column name: retrieval_events is immutable raw history and
-            // its rows cannot be rewritten, so renaming the column would split one signal across two.
-            Staleness = limitedBy ?? "live",
-            ErrorKind = errorKind,
-        });
-        return result;
+        // Kept as a positional forwarder rather than folded into ToolTelemetry.Record directly: this
+        // signature has six call sites in this file, all positional, whose argument order would
+        // otherwise have to move for no behavioural gain.
+        return ToolTelemetry.Record(
+            telemetry, toolCallId, sessionId, taskId, tool, requestedSymbol, result,
+            symbolId: symbolId,
+            resolution: resolution,
+            contentVersion: contentVersion,
+            returnedSymbols: returnedSymbols,
+            limitedBy: limitedBy,
+            errorKind: errorKind,
+            direction: direction);
     }
 }

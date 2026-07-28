@@ -29,7 +29,7 @@ public sealed class ChangeClassifierTests
         }
         """;
 
-    private static (Solution Solution, DocumentId DocId) NewSolution(string? source = null)
+    private static (Solution Solution, DocumentId DocId) NewSolution(string? source = null, OutputKind outputKind = OutputKind.DynamicallyLinkedLibrary)
     {
         var refs = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
@@ -40,7 +40,7 @@ public sealed class ChangeClassifierTests
         var project = workspace.AddProject(ProjectInfo.Create(
             ProjectId.CreateNewId(), VersionStamp.Create(), "Demo", "Demo", LanguageNames.CSharp,
             metadataReferences: refs,
-            compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)));
+            compilationOptions: new CSharpCompilationOptions(outputKind)));
         var document = workspace.AddDocument(project.Id, "Widget.cs", SourceText.From(source ?? BaseSource));
         return (workspace.CurrentSolution, document.Id);
     }
@@ -56,7 +56,7 @@ public sealed class ChangeClassifierTests
             "public int Spin(int turns) => turns * 2;",
             "public int Spin(int turns, int extra) => turns * 2 + extra;"));
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
 
         var change = Assert.Single(changes, c => c.DisplayString.Contains("Spin"));
         Assert.Contains(ChangeKind.Signature, change.Kinds);
@@ -113,7 +113,7 @@ public sealed class ChangeClassifierTests
             var forkedText = (await sandbox.Forked.GetDocument(docId)!.GetTextAsync()).ToString();
             Assert.Contains("int extra", forkedText);
 
-            var changes = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
+            var (changes, _) = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments);
             Assert.Contains(changes, c => c.DisplayString.Contains("Spin") && c.Kinds.Contains(ChangeKind.Signature));
         }
         finally
@@ -128,7 +128,7 @@ public sealed class ChangeClassifierTests
         var (solution, docId) = NewSolution();
         var forked = Fork(solution, docId, BaseSource.Replace("=> turns * 2;", "=> turns * 3;"));
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
         var change = Assert.Single(changes, c => c.DisplayString.Contains("Spin"));
         Assert.Equal([ChangeKind.Body], change.Kinds);
 
@@ -152,7 +152,7 @@ public sealed class ChangeClassifierTests
             .Single(m => m.Identifier.Text == "Spin" && m.Parent is ClassDeclarationSyntax);
         var expectedOldId = SymbolKey.IdOf(baseModel!.GetDeclaredSymbol(spinDecl)!);
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
 
         // IWidget.Spin is untouched (same key, same content) so it's silently skipped; only Widget.Turn
         // should show up, as a single paired change rather than a separate remove + add.
@@ -186,7 +186,7 @@ public sealed class ChangeClassifierTests
         var (solution, docId) = NewSolution(source);
         var forked = Fork(solution, docId, renamed);
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
 
         // Two same-signature removals and two same-signature additions in one container is ambiguous --
         // nothing here distinguishes "Spin became A, Whirl became B" from "Spin became B, Whirl became A",
@@ -205,7 +205,7 @@ public sealed class ChangeClassifierTests
             "public int Spin(int turns) => turns * 2;",
             "public int Spin(int turns) => turns * 2;\n    public int Extra() => 1;"));
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
 
         var change = Assert.Single(changes, c => c.DisplayString.Contains("Extra"));
         Assert.Contains(ChangeKind.Added, change.Kinds);
@@ -221,10 +221,29 @@ public sealed class ChangeClassifierTests
         var forked = Fork(solution, docId, BaseSource.Replace(
             "    public int Spin(int turns) => turns * 2;\n", ""));
 
-        var changes = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
 
         var change = Assert.Single(changes, c => c.DisplayString.Contains("Spin"));
         Assert.Contains(ChangeKind.Removed, change.Kinds);
         Assert.Equal(change.SymbolId, change.OldSymbolId);
+    }
+
+    [Fact]
+    public async Task TopLevelStatements_EditIsDetected_AndAnchoredToSyntheticEntryPoint()
+    {
+        const string topLevelSource = """
+            System.Console.WriteLine("hello");
+            """;
+        var (solution, docId) = NewSolution(topLevelSource, OutputKind.ConsoleApplication);
+        var forked = Fork(solution, docId, topLevelSource.Replace("hello", "goodbye"));
+
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes);
+        Assert.Equal([ChangeKind.Signature], change.Kinds);
+        Assert.Equal(change.SymbolId, change.OldSymbolId);
+
+        var ladder = await ValidationLadder.RunAsync(forked, [docId], ValidationLevel.ProjectCompile);
+        Assert.True(ladder.Succeeded);
     }
 }

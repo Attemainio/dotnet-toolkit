@@ -28,6 +28,7 @@ builder.Services.AddSingleton<DevlogStore>();
 // v2 knowledge store + telemetry (spec Part IV). The store is rebuildable; if it fails to
 // open, KnowledgeStore.Available stays false and telemetry degrades to no-ops.
 builder.Services.AddSingleton<KnowledgeStore>();
+builder.Services.AddSingleton<IKnowledgeStore>(sp => sp.GetRequiredService<KnowledgeStore>());
 builder.Services.AddSingleton<TelemetryRecorder>();
 builder.Services.AddSingleton<MetricsReader>();
 builder.Services.AddSingleton<AttributionJob>();

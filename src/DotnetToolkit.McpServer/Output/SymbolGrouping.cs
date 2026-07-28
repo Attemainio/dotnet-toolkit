@@ -60,17 +60,23 @@ public static class SymbolGrouping
         var uniformKind = kinds.Count == 1;
         if (uniformKind)
             node["kind"] = kinds[0];
-        node["symbols"] = rows.Select(r => RowDict(r, includeKind: !uniformKind)).ToList();
+        // BCL/NuGet (origin: external) hits, and any leaf whose sites are all unresolved, carry no line
+        // info by definition -- omit both columns from every row instead of repeating two constant nulls.
+        var anyLine = rows.Any(r => r.Line is not null || r.EndLine is not null);
+        node["symbols"] = rows.Select(r => RowDict(r, includeKind: !uniformKind, includeLines: anyLine)).ToList();
     }
 
-    private static Dictionary<string, object?> RowDict(Row r, bool includeKind)
+    private static Dictionary<string, object?> RowDict(Row r, bool includeKind, bool includeLines)
     {
         var d = new Dictionary<string, object?> { ["symbolId"] = r.SymbolId };
         if (includeKind)
             d["kind"] = r.Kind;
         d["name"] = r.LeafName;
-        d["line"] = r.Line;
-        d["endLine"] = r.EndLine;
+        if (includeLines)
+        {
+            d["line"] = r.Line;
+            d["endLine"] = r.EndLine;
+        }
         if (r.HasSummary is not null)
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)

@@ -71,6 +71,15 @@ public sealed class DevlogStore
                 sb.Append("**FIX:** ").Append(fix.Trim()).Append("\n\n");
 
             File.AppendAllText(abs, sb.ToString());
+
+            // EnsureFreshLocked decides staleness by comparing last-write ticks, and a filesystem with
+            // coarse mtime resolution (WSL /mnt/*) reports the same value for two appends in quick
+            // succession - so the second entry would be skipped as "unchanged" and never make it into
+            // the index. This call just wrote the file and does not need to infer that from a timestamp,
+            // so mark it stale outright.
+            _index ??= LoadIndex();
+            _index.Files[_locator.RelPath(abs)] = -1;
+
             EnsureFreshLocked();
             return (id, _locator.RelPath(abs));
         }

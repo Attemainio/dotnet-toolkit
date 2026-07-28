@@ -23,10 +23,18 @@ public static class ChangeClassifier
     /// <param name="baseSolution">The solution before the patch.</param>
     /// <param name="forked">The solution with the patch applied.</param>
     /// <param name="changedDocs">Documents to diff.</param>
-    /// <returns>One <see cref="Change"/> per paired, added, or removed declaration — exact-key matches first, then arity/signature pairing, then rename pairing, then pure additions and removals.</returns>
-    public static async Task<List<Change>> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs, CancellationToken cancellationToken = default)
+    /// <returns>
+    /// <see cref="Change"/>s — one per paired, added, or removed declaration (exact-key matches first, then
+    /// arity/signature pairing, then rename pairing, then pure additions and removals) — plus the current
+    /// version of every exact-key-matched declaration whose content did NOT change, keyed by its old symbol
+    /// id. A caller-supplied <c>baseVersions</c> claim about one of those untouched symbols (an identity
+    /// edit, or an unrelated sibling in the same file) still needs checking for staleness even though it
+    /// produced no <see cref="Change"/>.
+    /// </returns>
+    public static async Task<(List<Change> Changes, IReadOnlyDictionary<string, string> UnchangedVersions)> DetectAsync(Solution baseSolution, Solution forked, IReadOnlyList<DocumentId> changedDocs, CancellationToken cancellationToken = default)
     {
         var changes = new List<Change>();
+        var unchangedVersions = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var docId in changedDocs)
         {
             var baseDoc = baseSolution.GetDocument(docId);
@@ -53,7 +61,7 @@ public static class ChangeClassifier
                 {
                     pairedOld.Add(old);
                     pairedNew.Add(nw);
-                    AddChange(changes, model, baseModel, old, nw);
+                    AddChange(changes, unchangedVersions, model, baseModel, old, nw);
                 }
             }
 
@@ -73,7 +81,7 @@ public static class ChangeClassifier
                 var added = addedGroup.Select(kv => kv.Value).ToList();
                 for (var i = 0; i < Math.Min(added.Count, removed.Count); i++)
                 {
-                    AddChange(changes, model, baseModel, removed[i], added[i]);
+                    AddChange(changes, unchangedVersions, model, baseModel, removed[i], added[i]);
                     pairedOld.Add(removed[i]);
                     pairedNew.Add(added[i]);
                 }
@@ -107,7 +115,7 @@ public static class ChangeClassifier
             {
                 if (!oldBySignature.TryGetValue(sig, out var oldNode))
                     continue;
-                AddChange(changes, model, baseModel, oldNode, newNode);
+                AddChange(changes, unchangedVersions, model, baseModel, oldNode, newNode);
                 pairedOld.Add(oldNode);
                 pairedNew.Add(newNode);
             }
@@ -135,15 +143,23 @@ public static class ChangeClassifier
                 AddRemovedChange(changes, baseModel, old);
             }
         }
-        return changes;
+        return (changes, unchangedVersions);
     }
 
-    private static void AddChange(List<Change> changes, SemanticModel? model, SemanticModel? baseModel, SyntaxNode old, SyntaxNode nw)
+    private static void AddChange(List<Change> changes, Dictionary<string, string> unchangedVersions, SemanticModel? model, SemanticModel? baseModel, SyntaxNode old, SyntaxNode nw)
     {
         var (oldDecl, oldBody) = SyntaxFingerprint.Compute(old);
         var (newDecl, newBody) = SyntaxFingerprint.Compute(nw);
         if (oldDecl == newDecl && oldBody == newBody)
-            return; // unchanged (e.g. a sibling within the edited file)
+        {
+            // Unchanged (e.g. a sibling within the edited file, or a caller's identity-edit no-op) — still
+            // recorded so a stale baseVersions claim about this exact symbol can be caught even though
+            // nothing here escalates the validation level or joins the response's detectedChanges.
+            var unchangedSymbol = DeclaredSymbol(baseModel, old);
+            if (unchangedSymbol is not null)
+                unchangedVersions[SymbolKey.IdOf(unchangedSymbol)] = Contracts.ContentVersion.Of(oldDecl, oldBody).ToString();
+            return;
+        }
 
         var symbol = DeclaredSymbol(model, nw);
         if (symbol is null)
@@ -241,7 +257,14 @@ public static class ChangeClassifier
 
     private static Dictionary<string, SyntaxNode> BuildMap(SyntaxNode root)
     {
+        const string topLevelStatementsKey = "::top-level-statements";
         var map = new Dictionary<string, SyntaxNode>(StringComparer.Ordinal);
+        // Top-level statements (Program.cs-style) have no declaration node of their own to walk to below
+        // -- the whole file's global-statement run is treated as one pseudo-declaration, keyed off the
+        // synthesized entry point so an edit confined to those statements still produces a Change instead
+        // of vanishing silently (see DeclaredSymbol's matching CompilationUnitSyntax case).
+        if (root is CompilationUnitSyntax unit && unit.Members.OfType<GlobalStatementSyntax>().Any())
+            map[topLevelStatementsKey] = unit;
         foreach (var node in root.DescendantNodes())
         {
             switch (node)
@@ -298,6 +321,13 @@ public static class ChangeClassifier
             return null;
         if (node is FieldDeclarationSyntax field)
             return model.GetDeclaredSymbol(field.Declaration.Variables[0]);
+        if (node is CompilationUnitSyntax unit)
+        {
+            // Mirrors SymbolIndexBuilder.IndexTopLevelStatements: top-level statements have no declared
+            // symbol of their own, so resolve the compiler-synthesized entry point enclosing the first one.
+            var first = unit.Members.OfType<GlobalStatementSyntax>().FirstOrDefault();
+            return first is null ? null : model.GetEnclosingSymbol(first.SpanStart);
+        }
         return model.GetDeclaredSymbol(node);
     }
 

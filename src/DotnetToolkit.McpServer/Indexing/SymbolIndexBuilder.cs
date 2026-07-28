@@ -214,20 +214,25 @@ public sealed class SymbolIndexBuilder
             return;
 
         var entryId = SymbolKey.IdOf(entry);
-        // Gives get_call_hierarchy a real displayString instead of the raw id, and gives
-        // ContextTools.ResolveEntryPointAsync's row-text match path something to match against — this
-        // row has no meaningful project/decl-hash lineage of its own, so it mirrors
-        // RecordExternalIfNeeded's minimal-row shape rather than IndexDeclaration's full one.
+        // entry.ToDisplayString() renders as the literal "<top-level-statements-entry-point>" for a
+        // top-level-statements Main, which is neither typeable nor findable by search_index's free-text
+        // query -- so the row is named after the synthesized containing type instead ("Program" in the
+        // common case), matching the aliases ContextTools.ResolveEntryPointAsync accepts and giving
+        // get_call_hierarchy a real displayString. This row has no meaningful project/decl-hash lineage of
+        // its own, so it mirrors RecordExternalIfNeeded's minimal-row shape rather than IndexDeclaration's
+        // full one.
         if (!symbols.ContainsKey(entryId))
         {
+            var typeName = entry.ContainingType?.Name;
+            var friendlyName = typeName is { Length: > 0 } ? $"{typeName}.Main" : entry.ToDisplayString();
             symbols[entryId] = new SymbolStore.SymbolRow(
                 entryId,
-                entry.ToDisplayString(),
+                friendlyName,
                 SymbolKey.KindOf(entry),
                 Project: "",
                 DeclHash: SyntaxFingerprint.Compute(unit).Decl,
                 BodyHash: null,
-                DisplayString: entry.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat));
+                DisplayString: friendlyName);
         }
         foreach (var statement in statements)
             CollectCallEdges(statement, entry, model, entryId, edges, symbols);

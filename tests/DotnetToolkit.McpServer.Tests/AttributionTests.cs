@@ -30,8 +30,7 @@ public sealed class AttributionTests : IDisposable
         Directory.Delete(_root, recursive: true);
     }
 
-    private void Record(string task, string? symbolId, int tokens, bool leaseHit = false, bool refetch = false,
-        string? version = "decl:aaaa") =>
+    private void Record(string task, string? symbolId, int tokens, string? version = "decl:aaaa") =>
         _recorder.RecordRetrieval(new RetrievalEvent
         {
             ToolCallId = Ids.ToolCall(),
@@ -40,8 +39,6 @@ public sealed class AttributionTests : IDisposable
             ToolName = "get_symbol",
             SymbolId = symbolId,
             ContentVersion = version,
-            LeaseHit = leaseHit,
-            Refetch = refetch,
             ReturnedTokens = tokens,
         });
 
@@ -89,14 +86,11 @@ public sealed class AttributionTests : IDisposable
     }
 
     [Fact]
-    public void PlainRereadIsWaste_ButLeaseHitAndRefetchAreNot()
+    public void RepeatedFetchOfUnchangedSymbolIsWaste()
     {
         Record("tsk_r", "sym_plain", 80);
-        Record("tsk_r", "sym_plain", 80);                    // same version, no lease → waste
-        Record("tsk_r", "sym_leased", 40);
-        Record("tsk_r", "sym_leased", 40, leaseHit: true);   // correct behaviour
-        Record("tsk_r", "sym_compact", 60);
-        Record("tsk_r", "sym_compact", 60, refetch: true);   // justified after compaction
+        Record("tsk_r", "sym_plain", 80); // same version, repeated → waste
+        Record("tsk_r", "sym_other", 40);
 
         _job.RebuildForTask("tsk_r");
 
@@ -105,7 +99,6 @@ public sealed class AttributionTests : IDisposable
         cmd.CommandText = """
             SELECT COUNT(*) FROM derived_retrieval_attribution WHERE verdict = 'wasted_reread';
             """;
-        // Only the plain repeat counts as waste; the leased and refetched repeats do not.
         Assert.Equal(1, Convert.ToInt32(cmd.ExecuteScalar() ?? 0));
     }
 

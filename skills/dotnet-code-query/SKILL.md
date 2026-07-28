@@ -23,14 +23,22 @@ positives, fewer tokens. A wrong caller list produces a wrong answer, not a slow
 The only legitimate reasons to read a file directly: non-C# files (csproj, json, md), or
 lines you are about to edit that `get_symbol` did not return.
 
-## Session attribution is automatic
+## Session attribution is automatic; task attribution is opt-in
 
-No tool takes a `sessionId`/`taskId` argument — there is nothing to pass. Every call in a
-server process shares one ambient session id automatically for that process's whole
-lifetime, so usage metrics group correctly with no setup and no way to get it wrong.
-`get_retrieval_metrics` reads that same id back via `scope: "session"`; see
-`docs/tool-reference.md` for merging several past sessions together or discovering session
-ids in a date range with `groupBy: "session"`.
+No tool takes a `sessionId` — there is nothing to pass. Every call in a server process
+shares one ambient session id automatically for that process's whole lifetime, so usage
+metrics group correctly with no setup and no way to get it wrong. `get_retrieval_metrics`
+reads that same id back via `scope: "session"`; see `docs/tool-reference.md` for merging
+several past sessions together or discovering session ids in a date range with
+`groupBy: "session"`.
+
+Ordinary retrieval needs nothing more. The one case that does: **measuring your own token
+cost, or working alongside other agents on the same server.** Because that session id is
+per *process*, parallel agents share it and cannot be told apart. Pass an optional `taskId`
+on any recording tool to attribute its calls to you, then read only those back with
+`get_retrieval_metrics(taskIds: [...])` or compare callers with `groupBy: "task"`. Omit it
+and the call is attributed to the ambient session as before — this is instrumentation, never
+a precondition for retrieval.
 
 ## Decision table
 
@@ -39,7 +47,8 @@ ids in a date range with `groupBy: "session"`.
 | Find symbols when you don't know the exact names | `search_index`, **all terms in one call** | Grep/Glob over .cs files; one call per word |
 | A type or member's shape, docs, location | `get_symbol` | Read the .cs file |
 | A type's member list | `get_symbol` with `include: "members"` | Read the file |
-| Callers / usages | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
+| Who calls it (just the caller list, one hop) | `get_call_hierarchy` (`maxDepth: 1`) | `get_references` — measured 60% more tokens for the same one-hop answer on this repo, since it also carries file/line/snippet/dispatchKind per site that a bare "who calls it" doesn't need |
+| Where exactly it's called — file, line, snippet per call site | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
 | What is callable at a cursor position — locals, inherited members, extension methods, not just a type's own declared list (that's `get_symbol` with `include:"members"`, no position involved) | `get_scope` | Guess, or grep for a helper that may not apply here |
 | Whether a *known* symbol X reaches a *known* symbol Y, and through what path | `get_call_slice` | Walk the graph with repeated `get_references` calls and assemble the chain yourself |
@@ -200,7 +209,7 @@ Component names are exactly the response fields they control:
 | `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), returning only those lines. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (to the declaration's end), `"source@-50"` (from its start), `"source@52"` (one line). Ranges are **absolute file line numbers**, the same ones `declarationSites` and each line's own number report, so a span from any earlier response is reusable as-is; separate several with `;`, **not** `,` (that already separates component names). It is a pure filter — a line a `-modifier` dropped stays dropped even if a range names it, and nothing is ever renumbered. Past the declaration it clamps; entirely outside it returns no lines rather than erroring. A slice adds `sourceLines`: `"kept/whole"` (`"46-76/38-96"`, or `"none/38-96"` on a miss) and restores `displayString`/`modifiers`, since the signature line is usually not in the slice. Rejected with `symbols` (batch) as `lines_with_batch`. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
-| `bodyOutline` | Control-flow landmarks inside a method-like body — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` — for navigating a long body before deciding what to fetch. Purely syntactic (same cost tier as `source`, not `mechanicalFacts`' semantic-model tier). Under the default `toon` format this renders as a raw indented block, same treatment `source` gets: one `text,startLine,endLine` line per landmark, indented two spaces per nesting level instead of carrying a `depth` number — `format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` array instead, since plain JSON has no indentation of its own to lean on. A bare `try`/`else`/`finally` has no name/condition of its own and is omitted; infer its span from the parent row. `text` is truncated to 28 characters with a trailing `..`, not summarized. Nesting counts among other landmark rows only, not raw syntax depth. `null` for anything without an executable body of its own. A sibling `bodyOutlineNote` string appears (rows still returned) when the declaration is under 40 lines — see below. |
+| `bodyOutline` | Control-flow landmarks inside a method-like body — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` — for navigating a long body before deciding what to fetch. Purely syntactic (same cost tier as `source`, not `mechanicalFacts`' semantic-model tier). Under the default `toon` format this renders as a raw indented block, same treatment `source` gets: one `text,startLine,endLine` line per landmark, indented two spaces per nesting level instead of carrying a `depth` number — `format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` array instead, since plain JSON has no indentation of its own to lean on. A bare `try`/`else`/`finally` has no name/condition of its own and is omitted; infer its span from the parent row. `text` is truncated to 28 characters with a trailing `..`, not summarized. Nesting counts among other landmark rows only, not raw syntax depth. Absent, with an explanatory `bodyOutlineNote`, for anything without an executable body of its own (a type, a field, an auto-property) — not a silent double-disappearance. `bodyOutlineNote` also appears (rows still returned) when the declaration is under 40 lines — see below. |
 | `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
@@ -253,7 +262,7 @@ round trips for one answer. Fetch the member whole the first time; slice on the 
 
 Two things to hold when you do slice:
 
-- **The lease still covers the whole symbol.** `contentVersion` is fingerprinted over the entire
+- **`contentVersion` still covers the whole symbol.** It is fingerprinted over the entire
   declaration, not the lines you received, so holding it never means you have seen all of it. `sourceLines`
   (`"92-93/90-94"`) is the field that says what you actually got — read it rather than assuming the
   response is the member.
@@ -287,10 +296,9 @@ That means **"where does this live?" never costs a second call or an extra compo
 spans are exactly what a `validate_patch` edit takes. Do not reach for `include: "all"` just to
 find a line number — the default `standard` call already carries `declarationSites`.
 
-**A narrowed response returns a narrowed version token**, covering only the layers it served.
-That is deliberate: escalating later (a `standard` fetch → `include: "all"`) with that token
-returns the new content rather than a false `changed: false`. It also means you cannot lease a
-wide request against a narrow token — hold the token from a fetch of the same shape.
+**A narrowed response returns a narrowed version token**, covering only the layers it served —
+so a token from a `standard` fetch and one from `include: "all"` are not directly comparable if
+you're diffing them yourself later.
 
 ### Several symbols in one call
 
@@ -308,9 +316,8 @@ limitedBy, content`; a symbol that did not resolve has `error` instead (`symbol_
 `ambiguous_symbol`) with no `symbolId`/`contentVersion`/`content` — one failed lookup does not fail
 the batch, and the two shapes are told apart by which keys are present.
 
-`knownVersion`/`refetch` do not apply to a batch — leasing needs one token per symbol, which a
-single `knownVersion` cannot express — so every batch result carries full content regardless of
-what you already hold.
+Every entry carries full content — there is no lease mechanism to interact with here or anywhere
+else in `get_symbol` (see "Version tokens" below).
 
 ## Questions symbol lookup cannot answer
 
@@ -386,8 +393,9 @@ tells you where the chain actually breaks. `found: false` means no path within `
 An open-ended multi-level call tree from one symbol — Visual Studio's *View Call Hierarchy*,
 which `get_call_slice` structurally cannot answer (it needs a known `to`). `direction:
 "callers"` (default) walks upward toward entry points; `"callees"` walks downward into what
-the symbol invokes. Every node carries `symbolId` + `displayString`; add `kind`/`file`/`line`
-via `fields`.
+the symbol invokes. Every node carries `symbolId` + `displayString` (the bare name, parameter list
+dropped — overloads still disambiguate via `symbolId`); add `kind`/`file`/`line`/`signature` (the full
+parameter-list form) via `fields`.
 
 Call it to answer "if I change this, how much does it ripple" — `includeTree: false` returns
 only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
@@ -398,13 +406,13 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
 ```
 
 ```json
-{"root": {"symbolId": "sym_c25d...", "displayString": "string FeatureLogStore.Append(LogEntry entry)"},
+{"root": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append"},
  "direction": "callers",
- "tree": {"symbolId": "sym_c25d...", "displayString": "string FeatureLogStore.Append(LogEntry entry)",
+ "tree": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append",
    "children": [
-     {"symbolId": "sym_0e0e...", "displayString": "int DevlogMigration.Run(...)"},
-     {"symbolId": "sym_c3fc...", "displayString": "void FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds()"},
-     {"symbolId": "sym_2b15...", "displayString": "void PatchTools.AppendLog(...)"}, "...4 more"]},
+     {"symbolId": "sym_0e0e...", "displayString": "DevlogMigration.Run"},
+     {"symbolId": "sym_c3fc...", "displayString": "FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds"},
+     {"symbolId": "sym_2b15...", "displayString": "PatchTools.AppendLog"}, "...4 more"]},
  "blastRadius": {"totalUniqueNodes": 8, "perDepth": [1, 7], "depthCapped": true}}
 ```
 
@@ -462,7 +470,7 @@ get_project_graph()
 {"projects": [
    {"name": "DotnetToolkit.McpServer", "references": [], "referencedBy": ["DotnetToolkit.McpServer.Tests"]},
    {"name": "DotnetToolkit.McpServer.Tests", "references": ["DotnetToolkit.McpServer"], "referencedBy": []}],
- "totalProjects": 2}
+ "totalProjectsInSolution": 2}
 ```
 
 ### `detect_circular_dependencies` — a real dependency loop, not just deep nesting
@@ -544,37 +552,19 @@ one cheap call beats a duplicate implementation.
 
 Ambiguity is never guessed: you get `error: "ambiguous_symbol"` plus a candidate list.
 
-## Version tokens and leases
+## Version tokens
 
-Every content response carries a `contentVersion` like `decl:a1b2…|body:84c3…`. It is a
-lease: hold it, and pass it back later as `knownVersion`.
+Every content response carries a `contentVersion` like `decl:a1b2…|body:84c3…` — a hash of the
+symbol's declaration and (when fetched) body layers, useful for your own manual "has this changed
+since I last looked" comparison across calls in a long session. There used to be a caller-driven
+`knownVersion`/`refetch` lease pair that let a repeat `get_symbol` call omit content when nothing
+moved; it was removed (near-zero real adoption, plus a correctness gap where a wider request
+against a narrower fetch's token could be told `changed: false` and silently withheld content it
+had never actually sent). Every `get_symbol` call now always returns full content — there is
+nothing to hold onto or pass back, and no round trip is ever wasted by a stale or partial token.
 
-- All supplied layers still match → `changed: false` and **no content is sent**. Your copy
-  is current; carry on using it.
-- Something moved → you get fresh content.
-- **Only pass `knownVersion` when you actually still hold the content.** If you never held
-  it, you are asking whether something you do not have has changed.
-- Escalating is safe: a request needing components your token does not carry returns content
-  rather than `changed: false`, so `include:"xmlDoc"` → `include:"xmlDoc,source"` against an
-  xmlDoc-only token gives you the source. You still get a wasted round trip if you lease for
-  content you never held — the lease just will not silently hand you nothing.
-
-The layers are meaningful: same `decl` with a different `body` means the API is unchanged
-and only the implementation moved.
-
-**Before a single-symbol `get_symbol` call, check whether this exact symbol was already fetched
-earlier in this conversation.** If so, pass `knownVersion` with the version you already hold —
-don't re-fetch full content just because several other calls happened in between.
-`get_retrieval_metrics`'s `repeat_fetch_without_lease` names exactly this: fetching the same
-symbol several times across a long session without ever leasing is a real, measured cost, not a
-theoretical one. This does not apply to the `symbols` batch form (see above — it always returns
-full content, by design) or to a symbol you are fetching for the first time.
-
-### After context compaction
-
-If your context was summarized and the content is gone but you still have the version
-token, call `get_symbol` with **`refetch: true`** *and* `knownVersion`. That returns the
-content and correctly records the refetch as compaction-driven rather than waste.
+The layers are still meaningful if you're comparing tokens yourself: same `decl` with a different
+`body` means the API is unchanged and only the implementation moved.
 
 ## Workspace readiness
 
@@ -622,7 +612,10 @@ that merely lives in a test project is not counted. `get_references` marks the s
 
 ### `get_references`' `items` fields
 
-Each item is a plain object carrying `symbolId`, `contentVersion`, `displayString`, `sites`, and
-`dispatchKind` on every call. `isTest` and `content` (the inline body, only present with
-`includeBodies: true`) are present only when they apply — absent, not `null`, on a caller that
-isn't a test or wasn't fetched with a body.
+Each item is a plain object carrying `symbolId`, `displayString` (compact name/arity, e.g.
+`"ContextTools.GetSymbol/13"` — pass `fields: "signature"` for the full parameter list), and `sites` on
+every call. `dispatchKind` is reported once at the top level, not per item — it describes the *target*
+symbol's own dispatch, which cannot vary across items within one call. `contentVersion` (with
+`fields: "contentVersion"`), `isTest`, and `content` (the inline body, only present with
+`includeBodies: true`) are present only when they apply — absent, not `null`, on a caller that isn't a
+test, wasn't fetched with a body, or where the caller didn't ask for per-item versions.
