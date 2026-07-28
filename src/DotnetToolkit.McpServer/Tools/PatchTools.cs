@@ -177,6 +177,18 @@ public static class PatchTools
 
             var computedRequired = EscalationTable.RequiredForPatch(
                 detected.Select(c => ((IReadOnlyCollection<ChangeKind>)c.Kinds, testedIds.Contains(c.OldSymbolId))));
+
+            // The escalation table maxes over the symbols the classifier attributed a change to, so an
+            // empty set floors it at parse. Text can change without any symbol changing: a using
+            // directive, a file-scoped namespace, an assembly attribute -- none of which sit inside a
+            // declaration -- and trivia-blind fingerprints mean a comment-only edit lands here too.
+            // Parse alone cannot tell those apart: `using Nope.Missing;` is syntactically perfect and
+            // fails to bind, so applying on a parse pass writes a file whose project no longer compiles
+            // and reports succeeded:true doing it. Changed text is enough to demand a real compile.
+            if (detected.Count == 0 && sandbox.ChangedDocuments.Count > 0
+                && (int)computedRequired < (int)ValidationLevel.ProjectCompile)
+                computedRequired = ValidationLevel.ProjectCompile;
+
             var required = Raise(computedRequired, requestedLevel);
 
             var ladder = await ValidationLadder.RunAsync(

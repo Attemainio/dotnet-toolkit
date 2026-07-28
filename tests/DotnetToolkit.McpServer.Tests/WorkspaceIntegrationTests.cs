@@ -1051,6 +1051,30 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal("stale_base", root.GetProperty("error").GetString());
     }
 
+    [Fact]
+    public async Task ValidatePatch_ChangesTextButNoSymbol_StillRequiresACompile()
+    {
+        // A using directive sits outside every declaration, so the classifier attributes this edit to no
+        // symbol at all and the escalation table's max-over-symbols floors at parse. The directive is
+        // syntactically perfect and cannot bind, so a parse-only gate would report succeeded and write a
+        // file whose project no longer compiles. Line 1 is kept verbatim and the bogus using prepended:
+        // replacing line 1 would rewrite the file's namespace and re-attribute every symbol in it, which
+        // is the opposite of the no-symbol case under test.
+        var path = _f.Locator.AbsPath("Lib/Widget.cs");
+        var firstLine = (await File.ReadAllLinesAsync(path))[0];
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", 1, 1, $"using Sample.ThisNamespaceDoesNotExist;\n{firstLine}") };
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
+            new Dictionary<string, string>(), edits,
+            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
+
+        Assert.True(root.TryGetProperty("detectedChanges", out var dc), root.GetRawText());
+        Assert.Empty(dc.EnumerateArray());
+        Assert.Equal("project_compile", root.GetProperty("ladder").GetProperty("requiredLevel").GetString());
+        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.False(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+    }
+
     /// <summary>
     /// A search hit carries where it was found, so "search, then go there" is one call rather than two.
     /// The line is checked against the file's actual content, not just asserted non-null — a location

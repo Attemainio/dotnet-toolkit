@@ -139,6 +139,14 @@ Signature, accessibility, inheritance, interface, attribute, generic-constraint 
 nullability changes must show `requiredLevel` of at least `dependent_compile`. If you see
 less, escalate explicitly with `requestedLevel`.
 
+**An empty `detectedChanges` is not a free pass.** The required level is the maximum over the
+symbols the classifier attributed a change to, so an edit it attributes to *no* symbol — a `using`
+directive, a file-scoped namespace, an assembly attribute, or a comment-only change (fingerprints
+are trivia-blind) — would otherwise floor at `parse`. Parse cannot tell a harmless reformat from
+`using Nope.Missing;`, which is syntactically perfect and fails to bind. So a patch that changed
+text but no symbol is floored at `project_compile` instead. If you see `detectedChanges: []` with
+`requiredLevel: parse`, that is a bug, not a cheap green.
+
 ## When validation fails
 
 `diagnostics.rootCauses` is already distilled — one entry per root cause, not one per
