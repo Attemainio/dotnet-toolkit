@@ -24,6 +24,7 @@ internal static class Schema
         new(11, "symbol_modifiers_column", SymbolModifiersColumn),
         new(12, "symbol_origin_column", SymbolOriginColumn),
         new(13, "symbol_namespace_column", SymbolNamespaceColumn),
+        new(14, "drop_attribution", DropAttribution),
     ];
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
@@ -367,5 +368,19 @@ internal static class Schema
         CREATE TRIGGER trg_se_immutable BEFORE UPDATE ON session_events BEGIN
             SELECT RAISE(ABORT, 'raw telemetry is immutable');
         END;
+        """;
+
+    // The attribution stratum never had a consumer: AttributionJob was registered in DI but nothing
+    // ever injected it, no tool or timer called RebuildForTask/RebuildAll, and get_retrieval_metrics
+    // reads the raw retrieval_events/patch_events tables directly. Its ruleset also depended on the
+    // lease concept -- a "reread" was a repeat fetch that was neither a lease hit nor an explicit
+    // refetch -- and leases were retired in 2ff52e2, so that rule could no longer be computed as
+    // specified. The raw events these were derived FROM are untouched and immutable, so any future
+    // version of this analysis can be recomputed from full history: this drops opinions, not data.
+    private const string DropAttribution = """
+        DROP TABLE IF EXISTS derived_retrieval_attribution;
+        DROP TABLE IF EXISTS derived_task_summary;
+        DROP TABLE IF EXISTS surfaced_symbols;
+        DROP TABLE IF EXISTS session_events;
         """;
 }

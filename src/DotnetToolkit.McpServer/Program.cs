@@ -31,7 +31,7 @@ builder.Services.AddSingleton<KnowledgeStore>();
 builder.Services.AddSingleton<IKnowledgeStore>(sp => sp.GetRequiredService<KnowledgeStore>());
 builder.Services.AddSingleton<TelemetryRecorder>();
 builder.Services.AddSingleton<MetricsReader>();
-builder.Services.AddSingleton<AttributionJob>();
+
 builder.Services.AddSingleton<SymbolStore>();
 builder.Services.AddSingleton<FeatureLogStore>();
 builder.Services.AddSingleton<SymbolIndexBuilder>();
