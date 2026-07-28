@@ -60,10 +60,17 @@ what happened.
 A worked call, start to finish:
 
 1. `get_symbol` on the target — keep its `contentVersion` and `declarationSites` line span.
-2. `validate_patch` with `baseVersions: {symbolId: contentVersion}` and line-span `edits`, first with
-   `applyOnSuccess: false` to see the ladder verdict without touching disk.
-3. Re-send with `applyOnSuccess: true` and an `intent` in user terms once it reports
-   `isSufficient: true`. Disk is written and the log entry appended in the same step.
+2. `validate_patch` with `baseVersions: {symbolId: contentVersion}`, line-span `edits`,
+   `applyOnSuccess: true`, and an `intent` in user terms. Nothing is written unless the result is
+   sufficient, so **do not dry-run with `applyOnSuccess: false` first** — that pays for the same
+   in-memory compile twice for no extra information.
+3. If it fails, do **not** rebuild the whole patch. The response carries
+   `diagnostics.rootCauses[].locations` (where each error landed in the text you proposed) and a
+   `draft: {draftId}`. Send that `draftId` back with only the lines you are correcting;
+   `baseVersions` is inherited and the edits' spans address the draft's text. The same handle
+   re-runs a partial green at a higher `requestedLevel` with an empty `edits` array, and resolves
+   `unheld_symbol` (a symbol the classifier attributed a change to that your `baseVersions` did not
+   cover — usually the *containing type* of an added member) by merging in just that entry.
 
 Read `skills/dotnet-change/SKILL.md` before the first C# edit of a session for `baseVersions`, the
 sufficiency triple, and how to batch from `suggestedInspection` — and read the relevant coding standards
@@ -104,8 +111,8 @@ Other subsystems:
 - `Devlog/` — **legacy, retained only for migration.** The markdown devlog (`devlog/<year>-W<week>.md`) is no longer written or queried by any tool; `DevlogMigration.cs` imports existing entries into the SQLite `feature_log` once at startup, and the parser/store remain solely to read that legacy format.
 - `Store/` — the SQLite knowledge store (`KnowledgeStore.cs`, WAL + migration runner in `Schema.cs`): symbol index and reference edges (`SymbolStore.cs`), append-only development log (`FeatureLogStore.cs`), and immutable raw telemetry. Always rebuildable from source.
 - `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` computes the `decl`/`body` version layers from token text (trivia-blind, so comments and formatting move nothing); `ContentVersion.cs` implements the layered version token every content response carries.
-- `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from Roslyn symbols.
-- `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution), `ChangeClassifier.cs` (declaration delta → change kinds), `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4), `DiagnosticDistiller.cs` (root causes + suggested inspections).
+- `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from Roslyn symbols. `Ids.Draft()` mints the `draft_`-prefixed handle a validated-but-unapplied patch is amended through.
+- `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution, optionally seeded from a draft's proposed text instead of the workspace's copy), `ChangeClassifier.cs` (declaration delta → change kinds), `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4), `DiagnosticDistiller.cs` (root causes + suggested inspections + the `locations` where each error landed, in the proposed text's coordinates), `PatchDraftStore.cs` (bounded, 15-minute in-memory store of validated-but-unapplied patches, so a failed `validate_patch` is corrected by amending a few lines through its `draftId` rather than resubmitting the whole edit — deliberately not in SQLite, since a draft describes a fork of the currently loaded workspace and is meaningless once that is gone).
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
 - `Tools/` — the MCP surface: `ContextTools.cs` (`get_symbol`, `get_references`, `search_index`), `FlowTools.cs` (`get_scope`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`), `GraphTools.cs` (`get_project_graph`, `detect_circular_dependencies`), `HistoryTools.cs` (`get_semantic_diff`, `search_log`), `PatchTools.cs` (`validate_patch`), `MetricsTools.cs` (`get_retrieval_metrics`), `ServerTools.cs` (`ping`, `set_output_format`, `workspace_status`, `reload_workspace`). `ToolTelemetry.cs` is not a tool group — it is the single place a response becomes a `RetrievalEvent`, plus the shared `[Description]` text for the optional `taskId` every recording tool accepts; the five tools that take no `TelemetryRecorder` (`ServerTools`' four and `get_retrieval_metrics`) record nothing by design.
 
@@ -154,6 +161,7 @@ The surface that has to move with the code:
 | `docs/tool-reference.md` | the complete per-tool catalog — arguments, a real example call/response, what it replaces — for every shipped tool; what `dotnet-toolkit-init` points a consuming repo at |
 | `docs/hook-reference.md` | the four hooks and their scripts — matchers, allow/deny behavior, limits |
 | `docs/skill-reference.md` | the catalog of shipped skills — one entry per skill, none stale |
+| `README.md`'s Features table | the first thing a new user reads — every tool must appear in some row, and no row may name a tool that no longer exists |
 | `.claude/rules/csharp-standards.md` | the always-loaded standards index — its file list must match the standards actually in `.claude/rules/`, and its `validate_patch` line must match the current write path |
 | the standards files in `.claude/rules/` (list in `csharp-standards.md`'s index) | any MCP tool named in their review-calibration sections must still exist with the described behavior |
 | `skills/dotnet-toolkit-init/SKILL.md` | the rule-file template written into *consuming* repos, which embeds its own copies of the tool table and the standards-file list |

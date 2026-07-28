@@ -130,9 +130,14 @@ bypasses it is a change whose reasoning is gone when the conversation ends; `sea
 recover it and the next session re-derives or silently contradicts it.
 
 1. `get_symbol` — keep `contentVersion` and the `declarationSites` line span.
-2. `validate_patch` with `baseVersions: {symbolId: contentVersion}` and line-span `edits`,
-   `applyOnSuccess: false` — read the ladder verdict without touching disk.
-3. Re-send with `applyOnSuccess: true` and an `intent` in user terms once `isSufficient: true`.
+2. `validate_patch` with `baseVersions: {symbolId: contentVersion}`, line-span `edits`,
+   `applyOnSuccess: true`, and an `intent` in user terms. Nothing is written unless the result is
+   sufficient, so there is no reason to dry-run with `applyOnSuccess: false` first.
+3. If it fails, amend rather than resubmit: the response carries
+   `diagnostics.rootCauses[].locations` (where each error landed in the text you proposed) and a
+   `draft: {draftId}`. Send that `draftId` back with only the lines you are correcting —
+   `baseVersions` is inherited (anything you send is merged in), and the edits' spans address the
+   draft's text.
 
 "Too large or too interleaved to decompose" is not a reason to fall back to `Edit`. Split it into
 more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
