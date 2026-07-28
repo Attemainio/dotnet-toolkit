@@ -16,39 +16,69 @@ public sealed record PatchEdit(string File, int StartLine, int EndLine, string N
 public static class PatchSandbox
 {
     /// <summary>
-    /// The outcome of forking. <paramref name="Stale"/> distinguishes the one failure the caller can
-    /// actually act on — the workspace's copy of a file no longer matches disk — from an edit that was
-    /// simply malformed.
+    /// Why forking failed, when it did. Distinguishes the failures a caller can act on — the workspace's
+    /// copy of a file no longer matches disk, or a draft no longer matches the workspace it forked from —
+    /// from an edit that was simply malformed.
     /// </summary>
-    public sealed record Result(
-        Solution Forked, IReadOnlyList<DocumentId> ChangedDocuments, string? Error, bool Stale = false);
+    public enum Failure
+    {
+        /// <summary>Forking succeeded.</summary>
+        None,
 
-    /// <summary>Applies edits to a forked solution's in-memory documents, without touching disk.</summary>
-    /// <param name="solution">The solution to fork from.</param>
-    /// <param name="locator">Resolves each edit's file to an absolute, root-contained path.</param>
-    /// <param name="edits">The edits to apply, grouped and applied per file.</param>
-    /// <returns>The forked solution with edits applied, the changed document ids, or an error when a file is unknown, drifted from disk, or an edit is malformed.</returns>
+        /// <summary>The edit named a file outside the solution, or a line span outside that file.</summary>
+        InvalidEdit,
+
+        /// <summary>The workspace's copy of an edited file is behind disk.</summary>
+        StaleWorkspace,
+
+        /// <summary>A file moved in the workspace since the draft being amended forked from it.</summary>
+        DraftStale,
+    }
+
+    /// <summary>The outcome of forking: either a solution to validate, or a failure to report.</summary>
+    public sealed record Result(
+        Solution Forked, IReadOnlyList<DocumentId> ChangedDocuments, string? Error,
+        Failure FailureKind = Failure.None);
+
+    /// <summary>Applies proposed edits to a fork of <paramref name="solution"/>, leaving disk untouched.</summary>
+    /// <param name="solution">The workspace solution to fork from; never mutated.</param>
+    /// <param name="locator">Resolves each edit's repo-relative path to an absolute one.</param>
+    /// <param name="edits">The edits to apply. May be empty when <paramref name="draft"/> is supplied, which re-forks that draft unchanged.</param>
+    /// <param name="draft">When supplied, every file the draft covers is seeded with its proposed text, so the edits' line spans address that text rather than the copy the workspace holds.</param>
+    /// <param name="cancellationToken">Cancels the document text reads this makes.</param>
+    /// <returns>The forked solution and the documents it changed, or a <see cref="Failure"/> and a message explaining it.</returns>
     /// <remarks>
     /// Rewrites each touched document's whole text, not just the edited span, so a fork whose copy has
-    /// drifted from disk is refused outright (<see cref="Result.Stale"/>) rather than silently reverting
-    /// the untouched remainder of the file.
+    /// drifted from disk is refused outright (<see cref="Failure.StaleWorkspace"/>) rather than silently
+    /// reverting the untouched remainder of the file.
     /// </remarks>
-    public static async Task<Result> ApplyAsync(Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits, CancellationToken cancellationToken = default)
+    public static async Task<Result> ApplyAsync(
+        Solution solution, SolutionLocator locator, IReadOnlyList<PatchEdit> edits, PatchDraft? draft = null,
+        CancellationToken cancellationToken = default)
     {
         var forked = solution;
         var changed = new List<DocumentId>();
+        var editsByPath = edits
+            .GroupBy(e => locator.AbsPath(e.File), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<PatchEdit>)[.. g], StringComparer.Ordinal);
 
-        foreach (var group in edits.GroupBy(e => locator.AbsPath(e.File)))
+        // A draft's files are re-forked even when this call edits none of them: an amend touching one file
+        // must still carry the rest of the draft's proposed text into the fork, or the parts of the patch
+        // it is not correcting would silently vanish.
+        var paths = editsByPath.Keys.Union(draft?.Proposed.Keys ?? [], StringComparer.Ordinal).ToList();
+
+        foreach (var path in paths)
         {
-            var docIds = forked.GetDocumentIdsWithFilePath(group.Key);
+            var docIds = forked.GetDocumentIdsWithFilePath(path);
             if (docIds.IsEmpty)
-                return new Result(solution, [], $"file is not part of the loaded solution: {group.First().File}");
+                return new Result(solution, [], $"file is not part of the loaded solution: {locator.RelPath(path)}",
+                    Failure.InvalidEdit);
 
             // [0]: assumes one document per file path (no linked/multi-targeted files sharing this path
             // across projects) -- true for this repo's own project layout today.
             var docId = docIds[0];
             var document = forked.GetDocument(docId)!;
-            var text = await document.GetTextAsync(cancellationToken);
+            var workspaceText = await document.GetTextAsync(cancellationToken);
 
             // Refuse to fork from a copy that no longer matches disk. An apply writes the *whole*
             // document text back, not just the edited span, so a patch built on a lagging copy silently
@@ -59,19 +89,63 @@ public static class PatchSandbox
             // Observed exactly that way in this repo: the workspace had missed a commit, a one-method
             // patch applied cleanly, and the commit's other edits to the same file were reverted with
             // no diagnostic. Line endings are normalised first so a CRLF checkout is not read as drift.
-            if (await DiskDrift.DriftedAsync(group.Key, text))
-                return new Result(solution, [], $"the workspace's copy of {group.First().File} is behind "
-                    + "disk; reload_workspace, re-read the symbol, and rebuild the patch", Stale: true);
+            if (await DiskDrift.DriftedAsync(path, workspaceText))
+                return new Result(solution, [], $"the workspace's copy of {locator.RelPath(path)} is behind "
+                    + "disk; reload_workspace, re-read the symbol, and rebuild the patch", Failure.StaleWorkspace);
 
-            var newText = ApplyToText(text, group.OrderByDescending(e => e.StartLine).ToList(), out var error);
-            if (error is not null)
-                return new Result(solution, [], error);
+            var seed = workspaceText;
+            if (draft is not null && draft.Proposed.TryGetValue(path, out var proposed))
+            {
+                // A draft's line numbers only mean anything against the text it forked from. If the
+                // workspace has moved since, an amend would splice corrected lines into stale content.
+                if (!draft.Baseline.TryGetValue(path, out var baseline) || !baseline.ContentEquals(workspaceText))
+                    return new Result(solution, [], "the draft no longer matches the workspace's copy of "
+                        + $"{locator.RelPath(path)}; re-read the symbol and rebuild the patch from scratch",
+                        Failure.DraftStale);
 
-            forked = forked.WithDocumentText(docId, newText!, PreservationMode.PreserveIdentity);
+                seed = proposed;
+            }
+
+            SourceText? edited = seed;
+            if (editsByPath.TryGetValue(path, out var fileEdits))
+            {
+                edited = ApplyToText(seed, [.. fileEdits.OrderByDescending(e => e.StartLine)], out var error);
+                if (edited is null)
+                    return new Result(solution, [], error, Failure.InvalidEdit);
+            }
+
+            forked = forked.WithDocumentText(docId, edited, PreservationMode.PreserveIdentity);
             changed.Add(docId);
         }
 
         return new Result(forked, changed, null);
+    }
+
+    /// <summary>Captures a fork as an amendable draft, pairing each changed file's proposed text with the text it was derived from.</summary>
+    /// <param name="result">A successful fork whose text has not been written to disk.</param>
+    /// <param name="original">The unforked solution, source of the baseline text used to detect later drift.</param>
+    /// <param name="baseVersions">The held versions the patch was built against, carried forward so an amend need not resend them.</param>
+    /// <param name="cancellationToken">Cancels the document text reads this makes.</param>
+    /// <returns>An unstored draft; <see cref="PatchDraftStore.Put"/> assigns its id and deadline.</returns>
+    public static async Task<PatchDraft> DraftOfAsync(
+        Result result, Solution original, IReadOnlyDictionary<string, string> baseVersions,
+        CancellationToken cancellationToken = default)
+    {
+        var proposed = new Dictionary<string, SourceText>(StringComparer.Ordinal);
+        var baseline = new Dictionary<string, SourceText>(StringComparer.Ordinal);
+
+        foreach (var docId in result.ChangedDocuments)
+        {
+            var document = result.Forked.GetDocument(docId);
+            var before = original.GetDocument(docId);
+            if (document?.FilePath is null || before is null)
+                continue;
+
+            proposed[document.FilePath] = await document.GetTextAsync(cancellationToken);
+            baseline[document.FilePath] = await before.GetTextAsync(cancellationToken);
+        }
+
+        return new PatchDraft(baseVersions, proposed, baseline);
     }
 
     private static SourceText? ApplyToText(SourceText text, IReadOnlyList<PatchEdit> descendingEdits, out string? error)

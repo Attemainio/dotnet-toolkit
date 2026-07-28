@@ -1015,6 +1015,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
         var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
             new Dictionary<string, string> { [symbolId] = version }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
@@ -1043,6 +1044,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, currentLine) };
         var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
             new Dictionary<string, string> { [symbolId] = "decl:0000deadbeef|body:0000deadbeef" }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
 
@@ -1593,7 +1595,8 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
 
-    private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent) =>
+    private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent, PatchDraftStore? drafts = null, string? draftId = null) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null);
+            drafts ?? new PatchDraftStore(TimeProvider.System),
+            baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null, draftId: draftId);
 }

@@ -30,7 +30,9 @@ public static class PatchTools
     [Description("Validate (and optionally apply) a code change against an in-memory compilation before it "
         + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
         + "dependent_compile→targeted_tests→solution_validate) and reports honestly whether that was sufficient "
-        + "for the change. baseVersions is required (stale context is rejected); intent is required to apply.")]
+        + "for the change. baseVersions is required (stale context is rejected); intent is required to apply. "
+        + "Any result that was NOT applied returns a draft: pass its draftId back with only the lines you are "
+        + "correcting, instead of resubmitting the whole patch.")]
     public static async Task<string> ValidatePatch(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -39,13 +41,15 @@ public static class PatchTools
         SymbolIndexBuilder indexBuilder,
         TargetedTests targetedTests,
         TelemetryRecorder telemetry,
-        [Description("Map of symbolId -> held contentVersion the patch was built against. Required.")] Dictionary<string, string> baseVersions,
-        [Description("The edits to apply.")] PatchEditInput[] edits,
+        PatchDraftStore drafts,
+        [Description("Map of symbolId -> held contentVersion the patch was built against. Required, except with draftId, whose draft carries its own -- entries sent alongside a draftId are MERGED into it, which is how unheld_symbol is resolved.")] Dictionary<string, string> baseVersions,
+        [Description("The edits to apply. Line spans address the file as the workspace holds it -- or, with draftId, the draft's proposed text. May be empty ONLY with draftId, which re-runs validation on the draft unchanged.")] PatchEditInput[] edits,
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
         [Description("Optional tags.")] string[]? tags = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null,
+        [Description("Amend a previous unapplied patch instead of resubmitting it. Pass the draftId from that response's draft field; edits then address the DRAFT's line numbers -- the same coordinates the diagnostics' locations report -- and baseVersions is inherited, with anything you send merged in. Send only the lines you are correcting.")] string? draftId = null,
         CancellationToken cancellationToken = default)
     {
         var sessionId = Ids.AmbientSession;
@@ -55,16 +59,47 @@ public static class PatchTools
         var validationAttemptId = Ids.ValidationAttempt();
         var stopwatch = Stopwatch.StartNew();
 
-        if (edits is null || edits.Length == 0)
+        PatchDraft? draft = null;
+        if (draftId is not null)
+        {
+            draft = drafts.Get(draftId);
+            if (draft is null)
+                return Error("unknown_draft",
+                    $"No such draft. Drafts live {PatchDraftStore.Lifetime.TotalMinutes:0} minutes and only the "
+                    + $"{PatchDraftStore.Capacity} most recent are kept, so this one expired or was evicted. "
+                    + "Refetch the symbol with get_symbol and submit a full patch instead.");
+        }
+
+        // An amend is allowed to carry no edits at all: that is how a patch already reported succeeded but
+        // insufficient is re-run at a higher requestedLevel without resending a line of its text.
+        if (draft is null && (edits is null || edits.Length == 0))
             return Error("no_edits", "At least one edit is required.");
 
         if (applyOnSuccess && string.IsNullOrWhiteSpace(intent))
             return Error("intent_required",
                 "applyOnSuccess requires a non-empty intent describing the why.");
 
-        if (baseVersions is null)
+        IReadOnlyDictionary<string, string>? inherited = baseVersions;
+        if (draft is not null)
+        {
+            // An amend inherits the draft's map and may ADD to it. That is the cheap way out of
+            // unheld_symbol below: resend the draftId with only the missing versions and no edits, rather
+            // than retransmitting text that was never what the server objected to.
+            var merged = new Dictionary<string, string>(draft.BaseVersions, StringComparer.Ordinal);
+            if (baseVersions is not null)
+            {
+                foreach (var (id, version) in baseVersions)
+                    merged[id] = version;
+            }
+
+            inherited = merged;
+        }
+
+        if (inherited is null)
             return Error("missing_base_versions",
                 "baseVersions is required so patches from stale context are rejected.");
+
+        var heldVersions = inherited;
 
         async Task<string> RunAsync()
         {
@@ -73,24 +108,51 @@ public static class PatchTools
                 return Error("workspace_loading",
                     "The semantic workspace is not ready; retry shortly.");
 
-            var patchEdits = edits.Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
-            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits, cancellationToken);
+            var patchEdits = (edits ?? []).Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
+            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits, draft, cancellationToken);
             if (sandbox.Error is not null)
-                return Error(sandbox.Stale ? "stale_workspace" : "invalid_edit", sandbox.Error);
+            {
+                // A draft that no longer matches the workspace can never be amended again; drop it now so a
+                // retry gets unknown_draft rather than repeating the same mismatch.
+                if (sandbox.FailureKind == PatchSandbox.Failure.DraftStale && draftId is not null)
+                    drafts.Remove(draftId);
+
+                return Error(sandbox.FailureKind switch
+                {
+                    PatchSandbox.Failure.StaleWorkspace => "stale_workspace",
+                    PatchSandbox.Failure.DraftStale => "draft_stale",
+                    _ => "invalid_edit",
+                }, sandbox.Error);
+            }
 
             var (detected, unchangedVersions) = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments, cancellationToken);
 
-            var staleChanged = detected
-                .Where(c => !baseVersions.TryGetValue(c.OldSymbolId, out var held)
-                            || !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
+            // Two different failures used to share one error, and both were denied a draft. A version that
+            // DISAGREES means the content moved under the patch: its text is built on assumptions that no
+            // longer hold, so it must be rebuilt, and offering a cheap retry would only tempt the caller to
+            // re-apply it. A version that is merely ABSENT means the classifier attributed a change to a
+            // symbol the caller did not anticipate -- an added member anchors to its containing type, the
+            // usual cause -- and the proposed text is perfectly good. Keeping that text as a draft makes
+            // the fix cost one map entry instead of the whole patch.
+            var disagreeing = detected
+                .Where(c => heldVersions.TryGetValue(c.OldSymbolId, out var held)
+                            && !ContentVersion.Parse(c.OldVersion).AgreesWith(ContentVersion.Parse(held)))
                 .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion));
-            var staleUnchanged = baseVersions
+            var staleUnchanged = heldVersions
                 .Where(kv => unchangedVersions.TryGetValue(kv.Key, out var current)
                              && !ContentVersion.Parse(current).AgreesWith(ContentVersion.Parse(kv.Value)))
                 .Select(kv => (SymbolId: kv.Key, CurrentVersion: unchangedVersions[kv.Key]));
-            var stale = staleChanged.Concat(staleUnchanged).ToList();
+            var stale = disagreeing.Concat(staleUnchanged).ToList();
             if (stale.Count > 0)
                 return StaleBase(stale);
+
+            var unheld = detected
+                .Where(c => !heldVersions.ContainsKey(c.OldSymbolId))
+                .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion))
+                .ToList();
+            if (unheld.Count > 0)
+                return UnheldSymbol(unheld,
+                    await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken));
 
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
             var affectedTests = symbolStore.TestsReferencing(changedIds);
@@ -110,7 +172,7 @@ public static class PatchTools
 
             var distillation = ladder.Succeeded
                 ? new DiagnosticDistiller.Distillation([], 0, 0)
-                : await DiagnosticDistiller.DistillAsync(sandbox.Forked, ladder.FailingDiagnostics,
+                : await DiagnosticDistiller.DistillAsync(sandbox.Forked, locator, ladder.FailingDiagnostics,
                     detected.Select(c => (c.SymbolId, c.DisplayString)).ToList(), cancellationToken);
 
             var applied = false;
@@ -125,7 +187,13 @@ public static class PatchTools
                 }
             }
 
-            var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation);
+            // Nothing reached disk, so the caller has to come back. Retain the proposed text under a handle
+            // they can correct a few lines of, instead of making them resend the whole patch to fix one.
+            var draftInfo = applied
+                ? null
+                : await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken);
+
+            var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation, draftInfo);
             var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -197,7 +265,8 @@ public static class PatchTools
 
     private static object BuildResponse(
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
-        ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation)
+        ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation,
+        object? draft)
     {
         var (reason, nextAction) = Verdict(ladder, required, isSufficient);
         return new
@@ -229,12 +298,14 @@ public static class PatchTools
                     summary = rc.Summary,
                     affectedSymbolId = rc.AffectedSymbolId,
                     fixHint = rc.FixHint,
+                    locations = rc.Sites.Select(s => new { file = s.File, line = s.Line, column = s.Column, excerpt = s.Excerpt }).ToList(),
                     suggestedInspection = rc.SuggestedInspection.Select(i => new { symbolId = i.SymbolId, displayString = i.DisplayString }).ToList(),
                     suppressedDiagnostics = rc.SuppressedDiagnostics,
                 }),
                 totalRaw = distillation.TotalRaw,
                 totalSuppressed = distillation.TotalSuppressed,
             },
+            draft,
         };
     }
 
@@ -265,6 +336,42 @@ public static class PatchTools
         };
         return (ValidationLevel)Math.Max((int)computed, (int)requested);
     }
+
+    /// <summary>Stores a fork as an amendable draft and renders the handle the caller sends back.</summary>
+    /// <param name="drafts">The store that assigns the id and deadline.</param>
+    /// <param name="sandbox">The successful fork whose proposed text is being retained.</param>
+    /// <param name="solution">The unforked solution, source of the baseline used to detect later drift.</param>
+    /// <param name="heldVersions">The versions this patch was built against, inherited by every amend of the draft.</param>
+    /// <param name="locator">Renders each retained file's path repo-relative for the response.</param>
+    /// <param name="cancellationToken">Cancels the document text reads this makes.</param>
+    /// <returns>An anonymous object carrying the draftId, its expiry, and the files it covers.</returns>
+    private static async Task<object> DraftInfoAsync(
+        PatchDraftStore drafts, PatchSandbox.Result sandbox, Solution solution,
+        IReadOnlyDictionary<string, string> heldVersions, SolutionLocator locator,
+        CancellationToken cancellationToken)
+    {
+        var stored = drafts.Put(await PatchSandbox.DraftOfAsync(sandbox, solution, heldVersions, cancellationToken));
+        return new
+        {
+            draftId = stored.Id,
+            expiresAt = stored.ExpiresAt,
+            files = stored.Proposed
+                .Select(kv => new { file = locator.RelPath(kv.Key), lineCount = kv.Value.Lines.Count })
+                .ToList(),
+        };
+    }
+
+    private static string UnheldSymbol(IReadOnlyList<(string SymbolId, string CurrentVersion)> unheld, object draft) =>
+        Formats.Render(new
+        {
+            error = "unheld_symbol",
+            message = "This patch changes symbols no baseVersions entry covers -- an added member anchors to "
+                + "its containing type, which is the usual cause. Nothing is wrong with the proposed text, so "
+                + "it is kept as a draft: resend its draftId with these versions in baseVersions and an empty "
+                + "edits array, rather than retransmitting the patch.",
+            current = unheld.Select(c => new { symbolId = c.SymbolId, currentVersion = c.CurrentVersion }),
+            draft,
+        });
 
     private static string StaleBase(IReadOnlyList<(string SymbolId, string CurrentVersion)> stale) =>
         Formats.Render(new

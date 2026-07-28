@@ -93,6 +93,7 @@ public sealed class StalenessTests : IDisposable
         var root = Root(await PatchTools.ValidatePatch(
             _workspace, _locator, _symbols, _featureLog, _builder,
             new TargetedTests(_locator, NullLogger<TargetedTests>.Instance), _telemetry,
+            new PatchDraftStore(TimeProvider.System),
             new Dictionary<string, string>(), edits,
             requestedLevel: null, applyOnSuccess: true, intent: null, tags: null));
 

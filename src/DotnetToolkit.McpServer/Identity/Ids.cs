@@ -50,4 +50,7 @@ public static class Ids
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return "sym_" + Convert.ToHexStringLower(hash.AsSpan(0, 8));
     }
+
+    /// <summary>Mints an id for a validated-but-unapplied patch draft held by <c>PatchDraftStore</c>.</summary>
+    public static string Draft() => $"draft_{Ulid.NewString()}";
 }

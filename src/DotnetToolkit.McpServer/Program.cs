@@ -37,6 +37,8 @@ builder.Services.AddSingleton<FeatureLogStore>();
 builder.Services.AddSingleton<SymbolIndexBuilder>();
 builder.Services.AddSingleton<CallSlice>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.TargetedTests>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.PatchDraftStore>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.GitAnalyzer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
 
