@@ -12,10 +12,14 @@ public static class SymbolKey
 {
     public static string IdOf(ISymbol symbol)
     {
-        var metadataName = symbol.GetDocumentationCommentId()
-            ?? symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         var assembly = symbol.ContainingAssembly?.Name ?? "";
-        return Ids.SymbolId(metadataName, assembly);
+        if (symbol.GetDocumentationCommentId() is { } docId)
+            return Ids.SymbolId(docId, assembly);
+
+        // No doc-comment id at all (some symbol kinds structurally lack one, or the symbol was bound
+        // against a transiently incomplete compilation) -- a disjoint prefix so this can never be
+        // silently mistaken for the same id a clean bind of the same logical symbol would produce.
+        return Ids.FallbackSymbolId(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), assembly);
     }
 
     public static string KindOf(ISymbol symbol) => symbol switch

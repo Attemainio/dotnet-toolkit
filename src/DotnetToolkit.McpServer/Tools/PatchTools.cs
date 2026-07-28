@@ -101,6 +101,21 @@ public static class PatchTools
 
         var heldVersions = inherited;
 
+        // A provisional id never equals the live semantic tier's id for the same symbol -- they are
+        // hashed from incompatible inputs by construction. Rejecting them outright here keeps a caller
+        // who fetched during startup from getting a stale_base cascade across every symbol in the file,
+        // which says nothing about the actual cause.
+        var provisionalIds = heldVersions.Keys
+            .Where(id => !id.StartsWith("sym_", StringComparison.Ordinal))
+            .ToList();
+        if (provisionalIds.Count > 0)
+            return Error("stale_index_only_id",
+                $"baseVersions holds {provisionalIds.Count} id(s) not minted by the live semantic tier (a "
+                + "real symbolId always starts with sym_) -- e.g. get_symbol's index_only fallback (symidx_) "
+                + "or SymbolKey.IdOf's own no-doc-comment-id fallback (symfb_). Neither ever matches the live "
+                + "tier's id for the same symbol -- call get_symbol again once the workspace has finished "
+                + "loading (check workspace_status) and rebuild baseVersions from that response.");
+
         async Task<string> RunAsync()
         {
             var solution = await workspace.GetSolutionAsync();
@@ -193,7 +208,7 @@ public static class PatchTools
                 ? null
                 : await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken);
 
-            var response = BuildResponse(detected, ladder, required, isSufficient, applied, distillation, draftInfo);
+            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo);
             var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -264,6 +279,7 @@ public static class PatchTools
     }
 
     private static object BuildResponse(
+        SolutionLocator locator,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
         ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation,
         object? draft)
@@ -278,6 +294,10 @@ public static class PatchTools
                 oldVersion = c.OldVersion,
                 newVersion = applied ? c.NewVersion : null,
                 apiImpact = c.ApiImpact,
+                // Where the declaration sits in the text this call produced: the file itself once applied,
+                // otherwise the draft. Same shape and same bounds as get_symbol's declarationSites, so a
+                // follow-up edit to this symbol needs no refetch just to recover its shifted line span.
+                declarationSites = c.NewSymbol is null ? null : ContextTools.DeclarationSites(c.NewSymbol, locator),
             }),
             ladder = new
             {

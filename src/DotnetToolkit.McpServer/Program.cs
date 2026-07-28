@@ -1,3 +1,4 @@
+using DotnetToolkit.McpServer.Control;
 using DotnetToolkit.McpServer.Devlog;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
@@ -39,6 +40,7 @@ builder.Services.AddSingleton<CallSlice>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.TargetedTests>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.PatchDraftStore>();
+builder.Services.AddSingleton<ControlServer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.GitAnalyzer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
 
@@ -58,6 +60,9 @@ app.Services.GetRequiredService<WorkspaceHost>().StartLoading();
 Formats.Current = Formats.Parse(app.Services.GetRequiredService<SolutionLocator>().Config.DefaultFormat);
 // Populate the SQLite symbol index + edge cache once the workspace is ready (it self-awaits).
 app.Services.GetRequiredService<SymbolIndexBuilder>().Start();
+
+// Loopback control channel for hooks that need to trigger a rescan/reload outside the MCP session.
+app.Services.GetRequiredService<ControlServer>().Start();
 
 // One-time import of the legacy markdown devlog into feature_log (no-op once the log has entries).
 DevlogMigration.Run(

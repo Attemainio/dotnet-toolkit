@@ -916,7 +916,9 @@ validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2b
 {"detectedChanges":[
    {"symbolId":"sym_7a9d22ff3b68f4ee","changeKinds":["body"],
     "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","newVersion":null,
-    "apiImpact":"non-breaking"}],
+    "apiImpact":"non-breaking",
+    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs",
+                         "startLine":14,"endLine":16}]}],
  "ladder":{"completedLevel":"semantic_bind","requiredLevel":"project_compile","isSufficient":false,
    "reason":"Validation failed at semantic_bind.",
    "nextAction":"Fetch the suggested symbols, revise the patch, and resubmit."},
@@ -935,9 +937,18 @@ validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2b
    "files":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs","lineCount":126}]}}
 ```
 
+Note `declarationSites` reports 14–16 while the edit targeted only line 16: the span covers the whole
+declaration including its attributes, exactly as `get_symbol` reports it.
+
 `newVersion` is `null` here because nothing was applied — it only describes reality once the patch is
-actually on disk. After an apply it carries the `baseVersions` entry for the next edit to that symbol,
-so a second change to something you just changed needs no refetch of its version.
+actually on disk.
+
+Each `detectedChanges` entry also carries `declarationSites` — `[{file, startLine, endLine}]`, the same
+shape and the same bounds `get_symbol` returns, describing where that declaration sits **in the text this
+call produced**: the file itself once applied, otherwise the draft. Together with `newVersion` that is
+everything a follow-up edit to the same symbol needs, so **editing a symbol twice in a row costs one
+`validate_patch` call, not a `validate_patch` and then a `get_symbol` to recover the shifted span**. It is
+`null` for a removal, which has no new declaration to point at.
 
 The fix then costs one line, not the whole patch — `locations[0].line` says where, and `draftId` says
 against what:
@@ -952,7 +963,9 @@ validate_patch(draftId: "draft_01KYHQZHXXKMF2XQE0AHS2KWNJ",
 {"detectedChanges":[
    {"symbolId":"sym_7a9d22ff3b68f4ee","changeKinds":["body"],
     "oldVersion":"decl:7c76e9eba9da|body:2bac28c29969","newVersion":null,
-    "apiImpact":"non-breaking"}],
+    "apiImpact":"non-breaking",
+    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Tools/ServerTools.cs",
+                         "startLine":14,"endLine":16}]}],
  "ladder":{"completedLevel":"project_compile","requiredLevel":"project_compile","isSufficient":true},
  "succeeded":true,"applied":false,
  "draft":{"draftId":"draft_01KYHR09F8TVXC81ZRE493X5VX","expiresAt":"2026-07-27T12:30:12.3601156+00:00",

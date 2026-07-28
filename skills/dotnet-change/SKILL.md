@@ -211,15 +211,18 @@ your text was built on content that has since moved, so it gets no draft and mus
 Rebuild from scratch, not by amending, after `stale_base`, `invalid_edit`, or `stale_workspace` —
 those responses carry no draft, because the patch itself is built on something that moved.
 
-## Editing the same symbol again — reuse `newVersion`
+## Editing the same symbol again — don't refetch it
 
-An applied response gives each changed symbol a **`newVersion`** — the `baseVersions` entry for the
-next edit to that symbol. Reuse it directly instead of refetching the symbol just to re-read its
-version.
+An applied response gives each changed symbol both halves the next patch needs:
 
-The response does **not** yet report where the declaration moved to, so when an edit shifted line
-numbers you still need a `get_symbol` to recover the span. Refetch as well whenever you need
-*content* you no longer hold, or for a symbol this patch did not change.
+- **`newVersion`** — the `baseVersions` entry for the next edit to that symbol.
+- **`declarationSites`** — `[{file, startLine, endLine}]`, where the declaration now sits, in the
+  same shape and with the same bounds `get_symbol` returns.
+
+So a second edit to a symbol you just changed goes straight into another `validate_patch`. Calling
+`get_symbol` again only to recover the shifted line span is a round trip the response already paid
+for. (Refetch normally when you need *content* you no longer hold, or for a symbol this patch did
+not change.)
 
 ## What gets recorded
 

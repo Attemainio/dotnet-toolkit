@@ -1,5 +1,5 @@
 {
-  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), and reminds Claude to refresh the workspace after creating a new .cs file",
+  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), and refreshes the workspace (via a loopback control channel, falling back to a reminder) after creating a new .cs file",
   "hooks": {
     "PreToolUse": [
       {

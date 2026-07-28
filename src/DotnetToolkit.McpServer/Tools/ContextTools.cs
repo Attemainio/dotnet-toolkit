@@ -214,18 +214,26 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var solution = await workspace.GetSolutionAsync();
         if (solution is null)
         {
-            // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
-            await index.EnsureFreshAsync();
-            var fallback = IndexSymbol(index, locator, symbol, include);
-            if (fallback is { } fb)
+            // A reload in progress after a previous successful load means a live answer is imminent (or
+            // already timed out waiting for one) -- minting an index-only id here would only diverge
+            // from the live one moments later (see Ids.IndexOnlySymbolId). Only fall back to the syntax
+            // index when no live answer has ever existed yet.
+            var reloadInProgress = workspace.State == WorkspaceState.Loading && workspace.HasLoadedOnce;
+            if (!reloadInProgress)
             {
-                var indexEnvelope = new
+                // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
+                await index.EnsureFreshAsync();
+                var fallback = IndexSymbol(index, locator, symbol, include);
+                if (fallback is { } fb)
                 {
-                    contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
-                    limitedBy = "index_only", content = fb.Content,
-                };
-                var indexJson = Formats.ToJson(indexEnvelope);
-                return new SymbolFetchResult(indexJson, fb.SymbolId, fb.Version, "index_only", null);
+                    var indexEnvelope = new
+                    {
+                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
+                        limitedBy = "index_only", content = fb.Content,
+                    };
+                    var indexJson = Formats.ToJson(indexEnvelope);
+                    return new SymbolFetchResult(indexJson, fb.SymbolId, fb.Version, "index_only", null);
+                }
             }
 
             var loading = Formats.ToJson(new { error = workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace" });
@@ -932,7 +940,16 @@ private static object? ContainingType(ISymbol sym)
         displayString = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
     };
 
-private static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
+    /// <summary>Flat file/startLine/endLine sites for a symbol's declarations, one per partial part.</summary>
+    /// <param name="sym">The symbol whose declaration spans are wanted.</param>
+    /// <param name="locator">Renders each site's path repo-relative.</param>
+    /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
+    /// <remarks>
+    /// Internal rather than private because <c>validate_patch</c> returns the same shape for the symbols a
+    /// patch changed. Both paths must produce byte-identical spans -- a caller is meant to feed either one
+    /// straight back into an edit -- so they share this method rather than each computing bounds.
+    /// </remarks>
+    internal static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
         sym.DeclaringSyntaxReferences
             // Exclude source-generator output (obj/**): it is regenerated on every build and not an
             // editable declaration site, so surfacing it alongside the hand-written partial only offers
@@ -1496,7 +1513,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
             xmlDoc = hit.Doc,
             referenceCounts = (object?)null,
         };
-        return (content, version, Ids.SymbolId(hit.FqName, ""));
+        return (content, version, Ids.IndexOnlySymbolId(hit.FqName));
     }
 
     private static bool IsIndexableDeclaration(SyntaxNode node) => node
