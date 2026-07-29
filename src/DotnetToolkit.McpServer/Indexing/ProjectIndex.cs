@@ -364,10 +364,12 @@ public sealed class ProjectIndex : IDisposable
     /// and the stored line would rot silently. The index is mtime-swept per file, so it moves whenever
     /// the file does, which is exactly what a line number depends on.
     ///
-    /// A name that resolves to more than one distinct site — overloads, or a partial declared twice — is
-    /// omitted rather than guessed at. The names here carry no parameter list, so the two cannot be told
-    /// apart, and pointing at the wrong overload is worse than saying nothing: absent already means
-    /// "look it up".
+    /// A member name that resolves to more than one distinct site -- real overloads collapsed by dropping
+    /// their parameter list -- is omitted rather than guessed at: pointing at the wrong overload is worse
+    /// than saying nothing, and absent already means "look it up". A TYPE name resolving to more than one
+    /// site is never that kind of ambiguity -- C# forbids two distinct types sharing one fully-qualified
+    /// name, so multiple sites there can only be partial-class fragments of the same symbol, and
+    /// LocateWithDocs merges them to one stable representative instead of omitting the location.
     /// </summary>
     public IReadOnlyDictionary<string, Site> Locate(IReadOnlySet<string> fqNamesWithoutParameters)
         => LocateWithDocs(fqNamesWithoutParameters).ToDictionary(
@@ -384,31 +386,43 @@ public sealed class ProjectIndex : IDisposable
         var found = new Dictionary<string, DocSite>(StringComparer.Ordinal);
         var ambiguous = new HashSet<string>(StringComparer.Ordinal);
 
-        void Offer(string fqName, DocSite site)
+    void Offer(string fqName, DocSite site, bool isType = false)
+    {
+        if (!fqNamesWithoutParameters.Contains(fqName) || ambiguous.Contains(fqName))
+            return;
+        if (found.TryGetValue(fqName, out var existing))
         {
-            if (!fqNamesWithoutParameters.Contains(fqName) || ambiguous.Contains(fqName))
+            if (existing == site)
                 return;
-            if (found.TryGetValue(fqName, out var existing))
-            {
-                if (existing != site)
-                {
-                    found.Remove(fqName);
-                    ambiguous.Add(fqName);
-                }
-                return;
-            }
-            found[fqName] = site;
-        }
 
-        foreach (var (file, entry) in _files)
-        {
-            foreach (var type in Flatten(entry.Types))
+            if (isType)
             {
-                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections));
-                foreach (var member in type.Members)
-                    Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections));
+                // A type FqName can only repeat across partial declarations of the SAME symbol -- C#
+                // forbids two distinct types sharing one fully-qualified name -- so keep a stable,
+                // deterministic representative instead of treating this like the genuine name collision
+                // (an overload) handled below.
+                if (string.CompareOrdinal(site.File, existing.File) < 0
+                    || (site.File == existing.File && site.Line < existing.Line))
+                    found[fqName] = site;
+                return;
             }
+
+            found.Remove(fqName);
+            ambiguous.Add(fqName);
+            return;
         }
+        found[fqName] = site;
+    }
+
+    foreach (var (file, entry) in _files)
+    {
+        foreach (var type in Flatten(entry.Types))
+        {
+            Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), isType: true);
+            foreach (var member in type.Members)
+                Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections));
+        }
+    }
         return found;
     }
 

@@ -88,6 +88,9 @@ public static class FlowTools
             symbols = model.LookupSymbols(position);
         }
 
+        var unqualifiedMemberFormat = SymbolDisplayFormat.MinimallyQualifiedFormat
+            .WithMemberOptions(SymbolDisplayFormat.MinimallyQualifiedFormat.MemberOptions & ~SymbolDisplayMemberOptions.IncludeContainingType);
+
         var items = symbols
             .Where(s => !s.IsImplicitlyDeclared)
             .Where(s => MatchesFilter(s, filter))
@@ -102,11 +105,12 @@ public static class FlowTools
                 var s = t.Symbol;
                 var origin = t.Origin;
                 var definedIn = s.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                var display = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                // definedIn already states the containing type on every row, so a displayString repeating
-                // it as a prefix ("SymbolStore.Callers" alongside definedIn:"SymbolStore") is pure repetition.
-                if (definedIn is not null && display.StartsWith(definedIn + ".", StringComparison.Ordinal))
-                    display = display[(definedIn.Length + 1)..];
+                // Qualification is dropped from the FORMAT itself, not stripped from the rendered text
+                // afterward: for a reduced extension method Roslyn renders the RECEIVER's type as that
+                // qualification, which is exactly what the receiverType header already states once for the
+                // whole response -- restating it per row (sometimes several times within one generic
+                // signature) was pure repetition.
+                var display = s.ToDisplayString(unqualifiedMemberFormat);
                 return new
                 {
                     displayString = display,
