@@ -8,11 +8,16 @@ trigger matches; this page is the catalog of what each one is for and what it re
 **When**: exploring, searching, inspecting, or analyzing C# — orienting in a codebase, finding a
 symbol, callers/references, implementations, type shapes.
 
-Carries the retrieval protocol for the read-side MCP tools: session/task ids, resolution escalation,
-and expansion gating. The reason it exists: Grep and Read give wrong
-answers on C# (text search cannot see interface/virtual/delegate dispatch, counts comment matches as
-hits, silently under-reports on truncation), while the MCP tools answer from a Roslyn semantic model at
-a fraction of the tokens.
+Carries what applies across all the read-side MCP tools: the decision table routing a question to a
+tool, expansion gating on `referenceCounts`, symbol addressing, version tokens, workspace readiness,
+and task attribution. The reason it exists: Grep and Read give wrong answers on C# (text search cannot
+see interface/virtual/delegate dispatch, counts comment matches as hits, silently under-reports on
+truncation), while the MCP tools answer from a Roslyn semantic model at a fraction of the tokens.
+
+**Per-tool mechanics deliberately live outside it**, in `docs/tools/<tool>.md`, read on demand. The
+skill is kept under ~5k tokens because Claude Code re-attaches only the first 5,000 tokens of an
+invoked skill after auto-compaction — a larger skill loses its later sections mid-session while still
+pointing at them. `docs/tools/_index.md` is the router between the two.
 
 ## `dotnet-change` — the write protocol
 

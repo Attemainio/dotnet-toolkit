@@ -169,7 +169,9 @@ aspect in one pass) — this list exists to reduce how often it finds something,
 - **New tests exercise real dependencies, not an in-memory database substitute**, for anything
   asserting constraint/transaction/query-translation behavior the substitute doesn't share.
 
-Full per-tool reference: `${CLAUDE_PLUGIN_ROOT}/docs/tool-reference.md`.
+Which tool answers which question: `${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md` (the router — start
+here). How to call one: `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`. Read the single tool you need,
+not the directory.
 ```
 
 If Step 3 found a scoped-but-resolvable overlap, add one sentence noting the boundary — e.g. "For

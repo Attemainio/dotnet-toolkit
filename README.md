@@ -68,8 +68,8 @@ already governs code search there) plus copies of the standards files (list in
 `.claude/rules/csharp-standards.md`'s index), shows you the exact plan,
 and writes only after you approve — backing up anything it replaces so it's fully reversible. It never
 modifies your `CLAUDE.md`: `.claude/rules/` loads independently, so the rule files stand on their own.
-See `skills/dotnet-toolkit-init/SKILL.md` for the process and `docs/tool-reference.md` for the complete
-per-tool reference the rule file points at.
+See `skills/dotnet-toolkit-init/SKILL.md` for the process, `docs/tools/_index.md` for the router the
+rule file points at, and `docs/tools/<tool>.md` for each tool's own reference.
 
 > Upgrading from an earlier version: the standards used to live in `docs/` under different names
 > (`naming-conventions.md`, `common-antipatterns.md`, `review-workflow.md`, …). They are now
@@ -242,6 +242,7 @@ SQLite, `Fingerprint/` + `Contracts/` version layers and leases, `Validation/` t
 path, `Telemetry/`, `Git/`, `Identity/`, `Devlog/` legacy), `tests/` (xunit +
 `fixtures/SampleSolution`), `skills/` (plugin skills), `agents/` (review subagents),
 `.claude/rules/` (the coding standards + the always-loaded index rule),
-`docs/` (`tool-reference.md`, `agent-reference.md`, `hook-reference.md`, `skill-reference.md`),
+`docs/` (`tools/` — the per-tool router + one file per tool — plus `tool-reference.md`,
+`agent-reference.md`, `hook-reference.md`, `skill-reference.md`),
 `.claude-plugin/` (plugin + marketplace manifests),
 `.mcp.json` (MCP registration).

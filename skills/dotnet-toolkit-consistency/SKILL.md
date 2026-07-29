@@ -47,10 +47,15 @@ Docs get audited against this, not against their own prior text.
 
 **2. `[Description]` attributes vs. documented behavior and return shape.** Compare each tool's
 `[Description]` attribute (on the method and on each parameter) against:
-   - `docs/tool-reference.md`'s entry for that tool — arguments, defaults, the example call/response.
-     If you can, actually call the tool with the documented example arguments and confirm the response
-     still matches what's printed; an example that no longer matches the current return shape is worse
-     than no example.
+   - `docs/tools/<tool>.md` — its "When to reach for it" guidance, arguments, defaults, the example
+     call/response, and its "Next steps" footer. If you can, actually call the tool with the documented
+     example arguments and confirm the response still matches what's printed; an example that no longer
+     matches the current return shape is worse than no example.
+   - Whether the `[Description]` is written as a **search target**. Tool definitions are deferred by
+     default (Claude Code enables tool search automatically), so the model sees only the tool *name*
+     until it searches. The attribute's job is to be findable by the vocabulary a caller would search
+     for and to say what question the tool answers — not to restate `docs/tools/<tool>.md`. A
+     `[Description]` that has grown into a manual is a finding: it is re-paid on every fetch.
    - Any `[Description]` wording that has drifted from what the code now does (e.g., a default value
      mentioned in the attribute that the method body no longer honors).
 
@@ -67,8 +72,10 @@ missing (a tool that exists but appears nowhere in it):
 
 | File | What it must carry |
 | --- | --- |
-| `docs/tool-reference.md` | complete per-tool catalog: arguments, one real example call/response, what it replaces |
-| `CLAUDE.md`'s "Working in this repo" table (`Instead of / Use`) | one row per read/write tool a session would otherwise reach for Grep/Read/`find` instead of |
+| `docs/tools/_index.md` | **the router** — one row per tool mapping the question it answers to the tool and its detail file; plus the common call chains, workspace readiness, and response conventions (documented once, here, not per tool). A tool missing from this table is unreachable no matter how good its own file is |
+| `docs/tools/<tool>.md` (one per tool, plus `server.md`) | when to reach for it, arguments, one real example call/response, and a **Next steps** footer naming what to call with what it just returned. Every tool from Step 0 has a file; no file names a tool that no longer exists |
+| `docs/tool-reference.md` | now an **index only** — the file table plus the conventions that hold across every tool. Check its table lists every file in `docs/tools/`. It must not re-acquire per-tool detail; that is what was split out |
+| `CLAUDE.md`'s "Working in this repo" section | that it still points at `docs/tools/_index.md` as the router rather than carrying its own copy of the tool table. A per-tool table reappearing here is drift: it was removed deliberately, and two copies always diverge |
 | `CLAUDE.md`'s Architecture section, `Tools/` bullet | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new clause |
 | `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/` (nothing missing, nothing stale), and its `validate_patch` line must match the current write path. That table's "When" column doubles as the **reviewer's trigger table**, so each row's condition must be an *observable property of the code* (awaits/locks, hot path, public surface change), not a vague topic a reviewer can't match against retrieved source; and the always-loaded core it names must match `agents/dotnet-code-review.md`'s list exactly |
 | `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
@@ -119,9 +126,38 @@ CLAUDE.md's own "Changing the tool surface" section warns about — `get_scope`,
 `get_semantic_diff` were a real past instance of this: shipped in the code but named in none of the docs.
 
 **7. The skills' own instructions.** Once Steps 1–6 have surfaced concrete drift, the fix usually touches
-a skill file itself, not just a table row — e.g. a new tool needs a new "when to reach for this" paragraph
-in `dotnet-code-query`, not just a new line in `docs/tool-reference.md`. Update the skill body, not only
+a skill file itself, not just a table row — e.g. a new tool needs a new row in `docs/tools/_index.md`'s
+router *and* its own `docs/tools/<tool>.md`, and a new "when to reach for this" line in
+`dotnet-code-query` only if it changes which tool a caller should pick. Update the skill body, not only
 its tool list, so a caller reading the skill gets the same guidance a caller reading the code would.
+
+**7b. Context budget — the size check.** Verbosity drift is as real as factual drift and costs every
+session. Run:
+
+```bash
+for f in skills/*/SKILL.md CLAUDE.md .claude/rules/csharp-standards.md; do
+    printf "%-50s %6d B  ~%.1fk tok\n" "$f" $(wc -c < "$f") $(echo "$(wc -c < "$f")/3800" | bc -l)
+done
+```
+
+Findings, in order of severity:
+
+- **Any `SKILL.md` over ~19 KB (~5k tokens) is a finding, not a style note.** Claude Code re-attaches
+  only the first 5,000 tokens of each invoked skill after auto-compaction (25k shared across all
+  skills), so everything past that is silently dropped mid-session while the skill's own decision
+  table still points at it. This is a correctness bug, not a cost one. The fix is always the same:
+  move per-tool mechanics into `docs/tools/<tool>.md` and leave the routing decision in the skill.
+- **`CLAUDE.md` over ~19 KB (~5k tokens)** — it is loaded in full by every session in this repo
+  regardless of task. Maintainer procedures belong in this skill; per-tool detail belongs in
+  `docs/tools/`; anything read only at write time belongs in `.claude/rules/` or `dotnet-change`.
+- **`.claude/rules/csharp-standards.md` over ~6 KB** — it is the other always-loaded file and is
+  deliberately just an index. Content, not pointers, appearing here is the drift.
+- **A `[Description]` attribute that has grown into a manual** (Step 2) — re-paid on every tool-search
+  fetch, so it is the per-call equivalent of the same mistake.
+
+Report each overage with its current size, the budget, and which sections to move where. Do not fix a
+size overage by deleting guidance — move it to an on-demand file and leave a pointer, or the next
+session simply loses the rule.
 
 **8. `CLAUDE.md` and `README.md` last.** These are the two files a fresh session or a new user reads
 first, so they should reflect the *already-corrected* state of everything above, not be patched

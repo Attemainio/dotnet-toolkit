@@ -82,22 +82,22 @@ abs_file="$abs_dir/$(basename "$file")"
 
 is_governed_cs_file "$abs_file" "$root" || exit 0
 
+DOCS="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/docs/tools"
 cat >&2 <<EOF
 Blocked Read on ${file}: it is compiled by ${REL_CSPROJ}, so search_index/get_symbol answer this more
 cheaply and completely than a raw file read - no truncation risk, and no irrelevant methods pulled in
 alongside the one you want.
 
 Do this instead:
-  - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - ranked hits with
-    symbolId, file, and line, all in one call.
-  - Know the type/member name: get_symbol(symbol: "...", include: "members") to enumerate a type, or
-    the default include for one member's declaration, xmlDoc, and reference counts. Its source
-    component includes the symbol's own leading /// doc comment now, not just the signature/body.
-  - Only need certain lines of a long member: get_symbol(symbol: "...", include: "source:code@120-160")
-    returns just those absolute file lines, ';'-separate several ranges. This is the replacement for
-    reading a file to reach one region - the response's sourceLines says what you got vs the whole span.
-  - Orienting in a folder you already know: search_index(query: "...", pathPrefix: "path/to/folder")
-    scopes ranked results to one file or directory.
+  - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - one call, many terms.
+  - Know the type/member name: get_symbol(symbol: "...").
+  - Only need part of a long member: get_symbol(symbol: "...", include: "source:code@120-160").
+
+For arguments and worked examples, read the one file for the tool you are about to call:
+  ${DOCS}/search_index.md
+  ${DOCS}/get_symbol.md
+${DOCS}/_index.md routes any other question to its tool. Read one file,
+not the directory.
 
 If this genuinely needs a raw read (the workspace failed to load, or the file's exact formatting/byte
 layout is itself what you need to see), say so and ask the user to allow it explicitly rather than

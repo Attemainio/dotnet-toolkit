@@ -72,6 +72,7 @@ if [ "$tool" = "Write" ] && [ ! -e "$file" ]; then
     exit 0
 fi
 
+DOCS="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/docs/tools"
 cat >&2 <<EOF
 Blocked ${tool} on ${file}: C# edits go through validate_patch, not ${tool}.
 
@@ -86,12 +87,14 @@ Do this instead:
      there is no reason to dry-run with applyOnSuccess false first.
   3. If it fails, the response carries diagnostics.rootCauses[].locations (where the error landed
      in the text you proposed) and a draft {draftId}. Send that draftId back with ONLY the lines
-     you are correcting — baseVersions is inherited (anything you send is merged in) and the
-     spans address the draft. Do not
+     you are correcting — baseVersions is inherited and the spans address the draft. Do not
      resubmit the whole patch.
 
 A change that feels too large or too interleaved to decompose is still not a reason to fall back to
 ${tool} — split it into more validate_patch calls, one per touched symbol, sharing one intent.
+
+Full arguments, the sufficiency triple, and every failure mode (unheld_symbol, stale_workspace,
+stale_index_only_id): ${DOCS}/validate_patch.md
 
 If this genuinely is not a validate_patch case (the workspace failed to load, or you are reverting a
 partial write), say so and ask the user to allow it explicitly rather than retrying the same call.

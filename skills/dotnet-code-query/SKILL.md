@@ -5,40 +5,27 @@ description: Use when exploring, searching, inspecting or analyzing C# code in a
 
 # Retrieving C# code without reading files
 
-This repo has the dotnet-toolkit MCP server. For C# questions, retrieve **symbols**, not
-files. The server answers from a live Roslyn semantic model, so it sees calls through
-interfaces, virtual dispatch and delegates that a text search cannot.
+This repo has the dotnet-toolkit MCP server. For C# questions, retrieve **symbols**, not files. The
+server answers from a live Roslyn semantic model, so it sees calls through interfaces, virtual
+dispatch and delegates that a text search cannot.
 
 Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 
+**How to call each tool lives in `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`, one file per tool.
+Read the one you are about to use — not the whole directory.** This skill carries only what applies
+across all of them: when to reach for which tool, and the rules that hold on every call.
+
 ## Never fall back to grep
 
-If you find yourself about to run Grep, Glob or Read against a `.cs` file, stop — that is
-the mistake this skill exists to prevent. Reach for the MCP tool instead, even when it
-costs an extra step to load the tool schema first. Measured on a real repo, `grep -rn` for
-a method name found **3 of 5** call sites (truncation dropped two) and would have returned
-**58** comment/XML-doc matches to hand-filter; `get_references` returned all 5, no false
-positives, fewer tokens. A wrong caller list produces a wrong answer, not a slower one.
+If you find yourself about to run Grep, Glob or Read against a `.cs` file, stop — that is the
+mistake this skill exists to prevent. Reach for the MCP tool instead, even when it costs an extra
+step to load the tool schema first. Measured on a real repo, `grep -rn` for a method name found
+**3 of 5** call sites (truncation dropped two) and would have returned **58** comment/XML-doc
+matches to hand-filter; `get_references` returned all 5, no false positives, fewer tokens. A wrong
+caller list produces a wrong answer, not a slower one.
 
-The only legitimate reasons to read a file directly: non-C# files (csproj, json, md), or
-lines you are about to edit that `get_symbol` did not return.
-
-## Session attribution is automatic; task attribution is opt-in
-
-No tool takes a `sessionId` — there is nothing to pass. Every call in a server process
-shares one ambient session id automatically for that process's whole lifetime, so usage
-metrics group correctly with no setup and no way to get it wrong. `get_retrieval_metrics`
-reads that same id back via `scope: "session"`; see `docs/tool-reference.md` for merging
-several past sessions together or discovering session ids in a date range with
-`groupBy: "session"`.
-
-Ordinary retrieval needs nothing more. The one case that does: **measuring your own token
-cost, or working alongside other agents on the same server.** Because that session id is
-per *process*, parallel agents share it and cannot be told apart. Pass an optional `taskId`
-on any recording tool to attribute its calls to you, then read only those back with
-`get_retrieval_metrics(taskIds: [...])` or compare callers with `groupBy: "task"`. Omit it
-and the call is attributed to the ambient session as before — this is instrumentation, never
-a precondition for retrieval.
+The only legitimate reasons to read a file directly: non-C# files (csproj, json, md), or lines you
+are about to edit that `get_symbol` did not return.
 
 ## Decision table
 
@@ -47,6 +34,7 @@ a precondition for retrieval.
 | Find symbols when you don't know the exact names | `search_index`, **all terms in one call** | Grep/Glob over .cs files; one call per word |
 | A type or member's shape, docs, location | `get_symbol` | Read the .cs file |
 | A type's member list | `get_symbol` with `include: "members"` | Read the file |
+| One region of a long member | `get_symbol` with `include: "source:code@120-160"` | `Read`/`sed` on the file |
 | Who calls it (just the caller list, one hop) | `get_call_hierarchy` (`maxDepth: 1`) | `get_references` — measured 60% more tokens for the same one-hop answer on this repo, since it also carries file/line/snippet/dispatchKind per site that a bare "who calls it" doesn't need |
 | Where exactly it's called — file, line, snippet per call site | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
@@ -60,485 +48,53 @@ a precondition for retrieval.
 | Why past code looks the way it does | `search_log` | Guess from the code |
 | Whether a change is safe | `validate_patch` (see the dotnet-change skill) | `dotnet build` |
 
-Read a .cs file only when you are about to edit lines that `get_symbol` did not give you,
-or for non-C# files (csproj, json, md) where Read/Grep are the right tools.
+Read a .cs file only when you are about to edit lines that `get_symbol` did not give you, or for
+non-C# files (csproj, json, md) where Read/Grep are the right tools.
 
-`get_call_slice` needs both `from` and `to` already known — it is point-to-point pathfinding,
-not an open-ended walk. For "who calls this, and who calls those, up to the entry points"
-(Visual Studio's *View Call Hierarchy*), use `get_call_hierarchy` instead — see below.
+`get_call_slice` needs both `from` and `to` already known — it is point-to-point pathfinding, not an
+open-ended walk. For "who calls this, and who calls those, up to the entry points" (Visual Studio's
+*View Call Hierarchy*), use `get_call_hierarchy`.
 
-## Search for everything at once
+`${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md` carries the same table plus the common call chains, and
+each `docs/tools/<tool>.md` ends with a **Next steps** section naming what to call with what it just
+returned.
+
+## One call, not several
 
 `search_index` OR-es its terms and ranks the results, so one call answers for many names:
 
 ```
 search_index(query: "fee ledger TryBuy TrySell")     ← one call, all four
-```
-
-Not this:
-
-```
 search_index(query: "fee"); search_index(query: "ledger"); ...   ← several × the tokens
 ```
 
-Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` finds
-`TryBuy`. When a question spans two subsystems, name both in the same query — the ranking
-puts the symbols matching more of your terms first, which is exactly the overlap you want.
-
-Each hit carries where it was found, so going straight there costs no second call. `items` is a
-plain array of objects — `symbolId, name, kind, file, line, endLine` on every hit:
-
-```json
-{"items":[{"symbolId":"sym_...","name":"Sample.Lib.WidgetExtensions.SpinTwice(IWidget,int)",
-           "kind":"Method","file":"Lib/Pipeline.cs","line":6,"endLine":6}]}
-```
-
-`file`/`line` are resolved from the syntax index at response time — swept for staleness on the
-way — so they point at where the declaration is *now*, not where it was when the row was
-written. **A name that maps to several declarations (overloads) omits both fields entirely**
-(absent, not `null`) rather than pointing at the wrong one; that hit still resolves through
-`get_symbol`, which separates overloads by parameter list and always returns exact spans.
-`endLine` is the declaration's own last line (trailing trivia excluded) — a cheap signal for
-whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
-whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration, or
-whether a large `endLine - line` span is worth mapping with `bodyOutline` first (see "When to reach
-for `bodyOutline`" below) before deciding how much of `source` to fetch.
-
-Only split into separate calls when you need different `kinds` filters.
-
-Narrow to one subsystem with `pathPrefix` (folder or file, repo-root-relative, forward slashes)
-instead of filtering the whole-repo result yourself:
-
-```
-search_index(query: "Search", kinds: "method", pathPrefix: "src/DotnetToolkit.McpServer/Store")
-```
-
-A hit whose `file` can't be resolved (an overloaded name — see above) is dropped rather than
-guessed into scope, so an overload-heavy query can undercount. Ranking still runs over the whole
-index before scoping, so a query with far more hits outside the prefix than fit an internal
-overfetch cap can return fewer than `limit` even with more in-scope matches available — narrow the
-query text itself if that happens, rather than raising `limit`.
-
-### Filter by modifier or by interface
-
-`modifiers` filters the same way `kinds` does — space/comma-separated tokens, `-token` to exclude —
-but with the opposite combining rule for bare tokens: **AND, not OR**. A symbol carries several
-modifiers at once (a method can be both `public` and `static`), so `modifiers: "public static"`
-means both, not either — unlike `kinds`, where a symbol has exactly one kind and `"method
-property"` reads naturally as "either of these". `-` tokens exclude and combine with the bare
-tokens (`"public -sealed"` is public AND NOT sealed), rather than one replacing the other the way
-`kinds`' mixed form does. Valid tokens are the literal C# keywords (`public`, `static`, `readonly`,
-`sealed`, `override`, `async`, `partial`, …) plus a few cheap derived tags that aren't keywords:
-`extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`.
-
-`implements` narrows to the direct implementers of a named interface — resolved the same way any
-symbol name is elsewhere, an unresolvable name yields an empty result rather than an error. It
-narrows the ranked `query` hits the same way `pathPrefix` does, so `query` still needs a real term:
-
-```
-search_index(query: "Widget", kinds: "class", modifiers: "public sealed")   ← AND: public AND sealed
-search_index(query: "Widget", kinds: "class", implements: "IWidget")        ← direct implementers only
-```
-
-### Find a BCL/NuGet symbol this repo's own code references
-
-`origin` defaults to `"source"` — only symbols this repo's own solution declares. `origin: "external"`
-searches only BCL/NuGet symbols already discovered as a call, construction, or `implements` target from
-this repo's own source — not a general library browser, only what the code here already references.
-`origin: "all"` searches both.
-
-```
-search_index(query: "IDisposable", kinds: "interface", origin: "external")
-```
-
-A hit found this way carries no `file`/`line` (nothing in this repo declares it) — follow up with
-`get_symbol` on its `symbolId`, whose response carries `origin: "external"` and an empty
-`declarationSites`.
-
-### Check documentation without a follow-up get_symbol call
-
-Pass `summary` to fold an XML doc `<summary>` signal into the same search response — read from the
-syntax index, so it costs nothing extra and works even at `index_only`:
-
-- `summary: "has"` — adds `hasSummary` (bool) per item. The cheap check: is this hit even
-  documented, before you decide whether it's worth a `get_symbol` round trip.
-- `summary: "full"` — adds `summary` (the extracted text, capped at 160 characters with a trailing
-  `…`) per item. Use it when judging whether a hit is actually the symbol you want, without paying
-  for a separate fetch just to read its intent. The cap keeps one pathological doc comment from
-  dominating a multi-hit response — once you've picked the symbol, `get_symbol`'s `xmlDoc.summary`
-  gives you the untruncated text.
-- Omit `summary` entirely for the default, unchanged response — no `hasSummary`/`summary` field on
-  any item.
-
-A hit with no `<summary>` doc comment has no `hasSummary` key at all (not `false`) — same
-absent-means-absent convention as everything else in this skill.
-
-### Filter by which XML doc sections are present
-
-`xmlDoc` filters on whether a hit's doc comment carries specific sections beyond plain `<summary>`
-presence (that's what `summary` checks) — same grammar as `modifiers`: bare tokens AND (a declaration
-can carry several tags at once), a `-`-prefixed token excludes and combines with the bare tokens.
-Valid tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`,
-`exceptions`. Narrows the ranked `query` hits the same way `pathPrefix`/`implements` do:
-
-```
-search_index(query: "Widget", kinds: "method", xmlDoc: "returns -remarks")   ← has-returns AND NOT has-remarks
-```
-
-**If a symbol you are about to edit has no summary, see the `dotnet-change` skill** — a missing
-summary on a symbol you touch is not just a gap to note, it's something `validate_patch` should fix
-in the same edit.
-
-## Choose exactly what you need with include
-
-`get_symbol` takes one selector, `include`, instead of a resolution ladder. It has three forms:
-
-1. **omitted, or `include: "standard"`** (default) — `xmlDoc`, `referenceCounts`, `recentLog`.
-   The set meaningful on nearly every call. Start here.
-2. **`include: "all"`** — every component below. Reach for this **only** when you already
-   intend to edit the symbol, or genuinely want everything about it at once.
-3. **an explicit comma list of component names** — e.g. `include: "source,members"`. This
-   REPLACES the default set rather than adding to it: it is a literal query of exactly the
-   columns you want, nothing implied. Use it whenever `standard`/`all` is close but not right.
-
-Component names are exactly the response fields they control:
-
-| Component | Returns |
-|---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine` — surviving lines keep their real file number even after a modifier below drops others, never renumbered. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. Suffix the component name with `:code` (`"source:code"`) to drop every `///` doc comment (the requested symbol's own and, for a type, each member's) and get just attributes + body — cheaper when you're about to edit and already have (or don't need) `xmlDoc`. Bare `"source"` is `"source:full"`. Either mode also takes `-modifier` suffixes to subtract further, e.g. `"source:full-remarks-attributes"` (drop just the `<remarks>` tag and all attributes, keep everything else) or `"source:code-comments"` (also drop `//` comments). Doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — same names as `xmlDoc`'s fields) only work under `full`; `attributes`/`comments` work under either. No `+tag` exists — a query only ever subtracts from its mode's default, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. Either mode also takes an `@` line selector — see the row below. |
-| `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), returning only those lines. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (to the declaration's end), `"source@-50"` (from its start), `"source@52"` (one line). Ranges are **absolute file line numbers**, the same ones `declarationSites` and each line's own number report, so a span from any earlier response is reusable as-is; separate several with `;`, **not** `,` (that already separates component names). It is a pure filter — a line a `-modifier` dropped stays dropped even if a range names it, and nothing is ever renumbered. Past the declaration it clamps; entirely outside it returns no lines rather than erroring. A slice adds `sourceLines`: `"kept/whole"` (`"46-76/38-96"`, or `"none/38-96"` on a miss) and restores `displayString`/`modifiers`, since the signature line is usually not in the slice. Rejected with `symbols` (batch) as `lines_with_batch`. |
-| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
-| `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed |
-| `bodyOutline` | Control-flow landmarks inside a method-like body — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` — for navigating a long body before deciding what to fetch. Purely syntactic (same cost tier as `source`, not `mechanicalFacts`' semantic-model tier). Under the default `toon` format this renders as a raw indented block, same treatment `source` gets: one `text,startLine,endLine` line per landmark, indented two spaces per nesting level instead of carrying a `depth` number — `format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` array instead, since plain JSON has no indentation of its own to lean on. A bare `try`/`else`/`finally` has no name/condition of its own and is omitted; infer its span from the parent row. `text` is truncated to 28 characters with a trailing `..`, not summarized. Nesting counts among other landmark rows only, not raw syntax depth. Absent, with an explanatory `bodyOutlineNote`, for anything without an executable body of its own (a type, a field, an auto-property) — not a silent double-disappearance. `bodyOutlineNote` also appears (rows still returned) when the declaration is under 40 lines — see below. |
-| `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
-| `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
-| `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
-| `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none. Suppressed when `source` is also requested |
-| `baseType` | For a type only: `{symbolId, displayString}` for its direct base type — one hop, not the transitive chain (`get_type_hierarchy` owns that). Absent for anything else. Suppressed when `source` is also requested |
-| `interfaces` | For a type only: `[{symbolId, displayString}]` for its direct interfaces (not `AllInterfaces`). Absent for anything else. Suppressed when `source` is also requested |
-| `usings` | This symbol's file-level `using` directives (compilation-unit plus any enclosing classic namespace block), in source order. `null` if there are none. **Not** suppressed by `source` — a symbol's own declaration span never includes the file's usings, so it's genuinely new information either way |
-
-`modifiers` is not in this table — it isn't an `include` component at all. It's computed on every call,
-like the skeleton, not opt-in (see below).
-
-The skeleton is `kind`, `origin`, `containingType`, `declarationSites` — unconditional, every call gets
-it. `displayString` and `modifiers` (the literal C# modifier phrase, e.g. `"public sealed"`, `"public
-override"`) sit one tier below: also computed on every call, but suppressed to `null` when `source` is
-also requested, since the declaration's own signature line already states both as text — **unless the
-source was line-sliced** (`@`), which usually cuts that line out, so both come back. **There is no
-`accessibility` field** — `modifiers` already carries it, so a second field saying the same thing would
-just be duplication. `source` itself reads exactly as it does in the file, no header line prepended.
-
-`origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a BCL/NuGet
-symbol resolved only because this repo's own code calls, constructs, implements, or extends it —
-`search_index(origin: "external")` is how such a symbol gets found in the first place. An external
-symbol's `declarationSites` is always `[]`.
-
-Examples:
-
-- `include: "all"` minus the body — spell out the rest instead of subtracting:
-  `include: "xmlDoc,mechanicalFacts,referenceCounts,recentLog"`. Use when you want facts and
-  history but are not going to edit the symbol.
-- `include: "members"` — a type's API surface with no bodies and none of the standard extras.
-- `include: "xmlDoc"` — the leanest non-default fetch: just the skeleton plus the doc breakdown,
-  no `referenceCounts` latency cost (it waits on the semantic model) and no history lookup.
-- `include: "attributes"` — check `[Authorize]`/`[AllowAnonymous]`/`[Obsolete]` presence on a
-  member without a `source` fetch; the review agent's `[security]` and `[docs]` aspects use this.
-- `include: "source:code@120-160"` — one region of a long member. See below for when that pays.
-
-An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
-misspelled name is an `invalid_component` error rather than being silently dropped.
-
-### When to slice `source` with `@`, and when not to
-
-An `@` selection is worth it when you already know **where** in a long declaration you need to look and
-the rest is dead weight — a stack frame or diagnostic naming a line, a span you noted from an earlier
-fetch, or a second pass into a member you have already read once. Two hundred lines fetched to read
-thirty is the case it exists for.
-
-It is **not** worth it as a default. Below roughly 40–60 lines a whole declaration costs less than the
-slice plus the follow-up you will issue when the slice turns out to be the wrong region — you pay two
-round trips for one answer. Fetch the member whole the first time; slice on the way back in.
-
-Two things to hold when you do slice:
-
-- **`contentVersion` still covers the whole symbol.** It is fingerprinted over the entire
-  declaration, not the lines you received, so holding it never means you have seen all of it. `sourceLines`
-  (`"92-93/90-94"`) is the field that says what you actually got — read it rather than assuming the
-  response is the member.
-- **A miss is silent by design.** Ranges outside the declaration return `"source":[]` with
-  `"sourceLines":"none/90-94"` instead of an error, because the response still carries the skeleton and
-  the real span. If you get `none`, re-read the denominator and ask again — don't conclude the symbol has
-  no body.
-
-### When to reach for `bodyOutline`
-
-Use it as a **map before a fetch**, not a replacement for one: a long, unfamiliar member where you don't
-yet know which region to slice with `source@`. A `switch` with a dozen cases, or a member `search_index`'s
-`endLine - line` flags as large, is the shape it pays off on — the rows tell you which case/branch to
-slice next instead of guessing a line range or reading the whole thing.
-
-It is **not** worth it below roughly 40 lines (doc-comment-inclusive, the same bound `declarationSites`
-reports) — `bodyOutlineNote` says so explicitly rather than silently degrading to something else, but the
-rows still come back so the response is never a dead end. And it is not a substitute for reading the
-region once you've located it: `text` is a truncated label for navigation, not a summary you can reason
-from in place of the actual condition/expression.
-
-### Location is always there
-
-Every `get_symbol` response carries `declarationSites` — `file`, `startLine`, `endLine` —
-regardless of `include`. It is part of the unconditional skeleton (`kind`, `origin`, `containingType`,
-`declarationSites` — plus `displayString`/`modifiers`, computed the same way but suppressed when
-an unsliced `source` is also requested), and the spans are computed live rather than read from a cache, so they are
-correct even for a symbol split across partial-class files.
-
-That means **"where does this live?" never costs a second call or an extra component**, and those
-spans are exactly what a `validate_patch` edit takes. Do not reach for `include: "all"` just to
-find a line number — the default `standard` call already carries `declarationSites`.
-
-**A narrowed response returns a narrowed version token**, covering only the layers it served —
-so a token from a `standard` fetch and one from `include: "all"` are not directly comparable if
-you're diffing them yourself later.
-
-### Several symbols in one call
-
-`symbols` fetches a list instead of `symbol` fetching one — same `include` applied to every entry:
-
-```
-get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"])
-```
-
-The response's `results` is a plain array with one entry per requested symbol, and each entry is
-*exactly* what a single-symbol `get_symbol` call for that symbol would have returned — batching is
-an orchestration convenience, not a different response shape, so there is no fixed column set to
-learn and nothing gets hoisted out of `content`. A successful entry has `symbolId, contentVersion,
-limitedBy, content`; a symbol that did not resolve has `error` instead (`symbol_not_found`,
-`ambiguous_symbol`) with no `symbolId`/`contentVersion`/`content` — one failed lookup does not fail
-the batch, and the two shapes are told apart by which keys are present.
-
-Every entry carries full content — there is no lease mechanism to interact with here or anywhere
-else in `get_symbol` (see "Version tokens" below).
-
-## Questions symbol lookup cannot answer
-
-These tools answer questions that no amount of `get_symbol` will. Every example below is a
-real call against this plugin's own repo, with its real response.
-
-### `get_scope` — what is callable *here*
-
-Members, inherited members, locals, parameters and **applicable extension methods** at a
-file/line, filtered to what is actually accessible from that position. Grep cannot answer
-this: an extension method shares no text with its call site.
-
-**Different question from `get_symbol`'s `members`.** `members` is a static, position-free
-list of what a *type declares* — ask it when you already know the type. `get_scope` is
-position-sensitive — it also surfaces inherited members, locals/parameters in scope at that
-exact line, and extension methods applicable to a receiver, none of which `members` returns.
-
-Call it when:
-- you're about to write a helper and suspect one already exists on a variable in scope;
-- you're standing at a cursor and don't yet know the receiver's type, so `get_symbol` has
-  no target to query yet;
-- you want "what's in scope generally" at a line (drop `receiver` for that).
-
-Don't reach for it once you already know the type name — `get_symbol(include:"members")` is
-cheaper and doesn't need a file/line/column.
-
-```
-get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
-          line: 185, receiver: "featureLog", filter: "methods")
-```
-
-```json
-{"receiverType": "FeatureLogStore",
- "items": [{"displayString": "string FeatureLogStore.Append(LogEntry entry)",
-            "kind": "Method", "origin": "member", "definedIn": "FeatureLogStore"},
-           {"displayString": "int FeatureLogStore.EntryCount()", "origin": "member"},
-           {"displayString": "bool object.Equals(object? obj)", "origin": "inherited"}]}
-```
-
-`origin` separates what the type itself declares from what it inherits — usually the first
-thing you want to know. Drop `receiver` to ask what is in scope at that line generally
-rather than on one expression.
-
-### `get_call_slice` — how does X reach Y
-
-The shortest call path between two symbols **you can already name**. Use it for "does X
-reach Y, and through what" instead of walking outwards with repeated `get_references` calls,
-which costs a round trip per hop and leaves you assembling the chain yourself.
-
-Call it when both endpoints are known — e.g. confirming a proposed removal is safe by
-checking whether an entry point still reaches it, or explaining an unexpected side effect by
-finding the path between the trigger and the symbol that causes it. It requires `to` as well
-as `from`: it cannot answer an open-ended "who (eventually) calls this" with no destination
-in mind — that's `get_call_hierarchy`, below.
-
-```
-get_call_slice(from: "PatchTools.ValidatePatch", to: "FeatureLogStore.Append")
-```
-
-```json
-{"found": true, "depth": 2, "nodesExplored": 69,
- "path": [{"displayString": "Task<string> PatchTools.ValidatePatch(...)"},
-          {"displayString": "void PatchTools.AppendLog(...)"},
-          {"displayString": "string FeatureLogStore.Append(LogEntry entry)"}]}
-```
-
-A miss is still informative: it reports the nearest reachable frontier from each end, which
-tells you where the chain actually breaks. `found: false` means no path within `maxDepth`
-(default 8) — not necessarily no relationship.
-
-### `get_call_hierarchy` — who eventually calls this, up to the entry points
-
-An open-ended multi-level call tree from one symbol — Visual Studio's *View Call Hierarchy*,
-which `get_call_slice` structurally cannot answer (it needs a known `to`). `direction:
-"callers"` (default) walks upward toward entry points; `"callees"` walks downward into what
-the symbol invokes. Every node carries `symbolId` + `displayString` (the bare name, parameter list
-dropped — overloads still disambiguate via `symbolId`); add `kind`/`file`/`line`/`signature` (the full
-parameter-list form) via `fields`.
-
-Call it to answer "if I change this, how much does it ripple" — `includeTree: false` returns
-only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
-version of that question, without paying for the full tree.
-
-```
-get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDepth: 1)
-```
-
-```json
-{"root": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append"},
- "direction": "callers",
- "tree": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append",
-   "children": [
-     {"symbolId": "sym_0e0e...", "displayString": "DevlogMigration.Run"},
-     {"symbolId": "sym_c3fc...", "displayString": "FeatureLogStoreTests.ResolveIdChain_SingleHop_ReturnsBothIds"},
-     {"symbolId": "sym_2b15...", "displayString": "PatchTools.AppendLog"}, "...4 more"]},
- "blastRadius": {"totalUniqueNodes": 8, "perDepth": [1, 7], "depthCapped": true}}
-```
-
-`depthCapped: true` here means `Append` has callers beyond `maxDepth: 1` — raise it to see further up the
-chain (a real 3-level pull from this same root reaches `PatchTools.ValidatePatch`, the actual MCP tool
-entry point, at depth 3).
-
-A symbol reached through two different branches (a diamond) legitimately appears twice in the
-tree — that isn't deduped, since collapsing it would hide a real second route in — but counts
-once in `blastRadius`. True recursion (a symbol reappearing on its own root-to-node path) stops
-as a leaf marked `recursive: true` rather than looping. `maxDepth` defaults to 3 and clamps to
-8; a well-connected graph grows fast, so start shallow and increase only if the answer needs
-it, or lean on `blastRadius.depthCapped` to see whether a branch was still expanding when the
-cap hit.
-
-### `get_type_hierarchy` — a type's full inheritance shape
-
-Base chain up to `object`, transitive interfaces (tagged `direct` vs `inherited`), and every
-derived/implementing type — one hop further than `get_symbol`/`get_references` give (those
-only show one level: `containingType`, or one hop of `implementations`/`overrides`).
-
-`derived` is a flat ranked list, not a nested tree — a widely-subclassed base could have
-hundreds of descendants, and the intermediate shape rarely matters; `get_symbol` on any single
-result reveals its own immediate base if you need one more level. Omitted entirely when
-`symbol` isn't a class/interface (structs/enums/delegates can't be derived from).
-
-```
-get_type_hierarchy(symbol: "SymbolStore")
-```
-
-```json
-{"symbolId": "sym_a477...", "displayString": "SymbolStore",
- "baseChain": [{"symbolId": "sym_0230...", "displayString": "object"}],
- "interfaces": [],
- "derived": {"items": [], "totalItems": 0}}
-```
-
-`SymbolStore` is a `sealed class` with no interfaces, so `interfaces` is empty and `derived` correctly
-reports zero rather than being omitted — `derived` is omitted only when `symbol` isn't a class/interface
-at all (a method, a struct, an enum). For an interface or a widely-implemented base, `interfaces`/`derived`
-fill in with `origin: "direct"|"inherited"` tags and non-empty `items` (`limit`, default 40, matches
-`search_index`'s cap convention).
-
-### `get_project_graph` — the solution's project reference graph
-
-Which `.csproj` references which, and the reverse (`referencedBy`) — computed live from the
-loaded solution every call, no caching (project counts are small). Pass `project` to scope to
-one project's direct references and dependents instead of the whole graph.
-
-```
-get_project_graph()
-```
-
-```json
-{"projects": [
-   {"name": "DotnetToolkit.McpServer", "references": [], "referencedBy": ["DotnetToolkit.McpServer.Tests"]},
-   {"name": "DotnetToolkit.McpServer.Tests", "references": ["DotnetToolkit.McpServer"], "referencedBy": []}],
- "totalProjectsInSolution": 2}
-```
-
-### `detect_circular_dependencies` — a real dependency loop, not just deep nesting
-
-Cycles in the solution's project reference graph. `scope: "project"` (default, and for now the
-only supported value) reports one representative cycle per strongly-connected component found
-— not every distinct cycle within it, which can be combinatorial. `scope: "type"` returns
-`error: "unsupported_scope"` rather than a partial answer: it would need collapsing
-member-level call edges up to their containing type, which this server does not do today.
-
-```
-detect_circular_dependencies()
-```
-
-```json
-{"scope": "project", "cycles": [], "totalCycles": 0}
-```
-
-An empty `cycles` array is a checked "found none," not silence — this repo has no known
-project cycles today.
-
-### `get_semantic_diff` — what changed, semantically
-
-Symbols added, removed and changed between two git refs, with which version layers moved and
-the API impact. Use it instead of reading a textual diff to judge a commit or a branch.
-
-```
-get_semantic_diff(fromRef: "9f20936~1", toRef: "9f20936")
-```
-
-```json
-{"symbolsAdded": ["...Store.SearchText::method ForIndex/1", "..."],
- "symbolsChanged": [{"displayString": "...Store.SymbolStore::method Search/3",
-                     "layersChanged": ["body"], "apiImpact": "non-breaking"}],
- "apiImpactSummary": {"breaking": 0, "nonBreaking": 3, "added": 16, "removed": 0}}
-```
-
-It is trivia-blind, so a formatting- or comment-only commit correctly reports **no change**.
-Read an all-empty result as "nothing semantic moved" — which also covers a commit that only
-touched non-C# files. Defaults are `HEAD~1`..`HEAD`.
+`get_symbol` takes `symbols: [...]` to fetch a list with one `include`. Batch by default; split only
+when you genuinely need different filters per call. Details in `search_index.md` / `get_symbol.md`.
 
 ## Gate expansion on referenceCounts
 
 `get_symbol` returns `referenceCounts: { callers, tests, implementations, overrides }`. Use it to
 decide whether an expansion is worth the tokens:
 
-- **0 callers** → usually nothing to find; skip `get_references`. **But not if the symbol can
-  be invoked without being named** — see below.
+- **0 callers** → usually nothing to find; skip `get_references`. **But not if the symbol can be
+  invoked without being named** — see below.
 - **1–5 and you plan a signature change** → fetch them.
-- **more than 5** → fetch the list without bodies first, then bodies only for the ones you
-  will actually edit.
+- **more than 5** → fetch the list without bodies first, then bodies only for the ones you will
+  actually edit.
 
-`callers` counts **static call sites in the loaded solution**. Anything a framework invokes
-by reflection is invisible to it, so for such a symbol the number measures only who else
-happens to call it directly — which is incidental. In this plugin's own code
-`HistoryTools.SearchLog` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely
-because tests call one by name and not the other; both are live MCP tools reached the same
-way. Treat 0 as "no information" rather than "unused" when the symbol is an entry point, has
-a registration attribute (its own or on its type), is a DI-registered implementation, a
-serialization target, or a test/event handler. Never conclude "dead code" from a 0 alone.
+`callers` counts **static call sites in the loaded solution**. Anything a framework invokes by
+reflection is invisible to it. In this plugin's own code `HistoryTools.SearchLog` reports 0 callers
+and `ContextTools.GetSymbol` reports 3, purely because tests call one by name and not the other;
+both are live MCP tools reached the same way. Treat 0 as "no information" rather than "unused" when
+the symbol is an entry point, has a registration attribute, is a DI-registered implementation, a
+serialization target, or a test/event handler. **Never conclude "dead code" from a 0 alone.**
 
-A count is **omitted entirely** when it could not be measured — the workspace is still
-loading, or the symbol's project contributed no edges. Absent is not 0: absent means unknown.
-`callers` and `tests` are also omitted for named types, where call edges are recorded against
-members and a type-level count would structurally always be zero.
+A count is **omitted entirely** when it could not be measured. Absent is not 0: absent means
+unknown. `callers`/`tests` are also omitted for named types, where call edges are recorded against
+members.
 
-Before writing a helper that plausibly already exists, check with `search_index` first —
-one cheap call beats a duplicate implementation.
+Before writing a helper that plausibly already exists, check with `search_index` first — one cheap
+call beats a duplicate implementation.
 
 ## Addressing a symbol
 
@@ -555,67 +111,28 @@ Ambiguity is never guessed: you get `error: "ambiguous_symbol"` plus a candidate
 ## Version tokens
 
 Every content response carries a `contentVersion` like `decl:a1b2…|body:84c3…` — a hash of the
-symbol's declaration and (when fetched) body layers, useful for your own manual "has this changed
-since I last looked" comparison across calls in a long session. There used to be a caller-driven
-`knownVersion`/`refetch` lease pair that let a repeat `get_symbol` call omit content when nothing
-moved; it was removed (near-zero real adoption, plus a correctness gap where a wider request
-against a narrower fetch's token could be told `changed: false` and silently withheld content it
-had never actually sent). Every `get_symbol` call now always returns full content — there is
-nothing to hold onto or pass back, and no round trip is ever wasted by a stale or partial token.
+symbol's declaration and (when fetched) body layers, for your own "has this changed since I last
+looked" comparison. Same `decl` with a different `body` means the API is unchanged and only the
+implementation moved. There is no lease mechanism: every `get_symbol` call always returns full
+content, so there is nothing to hold onto or pass back.
 
-The layers are still meaningful if you're comparing tokens yourself: same `decl` with a different
-`body` means the API is unchanged and only the implementation moved.
+`validate_patch` takes these tokens as `baseVersions` — see the `dotnet-change` skill.
 
-## Workspace readiness
+## Workspace readiness and response conventions
 
-`limitedBy` names what the answer could **not** draw on — the tier it came from, or the content
-it was built on.
+`limitedBy` names what the answer could **not** draw on: **absent** = fully informed;
+**`index_only`** = syntax tier only, reference counts unavailable **not zero**; **`stale`** = the
+file changed on disk, call `reload_workspace` and re-read before patching; **`degraded`** = projects
+failed to load, results may be silently **wrong**, call `workspace_status` and fix the build. Never
+report findings from a degraded workspace without saying so.
 
-- **absent** — fully informed. Silence is the healthy case.
-- **`index_only`** — answered from the syntax tier, or before the semantic index finished its
-  first pass. Reference counts and semantic resolution are unavailable, **not zero**.
-- **`stale`** — the file this symbol was served from has changed on disk since the workspace read
-  it, so the content is behind what is actually there. Call `reload_workspace`, then re-read: line
-  spans will have moved. Do not build a patch on a `stale` response — `validate_patch` refuses it
-  with `stale_workspace` anyway, because applying it would revert whatever else changed in that
-  file.
-- **`degraded`** — the workspace loaded but one or more projects failed (commonly a restore done
-  by a different SDK than the server runs on). Results may be silently **wrong**, not just thin:
-  symbols from failed projects are missing, and attribute-derived facts like `tests` can be
-  false across the board. Call `workspace_status` for the diagnostics, fix the build, then
-  `reload_workspace`. Do not report findings from a degraded workspace without saying so.
+Responses are TOON by default and deliberately terse — an absent field carries no information.
+**Absent is not zero.** Full detail on both in `${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md`.
 
-`search_index` and `get_symbol` answer from the syntax index immediately; while the MSBuild
-workspace is still loading they return `limitedBy: "index_only"` (and `referenceCounts` may
-be absent — do not read that as "no callers"). `get_references` needs live semantics and
-returns `error: "workspace_loading"` until it is ready — wait briefly and retry, or check
-`workspace_status`. After a large git operation, call `reload_workspace`.
+## Attribution
 
-## Reading responses
-
-Responses are deliberately terse: fields that are absent carry no information.
-`limitedBy` appears only when something limited the answer, `changed` only when `false`, `truncated`
-only when true. Absence of `tests` in `referenceCounts` means "not computed yet", **not**
-"no tests".
-
-By default responses are rendered as **TOON** (Token-Oriented Object Notation) rather than JSON text —
-still the same field names and nesting described throughout this skill, just a more compact encoding of
-them: every multi-item response is a plain array of objects in either case, there is no separate
-columns/rows table shape. Call `set_output_format(format: "compact")` (minified JSON) or `format: "json"`
-(pretty-printed) to get JSON text back for the rest of the session; `defaultFormat` in
-`.claude/dotnet-toolkit/config.json` only sets what a fresh server starts with.
-
-`tests` is the subset of `callers` whose own declaration carries a test attribute (`[Fact]`,
-`[Theory]`, `[Test]`, `[TestCase]`, `[TestMethod]`), so it can never exceed `callers`. A helper
-that merely lives in a test project is not counted. `get_references` marks the same callers with
-`isTest: true`, emitted only on the ones that are tests — an absent flag means "not a test".
-
-### `get_references`' `items` fields
-
-Each item is a plain object carrying `symbolId`, `displayString` (compact name/arity, e.g.
-`"ContextTools.GetSymbol/13"` — pass `fields: "signature"` for the full parameter list), and `sites` on
-every call. `dispatchKind` is reported once at the top level, not per item — it describes the *target*
-symbol's own dispatch, which cannot vary across items within one call. `contentVersion` (with
-`fields: "contentVersion"`), `isTest`, and `content` (the inline body, only present with
-`includeBodies: true`) are present only when they apply — absent, not `null`, on a caller that isn't a
-test, wasn't fetched with a body, or where the caller didn't ask for per-item versions.
+No tool takes a `sessionId`; every call in a server process shares one ambient session id
+automatically. Pass an optional `taskId` on any recording tool only when you are **measuring your
+own token cost or working alongside other agents on the same server** — parallel agents share the
+ambient id and cannot otherwise be told apart. It is instrumentation, never a precondition for
+retrieval. Recipe in `docs/tools/get_retrieval_metrics.md`.

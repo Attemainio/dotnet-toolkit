@@ -110,6 +110,7 @@ while IFS= read -r seg; do
     [ -f "$abs_file" ] || continue
 
     if is_governed_cs_file "$abs_file" "$root"; then
+        DOCS="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}/docs/tools"
         cat >&2 <<EOF
 Blocked Bash command '${cmdname}' reading ${candidate}: it is compiled by ${REL_CSPROJ}, so
 search_index/get_symbol answer this more cheaply and completely than raw shell text tools - no
@@ -119,16 +120,18 @@ This is the same rule Read is blocked under (see guard-cs-read.sh) - running the
 Bash instead of the Read tool is not a sanctioned way around it.
 
 Do this instead:
-  - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - ranked hits with
-    symbolId, file, and line, all in one call.
-  - Know the type/member name: get_symbol(symbol: "...", include: "members") to enumerate a type, or
-    the default include for one member's declaration, xmlDoc, and reference counts.
-  - Only need certain lines of a long member (what sed -n '120,160p' would have done):
-    get_symbol(symbol: "...", include: "source:code@120-160") returns just those absolute file lines,
-    ';'-separate several ranges; the response's sourceLines says what you got vs the whole span.
+  - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - one call, many terms.
+  - Know the type/member name: get_symbol(symbol: "...").
+  - Only need part of a long member (what sed -n '120,160p' would have done):
+    get_symbol(symbol: "...", include: "source:code@120-160").
   - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
     declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
     equivalent yet - say so and ask the user to allow the Bash command explicitly.
+
+For arguments and worked examples, read the one file for the tool you are about to call:
+  ${DOCS}/search_index.md
+  ${DOCS}/get_symbol.md
+${DOCS}/_index.md routes any other question to its tool.
 
 If this genuinely needs raw shell access (the workspace failed to load, or the file's exact
 formatting/byte layout is itself what you need to see), say so and ask the user to allow it explicitly
