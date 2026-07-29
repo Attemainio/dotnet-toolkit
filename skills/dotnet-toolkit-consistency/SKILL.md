@@ -5,12 +5,11 @@ description: Use when auditing whether this plugin's own docs, skills, agent, ru
 
 # Auditing plugin self-consistency
 
-This plugin teaches Claude to use its own MCP tools through a scattered set of files — skills, an agent
-definition, path-scoped rules, hooks/scripts, `docs/*.md`, `CLAUDE.md`, `README.md`. None of them is
-generated from the code; every one is hand-maintained prose that can silently drift from
-`src/DotnetToolkit.McpServer/Tools/*.cs` the moment a tool changes and the corresponding doc edit is
-skipped. This skill is the audit pass that catches that drift, run as its own task rather than trusted to
-happen implicitly during unrelated work.
+This plugin teaches Claude to use its own MCP tools through a scattered set of hand-maintained files —
+skills, an agent definition, rules, hooks/scripts, `docs/*.md`, `CLAUDE.md`, `README.md`. None is
+generated from the code, so every one can silently drift from `src/DotnetToolkit.McpServer/Tools/*.cs`
+the moment a tool changes and the doc edit is skipped. This skill is the audit pass that catches that
+drift, run as its own task rather than trusted to happen during unrelated work.
 
 **Ground truth is always the code.** Every check below starts from `Tools/*.cs` and treats every other
 file as a claim to verify against it — never the reverse. If a doc and the code disagree, the code is
@@ -18,13 +17,10 @@ right and the doc is what moves.
 
 ## Step 0 — enumerate the actual tool surface
 
-Before anything else, get the current, complete list directly from the source (don't trust any doc's
-existing tool list, including this skill's own examples below, since that's exactly the kind of claim
-being audited):
-
-**Do not reach for `grep` here** — `guard-cs-bash-read.sh` blocks any shell read of a `.cs` file in the
-solution, including this one, and it is right to: the enumeration is a symbol query, not a text search.
-Get it from the tools instead:
+Get the current, complete list directly from the source — don't trust any doc's existing tool list,
+including this skill's own examples below; that is exactly the kind of claim being audited. **Not
+`grep`**: `guard-cs-bash-read.sh` blocks shell reads of solution `.cs` files, and rightly — this is a
+symbol query, not a text search.
 
 ```
 get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools",
@@ -80,13 +76,41 @@ missing (a tool that exists but appears nowhere in it):
 | `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table must list exactly the standards files that exist in `.claude/rules/` (nothing missing, nothing stale), and its `validate_patch` line must match the current write path. That table's "When" column doubles as the **reviewer's trigger table**, so each row's condition must be an *observable property of the code* (awaits/locks, hot path, public surface change), not a vague topic a reviewer can't match against retrieved source; and the always-loaded core it names must match `agents/dotnet-code-review.md`'s list exactly |
 | `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
 | every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
-| `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently |
+| `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently. Also the "what is deliberately *not* written" table and the uninstall list: every asset the plugin ships is in exactly one of write / not-written / uninstall, and the write and uninstall lists name the same files |
+| `skills/dotnet-toolkit-install-check/SKILL.md` | the installation audit. Its Step 1 inventory must cover every top-level directory the plugin actually ships (`skills/`, `agents/`, `hooks/`, `docs/`, `docs/tools/`, `.claude/rules/`, `scripts/`, `.mcp.json`) under one of its four delivery mechanisms, and its Step 6 scenario table must resolve to files that exist. It audits init; this skill audits it |
 | `skills/dotnet-toolkit-selfeval/SKILL.md` | the efficiency probe matrix. Check that its Step 2 families still cover every tool from Step 0; that the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`) are still exactly the ones with no `ToolTelemetry.Record`/`RecordPatch` call; and that its `taskId`/`taskIds`/`groupBy:"task"` measurement recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed there as unmeasurable understates what the evaluation can see |
 | `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. Check: `tools:` frontmatter matches Step 0 for the read-side subset it should have (not a stale subset missing a tool added since, and still excluding `get_project_graph`/`detect_circular_dependencies`, which are deliberately withheld as out of a scope slice's reach); every tool it names in Process, evidence bars, and Boundaries is granted in that frontmatter *and* still behaves as described; its always-loaded standards core and per-aspect fold-ins (e.g. which files feed `[correctness]`) still resolve to real files in `.claude/rules/`; it still requires the `Standards:` line in its output format; and it does **not** re-acquire a `skills:` grant or a directive to read `docs/agent-reference.md` — both were removed to hold the per-instance token baseline down |
 | `docs/agent-reference.md` | **human-facing only; the agent must not be told to read it.** Check it does not contradict the agent file (which is authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists and is described accurately. A statement here that duplicates the agent file is drift waiting to happen — prefer a pointer |
 | `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
 | `docs/skill-reference.md` | one entry per skill under `skills/`, none stale, none missing |
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
+
+**4b. Consumer reachability — does the plugin work out of the box?** Steps 1–4 check that the files
+describing the tools are *accurate*. This step checks they are *reachable from a consuming repo*, where
+this repo's `CLAUDE.md` does not exist and this repo's `.claude/rules/csharp-standards.md` was never
+copied. Every operational instruction must therefore live in something that ships: a skill, the agent
+file, a `.claude/rules/` standards file (copied by init), a `docs/` file reachable by
+`${CLAUDE_PLUGIN_ROOT}` path, or `dotnet-toolkit-init`'s protocol-rule template.
+
+Two sweeps, both cheap:
+
+- **This repo's `CLAUDE.md`, paragraph by paragraph.** For each instruction in it, decide: is this
+  *about maintaining the plugin* (correct — it belongs only here), or is it *about using the tools*?
+  Anything in the second category must also exist in a shipped file, and CLAUDE.md should carry a
+  pointer rather than a second copy. The write-path discipline is the canonical example — CLAUDE.md's
+  "C# edits go through `validate_patch`" argument is the same argument the init template and
+  `dotnet-change` must both make, because a consumer never sees CLAUDE.md.
+- **The maintainer's memory directory** (`~/.claude/projects/<repo-slug>/memory/`, indexed by its
+  `MEMORY.md`). Read the index, then each entry, and sort every one into: **(a)** operational for
+  consumers → must be embedded in a shipped file; **(b)** operational for this repo only → belongs in
+  `CLAUDE.md` or `.claude/rules/`; **(c)** personal or environment-specific → belongs in neither, and
+  is correctly only in memory. Memory is user-local and does not travel with the plugin, so anything
+  in (a) or (b) that exists *only* there is a finding — it will be silently absent for every other
+  user of this plugin, and for this repo after a memory reset.
+
+Report each finding as: the memory or CLAUDE.md paragraph, its category, and the shipped file that
+should carry it. Do not copy a category-(c) fact into a shipped file to close a finding — categorising
+it correctly *is* closing it.
 
 **5. Hooks and scripts.** Read `hooks/hooks.json` and every script it points at
 (`scripts/guard-cs-edit.sh`, `scripts/guard-cs-read.sh`, `scripts/guard-cs-bash-read.sh`,
@@ -102,28 +126,22 @@ registered in `hooks/hooks.json`). Specifically:
      claim they do?
    - Any new script under `scripts/` not mentioned in `docs/hook-reference.md` or CLAUDE.md's "Plugin
      packaging" section is a finding (see Step 6).
-   - `hooks/hooks.json`'s matchers key on tool name only (`Edit|Write|NotebookEdit`, `Read`), not on which
-     agent issues the call — they fire identically whether the tool call comes from the main agent or a
-     subagent invocation of `dotnet-code-review`. That agent is granted `Read` for the narrow case its
-     Process step 2 allows — judging specific lines `get_symbol` didn't already give it — so confirm two
-     things stay true together: (a) `agents/dotnet-code-review.md`'s `tools:` list does not grant it
-     `Edit`/`Write`/`NotebookEdit` at all (the guard for those exists but the agent should never need it,
-     since its Boundaries section states it never modifies code — note `memory: project` makes the harness
-     grant them anyway, which is why the instruction has to carry the weight); and (b) its Process step 2
-     still tells it to reach for `search_index`/`get_symbol` first and only `Read` a file when a symbol
-     lookup didn't give it the lines — i.e. its `Read` grant is a narrow, guarded fallback that
-     `guard-cs-read.sh` still enforces on every call, not an unguarded escape hatch from the MCP tools. If
-     either drifts — the agent gains `Edit`/`Write`, or the agent file stops steering it toward symbol
-     retrieval first — that's a finding here, not just in Step 4's table.
+   - `hooks/hooks.json`'s matchers key on tool name only, not on which agent issues the call, so they
+     fire for `dotnet-code-review` too. Two things must stay true together: (a) the agent's `tools:`
+     list never grants `Edit`/`Write`/`NotebookEdit` — `memory: project` makes the harness grant them
+     anyway, which is why its Boundaries section has to carry the weight; (b) its Process step 2 still
+     sends it to `search_index`/`get_symbol` first and to `Read` only when a symbol lookup didn't give
+     it the lines — a narrow fallback `guard-cs-read.sh` still enforces, not an escape hatch. Either
+     one drifting is a finding here, not just in Step 4's table.
 
 **6. New or modified files nothing else references.** This is the drift-detection step, not just a
 per-file check: `git status`/`git diff --stat` (or `git log -p` for a stated commit range) against the
 last time this audit ran, or against a stated baseline, and ask — for every added or non-trivially-modified
 file under `src/`, `docs/`, `skills/`, `agents/`, `hooks/`, `scripts/`, `.claude/rules/` — does *something*
-in Steps 3–5's tables now mention it? A new `Tools/*.cs` file, a new `docs/*.md` reference doc, a new
-skill, a new hook script that shipped without a corresponding row anywhere is exactly the kind of gap
-CLAUDE.md's own "Changing the tool surface" section warns about — `get_scope`, `get_call_slice`, and
-`get_semantic_diff` were a real past instance of this: shipped in the code but named in none of the docs.
+in Steps 3–5's tables now mention it? A new `Tools/*.cs` file, reference doc, skill, or hook script that
+shipped without a row anywhere is the gap CLAUDE.md's "Changing the tool surface" section warns about;
+`get_scope`, `get_call_slice`, and `get_semantic_diff` were a real instance — shipped in the code, named
+in none of the docs.
 
 **7. The skills' own instructions.** Once Steps 1–6 have surfaced concrete drift, the fix usually touches
 a skill file itself, not just a table row — e.g. a new tool needs a new row in `docs/tools/_index.md`'s
@@ -140,24 +158,22 @@ for f in skills/*/SKILL.md CLAUDE.md .claude/rules/csharp-standards.md; do
 done
 ```
 
-Findings, in order of severity:
+Budgets, and why each one is a correctness bug rather than a cost note, are stated in CLAUDE.md's
+"Context budget" section — don't restate them here, just enforce them:
 
-- **Any `SKILL.md` over ~19 KB (~5k tokens) is a finding, not a style note.** Claude Code re-attaches
-  only the first 5,000 tokens of each invoked skill after auto-compaction (25k shared across all
-  skills), so everything past that is silently dropped mid-session while the skill's own decision
-  table still points at it. This is a correctness bug, not a cost one. The fix is always the same:
-  move per-tool mechanics into `docs/tools/<tool>.md` and leave the routing decision in the skill.
-- **`CLAUDE.md` over ~19 KB (~5k tokens)** — it is loaded in full by every session in this repo
-  regardless of task. Maintainer procedures belong in this skill; per-tool detail belongs in
-  `docs/tools/`; anything read only at write time belongs in `.claude/rules/` or `dotnet-change`.
-- **`.claude/rules/csharp-standards.md` over ~6 KB** — it is the other always-loaded file and is
-  deliberately just an index. Content, not pointers, appearing here is the drift.
-- **A `[Description]` attribute that has grown into a manual** (Step 2) — re-paid on every tool-search
-  fetch, so it is the per-call equivalent of the same mistake.
+- **Any `SKILL.md` over ~19 KB (~5k tokens)** — past that, auto-compaction silently drops the skill's
+  later sections while its decision table still points at them. Fix: move per-tool mechanics into
+  `docs/tools/<tool>.md`, leave the routing decision in the skill.
+- **`CLAUDE.md` over ~19 KB**, **`.claude/rules/csharp-standards.md` over ~6 KB** — the two
+  always-loaded files. The second is deliberately an index; content rather than pointers is the drift.
+- **`dotnet-toolkit-init`'s protocol-rule template over ~6 KB** — the always-loaded footprint it
+  writes into every *consuming* repo. Procedure detail belongs behind its
+  `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md` pointers. `dotnet-toolkit-install-check` owns this
+  check too; either finding it is fine, both missing it is not.
+- **A `[Description]` attribute that has grown into a manual** (Step 2) — the per-call equivalent.
 
-Report each overage with its current size, the budget, and which sections to move where. Do not fix a
-size overage by deleting guidance — move it to an on-demand file and leave a pointer, or the next
-session simply loses the rule.
+Report each overage with its size, the budget, and which sections to move where. Do not fix an overage
+by deleting guidance — move it behind a pointer, or the next session loses the rule.
 
 **8. `CLAUDE.md` and `README.md` last.** These are the two files a fresh session or a new user reads
 first, so they should reflect the *already-corrected* state of everything above, not be patched
@@ -179,8 +195,7 @@ If every file checked is in sync, say so in one line — don't manufacture findi
 
 ## Fixing vs. reporting
 
-Apply fixes yourself once found, in the Step 1→8 order above (code is never the thing edited by this
-skill — only the docs/skills/rules/hooks that describe it). Every fix here is to a non-`.cs` file, so none
-of it goes through `validate_patch`; `Edit`/`Write` apply directly. Do not silently skip a step because
-"nothing looks wrong there" — state that the step was checked and came back clean, the same discipline
-`dotnet-code-review` applies to a clean aspect.
+Apply fixes yourself once found, in Step 1→8 order (code is never edited by this skill — only the
+docs/skills/rules/hooks describing it). Every fix is to a non-`.cs` file, so `Edit`/`Write` apply
+directly, not `validate_patch`. Never silently skip a step because "nothing looks wrong there" — state
+it was checked and came back clean.

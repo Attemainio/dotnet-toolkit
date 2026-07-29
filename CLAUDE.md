@@ -72,6 +72,13 @@ be slower than the pure unit tests.
 
 `TreatWarningsAsErrors` is set repo-wide (`Directory.Build.props`), so a build with warnings fails.
 
+**Build with the same SDK the server uses.** `scripts/run-server.sh` prefers a user-local
+`~/.dotnet` when present, so if the `dotnet` on `PATH` is a *different* net10 SDK, building with it
+rewrites `obj/project.assets.json` for the wrong MSBuild and the server's next workspace load fails
+with `The "ResolvePackageAssets" task failed` — `workspace_status` then reports DEGRADED and semantic
+results go silently incomplete rather than erroring. Check `dotnet --list-sdks`; if they differ, build
+with `~/.dotnet/dotnet`, or repair with `~/.dotnet/dotnet restore` + `reload_workspace`.
+
 ## Architecture
 
 The server (`src/DotnetToolkit.McpServer/Program.cs`) starts over stdio and registers tools via
@@ -163,7 +170,7 @@ index and `dotnet-change`'s pre-edit step) and by the review agent per invocatio
 `paths: ["**/*.cs"]` frontmatter exists only to keep them out of the launch context, not as a load
 mechanism.
 
-`skills/` ships six skills, cataloged in `docs/skill-reference.md`:
+`skills/` ships seven skills, cataloged in `docs/skill-reference.md`:
 
 - **`dotnet-code-query`** — the read protocol: when to reach for which tool, expansion gating,
   symbol addressing, workspace readiness. Deliberately small; per-tool mechanics live in
@@ -176,9 +183,16 @@ mechanism.
   that repo's CLAUDE.md, because `.claude/rules/` loads independently. It exists because a plugin can
   ship files for explicit reads (`${CLAUDE_PLUGIN_ROOT}/...`) but has no manifest field to make the
   harness auto-load a rule the way a consuming repo's own `.claude/rules/` gets scanned.
+- **`dotnet-toolkit-install-check`** — audits `dotnet-toolkit-init` against the plugin tree: every
+  shipped file must fall in exactly one delivery mechanism (ships active / must be copied /
+  referenced by `${CLAUDE_PLUGIN_ROOT}` path / created at runtime), init's write and uninstall lists
+  must name the same files, the consumer's CLAUDE.md must be untouched, and the protocol rule it
+  writes must stay a ~6 KB declaration rather than a copy of the workflow. Read-only.
 - **`dotnet-toolkit-consistency`** — this repo's internal audit: checks `Tools/*.cs` as ground truth
   against every file that describes the tool surface, and fixes what has drifted. **It owns the
-  authoritative list of those files.**
+  authoritative list of those files.** Its consumer-reachability step is the counterpart to
+  `install-check`: anything operational that lives only in this CLAUDE.md or in a maintainer's memory
+  never reaches a consuming repo, and is a finding.
 - **`dotnet-toolkit-selfeval`** — the complementary *efficiency* audit: a fixed probe matrix over
   every tool, measuring each call's exact token cost from `get_retrieval_metrics` deltas isolated by
   a caller-supplied `taskId`. Read-only; never fixes what it finds, and every finding is about this

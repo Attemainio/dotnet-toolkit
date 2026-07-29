@@ -27,6 +27,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | **To change a `.cs` file** | `validate_patch` | `validate_patch.md` | `Edit`/`Write`/`dotnet build` |
 | Where your tokens went | `get_retrieval_metrics` | `get_retrieval_metrics.md` | — |
 | Is the index/workspace warm | `workspace_status`, then `reload_workspace` | `server.md` | — |
+| Is the server answering at all | `ping` | `server.md` | — |
 
 Read a `.cs` file only for lines you are about to edit that `get_symbol` did not return. Non-C#
 files (`.csproj`, `.json`, `.md`, `.sh`) are normal `Read`/`Grep` territory.

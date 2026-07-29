@@ -1,6 +1,6 @@
 # Skill reference
 
-The plugin ships six skills under `skills/`. Each is a workflow definition the model loads when its
+The plugin ships seven skills under `skills/`. Each is a workflow definition the model loads when its
 trigger matches; this page is the catalog of what each one is for and what it reads or writes.
 
 ## `dotnet-code-query` — the read protocol
@@ -56,6 +56,24 @@ protocol rule (tool table, write path, standards index, write-time checklist) pl
 standards files (list in `.claude/rules/csharp-standards.md`'s index) into the repo's `.claude/rules/`.
 Approval-gated, backed up, additive — it never touches
 the repo's CLAUDE.md, and uninstall is deleting the listed files.
+
+## `dotnet-toolkit-install-check` — auditing the installation
+
+**When**: "did the init work", "check the dotnet-toolkit installation", "is this repo wired up
+correctly", "what does uninstalling leave behind", "audit the init skill".
+
+Builds the expected asset inventory from the plugin tree itself and sorts every shipped file into one
+of four delivery mechanisms — *ships active* (MCP server, hooks, skills, agent), *must be copied*
+(the protocol rule and standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path* (`docs/`), and
+*created at runtime* (`cache/`, `backups/`, `config.json`). It then checks `dotnet-toolkit-init`'s
+"what gets written", "what is deliberately not written", and "undoing this later" sections against
+that inventory, and in a consuming repo checks the state actually on disk.
+
+Also enforces the two boundaries the installation is defined by: the consumer's CLAUDE.md is never
+touched (no marker block, no dotnet-toolkit content), and the protocol rule stays a **declaration**
+of when and how — budget ~6 KB — with the full workflow behind on-demand pointers. Read-only: it
+reports and may offer to re-run `dotnet-toolkit-init`, never installs on its own. Complements
+`dotnet-toolkit-consistency`, which checks the same files for *accuracy* rather than *delivery*.
 
 ## `dotnet-toolkit-consistency` — the self-audit
 

@@ -46,6 +46,26 @@ A repo that would rather track the plugin's versions can decline the copies in S
 `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` reads plus `.claude/dotnet-toolkit/<name>.md` overrides — say
 this option exists when presenting the plan.
 
+**The protocol rule is the repo's entire always-loaded footprint, and its budget is ~6 KB (~1.6k
+tokens).** It declares *when* to use the tools and *where* the procedure lives; it is not a copy of
+the procedure. Per-tool arguments, the full `validate_patch` walkthrough, and failure modes stay in
+`${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md` and the `dotnet-change` skill, read on demand.
+
+### What is deliberately *not* written into the repo
+
+Naming these matters as much as the table above: assuming one of them needs copying, or needs
+cleaning up at uninstall, is the recurring bug in this procedure.
+
+| Not written | Why | At uninstall |
+| --- | --- | --- |
+| the MCP server, `hooks/`, `skills/`, `agents/` | they ship *active* with the plugin — the harness discovers them from the plugin manifest, so there is nothing repo-local to install | leave with the plugin; nothing to clean up |
+| `docs/tools/*.md` and `docs/{agent,hook,skill,tool}-reference.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/docs/...` path from the protocol rule and the skills. Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
+| `.claude/dotnet-toolkit/cache/` | created by the server at runtime, self-gitignored, always rebuildable from source | safe to leave; delete the directory for a fully clean removal |
+| `CLAUDE.md` | the project's own file (see above) | never touched, so nothing to undo |
+
+`dotnet-toolkit-install-check` audits this whole inventory — install and uninstall — against the
+actual plugin tree; run it if you suspect this table has fallen behind what the plugin ships.
+
 ## Step 1 — Locate the target repo
 
 The target repo is the current working directory (or `CLAUDE_PROJECT_DIR` if set) — **not** this plugin
@@ -129,19 +149,16 @@ nothing repo-local to maintain.
 bypasses it is a change whose reasoning is gone when the conversation ends; `search_log` cannot
 recover it and the next session re-derives or silently contradicts it.
 
-1. `get_symbol` — keep `contentVersion` and the `declarationSites` line span.
-2. `validate_patch` with `baseVersions: {symbolId: contentVersion}`, line-span `edits`,
-   `applyOnSuccess: true`, and an `intent` in user terms. Nothing is written unless the result is
-   sufficient, so there is no reason to dry-run with `applyOnSuccess: false` first.
-3. If it fails, amend rather than resubmit: the response carries
-   `diagnostics.rootCauses[].locations` (where each error landed in the text you proposed) and a
-   `draft: {draftId}`. Send that `draftId` back with only the lines you are correcting —
-   `baseVersions` is inherited (anything you send is merged in), and the edits' spans address the
-   draft's text.
+The shape of a call: `get_symbol` for `contentVersion` + the `declarationSites` line span, then
+`validate_patch` with `baseVersions`, line-span `edits`, `applyOnSuccess: true`, and an `intent` in
+user terms. On failure, amend through the returned `draftId` rather than rebuilding the patch.
 
 "Too large or too interleaved to decompose" is not a reason to fall back to `Edit`. Split it into
 more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
 legitimately outside this: `Write` the file, then change it through `validate_patch`.
+
+Full procedure, arguments, and failure modes: `${CLAUDE_PLUGIN_ROOT}/docs/tools/validate_patch.md`,
+and the `dotnet-change` skill — both read on demand, so neither costs anything until it is needed.
 
 ## Coding standards — read before writing C#
 
@@ -218,12 +235,23 @@ alongside the refresh (see "Undoing this later"), since the rule files alone are
 ## Undoing this later
 
 - **Remove everything**: delete `.claude/rules/dotnet-toolkit-csharp.md` and the standards copies
-  (or restore from `.claude/dotnet-toolkit/backups/`). That's the whole uninstall.
+  (or restore from `.claude/dotnet-toolkit/backups/`). That is the complete list of files this skill
+  ever creates outside `.claude/dotnet-toolkit/`.
+- **Runtime leftovers**: `.claude/dotnet-toolkit/cache/` is the server's rebuildable SQLite store and
+  is self-gitignored — safe to leave, delete the directory for a fully clean removal.
+  `.claude/dotnet-toolkit/config.json`, if the repo wrote one, is the repo's own; leave it.
+  `.claude/dotnet-toolkit/backups/` is kept deliberately — say where it is when reporting.
 - **If an old CLAUDE.md marker block exists from a prior version of this skill**: delete everything from
   `<!-- dotnet-toolkit:start -->` to `<!-- dotnet-toolkit:end -->` inclusive, or restore the newest
-  backup over `CLAUDE.md`.
+  backup over `CLAUDE.md`. Current versions never write there, so on a fresh install there is nothing
+  to check.
+- **Everything else leaves with the plugin.** The hooks, skills, agent, MCP server, and every
+  `${CLAUDE_PLUGIN_ROOT}/docs/...` the rule points at are gone the moment the plugin is uninstalled —
+  no repo-local cleanup, and nothing left instructing a session to call tools that no longer exist.
 
-The hooks come and go with the plugin itself — uninstalling the plugin removes them; there is nothing
-repo-local to clean up.
+Confirm the last point rather than asserting it: after the deletions, nothing remaining in the repo
+should name `search_index`/`get_symbol`/`validate_patch` or `${CLAUDE_PLUGIN_ROOT}` — except whatever
+the repo wrote itself, which is theirs to keep. `dotnet-toolkit-install-check` does exactly this as a
+dry run.
 
 Mention all of these when reporting Step 6's result.
