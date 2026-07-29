@@ -59,12 +59,23 @@ public static class PatchTools
         var validationAttemptId = Ids.ValidationAttempt();
         var stopwatch = Stopwatch.StartNew();
 
+        // A rejected call still cost a round trip and the tokens its error payload carries. Record it as
+        // a retrieval event, the way every other tool records its error payloads: the patch_events row
+        // further down is written only once validation actually ran, so without this every reject --
+        // stale_base most of all -- is invisible to get_retrieval_metrics, which is the instrument every
+        // measurement of this server depends on.
+        var requestedTarget = edits is { Length: > 0 } ? edits[0].File : draftId ?? "";
+        string Reject(string errorKind, string json) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "validate_patch",
+                requestedTarget, json, errorKind: errorKind);
+        string Fail(string errorKind, string message) => Reject(errorKind, Error(errorKind, message));
+
         PatchDraft? draft = null;
         if (draftId is not null)
         {
             draft = drafts.Get(draftId);
             if (draft is null)
-                return Error("unknown_draft",
+                return Fail("unknown_draft",
                     $"No such draft. Drafts live {PatchDraftStore.Lifetime.TotalMinutes:0} minutes and only the "
                     + $"{PatchDraftStore.Capacity} most recent are kept, so this one expired or was evicted. "
                     + "Refetch the symbol with get_symbol and submit a full patch instead.");
@@ -73,10 +84,10 @@ public static class PatchTools
         // An amend is allowed to carry no edits at all: that is how a patch already reported succeeded but
         // insufficient is re-run at a higher requestedLevel without resending a line of its text.
         if (draft is null && (edits is null || edits.Length == 0))
-            return Error("no_edits", "At least one edit is required.");
+            return Fail("no_edits", "At least one edit is required.");
 
         if (applyOnSuccess && string.IsNullOrWhiteSpace(intent))
-            return Error("intent_required",
+            return Fail("intent_required",
                 "applyOnSuccess requires a non-empty intent describing the why.");
 
         IReadOnlyDictionary<string, string>? inherited = baseVersions;
@@ -96,7 +107,7 @@ public static class PatchTools
         }
 
         if (inherited is null)
-            return Error("missing_base_versions",
+            return Fail("missing_base_versions",
                 "baseVersions is required so patches from stale context are rejected.");
 
         var heldVersions = inherited;
@@ -109,7 +120,7 @@ public static class PatchTools
             .Where(id => !id.StartsWith("sym_", StringComparison.Ordinal))
             .ToList();
         if (provisionalIds.Count > 0)
-            return Error("stale_index_only_id",
+            return Fail("stale_index_only_id",
                 $"baseVersions holds {provisionalIds.Count} id(s) not minted by the live semantic tier (a "
                 + "real symbolId always starts with sym_) -- e.g. get_symbol's index_only fallback (symidx_) "
                 + "or SymbolKey.IdOf's own no-doc-comment-id fallback (symfb_). Neither ever matches the live "
@@ -120,7 +131,7 @@ public static class PatchTools
         {
             var solution = await workspace.GetSolutionAsync();
             if (solution is null)
-                return Error("workspace_loading",
+                return Fail("workspace_loading",
                     "The semantic workspace is not ready; retry shortly.");
 
             var patchEdits = (edits ?? []).Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
@@ -132,12 +143,13 @@ public static class PatchTools
                 if (sandbox.FailureKind == PatchSandbox.Failure.DraftStale && draftId is not null)
                     drafts.Remove(draftId);
 
-                return Error(sandbox.FailureKind switch
+                var sandboxError = sandbox.FailureKind switch
                 {
                     PatchSandbox.Failure.StaleWorkspace => "stale_workspace",
                     PatchSandbox.Failure.DraftStale => "draft_stale",
                     _ => "invalid_edit",
-                }, sandbox.Error);
+                };
+                return Fail(sandboxError, sandbox.Error);
             }
 
             var (detected, unchangedVersions) = await ChangeClassifier.DetectAsync(solution, sandbox.Forked, sandbox.ChangedDocuments, cancellationToken);
@@ -159,15 +171,15 @@ public static class PatchTools
                 .Select(kv => (SymbolId: kv.Key, CurrentVersion: unchangedVersions[kv.Key]));
             var stale = disagreeing.Concat(staleUnchanged).ToList();
             if (stale.Count > 0)
-                return StaleBase(stale);
+                return Reject("stale_base", StaleBase(stale));
 
             var unheld = detected
                 .Where(c => !heldVersions.ContainsKey(c.OldSymbolId))
                 .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion))
                 .ToList();
             if (unheld.Count > 0)
-                return UnheldSymbol(unheld,
-                    await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken));
+                return Reject("unheld_symbol", UnheldSymbol(unheld,
+                    await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken)));
 
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
             var affectedTests = symbolStore.TestsReferencing(changedIds);

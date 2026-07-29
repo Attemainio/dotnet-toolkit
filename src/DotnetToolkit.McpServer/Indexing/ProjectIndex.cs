@@ -355,75 +355,118 @@ public sealed class ProjectIndex : IDisposable
     public sealed record DocSite(string File, int Line, int EndLine, string? Doc, string Namespace, string? DocSections = null);
 
     /// <summary>
-    /// Resolves fully-qualified names — without parameter lists — to their declaration site, in one pass
-    /// over the index.
+    /// Resolves fully-qualified names to their declaration site, in one pass over the index.
     ///
     /// Read from the syntax index rather than stored alongside the symbol row on purpose. A line number
     /// stored next to a symbol would be invalidated by that symbol's own hashes, and editing *above* a
     /// declaration moves its line without changing a single one of them: the row would not be rewritten
     /// and the stored line would rot silently. The index is mtime-swept per file, so it moves whenever
     /// the file does, which is exactly what a line number depends on.
-    ///
-    /// A member name that resolves to more than one distinct site -- real overloads collapsed by dropping
-    /// their parameter list -- is omitted rather than guessed at: pointing at the wrong overload is worse
-    /// than saying nothing, and absent already means "look it up". A TYPE name resolving to more than one
-    /// site is never that kind of ambiguity -- C# forbids two distinct types sharing one fully-qualified
-    /// name, so multiple sites there can only be partial-class fragments of the same symbol, and
-    /// LocateWithDocs merges them to one stable representative instead of omitting the location.
     /// </summary>
-    public IReadOnlyDictionary<string, Site> Locate(IReadOnlySet<string> fqNamesWithoutParameters)
-        => LocateWithDocs(fqNamesWithoutParameters).ToDictionary(
+    /// <param name="fqNames">
+    /// The names to resolve, each keeping its parameter list where the caller has one — that list is what
+    /// tells the members of an overload set apart. Results come back keyed by the exact string passed in.
+    /// </param>
+    /// <returns>One site per name that resolved; a name that stayed ambiguous is absent.</returns>
+    public IReadOnlyDictionary<string, Site> Locate(IReadOnlySet<string> fqNames)
+        => LocateWithDocs(fqNames).ToDictionary(
             kv => kv.Key, kv => new Site(kv.Value.File, kv.Value.Line), StringComparer.Ordinal);
 
     /// <summary>
-    /// Same resolution as <see cref="Locate"/>, but each site also carries its declaration's extracted
-    /// XML doc &lt;summary&gt; text (null when absent) — the data <c>search_index</c>'s <c>summary</c>
-    /// argument surfaces, computed here rather than re-parsed, since <see cref="Indexing.TypeEntry.Doc"/>/
-    /// <see cref="Indexing.MemberEntry.Doc"/> already hold it from the syntax pass.
+    /// <see cref="Locate"/> plus each declaration's doc summary, namespace and doc-section tags.
     /// </summary>
-    public IReadOnlyDictionary<string, DocSite> LocateWithDocs(IReadOnlySet<string> fqNamesWithoutParameters)
+    /// <remarks>
+    /// The index keys members by bare name, so a requested name is matched with its parameter list
+    /// dropped and then disambiguated by parameter count. A member name that still resolves to more than
+    /// one distinct site — two overloads of the same arity, or a caller that had no parameter list to
+    /// offer — is omitted rather than guessed at: pointing at the wrong overload is worse than saying
+    /// nothing, and absent already means "look it up". A TYPE name resolving to more than one site is
+    /// never that kind of ambiguity — C# forbids two distinct types sharing one fully-qualified name, so
+    /// multiple sites there can only be partial-class fragments of the same symbol, and they collapse to
+    /// one stable representative instead of being dropped.
+    /// </remarks>
+    /// <param name="fqNames">The names to resolve, keyed as described on <see cref="Locate"/>.</param>
+    /// <returns>One site per name that resolved; a name that stayed ambiguous is absent.</returns>
+    public IReadOnlyDictionary<string, DocSite> LocateWithDocs(IReadOnlySet<string> fqNames)
     {
-        var found = new Dictionary<string, DocSite>(StringComparer.Ordinal);
-        var ambiguous = new HashSet<string>(StringComparer.Ordinal);
-
-    void Offer(string fqName, DocSite site, bool isType = false)
-    {
-        if (!fqNamesWithoutParameters.Contains(fqName) || ambiguous.Contains(fqName))
-            return;
-        if (found.TryGetValue(fqName, out var existing))
+        var requested = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var name in fqNames)
         {
-            if (existing == site)
-                return;
+            var bare = SymbolResolver.NameWithoutParameters(name);
+            if (!requested.TryGetValue(bare, out var sameBareName))
+                requested[bare] = sameBareName = [];
+            sameBareName.Add(name);
+        }
 
-            if (isType)
+        var candidates = new Dictionary<string, List<Candidate>>(StringComparer.Ordinal);
+        void Offer(string bareName, DocSite site, int arity, bool isType)
+        {
+            if (!requested.ContainsKey(bareName))
+                return;
+            if (!candidates.TryGetValue(bareName, out var forName))
+                candidates[bareName] = forName = [];
+            forName.Add(new Candidate(site, arity, isType));
+        }
+
+        foreach (var (file, entry) in _files)
+        {
+            foreach (var type in Flatten(entry.Types))
             {
-                // A type FqName can only repeat across partial declarations of the SAME symbol -- C#
-                // forbids two distinct types sharing one fully-qualified name -- so keep a stable,
-                // deterministic representative instead of treating this like the genuine name collision
-                // (an overload) handled below.
-                if (string.CompareOrdinal(site.File, existing.File) < 0
-                    || (site.File == existing.File && site.Line < existing.Line))
-                    found[fqName] = site;
-                return;
+                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), -1, isType: true);
+                foreach (var member in type.Members)
+                {
+                    Offer($"{type.FqName}.{member.Name}",
+                        new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections),
+                        SymbolResolver.ParameterArity(member.Signature), isType: false);
+                }
             }
-
-            found.Remove(fqName);
-            ambiguous.Add(fqName);
-            return;
         }
-        found[fqName] = site;
-    }
 
-    foreach (var (file, entry) in _files)
-    {
-        foreach (var type in Flatten(entry.Types))
+        var found = new Dictionary<string, DocSite>(StringComparer.Ordinal);
+        foreach (var (bareName, names) in requested)
         {
-            Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), isType: true);
-            foreach (var member in type.Members)
-                Offer($"{type.FqName}.{member.Name}", new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections));
+            if (!candidates.TryGetValue(bareName, out var forName))
+                continue;
+            foreach (var name in names)
+            {
+                if (Disambiguate(forName, SymbolResolver.ParameterArity(name)) is { } site)
+                    found[name] = site;
+            }
         }
-    }
+
         return found;
+    }
+
+    /// <summary>One declaration the index holds under a bare name, with what it takes to tell it apart.</summary>
+    private sealed record Candidate(DocSite Site, int Arity, bool IsType);
+
+    /// <summary>Picks the site a requested name meant, or null when the choice stays genuinely ambiguous.</summary>
+    private static DocSite? Disambiguate(List<Candidate> candidates, int requestedArity)
+    {
+        if (candidates.Count == 1)
+            return candidates[0].Site;
+
+        if (candidates.All(c => c.IsType))
+        {
+            return candidates
+                .OrderBy(c => c.Site.File, StringComparer.Ordinal)
+                .ThenBy(c => c.Site.Line)
+                .First().Site;
+        }
+
+        var distinct = candidates.Select(c => c.Site).Distinct().ToList();
+        if (distinct.Count == 1)
+            return distinct[0];
+
+        if (requestedArity < 0)
+            return null;
+
+        var byArity = candidates
+            .Where(c => c.Arity == requestedArity)
+            .Select(c => c.Site)
+            .Distinct()
+            .ToList();
+        return byArity.Count == 1 ? byArity[0] : null;
     }
 
     public (List<SymbolHit> Hits, int Total) FindSymbol(string query, string? kind, int limit)

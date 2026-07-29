@@ -35,7 +35,7 @@ are about to edit that `get_symbol` did not return.
 | A type or member's shape, docs, location | `get_symbol` | Read the .cs file |
 | A type's member list | `get_symbol` with `include: "members"` | Read the file |
 | One region of a long member | `get_symbol` with `include: "source:code@120-160"` | `Read`/`sed` on the file |
-| Who calls it (just the caller list, one hop) | `get_call_hierarchy` (`maxDepth: 1`) | `get_references` — measured 60% more tokens for the same one-hop answer on this repo, since it also carries file/line/snippet/dispatchKind per site that a bare "who calls it" doesn't need |
+| Who calls it (just the caller list, one hop) — **when fan-in is high** | `get_call_hierarchy` (`maxDepth: 1`) | `get_references` — at 105 callers it cost 5,266 tokens against 637, since it carries file/line/snippet/dispatchKind per site that a bare "who calls it" doesn't need. Below roughly a dozen callers the ladder **inverts** (139 vs 100 at one caller) — take `get_references` there and get the sites for free |
 | Where exactly it's called — file, line, snippet per call site | `get_references` (`direction: "callers"`) | Grep the name — it misses interface dispatch and returns comment hits |
 | Implementations, derived types, overrides | `get_references` (`direction: "implementations"` or `"overrides"`) | Grep for `: IFoo` |
 | What is callable at a cursor position — locals, inherited members, extension methods, not just a type's own declared list (that's `get_symbol` with `include:"members"`, no position involved) | `get_scope` | Guess, or grep for a helper that may not apply here |
@@ -69,7 +69,10 @@ search_index(query: "fee"); search_index(query: "ledger"); ...   ← several × 
 ```
 
 `get_symbol` takes `symbols: [...]` to fetch a list with one `include`. Batch by default; split only
-when you genuinely need different filters per call. Details in `search_index.md` / `get_symbol.md`.
+when you genuinely need different filters per call. The batch's win is **round trips** — on tokens it
+is roughly a wash with the same fetches made singly, since what every entry shares (`components`,
+`origin`, a common `containingType`) is lifted into one `shared` block only when that actually renders
+smaller. Details in `search_index.md` / `get_symbol.md`.
 
 ## Gate expansion on referenceCounts
 

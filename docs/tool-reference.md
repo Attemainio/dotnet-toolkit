@@ -39,7 +39,10 @@ a caller you name, so `get_retrieval_metrics` can read those calls back on their
 Responses are deliberately terse: a field that is absent carries no information and costs no
 tokens. This applies to plain objects too, not just top-level envelopes — a `null` field is dropped
 from JSON entirely rather than written as `"field":null`, so check for the key's absence, not its
-value.
+value. One TOON-only exception: when most rows of an array carry a field and a few don't, the gaps are
+rendered as **empty cells** so the array keeps its tabular form — a single ragged row otherwise drops
+every row into the far more expensive per-item shape. An empty cell there means the same "absent" the
+missing key means, and the JSON/compact formats still omit it outright.
 
 Responses are **TOON** (Token-Oriented Object Notation) by default, not JSON text.
 `set_output_format(format: "compact")` gives minified JSON, `format: "json"` pretty-printed; either

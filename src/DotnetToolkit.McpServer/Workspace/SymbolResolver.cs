@@ -93,6 +93,52 @@ public static partial class SymbolResolver
         return paren < 0 ? fqName : fqName[..paren];
     }
 
+    /// <summary>
+    /// How many parameters a name's parameter list declares, or <c>-1</c> when it carries no parameter
+    /// list at all — what tells the members of an overload set apart once their parameter list has been
+    /// dropped to match the syntax index's bare-name keys.
+    /// </summary>
+    /// <remarks>
+    /// Counts top-level commas only, so a generic argument, tuple element or default value does not
+    /// inflate the count. Accepts both the symbol store's <c>Name(int,string)</c> form and the syntax
+    /// index's <c>Name(int a, string b = "x") -&gt; int</c> signature form.
+    /// </remarks>
+    public static int ParameterArity(string nameWithParameters)
+    {
+        var open = nameWithParameters.IndexOf('(');
+        if (open < 0)
+            return -1;
+
+        var depth = 0;
+        var commas = 0;
+        var sawParameter = false;
+        for (var i = open; i < nameWithParameters.Length; i++)
+        {
+            var c = nameWithParameters[i];
+            switch (c)
+            {
+                case '(' or '<' or '[' or '{':
+                    depth++;
+                    break;
+                case ')' or '>' or ']' or '}':
+                    depth--;
+                    if (depth == 0)
+                        return sawParameter ? commas + 1 : 0;
+                    break;
+                case ',' when depth == 1:
+                    commas++;
+                    sawParameter = true;
+                    break;
+                default:
+                    if (!char.IsWhiteSpace(c))
+                        sawParameter = true;
+                    break;
+            }
+        }
+
+        return sawParameter ? commas + 1 : 0;
+    }
+
     /// <summary>Reduces a parenthesized parameter list to short type names without whitespace.</summary>
     private static string ShortParams(string parenList) =>
         NamespacePrefixRegex().Replace(parenList, "").Replace(" ", "");

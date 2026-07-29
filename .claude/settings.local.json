@@ -39,7 +39,8 @@
       "Read(//home/atte/.claude/plugins/data/dotnet-toolkit-inline/**)",
       "Read(//home/atte/.claude/plugins/**)",
       "Read(//home/atte/.claude/**)",
-      "Read(//home/atte/**)"
+      "Read(//home/atte/**)",
+      "Bash(PATH=/home/atte/.dotnet:__TRACKED_VAR__ ./scripts/build-plugin.sh)"
     ]
   },
   "disabledMcpjsonServers": [

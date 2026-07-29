@@ -129,6 +129,9 @@ Other subsystems:
   store of validated-but-unapplied patches — deliberately not in SQLite, since a draft describes a
   fork of the currently loaded workspace and is meaningless once that is gone).
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
+- `Git/` — `GitAnalyzer.cs` (git commands, run in a repository it discovers: the solution root when
+  that is inside a work tree, otherwise the repos checked out beneath it) + `SemanticDiff.cs`, behind
+  `get_semantic_diff`.
 - `Control/ControlServer.cs` — a loopback TCP listener (127.0.0.1, OS-assigned port published at
   `CacheDir/control.port`) letting a hook trigger an index rescan (`rescan`, synchronous) or a
   background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by

@@ -29,6 +29,23 @@ public static class ContextTools
     private const int ScopedOverfetchCap = 500;
     private const int SummaryCap = 160;
 
+    /// <summary>
+    /// The display form behind every default reference and call-hierarchy row: containing type and member
+    /// name, with neither the return type nor a parameter list.
+    /// </summary>
+    /// <remarks>
+    /// Emitting the return type put the default within 17% of what <c>fields:"signature"</c> costs while
+    /// conveying strictly less, and the empty parens left behind by suppressing only the parameters read
+    /// as a zero-argument method when the trailing arity is the real signal.
+    /// </remarks>
+    private static readonly SymbolDisplayFormat CompactMemberFormat = new(
+        globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Omitted,
+        typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypes,
+        genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+        memberOptions: SymbolDisplayMemberOptions.IncludeContainingType,
+        miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes
+            | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
+
 [McpServerTool(Name = "get_symbol")]
     [Description("Retrieve one or more C# symbols — a class, interface, method, property or field: its "
         + "signature, XML docs, source text, members, attributes, base type, reference counts and exact "
@@ -121,9 +138,100 @@ public static class ContextTools
         }
 
         var batchRendered = Formats.Render(new { results });
+        if (SharedBatchEnvelope(results) is { } hoisted)
+        {
+            var hoistedRendered = Formats.Render(hoisted);
+            if (hoistedRendered.Length < batchRendered.Length)
+                batchRendered = hoistedRendered;
+        }
+
         return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", string.Join(",", targets),
             null, include ?? "standard", null, targets.Length, firstLimitedBy,
             firstErrorKind, batchRendered);
+    }
+
+    /// <summary>
+    /// The batch envelope with every property the entries repeat verbatim lifted into one <c>shared</c>
+    /// block, or null when there is nothing to lift.
+    /// </summary>
+    /// <remarks>
+    /// One include applies to the whole batch, so <c>components</c> is identical per entry by
+    /// construction, and entries fetched from one type repeat <c>content.origin</c> and
+    /// <c>content.containingType</c> too. That repetition made a three-symbol batch cost 15% MORE than
+    /// the same three single calls, inverting the route table's claim that batching is the cheap route.
+    /// Lifting reaches one level into <c>content</c> for exactly that reason — an entry-level sweep alone
+    /// leaves the two worst repeaters untouched, since they are nested. The caller compares the two
+    /// renderings and keeps this one only when it is genuinely smaller.
+    /// </remarks>
+    /// <param name="results">The per-entry responses, in call order.</param>
+    /// <returns>An envelope of <c>shared</c> plus the trimmed entries, or null when nothing is shared.</returns>
+    private static object? SharedBatchEnvelope(List<JsonElement> results)
+    {
+        if (results.Count < 2 || results.Any(r => r.ValueKind != JsonValueKind.Object))
+            return null;
+
+        var shared = SharedProperties(results);
+
+        // A content object hoisted whole is already covered; splitting it again would emit it twice.
+        var contents = results.Select(r => r.TryGetProperty("content", out var c) ? c : default).ToList();
+        var sharedContent = shared.ContainsKey("content") || contents.Any(c => c.ValueKind != JsonValueKind.Object)
+            ? []
+            : SharedProperties(contents);
+
+        if (shared.Count == 0 && sharedContent.Count == 0)
+            return null;
+
+        var trimmed = results.Select(r =>
+        {
+            var own = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var property in r.EnumerateObject())
+            {
+                if (shared.ContainsKey(property.Name))
+                    continue;
+
+                if (sharedContent.Count > 0 && property.NameEquals("content"))
+                {
+                    var ownContent = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+                    foreach (var field in property.Value.EnumerateObject())
+                    {
+                        if (!sharedContent.ContainsKey(field.Name))
+                            ownContent[field.Name] = field.Value;
+                    }
+
+                    if (ownContent.Count > 0)
+                        own["content"] = ownContent;
+                    continue;
+                }
+
+                own[property.Name] = property.Value;
+            }
+
+            return own;
+        }).ToList();
+
+        var block = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in shared)
+            block[key] = value;
+        if (sharedContent.Count > 0)
+            block["content"] = sharedContent;
+
+        return new { shared = block, results = trimmed };
+    }
+
+    /// <summary>Every property these objects all declare with byte-identical value.</summary>
+    /// <param name="objects">Objects to compare; must be non-empty and all of kind object.</param>
+    /// <returns>The shared properties, in the first object's order; empty when they share none.</returns>
+    private static Dictionary<string, JsonElement> SharedProperties(List<JsonElement> objects)
+    {
+        var shared = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var candidate in objects[0].EnumerateObject())
+        {
+            var raw = candidate.Value.GetRawText();
+            if (objects.All(o => o.TryGetProperty(candidate.Name, out var same) && same.GetRawText() == raw))
+                shared[candidate.Name] = candidate.Value;
+        }
+
+        return shared;
     }
 
 
@@ -504,12 +612,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             : "index_only";
 
         await index.EnsureFreshAsync();
-        var sites = index.LocateWithDocs(hits
-            .Select(h => SymbolResolver.NameWithoutParameters(h.FqName))
-            .ToHashSet(StringComparer.Ordinal));
+        var sites = index.LocateWithDocs(hits.Select(h => h.FqName).ToHashSet(StringComparer.Ordinal));
 
-        var resolved = hits.Select(h =>
-            (Hit: h, Site: sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(h.FqName))));
+        var resolved = hits.Select(h => (Hit: h, Site: sites.GetValueOrDefault(h.FqName)));
         if (scope is not null)
             resolved = resolved.Where(r => WithinPathScope(r.Site?.File, scope));
         if (implementorIds is not null)
@@ -810,6 +915,14 @@ private static async Task<object> BuildContent(
     /// Facts are stored as JSON; returning the parsed element keeps them structured in the response
     /// without re-modelling every field here. Null when the body moved since they were computed.
     /// </summary>
+    /// <remarks>
+    /// Members that carry nothing are dropped rather than emitted as an empty collection or a null:
+    /// absence already means "none", and the six empty members a typical symbol has cost ~18 tokens each
+    /// time it is returned — 11% of a three-symbol batch.
+    /// </remarks>
+    /// <param name="sym">The symbol whose facts are wanted.</param>
+    /// <param name="symbolStore">The store holding the extracted facts.</param>
+    /// <returns>The non-empty facts, or null when there are none or the stored JSON no longer parses.</returns>
     private static object? MechanicalFactsFor(ISymbol sym, SymbolStore symbolStore)
     {
         var version = VersionOf(sym);
@@ -818,7 +931,26 @@ private static async Task<object> BuildContent(
             return null;
         try
         {
-            return JsonDocument.Parse(json).RootElement.Clone();
+            var root = JsonDocument.Parse(json).RootElement.Clone();
+            if (root.ValueKind != JsonValueKind.Object)
+                return root;
+
+            var carried = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var fact in root.EnumerateObject())
+            {
+                var isEmpty = fact.Value.ValueKind switch
+                {
+                    JsonValueKind.Null => true,
+                    JsonValueKind.Array => fact.Value.GetArrayLength() == 0,
+                    JsonValueKind.Object => !fact.Value.EnumerateObject().Any(),
+                    JsonValueKind.String => fact.Value.GetString() is { Length: 0 },
+                    _ => false,
+                };
+                if (!isEmpty)
+                    carried[fact.Name] = fact.Value;
+            }
+
+            return carried.Count == 0 ? null : carried;
         }
         catch (JsonException)
         {
@@ -1210,10 +1342,15 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     // "ContextTools.GetSymbol/13") rather than the full parameter list with types and default values,
     // which answers "who/what is this" for a fraction of the tokens; the full form is still one
     // fields:"signature" away on either tool.
+    /// <summary>
+    /// The compact name/arity form — <c>ContextTools.GetSymbol/13</c> — that a reference or
+    /// call-hierarchy item carries unless the caller asked for the full signature.
+    /// </summary>
+    /// <param name="s">The symbol to name.</param>
+    /// <returns>The containing type and member name, with <c>/N</c> appended for a method's arity.</returns>
     private static string CompactDisplay(ISymbol s)
     {
-        var name = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat
-            .WithParameterOptions(SymbolDisplayParameterOptions.None));
+        var name = s.ToDisplayString(CompactMemberFormat);
         return s is IMethodSymbol method ? $"{name}/{method.Parameters.Length}" : name;
     }
 

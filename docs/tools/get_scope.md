@@ -27,15 +27,16 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
 
 ```json
 {"receiverType": "FeatureLogStore",
- "items": [{"displayString": "string FeatureLogStore.Append(LogEntry entry)",
-            "kind": "Method", "origin": "member", "definedIn": "FeatureLogStore"},
-           {"displayString": "int FeatureLogStore.EntryCount()", "origin": "member"},
-           {"displayString": "bool object.Equals(object? obj)", "origin": "inherited"}]}
+ "items": [{"displayString": "Append(LogEntry entry)", "kind": "Method"},
+           {"displayString": "EntryCount()", "kind": "Method"},
+           {"displayString": "Equals(object? obj)", "kind": "Method",
+            "origin": "inherited", "definedIn": "object"}]}
 ```
 
 `origin` separates what the type itself declares from what it inherits — usually the first
-thing you want to know. Drop `receiver` to ask what is in scope at that line generally
-rather than on one expression.
+thing you want to know. Both `origin` and `definedIn` are omitted on a row the
+`receiverType` header already accounts for. Drop `receiver` to ask what is in scope at that
+line generally rather than on one expression.
 
 ## Reference
 
@@ -54,7 +55,7 @@ exist, or when you don't yet know a receiver's type so `get_symbol` has no targe
 | `file`, `line`, `column` | Required position (column defaults to 1). |
 | `receiver` | Optional variable/expression — narrows to what's callable *on it*, including applicable extension methods. |
 | `filter` | `all` (default) \| `methods` \| `properties` \| `locals` \| `types`. |
-| `nameContains`, `limit` | Narrow a large result. |
+| `nameContains`, `limit` | Narrow a large result. `limit` defaults to 40 (cap 200) and is spent **across origins**, round-robin, so a receiver's own members cannot crowd out the applicable extension methods this tool exists to surface. A capped result carries `totalItems` and `truncated: true`. |
 
 Real call and response (trimmed):
 
@@ -64,19 +65,24 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 182,
 ```
 
 ```json
-{"receiverType":"FeatureLogStore",
+{"receiverType":"FeatureLogStore","totalItems":63,"truncated":true,
  "items":[
-   {"displayString":"Append(LogEntry entry)","kind":"Method","definedIn":"FeatureLogStore"},
-   {"displayString":"EntryCount()","kind":"Method","definedIn":"FeatureLogStore"},
+   {"displayString":"Append(LogEntry entry)","kind":"Method"},
+   {"displayString":"EntryCount()","kind":"Method"},
    {"displayString":"Equals(object? obj)","kind":"Method",
     "origin":"inherited","definedIn":"object"}]}
 ```
 
-`displayString` has its containing type's prefix stripped — `definedIn` already states it on every row,
-so repeating it in both places was pure repetition. `origin` separates what the type itself declares
-from what it inherits, which is usually the first thing you want to know; it is omitted when it would
-just be `"member"` alongside a `receiverType` header, since `definedIn == receiverType` already says
-that. Drop `receiver` to see what's in scope at that line generally. (The line number above
+`displayString` has its containing type's prefix stripped, since `definedIn` states it when it differs
+from the header. `origin` separates what the type itself declares from what it inherits, which is
+usually the first thing you want to know. **Both `origin` and `definedIn` are omitted when the
+`receiverType` header already implies them** — `definedIn == receiverType` makes `origin: "member"`
+derivable, and restating the header on every row cost 39% of a measured response.
+
+When more is in scope than `limit` allows, the budget is spent round-robin across origins rather than
+alphabetically, so applicable extension methods appear alongside the receiver's own members instead of
+being crowded out; `totalItems` and `truncated` then report what was left out. Drop `receiver` to see
+what's in scope at that line generally. (The line number above
 tracks a real call site in this file; if a future refactor moves it, re-find the receiver with
 `search_index`/`get_symbol` rather than assuming this line still resolves.)
 

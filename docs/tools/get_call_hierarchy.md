@@ -18,8 +18,7 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
 ```
 
 ```json
-{"root": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append"},
- "direction": "callers",
+{"direction": "callers",
  "tree": {"symbolId": "sym_c25d...", "displayString": "FeatureLogStore.Append",
    "children": [
      {"symbolId": "sym_0e0e...", "displayString": "DevlogMigration.Run"},
@@ -53,7 +52,7 @@ upward toward entry points; `"callees"` walks downward into what the symbol invo
 | `direction` | `callers` (default) \| `callees`. |
 | `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
 | `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. |
-| `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." |
+| `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." That shape is also the only one carrying a separate `root` block: with a tree, its head node **is** the root, and emitting both repeated every root field. |
 | `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default bare name) to every node beyond the always-present `symbolId`/`displayString`. |
 
 Real call and response (trimmed to 4 of 7 children):
@@ -63,8 +62,7 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
 ```
 
 ```json
-{"root":{"symbolId":"sym_c25d...","displayString":"FeatureLogStore.Append"},
- "direction":"callers",
+{"direction":"callers",
  "tree":{"symbolId":"sym_c25d...","displayString":"FeatureLogStore.Append",
    "children":[
      {"symbolId":"sym_0e0e...","displayString":"DevlogMigration.Run"},
@@ -96,5 +94,6 @@ against pathological fan-out, independent of `maxChildrenPerNode`.
 ## Next steps
 
 - **Need file/line/snippet per call site** → `get_references` — `get_references.md`
+- **One hop on a symbol with only a handful of callers** → `get_references` is both cheaper and richer there. This tool's fixed overhead only pays off as fan-in grows: measured at 105 callers it cost 637 tokens against `get_references`' 5,266, but at a single caller 139 against 100 — and the 100 included file, line, snippet and `dispatchKind`.
 - **Have a specific destination in mind** → `get_call_slice` is cheaper — `get_call_slice.md`
 - **Judging a removal** → check `blastRadius`, then `get_symbol` on the survivors — `get_symbol.md`

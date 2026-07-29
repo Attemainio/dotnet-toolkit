@@ -1167,20 +1167,23 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
     }
 
     /// <summary>
-    /// The index keys members without their parameter lists, so overloads collapse to one name and the
-    /// site cannot be resolved. Omit it: absent already means "call get_symbol", which is what a caller
-    /// did before locations existed, whereas a confidently wrong line is a new failure mode.
+    /// The index keys members without their parameter lists, so overloads collapse onto one name. The
+    /// requested name's parameter COUNT picks the right declaration back out, so each overload reports
+    /// its own line instead of both being dropped as ambiguous.
     /// </summary>
     [Fact]
-    public async Task SearchIndex_OmitsTheLineForAnOverloadRatherThanPickingOne()
+    public async Task SearchIndex_LocatesEachOverloadByItsParameterCount()
     {
-        var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous", groupBy: "none")).GetProperty("items")).First();
+        var rows = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Ambiguous", groupBy: "none")).GetProperty("items"));
 
-        Assert.False(hit.ContainsKey("file"));
-        Assert.False(hit.ContainsKey("line"));
-        // The hit itself is still useful — it just costs a get_symbol to locate.
-        Assert.Contains("Ambiguous", hit["name"].GetString());
+        var overloads = rows
+            .Where(row => row["name"].GetString()!.Contains("Ambiguous", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Equal(2, overloads.Count);
+        Assert.All(overloads, hit => Assert.True(hit.ContainsKey("file") && hit.ContainsKey("line")));
+        Assert.Equal(2, overloads.Select(hit => hit["line"].GetInt32()).Distinct().Count());
     }
 
     /// <summary>

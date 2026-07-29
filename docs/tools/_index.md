@@ -13,7 +13,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | A type or member's shape, docs, source, location | `get_symbol` | `get_symbol.md` | Read the `.cs` file |
 | A type's member list | `get_symbol(include: "members")` | `get_symbol.md` | Read the file |
 | One region of a long member | `get_symbol(include: "source:code@120-160")` | `get_symbol.md` | `Read`/`sed` on the file |
-| Who calls it — just the list, one hop | `get_call_hierarchy(maxDepth: 1)` | `get_call_hierarchy.md` | `get_references` — ~60% more tokens for the same answer |
+| Who calls it — just the list, one hop, **high fan-in** | `get_call_hierarchy(maxDepth: 1)` | `get_call_hierarchy.md` | `get_references` — 8× the tokens at 105 callers. Below ~a dozen callers it inverts: take `get_references` and get the sites free |
 | Where exactly it's called — file, line, snippet | `get_references(direction: "callers")` | `get_references.md` | Grep the name — misses interface dispatch, returns comment hits |
 | Implementations, derived types, overrides | `get_references(direction: "implementations"\|"overrides")` | `get_references.md` | Grep for `: IFoo` |
 | What is callable at a cursor — locals, inherited, extension methods | `get_scope` | `get_scope.md` | Guess, or grep for a helper that may not apply |

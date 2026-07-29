@@ -52,3 +52,45 @@ public class CompactNameTests
         Assert.NotEqual(one, two);
     }
 }
+
+/// <summary>
+/// Covers <see cref="SymbolResolver.ParameterArity"/>, which is what tells the members of an overload
+/// set apart once the syntax index has dropped their parameter lists.
+/// </summary>
+public class ParameterArityTests
+{
+    /// <summary>A name with no parameter list is not a zero-parameter member — it is not a member call at all.</summary>
+    [Fact]
+    public void ReportsMinusOneForANameWithoutAParameterList()
+    {
+        Assert.Equal(-1, SymbolResolver.ParameterArity("Lib.Store.Count"));
+    }
+
+    [Fact]
+    public void CountsAnEmptyParameterListAsZero()
+    {
+        Assert.Equal(0, SymbolResolver.ParameterArity("Lib.Store.Clear()"));
+    }
+
+    /// <summary>The store's form: types only, no spaces, no names.</summary>
+    [Fact]
+    public void CountsTheStoresTypeOnlyParameterList()
+    {
+        Assert.Equal(2, SymbolResolver.ParameterArity("Lib.Store.Get(System.String,System.Int32)"));
+    }
+
+    /// <summary>The syntax index's form: named parameters, defaults, and a return type after the list.</summary>
+    [Fact]
+    public void CountsTheIndexSignatureFormIncludingDefaults()
+    {
+        Assert.Equal(2, SymbolResolver.ParameterArity("Get(string key, int limit = 10) -> string"));
+    }
+
+    /// <summary>A comma inside a generic argument or tuple belongs to the type, not to the parameter list.</summary>
+    [Fact]
+    public void IgnoresCommasNestedInsideAParameterType()
+    {
+        Assert.Equal(1, SymbolResolver.ParameterArity("Lib.Store.Put(Dictionary<string, int> entries)"));
+        Assert.Equal(1, SymbolResolver.ParameterArity("Lib.Store.Put(params (string Key, string Value)[] pairs)"));
+    }
+}

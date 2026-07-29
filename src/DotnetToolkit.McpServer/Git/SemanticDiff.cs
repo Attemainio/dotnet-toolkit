@@ -26,10 +26,21 @@ public sealed class SemanticDiff
         IReadOnlyList<string> Removed,
         IReadOnlyList<ChangedSymbol> Changed);
 
-    public async Task<Result> CompareAsync(string fromRef, string toRef, CancellationToken ct = default)
+    /// <summary>Reports which declarations moved between two refs, and how far.</summary>
+    /// <param name="fromRef">The base ref.</param>
+    /// <param name="toRef">The target ref.</param>
+    /// <param name="repository">
+    /// The analyzer to run in, for a caller that bound one to a specific repository beneath the solution
+    /// root. Defaults to the injected analyzer, which runs at the root itself.
+    /// </param>
+    /// <param name="ct">Cancels the git commands this issues.</param>
+    /// <returns>The commit count with the added, removed and changed declarations.</returns>
+    public async Task<Result> CompareAsync(string fromRef, string toRef, GitAnalyzer? repository = null,
+        CancellationToken ct = default)
     {
-        var commits = await _git.CommitCountAsync(fromRef, toRef, ct);
-        var files = await _git.ChangedCSharpFilesAsync(fromRef, toRef, ct);
+        var git = repository ?? _git;
+        var commits = await git.CommitCountAsync(fromRef, toRef, ct);
+        var files = await git.ChangedCSharpFilesAsync(fromRef, toRef, ct);
 
         var added = new List<string>();
         var removed = new List<string>();
@@ -37,8 +48,8 @@ public sealed class SemanticDiff
 
         foreach (var file in files)
         {
-            var beforeText = await _git.FileAtRefAsync(fromRef, file.Path, ct);
-            var afterText = await _git.FileAtRefAsync(toRef, file.Path, ct);
+            var beforeText = await git.FileAtRefAsync(fromRef, file.Path, ct);
+            var afterText = await git.FileAtRefAsync(toRef, file.Path, ct);
 
             var before = beforeText is null ? [] : Declarations(beforeText);
             var after = afterText is null ? [] : Declarations(afterText);

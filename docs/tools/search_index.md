@@ -28,9 +28,10 @@ plain array of objects — `symbolId, name, kind, file, line, endLine` on every 
 
 `file`/`line` are resolved from the syntax index at response time — swept for staleness on the
 way — so they point at where the declaration is *now*, not where it was when the row was
-written. **A name that maps to several declarations (overloads) omits both fields entirely**
-(absent, not `null`) rather than pointing at the wrong one; that hit still resolves through
-`get_symbol`, which separates overloads by parameter list and always returns exact spans.
+written. An overload set is separated by **parameter count**, so each overload reports its own
+location; only two overloads of the *same* arity stay ambiguous, and such a hit **omits both fields
+entirely** (absent, not `null`) rather than pointing at the wrong one. It still resolves through
+`get_symbol`, which separates overloads by full parameter list and always returns exact spans.
 `endLine` is the declaration's own last line (trailing trivia excluded) — a cheap signal for
 whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
 whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration, or
@@ -156,9 +157,10 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
     "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":10,"endLine":260}]}
 ```
 
-`name` is directly usable as `get_symbol`'s `symbol` argument. A hit whose name maps to several
-overloads has no `file` at all rather than pointing at the wrong one — resolve it through
-`get_symbol` instead, which separates overloads by parameter list. `endLine` is the declaration's own
+`name` is directly usable as `get_symbol`'s `symbol` argument. Overloads are told apart by parameter
+count, so each reports its own `file`/`line`; two overloads of the same arity stay ambiguous and carry
+no `file` at all rather than pointing at the wrong one — resolve those through `get_symbol`, which
+separates overloads by full parameter list. `endLine` is the declaration's own
 last line (trailing trivia excluded, leading doc comment excluded — so it stays comparable to `line`,
 which never counts the doc comment either) — a cheap size signal for judging whether `get_symbol`'s
 `source` component is worth requesting before asking for it. `ValidatePatch` spans over a hundred

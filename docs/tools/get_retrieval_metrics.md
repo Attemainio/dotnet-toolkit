@@ -60,10 +60,14 @@ get_retrieval_metrics(scope: "global", groupBy: "tool")
    {"key":"validate_patch","calls":6,"tokensReturned":1595}]}
 ```
 
-`validate_patch` writes to a separate raw-events table (`patch_events`, not `retrieval_events`) since it
-records validation-ladder fields no read tool has (`completedLevel`, `isSufficient`, …). `totals` and the
-default `tool` grouping fold its calls/tokens in alongside the read tools; `validationAttempts` above
-counts the same six calls from the angle of the validation ladder rather than raw token volume. A
+`validate_patch` writes a validation that actually ran to a separate raw-events table (`patch_events`,
+not `retrieval_events`) since it records ladder fields no read tool has (`completedLevel`,
+`isSufficient`, …). A call **rejected before validation** — `stale_base`, `unheld_symbol`,
+`invalid_edit`, `no_edits` and the rest — is not a validation attempt and writes an ordinary
+`retrieval_events` row instead, the way every other tool records its error payloads; it still cost a
+round trip and the tokens of its error payload, and both belong in the totals. `totals` and the default
+`tool` grouping fold both tables in alongside the read tools; `validationAttempts` above counts only the
+`patch_events` side, i.e. the calls that reached the ladder, rather than raw token volume. A
 `validate_patch` entry appears in `groups` only when at least one such call falls in scope — it's absent,
 not zero, for a scope with no patch activity.
 

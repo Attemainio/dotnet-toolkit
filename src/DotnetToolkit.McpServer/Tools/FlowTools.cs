@@ -27,8 +27,10 @@ public static class FlowTools
         + "'members' (a type's static declared list, no position involved) — call this when standing at a cursor "
         + "deciding what to call, before writing a helper that may already exist, or when the receiver's type "
         + "isn't known yet so get_symbol has no target to query. Each item's displayString has its containing "
-        + "type's prefix stripped, since definedIn already states it; origin is omitted when it would just be "
-        + "\"member\" alongside a receiverType header (definedIn == receiverType makes that derivable).")]
+        + "type's prefix stripped, and definedIn and origin are both omitted when a receiverType header already "
+        + "states them (definedIn == receiverType makes both derivable). When more is in scope than limit "
+        + "allows, the budget is split across origins so applicable extension methods are never crowded out by "
+        + "a receiver's own members, and totalItems/truncated report what was left out.")]
 
     public static async Task<string> GetScope(
         WorkspaceHost workspace,
@@ -90,8 +92,9 @@ public static class FlowTools
 
         var unqualifiedMemberFormat = SymbolDisplayFormat.MinimallyQualifiedFormat
             .WithMemberOptions(SymbolDisplayFormat.MinimallyQualifiedFormat.MemberOptions & ~SymbolDisplayMemberOptions.IncludeContainingType);
+        var receiverTypeName = receiverType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
-        var items = symbols
+        var ranked = symbols
             .Where(s => !s.IsImplicitlyDeclared)
             .Where(s => MatchesFilter(s, filter))
             .Where(s => nameContains is null || s.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
@@ -99,7 +102,9 @@ public static class FlowTools
             .Select(s => (Symbol: s, Origin: OriginOf(s, receiverType)))
             .OrderBy(t => OriginRank(t.Origin))
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
-            .Take(Math.Clamp(limit, 1, 200))
+            .ToList();
+
+        var items = TakeAcrossOrigins(ranked, Math.Clamp(limit, 1, 200))
             .Select(t =>
             {
                 var s = t.Symbol;
@@ -118,7 +123,9 @@ public static class FlowTools
                     // "member" is derivable once a receiverType header exists: it is the only origin left
                     // once local/parameter/extension/type/inherited are ruled out, i.e. definedIn == receiverType.
                     origin = receiverType is not null && origin == "member" ? null : origin,
-                    definedIn,
+                    // The same derivation, finally applied to definedIn itself: on a receiver whose own
+                    // members dominate, repeating the header per row was 39% of a 207-token response.
+                    definedIn = definedIn == receiverTypeName ? null : definedIn,
                 };
             })
             .ToList();
@@ -126,7 +133,9 @@ public static class FlowTools
         var json = Formats.Render(new
         {
             position = new { file, line },
-            receiverType = receiverType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            receiverType = receiverTypeName,
+            totalItems = ranked.Count > items.Count ? (int?)ranked.Count : null,
+            truncated = ranked.Count > items.Count ? (bool?)true : null,
             items,
         });
 
@@ -219,7 +228,8 @@ public static class FlowTools
         + "known to and returns one shortest path; this tool needs only a root and returns every branch up to "
         + "maxDepth, plus a blastRadius summary (unique nodes reached, per depth) answering 'if I change this, "
         + "how much does it ripple' without paying for the full tree — set includeTree:false for just that "
-        + "summary. Every node always carries symbolId (the join key back to get_symbol) and displayString — the "
+        + "summary, which is also the only shape carrying a separate root block: with a tree, its head node IS "
+        + "the root. Every node always carries symbolId (the join key back to get_symbol) and displayString — the "
         + "bare name with its parameter list dropped (overloads still disambiguate via symbolId); add kind, file, "
         + "line, or the full signature (signature) via fields. A symbol reached through two different branches (a "
         + "diamond) legitimately appears twice in the tree but counts once in blastRadius; true recursion (a "
@@ -301,7 +311,7 @@ public static class FlowTools
         if (wantFile || wantLine)
         {
             await index.EnsureFreshAsync();
-            var names = rows.Values.Where(r => r.FqName is not null).Select(r => SymbolResolver.NameWithoutParameters(r.FqName!)).ToHashSet(StringComparer.Ordinal);
+            var names = rows.Values.Where(r => r.FqName is not null).Select(r => r.FqName!).ToHashSet(StringComparer.Ordinal);
             sites = index.Locate(names);
         }
 
@@ -310,7 +320,7 @@ public static class FlowTools
             rows.TryGetValue(node.SymbolId, out var row);
             var display = DisplayFor(node.SymbolId, row);
             var site = (wantFile || wantLine) && row.FqName is not null
-                ? sites.GetValueOrDefault(SymbolResolver.NameWithoutParameters(row.FqName))
+                ? sites.GetValueOrDefault(row.FqName)
                 : null;
 
             return new
@@ -331,7 +341,10 @@ public static class FlowTools
         var degradedBy = workspace.IsDegraded ? "degraded" : null;
         var json = Formats.Render(new
         {
-            root = new
+            // With a tree, its head node IS the root and already carries both of these fields. Emitting
+            // them again under root made a one-caller maxDepth:1 answer cost 39% MORE than get_references
+            // while saying less. Without a tree, nothing else names what the answer is about.
+            root = includeTree ? null : new
             {
                 symbolId = rootId,
                 displayString = DisplayFor(rootId, rootRow),
@@ -542,4 +555,54 @@ public static class FlowTools
         "extension" => 4,
         _ => 5,
     };
+
+    /// <summary>
+    /// Takes up to <paramref name="limit"/> items, round-robin across origin groups in rank order, so one
+    /// crowded origin cannot spend the whole budget.
+    /// </summary>
+    /// <remarks>
+    /// Rank-then-alphabetical order alone buried this tool's own value proposition: on a
+    /// <c>List&lt;Trade&lt;T&gt;&gt;</c> receiver, members from Add to ConvertAll (three BinarySearch
+    /// overloads among them) filled a limit of 10, and not one applicable extension method -- the thing
+    /// grep genuinely cannot answer -- appeared at that limit or at the default one.
+    /// </remarks>
+    /// <param name="ranked">Every in-scope symbol, already ordered by origin rank then name.</param>
+    /// <param name="limit">How many items the response may carry.</param>
+    /// <returns>The chosen items, back in rank-then-name order.</returns>
+    private static List<(ISymbol Symbol, string Origin)> TakeAcrossOrigins(
+        List<(ISymbol Symbol, string Origin)> ranked, int limit)
+    {
+        if (ranked.Count <= limit)
+            return ranked;
+
+        var groups = ranked
+            .GroupBy(t => t.Origin, StringComparer.Ordinal)
+            .OrderBy(g => OriginRank(g.Key))
+            .Select(g => g.ToList())
+            .ToList();
+
+        var taken = new List<(ISymbol Symbol, string Origin)>(limit);
+        for (var round = 0; taken.Count < limit; round++)
+        {
+            var addedThisRound = false;
+            foreach (var group in groups)
+            {
+                if (round >= group.Count)
+                    continue;
+
+                taken.Add(group[round]);
+                addedThisRound = true;
+                if (taken.Count == limit)
+                    break;
+            }
+
+            if (!addedThisRound)
+                break;
+        }
+
+        return taken
+            .OrderBy(t => OriginRank(t.Origin))
+            .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
+            .ToList();
+    }
 }

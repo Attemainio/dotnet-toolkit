@@ -21,7 +21,9 @@ public static class HistoryTools
         + "which version layers moved and the API impact. Formatting- and comment-only commits report no change. "
         + "Use this instead of reading a textual diff. Each of symbolsAdded/symbolsRemoved/symbolsChanged is "
         + "capped independently at limit entries; a capped list carries its own *Truncated:true flag alongside it, "
-        + "while apiImpactSummary always reports the true added/removed/changed counts regardless of the cap.")]
+        + "while apiImpactSummary always reports the true added/removed/changed counts regardless of the cap. "
+        + "A solution root that is not itself a repository but holds several (projects from separate repos "
+        + "checked out side by side) is diffed one repository at a time — name it with repo.")]
     public static async Task<string> GetSemanticDiff(
         GitAnalyzer git,
         SemanticDiff diff,
@@ -30,6 +32,8 @@ public static class HistoryTools
         [Description("Target ref. Default: HEAD.")] string toRef = "HEAD",
         [Description("Max entries kept in each of symbolsAdded/symbolsRemoved/symbolsChanged, capped "
             + "independently (default 50, cap 200). apiImpactSummary's counts are never capped.")] int limit = 50,
+        [Description("Which repository to diff, by directory name, when the solution root is not itself a "
+            + "git repository. Omit when the root is one, or when exactly one repository sits beneath it.")] string? repo = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
 
     {
@@ -38,14 +42,48 @@ public static class HistoryTools
         var toolCallId = Ids.ToolCall();
         var requested = $"{fromRef}..{toRef}";
 
-        if (!await git.IsRepositoryAsync())
+        string Fail(string kind, object payload) =>
+            ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
+                requested, Formats.Render(payload), errorKind: kind);
+
+        // The root is not always the repository: projects from separate repositories are routinely checked
+        // out side by side under a folder that was never one itself, and resolving git only from the root
+        // reports not_a_git_repository for a solution whose every project is versioned.
+        var repositories = git.Repositories;
+        var selected = repositories.Count == 1 ? repositories[0] : null;
+        if (repo is not null)
         {
-            return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
-                requested, Formats.Render(new { error = "not_a_git_repository" }), errorKind: "not_a_git_repository");
+            var wanted = repo.Trim().Trim('/', '\\');
+            selected = repositories.FirstOrDefault(r =>
+                string.Equals(Path.GetFileName(r), wanted, StringComparison.OrdinalIgnoreCase));
+            if (selected is null)
+            {
+                return Fail("unknown_repository", new
+                {
+                    error = "unknown_repository",
+                    message = $"no repository '{repo}' under the solution root",
+                    repositories = repositories.Select(Path.GetFileName),
+                });
+            }
+        }
+        else if (repositories.Count > 1)
+        {
+            // Each repository has its own history, so there is no single diff to report and guessing one
+            // would answer a question the caller did not ask. Naming them costs less than guessing wrong.
+            return Fail("ambiguous_repository", new
+            {
+                error = "ambiguous_repository",
+                message = "the solution root holds several repositories; pass repo to pick one",
+                repositories = repositories.Select(Path.GetFileName),
+            });
         }
 
-        var from = await git.ResolveRefAsync(fromRef);
-        var to = await git.ResolveRefAsync(toRef);
+        var scoped = selected is null ? git : git.For(selected);
+        if (!await scoped.IsRepositoryAsync())
+            return Fail("not_a_git_repository", new { error = "not_a_git_repository" });
+
+        var from = await scoped.ResolveRefAsync(fromRef);
+        var to = await scoped.ResolveRefAsync(toRef);
         if (from is null || to is null)
         {
             var unresolved = Formats.Render(new
@@ -58,7 +96,7 @@ public static class HistoryTools
         }
 
         limit = Math.Clamp(limit, 1, 200);
-        var result = await diff.CompareAsync(from, to);
+        var result = await diff.CompareAsync(from, to, scoped);
         var breaking = result.Changed.Count(c => c.ApiImpact.StartsWith("breaking", StringComparison.Ordinal));
 
         var addedTruncated = result.Added.Count > limit;

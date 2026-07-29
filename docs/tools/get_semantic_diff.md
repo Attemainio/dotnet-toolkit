@@ -30,6 +30,14 @@ commit correctly reports no change.
 | `fromRef` | Default `HEAD~1`. |
 | `toRef` | Default `HEAD`. |
 | `limit` | Max entries kept in each of `symbolsAdded`/`symbolsRemoved`/`symbolsChanged`, capped independently. Default 50, cap 200. |
+| `repo` | Which repository to diff, by directory name, when the **solution root is not itself a git repository**. Omit when it is one, or when exactly one repository sits directly beneath it. |
+
+The solution root is not always the repository: projects belonging to separate repositories are
+routinely checked out side by side under a folder that was never one itself. The tool resolves git from
+the root when the root (or an ancestor) holds the `.git` entry, and otherwise from the repositories
+directly beneath it — one of them per call. `error: "ambiguous_repository"` lists the candidates when
+there is more than one and no `repo` was given; `error: "unknown_repository"` lists them when `repo`
+names none of them; `error: "not_a_git_repository"` means there was no repository to find at all.
 
 Real call and response (trimmed):
 

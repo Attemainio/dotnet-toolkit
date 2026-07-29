@@ -15,11 +15,66 @@ public sealed class GitAnalyzer
 
     private readonly SolutionLocator _locator;
     private readonly ILogger<GitAnalyzer> _log;
+    private readonly string? _repositoryOverride;
+    private readonly Lazy<IReadOnlyList<string>> _repositories;
 
     public GitAnalyzer(SolutionLocator locator, ILogger<GitAnalyzer> log)
+        : this(locator, log, null)
+    {
+    }
+
+    private GitAnalyzer(SolutionLocator locator, ILogger<GitAnalyzer> log, string? repositoryOverride)
     {
         _locator = locator;
         _log = log;
+        _repositoryOverride = repositoryOverride;
+        _repositories = new Lazy<IReadOnlyList<string>>(DiscoverRepositories);
+    }
+
+    /// <summary>
+    /// Every repository this solution's history can be read from: the solution root itself when it sits
+    /// inside a work tree, otherwise the repositories checked out directly beneath it.
+    /// </summary>
+    /// <remarks>
+    /// A solution root is not always a repository. Projects belonging to separate repositories are
+    /// routinely checked out side by side under one folder that was never itself one, and resolving git
+    /// from the root alone reports "not a git repository" for a solution whose every project is
+    /// versioned. Scanned once, one level deep, and cached.
+    /// </remarks>
+    /// <value>Absolute repository roots, ordered by path; empty when there is no repository at all.</value>
+    public IReadOnlyList<string> Repositories => _repositories.Value;
+
+    /// <summary>The directory this analyzer runs its git commands in.</summary>
+    /// <value>The repository this analyzer was bound to, or the solution root when it was not bound.</value>
+    public string RepositoryDirectory => _repositoryOverride ?? _locator.Root;
+
+    /// <summary>Returns an analyzer that runs every command inside one specific repository.</summary>
+    /// <param name="repositoryRoot">Absolute path of a repository, normally one of <see cref="Repositories"/>.</param>
+    /// <returns>A new analyzer bound to that repository; this one is left unchanged.</returns>
+    public GitAnalyzer For(string repositoryRoot) => new(_locator, _log, repositoryRoot);
+
+    private IReadOnlyList<string> DiscoverRepositories()
+    {
+        // git resolves a work tree from any directory inside it, so a .git entry on the root or any
+        // ancestor of it means the root is already the right place to run.
+        for (var dir = new DirectoryInfo(_locator.Root); dir is not null; dir = dir.Parent)
+        {
+            if (Path.Exists(Path.Combine(dir.FullName, ".git")))
+                return [_locator.Root];
+        }
+
+        try
+        {
+            return Directory.EnumerateDirectories(_locator.Root)
+                .Where(d => Path.Exists(Path.Combine(d, ".git")))
+                .OrderBy(d => d, StringComparer.Ordinal)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogDebug(ex, "Cannot scan {Root} for repositories", _locator.Root);
+            return [];
+        }
     }
 
     public sealed record ChangedFile(string Path, string Status);
@@ -94,7 +149,7 @@ public sealed class GitAnalyzer
     {
         var psi = new ProcessStartInfo("git")
         {
-            WorkingDirectory = _locator.Root,
+            WorkingDirectory = RepositoryDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
