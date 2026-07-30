@@ -81,8 +81,11 @@ reports and may offer to re-run `dotnet-toolkit-init`, never installs on its own
 adding a new doc/skill/rule file, or whenever something describing the tool surface looks stale.
 
 Audits `Tools/*.cs` as ground truth against every file that describes the tool surface — docs, skills,
-the agent definition, rules, hooks, CLAUDE.md, README — and fixes exact drift file by file. Ships to
-consumers but its primary use is on this repo itself.
+the agent definition, rules, hooks, CLAUDE.md, README — and fixes exact drift file by file. **It owns the
+authoritative list of those files**, so a new doc, skill, or tool group is wired in by adding a row
+there. Also enforces the always-loaded and per-skill size budgets, and checks that anything operational
+reaches consumers through a shipped file rather than living only in this repo's CLAUDE.md or a
+maintainer's memory. Ships to consumers but its primary use is on this repo itself.
 
 ## `dotnet-toolkit-selfeval` — the efficiency evaluation
 

@@ -18,7 +18,7 @@ Creating a **new** `.cs` file with `Write` is allowed, because `validate_patch`'
 `symbolId` that does not exist yet; change the file through `validate_patch` after creation.
 
 The deny message restates the current `validate_patch` call procedure — when that procedure changes, this
-script's message must change with it (see CLAUDE.md's "Changing the tool surface" table).
+script's message must change with it (see `docs/architecture.md`'s "Changing the tool surface").
 
 ## `guard-cs-read.sh` — PreToolUse on `Read`
 

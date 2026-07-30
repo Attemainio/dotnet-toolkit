@@ -8,8 +8,8 @@ The standards files themselves carry `paths: ["**/*.cs"]` solely to keep them ou
 
 This file is the **master index** for every coding-standards file in `.claude/rules/` — the single place
 that lists which file exists and when to read it. A new standards file is not "done" until it has a row
-here; nothing else in this plugin enumerates the set on its own (see "Changing the tool surface" in
-`CLAUDE.md` for the full list of places a new file must also be wired into).
+here; nothing else in this plugin enumerates the set on its own (the `dotnet-toolkit-consistency` skill
+owns the full list of places a new file must also be wired into).
 
 The canonical coding standards live beside this file in `.claude/rules/`. They are loaded **on demand**,
 not automatically — before writing or editing C#, read the ones relevant to the change (the
@@ -54,5 +54,5 @@ Hold these without needing a review pass to catch them:
 - **New tests exercise real dependencies, not an in-memory database substitute**, for anything asserting
   constraint/transaction/query-translation behavior the substitute doesn't share.
 
-And the one mechanical rule: **C# edits go through `validate_patch`** (CLAUDE.md carries the full
-procedure and tool table) — it is the only writer to the development log.
+And the one mechanical rule: **C# edits go through `validate_patch`** (`docs/tools/validate_patch.md`
+carries the full procedure; CLAUDE.md states the rule) — it is the only writer to the development log.

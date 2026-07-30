@@ -242,7 +242,8 @@ forces a rebuild.
 | [`docs/skill-reference.md`](docs/skill-reference.md) | What each of the seven skills does |
 | [`docs/agent-reference.md`](docs/agent-reference.md) | The review agent's design and token budget |
 | [`docs/hook-reference.md`](docs/hook-reference.md) | The guard hooks and what they block |
-| [`CLAUDE.md`](CLAUDE.md) | Architecture, and how to work on the plugin itself |
+| [`docs/architecture.md`](docs/architecture.md) | How the server is built: startup, the two knowledge tiers, subsystems, packaging |
+| [`CLAUDE.md`](CLAUDE.md) | The operating contract for working on the plugin itself |
 
 ## Development
 
@@ -253,10 +254,11 @@ dotnet test                    # unit + MSBuildWorkspace integration tests
 ```
 
 `TreatWarningsAsErrors` is set repo-wide, so a build with warnings fails. If more than one .NET 10 SDK
-is installed, build with the same one `scripts/run-server.sh` picks — see CLAUDE.md's Commands section.
+is installed, build with the same one `scripts/run-server.sh` picks — see `docs/architecture.md`'s
+Environment section for the symptoms and the repair.
 
 Layout: `src/DotnetToolkit.McpServer/` (the server — `Tools/` is the MCP surface), `tests/`, `skills/`,
 `agents/`, `.claude/rules/` (coding standards), `docs/`, `.claude-plugin/` (manifests), `.mcp.json`.
-CLAUDE.md's Architecture section explains how the pieces fit.
+`docs/architecture.md` explains how the pieces fit.
 
 Issues and self-eval reports: **https://github.com/Attemainio/dotnet-toolkit/issues**
