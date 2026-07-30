@@ -5,13 +5,19 @@
 An open-ended multi-level call tree from one symbol — Visual Studio's *View Call Hierarchy*,
 which `get_call_slice` structurally cannot answer (it needs a known `to`). `direction:
 "callers"` (default) walks upward toward entry points; `"callees"` walks downward into what
-the symbol invokes. Every node carries `symbolId` + `displayString` (the bare name, parameter list
-dropped — overloads still disambiguate via `symbolId`); add `kind`/`file`/`line`/`signature` (the full
-parameter-list form) via `fields`.
+the symbol invokes. Every node carries `symbolId` + `displayString` (the containing type and member
+name, parameter list dropped — the same compact form `get_references` rows use, and overloads still
+disambiguate via `symbolId`); add `kind`/`file`/`line`/`signature` (the full parameter-list form) via
+`fields`.
 
 Call it to answer "if I change this, how much does it ripple" — `includeTree: false` returns
 only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
-version of that question, without paying for the full tree.
+version of that question, without paying for the full tree. `blastRadius` counts every symbol
+**reached** from the root, including the children a per-node cap left unexpanded, and reports that cap
+as `truncated`/`omittedChildren` in both shapes — so the summary-only answer is never smaller than the
+number the tree printed. It is not, however, cap-independent: an unexpanded node's *own* callers are
+never visited, so past `maxDepth: 1` a lower `maxChildrenPerNode` genuinely finds less. Compare totals
+only at equal caps.
 
 ```
 get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDepth: 1)
@@ -51,9 +57,9 @@ upward toward entry points; `"callees"` walks downward into what the symbol invo
 | `symbol` | Required. Same addressing as `get_symbol`. |
 | `direction` | `callers` (default) \| `callees`. |
 | `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
-| `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. |
+| `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. The children it left out are still **counted** in `blastRadius`, so the cap never hides a node at the depth it was found; but their own callers go unvisited, so at `maxDepth` above 1 a tighter cap does reduce the total. |
 | `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." That shape is also the only one carrying a separate `root` block: with a tree, its head node **is** the root, and emitting both repeated every root field. |
-| `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default bare name) to every node beyond the always-present `symbolId`/`displayString`. |
+| `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default type-and-member name) to every node beyond the always-present `symbolId`/`displayString`. |
 
 Real call and response (trimmed to 4 of 7 children):
 
@@ -71,9 +77,23 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
  "blastRadius":{"totalUniqueNodes":8,"perDepth":[1,7],"depthCapped":true}}
 ```
 
-`displayString` is the bare name with the parameter list dropped — overloads still disambiguate via
-`symbolId`. Pass `fields:"signature"` for the full parameter-list form (e.g.
+`displayString` is the containing type and member name with the parameter list dropped — the namespace
+in front of it was a third of a 25-node tree, repeated once per sibling, and `symbolId` still
+disambiguates overloads. (A member of a *nested* type keeps the inner type and loses the outer one.)
+Pass `fields:"signature"` for the full parameter-list form (e.g.
 `"string FeatureLogStore.Append(LogEntry entry)"`) when the signature itself is what's needed.
+
+`blastRadius` counts reached nodes, not rendered ones: at `maxDepth: 1` on this same root,
+`maxChildrenPerNode: 1` reports the same `totalUniqueNodes` as `maxChildrenPerNode: 200` and adds
+`truncated:true, omittedChildren:6`. That holds with `includeTree:false` too — the shape whose entire
+purpose is this number is not the shape that gets a worse one.
+
+Past depth 1 the equality stops holding, and that is a property of the graph walk rather than a
+reporting gap: a node the cap did not expand contributes itself to the count but contributes none of
+**its** callers, so the frontier is narrower at every level below. Measured on `Formats.Render`
+(`maxDepth: 3`): `maxChildrenPerNode: 200` reaches 126 nodes, `maxChildrenPerNode: 2` reaches 23 and
+reports `omittedChildren: 18`. Read a capped total as a floor, and never diff two runs whose caps
+differ.
 
 `depthCapped:true` means `Append` has callers beyond `maxDepth:1` — raising `maxDepth` reaches
 `PatchTools.ValidatePatch` (the actual MCP tool entry point) three levels up from this root.

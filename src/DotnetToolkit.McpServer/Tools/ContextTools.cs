@@ -337,15 +337,56 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 return (entryPoint, null);
             return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
         }
+
+        // Every candidate of one ambiguous name shares a prefix by construction -- that shared prefix is
+        // what made the name ambiguous in the first place -- so repeating it per row was 29% of a
+        // six-candidate payload. This is the same hoist the multi-symbol batch response already takes
+        // with its shared: block, finally applied to the shape whose rows share the MOST.
+        var named = resolution.Candidates.Take(10)
+            .Select(c => (Id: SymbolKey.IdOf(c), Display: SymbolResolver.CompactName(c.ToDisplayString())))
+            .ToList();
+        var sharedPrefix = named.Count > 1 ? SharedNamePrefix(named.Select(n => n.Display)) : "";
         return (null, Formats.ToJson(new
         {
             error = "ambiguous_symbol",
-            candidates = resolution.Candidates.Take(10).Select(c => new
+            sharedPrefix = sharedPrefix.Length > 0 ? sharedPrefix : null,
+            candidates = named.Select(n => new
             {
-                symbolId = SymbolKey.IdOf(c),
-                displayString = c.ToDisplayString(),
+                symbolId = n.Id,
+                displayString = n.Display[sharedPrefix.Length..],
             }),
         }));
+    }
+
+    /// <summary>
+    /// The longest dot-terminated prefix every one of <paramref name="displays"/> begins with.
+    /// </summary>
+    /// <remarks>
+    /// Cut back to the last '.' so what is hoisted is always a whole namespace/type path rather than a
+    /// half-identifier: two candidates named <c>Solve</c> and <c>SolveAll</c> share "Solve", which is a
+    /// prefix of the text but not of the name.
+    /// </remarks>
+    /// <param name="displays">The candidate display strings, two or more of them.</param>
+    /// <returns>The shared prefix including its trailing '.', or an empty string when there is none.</returns>
+    private static string SharedNamePrefix(IEnumerable<string> displays)
+    {
+        string? common = null;
+        foreach (var display in displays)
+        {
+            if (common is null)
+            {
+                common = display;
+                continue;
+            }
+
+            var shared = 0;
+            while (shared < common.Length && shared < display.Length && common[shared] == display[shared])
+                shared++;
+            common = common[..shared];
+        }
+
+        var lastDot = common?.LastIndexOf('.') ?? -1;
+        return lastDot < 0 ? "" : common![..(lastDot + 1)];
     }
 
 /// <summary>

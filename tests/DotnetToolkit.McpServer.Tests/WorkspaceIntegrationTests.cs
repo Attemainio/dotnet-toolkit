@@ -560,6 +560,29 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Contains(items, i => i.Contains("SpinTwice"));  // the extension method
     }
 
+    /// <summary>
+    /// Roslyn's LookupSymbols answers a position with the synthesized top-level-statements entry point's
+    /// locals no matter which file the position is in, so "what is callable here" has to discard any local
+    /// or parameter declared in another syntax tree -- one of those was never callable at this cursor.
+    /// </summary>
+    [Fact]
+    public async Task GetScope_DoesNotOfferLocalsDeclaredInAnotherFile()
+    {
+        // Program.cs in the fixture is a top-level-statements file; its locals must not leak into Lib.
+        var sym = Root(await GetSymbol("Sample.Lib.Pipeline.Deep"));
+        var line = sym.GetProperty("content").GetProperty("declarationSites")[0]
+            .GetProperty("startLine").GetInt32();
+
+        var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
+            file: "Lib/Pipeline.cs", line: line, column: 9, filter: "locals", limit: 200));
+
+        var locals = root.GetProperty("items").EnumerateArray()
+            .Where(i => i.GetProperty("kind").GetString() is "Local")
+            .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.DoesNotContain(locals, l => l.Contains("builder", StringComparison.Ordinal));
+        Assert.DoesNotContain(locals, l => l.Contains("app", StringComparison.Ordinal));
+    }
+
     private Task<string> ContextToolsCallSlice(string from, string to) =>
         FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, _f.Telemetry, from, to);
 
@@ -1394,7 +1417,7 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         var symbols = TableRows(root.GetProperty("symbols"));
         var symbol = Assert.Single(symbols);
         Assert.False(symbol.ContainsKey("kind"));
-        Assert.Equal("WidgetExtensions.SpinTwice(IWidget,int)", symbol["name"].GetString());
+        Assert.Equal("WidgetExtensions.SpinTwice(IWidget, int)", symbol["name"].GetString());
     }
 
 
@@ -1610,6 +1633,61 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
 
         Assert.False(root.TryGetProperty("tree", out _));
         Assert.True(root.GetProperty("blastRadius").GetProperty("totalUniqueNodes").GetInt32() > 0);
+    }
+
+    /// <summary>
+    /// A child the per-node cap left unexpanded is still part of the blast radius, so at maxDepth 1 -- where
+    /// every reached node is a child of the root -- the cap cannot change the count. It does shrink the total
+    /// at greater depths, since an unexpanded node's own callers are never visited; what is asserted here is
+    /// the countable part, plus that the truncation is reported in the summary-only shape, which is the only
+    /// shape the caller who asked "how much does changing this ripple" ever sees.
+    /// </summary>
+    [Fact]
+    public async Task GetCallHierarchy_BlastRadius_CountsWhatThePerNodeCapLeftOut()
+    {
+        var capped = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin",
+            maxDepth: 1, maxChildrenPerNode: 1, includeTree: false)).GetProperty("blastRadius");
+        var uncapped = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin",
+            maxDepth: 1, maxChildrenPerNode: 200, includeTree: false)).GetProperty("blastRadius");
+
+        // Two callers in the fixture: Pipeline.Deep and Program.cs's top-level statements.
+        Assert.True(uncapped.GetProperty("totalUniqueNodes").GetInt32() >= 3);
+        Assert.Equal(
+            uncapped.GetProperty("totalUniqueNodes").GetInt32(),
+            capped.GetProperty("totalUniqueNodes").GetInt32());
+        Assert.True(capped.GetProperty("truncated").GetBoolean());
+        Assert.True(capped.GetProperty("omittedChildren").GetInt32() > 0);
+        Assert.False(uncapped.TryGetProperty("truncated", out _));
+    }
+
+    /// <summary>
+    /// get_symbol narrows its contentVersion to the layers it actually served, so the default fetch hands
+    /// out no body layer -- and a body-rewriting patch built on one was never checked against the body it
+    /// overwrites, which is exactly the concurrent-edit case baseVersions exists to reject.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_BodyChangeWithoutABodyLayer_ReturnsUnleasedBody()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
+        Assert.DoesNotContain("body:", withoutBody);
+
+        var edits = new[] { new PatchEditInput("Lib/Widget.cs", 12, 12, "    public int Spin(int turns) => turns * 3;") };
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
+            new Dictionary<string, string> { [symbolId] = withoutBody }, edits,
+            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
+
+        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
+        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
+        Assert.Contains("body:", root.GetProperty("current")[0].GetProperty("currentVersion").GetString()!);
+        Assert.True(root.TryGetProperty("draft", out _));
+        Assert.Equal(
+            "    public int Spin(int turns) => turns * 2;",
+            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/Widget.cs")))[11]);
     }
 
     [Fact]

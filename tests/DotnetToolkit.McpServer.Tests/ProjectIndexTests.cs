@@ -155,4 +155,33 @@ public sealed class ProjectIndexTests : IDisposable
         await index.ForceRescanAsync();
         Assert.Equal(0, reloads);
     }
+
+    /// <summary>
+    /// Two overloads sharing a name AND a parameter count are the case arity cannot separate. The requested
+    /// name's parameter TYPES pick each one out, so both keep their own line instead of both being dropped
+    /// as ambiguous and costing a get_symbol round trip purely to navigate.
+    /// </summary>
+    [Fact]
+    public async Task LocatesOverloadsThatCollideOnNameAndArity()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "Overloads.cs"), """
+            namespace N;
+            public class Overloads
+            {
+                public int Pick(int only) => only;
+                public int Pick(string only) => only.Length;
+            }
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal)
+        {
+            "N.Overloads.Pick(int)",
+            "N.Overloads.Pick(string)",
+        });
+
+        Assert.Equal(2, located.Count);
+        Assert.Equal(4, located["N.Overloads.Pick(int)"].Line);
+        Assert.Equal(5, located["N.Overloads.Pick(string)"].Line);
+    }
 }

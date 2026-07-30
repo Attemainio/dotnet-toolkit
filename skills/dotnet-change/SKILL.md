@@ -66,6 +66,15 @@ committing to it — that's the rare case, not the default path.
   current content. A mismatch returns `error: "stale_base"` with the current versions;
   refetch those symbols, rebuild the edit, resubmit.
 
+  **A body edit needs a version that carries the body layer.** `get_symbol` narrows its
+  `contentVersion` to the layers it actually served, so the *default* include leases the declaration
+  only (`decl`, plus `refs`) — and a patch that rewrites a body against it is rejected with
+  `error: "unleased_body"`, because the body it overwrites was never checked for a concurrent edit.
+  Step 1's `include: "all"` is what avoids this; `source`, `bodyOutline` or `mechanicalFacts` in the
+  include list does too. The rejection keeps your text as a draft and lists the current versions, so the
+  fix is one amend: resend the `draftId` with the body-carrying version in `baseVersions` and an empty
+  `edits` array.
+
   A `symbolId` not starting with `sym_` — `symidx_` (from `get_symbol`'s syntax-tier fallback,
   `limitedBy: "index_only"`) or `symfb_` (from `SymbolKey.IdOf`'s own no-doc-comment-id fallback) —
   is provisional and never equal to the live semantic tier's id for the same symbol. `validate_patch`

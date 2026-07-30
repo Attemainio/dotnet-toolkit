@@ -33,29 +33,55 @@ public sealed class CallHierarchy
         bool Truncated,
         int? OmittedChildren);
 
+    /// <summary>
+    /// The walk's outcome: the tree itself, plus the blast-radius counters describing the whole graph
+    /// reached from the root — not just the part the tree rendered.
+    /// </summary>
+    /// <param name="Root">The root node, with its children as far as the caps allowed expansion.</param>
+    /// <param name="TotalUniqueNodes">Distinct symbols reached, counting neighbours a render cap left out.</param>
+    /// <param name="PerDepth">Distinct symbols reached at each depth, index 0 being the root itself.</param>
+    /// <param name="DepthCapped">True when maxDepth stopped a node that still had neighbours.</param>
+    /// <param name="OmittedChildren">Total children left unexpanded by the per-node cap, summed over the tree.</param>
     public sealed record Result(
         Node Root,
         int TotalUniqueNodes,
         IReadOnlyList<int> PerDepth,
-        bool DepthCapped);
+        bool DepthCapped,
+        int OmittedChildren);
 
     public Result Build(string rootId, bool walkCallers, int maxDepth, int maxChildrenPerNode)
     {
         var depthSets = new List<HashSet<string>>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var reached = new HashSet<string>(StringComparer.Ordinal);
+        var expanded = new HashSet<string>(StringComparer.Ordinal);
         var depthCapped = false;
+        var omittedTotal = 0;
 
         void Track(string id, int depth)
         {
             while (depthSets.Count <= depth)
                 depthSets.Add(new HashSet<string>(StringComparer.Ordinal));
             depthSets[depth].Add(id);
-            seen.Add(id);
+            reached.Add(id);
+        }
+
+        // A neighbour the per-node cap left out is still part of the blast radius: it was reached, it just
+        // was not rendered. Counting only what the tree shows made includeTree:false -- the shape whose
+        // whole purpose is answering "how much does changing this ripple" -- report 26 for a symbol with
+        // 103 callers, with no truncation marker in that shape to betray it.
+        void TrackOmitted(IEnumerable<string> neighbors, int depth)
+        {
+            foreach (var neighbor in neighbors)
+            {
+                Track(neighbor, depth);
+                omittedTotal++;
+            }
         }
 
         Node Walk(string id, HashSet<string> pathAncestors, int depth)
         {
             Track(id, depth);
+            expanded.Add(id);
 
             var neighbors = walkCallers ? _symbols.Callers(id) : _symbols.CallTargets(id);
 
@@ -68,11 +94,15 @@ public sealed class CallHierarchy
             if (neighbors.Count == 0)
                 return new Node(id, [], false, false, null);
 
-            if (seen.Count >= HardNodeCap)
+            if (expanded.Count >= HardNodeCap)
+            {
+                TrackOmitted(neighbors, depth + 1);
                 return new Node(id, [], false, true, neighbors.Count);
+            }
 
             var kept = neighbors.Take(Math.Max(1, maxChildrenPerNode)).ToList();
             var omitted = neighbors.Count - kept.Count;
+            TrackOmitted(neighbors.Skip(kept.Count), depth + 1);
 
             var children = new List<Node>(kept.Count);
             foreach (var neighbor in kept)
@@ -90,6 +120,6 @@ public sealed class CallHierarchy
         }
 
         var root = Walk(rootId, new HashSet<string>(StringComparer.Ordinal) { rootId }, 0);
-        return new Result(root, seen.Count, [.. depthSets.Select(s => s.Count)], depthCapped);
+        return new Result(root, reached.Count, [.. depthSets.Select(s => s.Count)], depthCapped, omittedTotal);
     }
 }

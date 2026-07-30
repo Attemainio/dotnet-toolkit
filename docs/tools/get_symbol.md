@@ -111,6 +111,12 @@ find a line number — the default `standard` call already carries `declarationS
 so a token from a `standard` fetch and one from `include: "all"` are not directly comparable if
 you're diffing them yourself later.
 
+That narrowing has a consequence on the write path: the `standard` token carries `decl` (+`refs`) and no
+`body`, and `validate_patch` rejects a **body-changing** patch built on a token that never held the body
+layer (`error: "unleased_body"`) rather than skipping the staleness check for the text it would
+overwrite. Fetch with `include: "all"` — or any include containing `source`, `bodyOutline` or
+`mechanicalFacts` — when the edit rewrites a body, which is also when you wanted the text anyway.
+
 ### Several symbols in one call
 
 `symbols` fetches a list instead of `symbol` fetching one — same `include` applied to every entry:
@@ -393,6 +399,17 @@ verbatim (`components` always, plus `origin`/`containingType` for symbols from o
 (`symbol_not_found`, `ambiguous_symbol`) instead of `symbolId`/`contentVersion`/`content` — one bad
 lookup does not fail the batch, and the two shapes are told apart by which keys are present.
 Every entry carries full content — there is no lease mechanism in `get_symbol` to interact with.
+
+`ambiguous_symbol` takes the same hoist: the prefix all its candidates share (namespace, and usually the
+containing type — by construction, since that shared prefix is what made the name ambiguous) is emitted
+once as `sharedPrefix`, and each candidate's `displayString` carries only the part that differs.
+Concatenate the two for a name you can pass back, or pass the candidate's `symbolId` instead:
+
+```json
+{"error":"ambiguous_symbol","sharedPrefix":"Sample.Lib.Overloads.",
+ "candidates":[{"symbolId":"sym_1a2b...","displayString":"Pick(int)"},
+               {"symbolId":"sym_3c4d...","displayString":"Pick(string)"}]}
+```
 
 ## Next steps
 

@@ -153,6 +153,11 @@ The shape of a call: `get_symbol` for `contentVersion` + the `declarationSites` 
 `validate_patch` with `baseVersions`, line-span `edits`, `applyOnSuccess: true`, and an `intent` in
 user terms. On failure, amend through the returned `draftId` rather than rebuilding the patch.
 
+**Rewriting a body means fetching the body.** `get_symbol` narrows its `contentVersion` to the layers
+it actually served, so the default fetch leases the declaration only — a patch that changes a body
+against it is rejected with `error: "unleased_body"`. Use `include: "all"` (or any include carrying
+`source`/`bodyOutline`/`mechanicalFacts`), which is what you want anyway when editing the text.
+
 "Too large or too interleaved to decompose" is not a reason to fall back to `Edit`. Split it into
 more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
 legitimately outside this: `Write` the file, then change it through `validate_patch`.

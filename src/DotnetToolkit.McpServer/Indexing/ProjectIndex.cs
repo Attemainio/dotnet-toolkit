@@ -377,13 +377,15 @@ public sealed class ProjectIndex : IDisposable
     /// </summary>
     /// <remarks>
     /// The index keys members by bare name, so a requested name is matched with its parameter list
-    /// dropped and then disambiguated by parameter count. A member name that still resolves to more than
-    /// one distinct site — two overloads of the same arity, or a caller that had no parameter list to
-    /// offer — is omitted rather than guessed at: pointing at the wrong overload is worse than saying
-    /// nothing, and absent already means "look it up". A TYPE name resolving to more than one site is
-    /// never that kind of ambiguity — C# forbids two distinct types sharing one fully-qualified name, so
-    /// multiple sites there can only be partial-class fragments of the same symbol, and they collapse to
-    /// one stable representative instead of being dropped.
+    /// dropped and then disambiguated by parameter count, and — for members that collide on count too —
+    /// by their parameter TYPES, which both the stored name and the indexed signature can be reduced to a
+    /// comparable key for. A member name that still resolves to more than one distinct site (a caller that
+    /// had no parameter list to offer, or types that reduce to different text for the same member) is
+    /// omitted rather than guessed at: pointing at the wrong overload is worse than saying nothing, and
+    /// absent already means "look it up". A TYPE name resolving to more than one site is never that kind
+    /// of ambiguity — C# forbids two distinct types sharing one fully-qualified name, so multiple sites
+    /// there can only be partial-class fragments of the same symbol, and they collapse to one stable
+    /// representative instead of being dropped.
     /// </remarks>
     /// <param name="fqNames">The names to resolve, keyed as described on <see cref="Locate"/>.</param>
     /// <returns>One site per name that resolved; a name that stayed ambiguous is absent.</returns>
@@ -399,25 +401,26 @@ public sealed class ProjectIndex : IDisposable
         }
 
         var candidates = new Dictionary<string, List<Candidate>>(StringComparer.Ordinal);
-        void Offer(string bareName, DocSite site, int arity, bool isType)
+        void Offer(string bareName, DocSite site, int arity, string? parameterTypes, bool isType)
         {
             if (!requested.ContainsKey(bareName))
                 return;
             if (!candidates.TryGetValue(bareName, out var forName))
                 candidates[bareName] = forName = [];
-            forName.Add(new Candidate(site, arity, isType));
+            forName.Add(new Candidate(site, arity, parameterTypes, isType));
         }
 
         foreach (var (file, entry) in _files)
         {
             foreach (var type in Flatten(entry.Types))
             {
-                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), -1, isType: true);
+                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), -1, null, isType: true);
                 foreach (var member in type.Members)
                 {
                     Offer($"{type.FqName}.{member.Name}",
                         new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections),
-                        SymbolResolver.ParameterArity(member.Signature), isType: false);
+                        SymbolResolver.ParameterArity(member.Signature),
+                        SymbolResolver.SignatureParameterTypeKey(member.Signature), isType: false);
                 }
             }
         }
@@ -429,7 +432,7 @@ public sealed class ProjectIndex : IDisposable
                 continue;
             foreach (var name in names)
             {
-                if (Disambiguate(forName, SymbolResolver.ParameterArity(name)) is { } site)
+                if (Disambiguate(forName, SymbolResolver.ParameterArity(name), SymbolResolver.ParameterTypeKey(name)) is { } site)
                     found[name] = site;
             }
         }
@@ -438,10 +441,10 @@ public sealed class ProjectIndex : IDisposable
     }
 
     /// <summary>One declaration the index holds under a bare name, with what it takes to tell it apart.</summary>
-    private sealed record Candidate(DocSite Site, int Arity, bool IsType);
+    private sealed record Candidate(DocSite Site, int Arity, string? ParameterTypes, bool IsType);
 
     /// <summary>Picks the site a requested name meant, or null when the choice stays genuinely ambiguous.</summary>
-    private static DocSite? Disambiguate(List<Candidate> candidates, int requestedArity)
+    private static DocSite? Disambiguate(List<Candidate> candidates, int requestedArity, string? requestedParameterTypes)
     {
         if (candidates.Count == 1)
             return candidates[0].Site;
@@ -461,12 +464,24 @@ public sealed class ProjectIndex : IDisposable
         if (requestedArity < 0)
             return null;
 
-        var byArity = candidates
-            .Where(c => c.Arity == requestedArity)
+        var byArity = candidates.Where(c => c.Arity == requestedArity).ToList();
+        var arityChoice = byArity.Select(c => c.Site).Distinct().ToList();
+        if (arityChoice.Count == 1)
+            return arityChoice[0];
+
+        // Same name AND same parameter count leaves only the parameter types to choose on. Stopping at
+        // arity dropped the location from every member of an arity-colliding overload set -- five
+        // constructors of one type in the measured case -- forcing a get_symbol round trip purely to
+        // navigate to something the index already knew the line of.
+        if (requestedParameterTypes is null)
+            return null;
+
+        var typeChoice = byArity
+            .Where(c => string.Equals(c.ParameterTypes, requestedParameterTypes, StringComparison.Ordinal))
             .Select(c => c.Site)
             .Distinct()
             .ToList();
-        return byArity.Count == 1 ? byArity[0] : null;
+        return typeChoice.Count == 1 ? typeChoice[0] : null;
     }
 
     public (List<SymbolHit> Hits, int Total) FindSymbol(string query, string? kind, int limit)

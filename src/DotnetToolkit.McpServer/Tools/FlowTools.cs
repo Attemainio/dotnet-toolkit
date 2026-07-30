@@ -27,8 +27,11 @@ public static class FlowTools
         + "'members' (a type's static declared list, no position involved) — call this when standing at a cursor "
         + "deciding what to call, before writing a helper that may already exist, or when the receiver's type "
         + "isn't known yet so get_symbol has no target to query. Each item's displayString has its containing "
-        + "type's prefix stripped, and definedIn and origin are both omitted when a receiverType header already "
-        + "states them (definedIn == receiverType makes both derivable). When more is in scope than limit "
+        + "type's prefix stripped. definedIn says where a member comes from, and is omitted where it would say "
+        + "nothing: a receiverType header already states it, or the item is a local/parameter with no declaring "
+        + "type at all; for a type-kind item it carries that type's NAMESPACE (or its outer type when nested). "
+        + "Within one origin, symbols this solution declares come first, so a crowded cursor does not spend its "
+        + "budget alphabetically in the A's of the referenced assemblies. When more is in scope than limit "
         + "allows, the budget is split across origins so applicable extension methods are never crowded out by "
         + "a receiver's own members, and totalItems/truncated report what was left out.")]
 
@@ -96,11 +99,18 @@ public static class FlowTools
 
         var ranked = symbols
             .Where(s => !s.IsImplicitlyDeclared)
+            // A local or parameter is only in scope in the tree that declares it. Roslyn hands back the
+            // synthesized top-level-statements entry point's locals -- Program.cs's `builder` and `app` --
+            // from LookupSymbols at EVERY position in the compilation, so a cursor in an unrelated file was
+            // being told two locals were callable that are not even in the same syntax tree.
+            .Where(s => s.Kind is not (SymbolKind.Local or SymbolKind.Parameter or SymbolKind.RangeVariable)
+                        || s.Locations.Any(l => l.SourceTree == model.SyntaxTree))
             .Where(s => MatchesFilter(s, filter))
             .Where(s => nameContains is null || s.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
             .DistinctBy(s => s.ToDisplayString())
             .Select(s => (Symbol: s, Origin: OriginOf(s, receiverType)))
             .OrderBy(t => OriginRank(t.Origin))
+            .ThenBy(t => SourceRank(t.Symbol))
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .ToList();
 
@@ -109,7 +119,7 @@ public static class FlowTools
             {
                 var s = t.Symbol;
                 var origin = t.Origin;
-                var definedIn = s.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                var definedIn = DefinedIn(s, receiverTypeName);
                 // Qualification is dropped from the FORMAT itself, not stripped from the rendered text
                 // afterward: for a reduced extension method Roslyn renders the RECEIVER's type as that
                 // qualification, which is exactly what the receiverType header already states once for the
@@ -123,9 +133,7 @@ public static class FlowTools
                     // "member" is derivable once a receiverType header exists: it is the only origin left
                     // once local/parameter/extension/type/inherited are ruled out, i.e. definedIn == receiverType.
                     origin = receiverType is not null && origin == "member" ? null : origin,
-                    // The same derivation, finally applied to definedIn itself: on a receiver whose own
-                    // members dominate, repeating the header per row was 39% of a 207-token response.
-                    definedIn = definedIn == receiverTypeName ? null : definedIn,
+                    definedIn,
                 };
             })
             .ToList();
@@ -228,10 +236,13 @@ public static class FlowTools
         + "known to and returns one shortest path; this tool needs only a root and returns every branch up to "
         + "maxDepth, plus a blastRadius summary (unique nodes reached, per depth) answering 'if I change this, "
         + "how much does it ripple' without paying for the full tree — set includeTree:false for just that "
-        + "summary, which is also the only shape carrying a separate root block: with a tree, its head node IS "
-        + "the root. Every node always carries symbolId (the join key back to get_symbol) and displayString — the "
-        + "bare name with its parameter list dropped (overloads still disambiguate via symbolId); add kind, file, "
-        + "line, or the full signature (signature) via fields. A symbol reached through two different branches (a "
+        + "summary plus the root. blastRadius counts every symbol REACHED, including the children a per-node "
+        + "cap left unexpanded, and reports that cap as truncated/omittedChildren in BOTH shapes. A capped "
+        + "node's own callers are never visited though, so a lower maxChildrenPerNode still yields a smaller "
+        + "total at maxDepth>1 — the cap limits discovery, not just rendering. Every node always carries "
+        + "symbolId (the join key back to get_symbol) and displayString — the containing type and member name "
+        + "with the parameter list dropped (overloads still disambiguate via symbolId); add kind, file, line, "
+        + "or the full signature (signature) via fields. A symbol reached through two different branches (a "
         + "diamond) legitimately appears twice in the tree but counts once in blastRadius; true recursion (a "
         + "symbol reappearing on its own path) stops as a leaf marked recursive:true rather than looping. "
         + "Internally capped at a few thousand total nodes as a safety net against pathological fan-out — use a "
@@ -299,13 +310,15 @@ public static class FlowTools
 
         var rows = symbolStore.RowsFor(CollectIds(result.Root));
 
-        // Default displayString is the bare name (parameter list dropped) — the full signature with types
-        // and default values made an 18-node tree 23x the size of its own blastRadius-only summary for no
-        // reader benefit; symbolId still disambiguates overloads, and fields:"signature" restores it.
+        // Default displayString is the containing type and member name (parameter list dropped) — the full
+        // signature with types and default values made an 18-node tree 23x the size of its own
+        // blastRadius-only summary for no reader benefit, and the namespace in front of it was another
+        // third of the tree, repeated once per sibling. symbolId still disambiguates overloads, and
+        // fields:"signature" restores the full form. get_references' default rows are the same shape.
         string DisplayFor(string symbolId, (string? FqName, string? Kind, string? DisplayString) row) =>
             wantSignature
                 ? row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId
-                : row.FqName is { } fq ? SymbolResolver.NameWithoutParameters(fq) : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
+                : row.FqName is { } fq ? SymbolResolver.MemberWithContainingType(SymbolResolver.NameWithoutParameters(fq)) : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
 
         IReadOnlyDictionary<string, ProjectIndex.Site> sites = new Dictionary<string, ProjectIndex.Site>();
         if (wantFile || wantLine)
@@ -356,6 +369,10 @@ public static class FlowTools
                 totalUniqueNodes = result.TotalUniqueNodes,
                 perDepth = result.PerDepth,
                 depthCapped = result.DepthCapped,
+                // Present in the summary-only shape too, which is the whole point: the caller who opted out
+                // of the tree opted out of the tree's truncated/omittedChildren markers with it.
+                truncated = result.OmittedChildren > 0 ? (bool?)true : null,
+                omittedChildren = result.OmittedChildren > 0 ? (int?)result.OmittedChildren : null,
             },
             limitedBy = degradedBy,
         });
@@ -557,6 +574,48 @@ public static class FlowTools
     };
 
     /// <summary>
+    /// 0 for a symbol this solution declares, 1 for one that came from metadata — the tiebreak that keeps
+    /// the repo's own symbols ahead of the BCL's within one origin group.
+    /// </summary>
+    /// <remarks>
+    /// Rank-then-alphabetical order alone spent the type share of the budget in the A's of the referenced
+    /// assemblies: at a cursor with 919 symbols in scope, three of ten returned rows were
+    /// AbandonedMutexException, AccessViolationException and AccessedThroughPropertyAttribute — none of
+    /// which is what a caller standing in this repo's code is deciding between.
+    /// </remarks>
+    /// <param name="symbol">The in-scope symbol being ordered.</param>
+    /// <returns>0 when any of its locations is in source, 1 otherwise.</returns>
+    private static int SourceRank(ISymbol symbol) =>
+        symbol.Locations.Any(location => location.IsInSource) ? 0 : 1;
+
+    /// <summary>
+    /// Where an in-scope symbol comes from, or null when nothing informative is left to say: a
+    /// receiverType header already states it, or a local/parameter has no declaring type at all.
+    /// </summary>
+    /// <remarks>
+    /// A type's own home is its namespace (or its outer type, when nested) rather than a containing type,
+    /// which is why every type-kind item used to carry a constant empty field here.
+    /// </remarks>
+    /// <param name="symbol">The symbol being described.</param>
+    /// <param name="receiverTypeName">The receiverType the response header already states, if any.</param>
+    /// <returns>The defining type or namespace, or null when it would carry no information.</returns>
+    private static string? DefinedIn(ISymbol symbol, string? receiverTypeName)
+    {
+        if (symbol is ILocalSymbol or IParameterSymbol)
+            return null;
+
+        if (symbol is INamedTypeSymbol type)
+        {
+            if (type.ContainingType is { } outer)
+                return outer.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+            return type.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() : null;
+        }
+
+        var declaring = symbol.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        return declaring == receiverTypeName ? null : declaring;
+    }
+
+    /// <summary>
     /// Takes up to <paramref name="limit"/> items, round-robin across origin groups in rank order, so one
     /// crowded origin cannot spend the whole budget.
     /// </summary>
@@ -566,9 +625,9 @@ public static class FlowTools
     /// overloads among them) filled a limit of 10, and not one applicable extension method -- the thing
     /// grep genuinely cannot answer -- appeared at that limit or at the default one.
     /// </remarks>
-    /// <param name="ranked">Every in-scope symbol, already ordered by origin rank then name.</param>
+    /// <param name="ranked">Every in-scope symbol, already ordered by origin rank, then source-first, then name.</param>
     /// <param name="limit">How many items the response may carry.</param>
-    /// <returns>The chosen items, back in rank-then-name order.</returns>
+    /// <returns>The chosen items, back in that same order.</returns>
     private static List<(ISymbol Symbol, string Origin)> TakeAcrossOrigins(
         List<(ISymbol Symbol, string Origin)> ranked, int limit)
     {
@@ -602,6 +661,7 @@ public static class FlowTools
 
         return taken
             .OrderBy(t => OriginRank(t.Origin))
+            .ThenBy(t => SourceRank(t.Symbol))
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .ToList();
     }

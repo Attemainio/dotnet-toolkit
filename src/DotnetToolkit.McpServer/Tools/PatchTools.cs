@@ -30,7 +30,9 @@ public static class PatchTools
     [Description("Validate (and optionally apply) a code change against an in-memory compilation before it "
         + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
         + "dependent_compile→targeted_tests→solution_validate) and reports honestly whether that was sufficient "
-        + "for the change. baseVersions is required (stale context is rejected); intent is required to apply. "
+        + "for the change. baseVersions is required (stale context is rejected -- and a patch that rewrites a "
+        + "BODY must hold a version carrying the body layer, which only a get_symbol that served the source, "
+        + "bodyOutline or mechanicalFacts hands out); intent is required to apply. "
         + "Any result that was NOT applied returns a draft: pass its draftId back with only the lines you are "
         + "correcting, instead of resubmitting the whole patch.")]
     public static async Task<string> ValidatePatch(
@@ -179,6 +181,21 @@ public static class PatchTools
                 .ToList();
             if (unheld.Count > 0)
                 return Reject("unheld_symbol", UnheldSymbol(unheld,
+                    await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken)));
+
+            // A held token only proves the layers it actually carries: get_symbol narrows its token to the
+            // components it served, so the default fetch leases decl (+refs) and no body, and AgreesWith
+            // compares shared layers only. A patch rewriting a body against such a token was never checked
+            // against the body it overwrites -- exactly the concurrent-edit case baseVersions exists to
+            // reject -- and it succeeded silently. Demand the layer rather than skipping the check.
+            var unleasedBody = detected
+                .Where(c => c.Kinds.Contains(ChangeKind.Body)
+                            && ContentVersion.Parse(c.OldVersion).Get("body") is not null
+                            && ContentVersion.Parse(heldVersions[c.OldSymbolId]).Get("body") is null)
+                .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion))
+                .ToList();
+            if (unleasedBody.Count > 0)
+                return Reject("unleased_body", UnleasedBody(unleasedBody,
                     await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken)));
 
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
@@ -414,6 +431,27 @@ public static class PatchTools
                 + "it is kept as a draft: resend its draftId with these versions in baseVersions and an empty "
                 + "edits array, rather than retransmitting the patch.",
             current = unheld.Select(c => new { symbolId = c.SymbolId, currentVersion = c.CurrentVersion }),
+            draft,
+        });
+
+    /// <summary>
+    /// The rejection for a body-changing patch whose held version never carried a body layer, so the
+    /// staleness check could not cover the text the patch overwrites.
+    /// </summary>
+    /// <param name="unleased">The changed symbols whose body layer was not held, with their current versions.</param>
+    /// <param name="draft">The retained proposed text, which is not what was objected to.</param>
+    /// <returns>The rendered error payload.</returns>
+    private static string UnleasedBody(IReadOnlyList<(string SymbolId, string CurrentVersion)> unleased, object draft) =>
+        Formats.Render(new
+        {
+            error = "unleased_body",
+            message = "This patch rewrites a body against a contentVersion that carries no body layer, so "
+                + "staleness was verified for the declaration only and a concurrent edit to the body would "
+                + "have been overwritten silently. get_symbol narrows its token to what it served: refetch "
+                + "with an include that serves the body (source, bodyOutline or mechanicalFacts), then "
+                + "resend this draftId with that version in baseVersions and an empty edits array. The "
+                + "versions below already carry the layer, so they can be sent as-is.",
+            current = unleased.Select(c => new { symbolId = c.SymbolId, currentVersion = c.CurrentVersion }),
             draft,
         });
 

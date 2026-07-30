@@ -82,6 +82,8 @@ the moment this conversation ends, and search_log can never recover it.
 
 Do this instead:
   1. get_symbol on the target symbol; keep its contentVersion and the declarationSites line span.
+     Use include: "all" when the edit rewrites a body — the default fetch's contentVersion carries no
+     body layer, and a body edit built on it is rejected with unleased_body.
   2. validate_patch with baseVersions {symbolId: contentVersion}, line-span edits, applyOnSuccess
      true, and an intent in user terms. Nothing is written unless the result is sufficient, so
      there is no reason to dry-run with applyOnSuccess false first.

@@ -109,7 +109,10 @@ call beats a duplicate implementation.
 - **a `sym_…` id returned by any previous response** — search hits, reference items and
   `suggestedInspection` entries all carry one, and passing it back is unambiguous
 
-Ambiguity is never guessed: you get `error: "ambiguous_symbol"` plus a candidate list.
+Ambiguity is never guessed: you get `error: "ambiguous_symbol"` plus a candidate list. The prefix every
+candidate shares — namespace, and usually the containing type — is hoisted out into `sharedPrefix`, so a
+row's `displayString` is only the part that actually differs; prepend `sharedPrefix` to get a name you
+can pass back (or just pass the row's `symbolId`).
 
 ## Version tokens
 

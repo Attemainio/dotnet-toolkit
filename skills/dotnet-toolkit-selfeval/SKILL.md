@@ -36,18 +36,24 @@ make that delta trustworthy.
 
 **Attribute every probe call with your own `taskId`.** Each measurable tool takes an optional `taskId`;
 the value is written to the telemetry row and is the only axis that separates concurrent callers — the
-session id is one per *server process*, so every agent talking to this server shares it. Use one stable
-id per probe family, e.g. `eval_flow_20260728T0900`. Then read only your own rows back:
+session id is one per *server process*, so every agent talking to this server shares it.
+
+**Give each individual probe its own id** — `p_<family>_<name>`, all sharing one run-wide prefix — and
+read them all back with a **single** `get_retrieval_metrics(groupBy: "task")` at the end. That is one
+call per run instead of two per probe (2 instead of ~130 on a full matrix), and it yields the same
+per-probe numbers, because a per-probe id makes each probe its own group:
 
 ```
-before = get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
-<one probe call, carrying taskId: "eval_flow_20260728T0900">
-after  = get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
-cost   = after.groups[<probed tool>].tokensReturned - before.groups[<probed tool>].tokensReturned
+<every probe call carries its own taskId, e.g. taskId: "p_C_rt_short">
+...
+costs = get_retrieval_metrics(groupBy: "task")     // one call, one row per probe
+cost  = costs.groups["p_C_rt_short"].tokensReturned
 ```
 
-`groupBy: "tool"` is not incidental: reading one tool's own row makes both the snapshot calls' own cost
-and any *other* caller's traffic irrelevant to the number. Never take a per-probe cost from `totals`.
+To isolate one probe mid-run instead (a suspected drift, an instrument check), snapshot
+`get_retrieval_metrics(taskIds: [<that id>], groupBy: "tool")` before and after it and subtract the
+probed tool's own `tokensReturned`. Reading one tool's row makes both snapshot calls' own cost and any
+other caller's traffic irrelevant to the number. Never take a per-probe cost from `totals`.
 
 **This is what makes parallel evaluation possible at all.** Several agents can run different probe
 families against the same server simultaneously, each passing its own `taskId` and reading back only its
@@ -110,9 +116,9 @@ once with defaults.
 | A · Orientation | `ping`, `workspace_status`, `get_project_graph`, `detect_circular_dependencies` | each cold; `workspace_status` again after a `reload_workspace`; `get_project_graph` whole-graph vs scoped to one project; `detect_circular_dependencies` with the unsupported `scope: "type"` |
 | B · Discovery | `search_index` | one multi-term query vs. the same terms as separate calls; `kinds`, `modifiers` (AND semantics), `pathPrefix`, `implements`, `xmlDoc`, `summary: "has"` vs `"full"`; all three `groupBy` values on one identical query; `limit` at 3 / 10 / 50; `origin: "external"` |
 | C · Retrieval | `get_symbol` | the full `include` ladder on **one** census symbol (Step 3a); `symbols:[…]` batch vs. N single calls; `source:code@a-b` with several ranges; a subtractive query (`source:full-remarks-attributes`); an `ambiguous_symbol` case; a symbol that does not exist |
-| D · Relations | `get_references`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_scope` | each on a census symbol; `get_references` on an interface member (dispatch coverage); `get_call_hierarchy` at rising `maxDepth`, and `includeTree: false` vs `true`; `get_scope` with and without `receiver` |
+| D · Relations | `get_references`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_scope` | each on a census symbol; `get_references` on an interface member (dispatch coverage); `get_call_hierarchy` at rising `maxDepth`, `includeTree: false` vs `true`, and the same call at `maxDepth: 1` with default vs. raised `maxChildrenPerNode` (`blastRadius.totalUniqueNodes` must not move, and the capped run must report `truncated`/`omittedChildren`; at greater depths a tighter cap legitimately reaches fewer nodes, so do not assert equality there); `get_scope` with and without `receiver` |
 | E · History | `search_log`, `get_semantic_diff` | `search_log` for a term known to be in the log and one known not to be; `get_semantic_diff` over a recent commit range and over an unresolvable ref |
-| F · Write path | `validate_patch` | **`applyOnSuccess: false` only** — an identity edit on a census symbol, a deliberately non-compiling edit (judge the distilled diagnostics), and a stale `baseVersions` token (judge the conflict payload) |
+| F · Write path | `validate_patch` | **`applyOnSuccess: false` only** — an identity edit on a census symbol, a deliberately non-compiling edit (judge the distilled diagnostics), a stale `baseVersions` token (judge the conflict payload), and a body-changing edit whose `baseVersions` came from a *default* `get_symbol` (expect `unleased_body`; judge that payload) |
 | G · Meta | `set_output_format`, `get_retrieval_metrics` | one identical `get_symbol` call rendered as `toon`, `compact` and `json`, measuring each; **restore the original format before finishing** |
 
 Errors are probes, not accidents. An error payload's token cost and usability are part of the tool — an

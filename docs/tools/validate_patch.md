@@ -6,7 +6,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 
 | Arg | Meaning |
 |---|---|
-| `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
+| `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. A **body**-changing edit additionally needs a version that carries the `body` layer, which only an include serving `source`/`bodyOutline`/`mechanicalFacts` hands out; the declaration-only token from a default fetch is `error: "unleased_body"`. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
 | `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. With `draftId`, the spans address the **draft's** proposed text instead, and the array may be empty. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
@@ -59,6 +59,7 @@ only the 8 most recent are kept.
 |---|---|
 | `unknown_draft` | Expired, evicted, or never existed. Refetch with `get_symbol` and submit a full patch. |
 | `unheld_symbol` | The patch changes a symbol no `baseVersions` entry covers — an added member anchors to its **containing type**, which is the usual cause. Nothing is wrong with the text, so a draft **is** issued: resend its `draftId` with the reported versions in `baseVersions` and an empty `edits` array. |
+| `unleased_body` | The patch rewrites a **body** against a `contentVersion` that carries no `body` layer, so staleness was only ever verified for the declaration and a concurrent edit to that body would have been overwritten silently. `get_symbol` narrows its token to the layers it served, so the default fetch leases `decl` (+`refs`) only. Same fix shape as `unheld_symbol`, and it likewise keeps a draft: refetch with an include that serves the body (`all`, `source`, `bodyOutline` or `mechanicalFacts`), then resend the `draftId` with that version and an empty `edits` array. The versions the error reports already carry the layer. |
 | `draft_stale` | A file moved in the workspace since the draft forked from it, so its line numbers no longer mean anything. The draft is dropped; rebuild from a fresh `get_symbol`. |
 
 A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — nor when the patch
@@ -69,7 +70,8 @@ trustworthy:
 - `stale_base` — a version you sent **disagrees** with the current one. Your text was built on content
   that has since moved, so it must be rebuilt; making the retry cheap would only tempt you to re-apply
   reasoning that no longer holds.
-- `unheld_symbol` — a version is simply **absent**. Nothing moved and the text is fine, so it is kept.
+- `unheld_symbol` / `unleased_body` — a version is simply **absent**, or present but narrower than the
+  change needs. Nothing moved and the text is fine, so it is kept.
 
 That last split is the useful one: a missing map entry is a metadata gap, not a stale patch, and it used
 to cost a full resend to fix.
@@ -153,5 +155,6 @@ See `skills/dotnet-change/SKILL.md` for the full write loop.
 
 - **Failed with diagnostics** → amend through `draftId` with only the corrected lines (above). Do not rebuild the whole patch.
 - **`unheld_symbol`** → merge that one entry into `baseVersions` via the same `draftId`.
+- **`unleased_body`** → refetch that symbol with a body-serving include (`all`/`source`/`bodyOutline`/`mechanicalFacts`) and merge the wider version in via the same `draftId`.
 - **`stale_workspace`** → `reload_workspace`, re-fetch `get_symbol` (spans move), then resubmit.
 - **Need the callers before changing a signature** → `get_references` — `get_references.md`
