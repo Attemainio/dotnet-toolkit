@@ -385,7 +385,9 @@ public sealed class ProjectIndex : IDisposable
     /// absent already means "look it up". A TYPE name resolving to more than one site is never that kind
     /// of ambiguity — C# forbids two distinct types sharing one fully-qualified name, so multiple sites
     /// there can only be partial-class fragments of the same symbol, and they collapse to one stable
-    /// representative instead of being dropped.
+    /// representative instead of being dropped. A method that declares its own type parameters is keyed
+    /// under both its bare identifier and its declared <c>Name&lt;T&gt;</c> form, because the syntax index
+    /// stores the bare one while the symbol store asks for the declared one.
     /// </remarks>
     /// <param name="fqNames">The names to resolve, keyed as described on <see cref="Locate"/>.</param>
     /// <returns>One site per name that resolved; a name that stayed ambiguous is absent.</returns>
@@ -417,10 +419,23 @@ public sealed class ProjectIndex : IDisposable
                 Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), -1, null, isType: true);
                 foreach (var member in type.Members)
                 {
-                    Offer($"{type.FqName}.{member.Name}",
-                        new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections),
-                        SymbolResolver.ParameterArity(member.Signature),
-                        SymbolResolver.SignatureParameterTypeKey(member.Signature), isType: false);
+                    var site = new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections);
+                    var arity = SymbolResolver.ParameterArity(member.Signature);
+                    var parameterTypes = SymbolResolver.SignatureParameterTypeKey(member.Signature);
+                    Offer($"{type.FqName}.{member.Name}", site, arity, parameterTypes, isType: false);
+
+                    // A method's own type-parameter list lives in its stored signature, not in its stored
+                    // name, so a generic method was only ever offered as "Pick" while the symbol store asks
+                    // for "Pick<T>" -- the key never matched and every such hit came back locationless.
+                    // Offer the declared form as a SECOND key rather than stripping the list off the
+                    // request, which would collapse a generic method onto a same-named non-generic sibling.
+                    var declaredName = SymbolResolver.NameWithoutParameters(member.Signature);
+                    if (declaredName.Length > member.Name.Length
+                        && declaredName.StartsWith(member.Name, StringComparison.Ordinal)
+                        && declaredName[member.Name.Length] == '<')
+                    {
+                        Offer($"{type.FqName}.{declaredName}", site, arity, parameterTypes, isType: false);
+                    }
                 }
             }
         }

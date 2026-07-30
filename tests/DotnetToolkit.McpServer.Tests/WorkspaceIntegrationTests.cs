@@ -1699,6 +1699,46 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
     }
 
+    /// <summary>
+    /// A method states its own type parameters in the index's signature but not in its indexed name, so the
+    /// symbol store's <c>Pick&lt;T&gt;</c> form matched no key and the hit carried no file or line at all.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_LocatesAMethodDeclaringItsOwnTypeParameters()
+    {
+        var rows = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Pick", kinds: "method", groupBy: "none")).GetProperty("items"));
+
+        var generic = Assert.Single(rows, row => row["name"].GetString()!.Contains("Pick<T>", StringComparison.Ordinal));
+        Assert.True(generic.ContainsKey("file") && generic.ContainsKey("line"), "a generic method must carry its location");
+        Assert.EndsWith("GenericSample.cs", generic["file"].GetString()!, StringComparison.Ordinal);
+        Assert.Equal(11, generic["line"].GetInt32());
+    }
+
+    /// <summary>
+    /// The body-layer demand cannot depend on the member's shape: rewriting a generic method's body against
+    /// a declaration-only token leaves exactly the same overwrite unverified as a non-generic one.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_BodyChangeToAGenericMethodWithoutABodyLayer_ReturnsUnleasedBody()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.GenericSample.Scale"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
+        Assert.DoesNotContain("body:", withoutBody);
+
+        var edits = new[] { new PatchEditInput("Lib/GenericSample.cs", 17, 17, "        return value * 3;") };
+        var root = Root(await ContextToolsValidate(
+            new Dictionary<string, string> { [symbolId] = withoutBody }, edits, applyOnSuccess: true, intent: "should never apply"));
+
+        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
+        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
+        Assert.Contains("body:", root.GetProperty("current")[0].GetProperty("currentVersion").GetString()!);
+        Assert.Equal(
+            "        return value * 2;",
+            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/GenericSample.cs")))[16]);
+    }
+
 
     private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent, PatchDraftStore? drafts = null, string? draftId = null) =>
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,

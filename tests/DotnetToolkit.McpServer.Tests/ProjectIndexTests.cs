@@ -184,4 +184,34 @@ public sealed class ProjectIndexTests : IDisposable
         Assert.Equal(4, located["N.Overloads.Pick(int)"].Line);
         Assert.Equal(5, located["N.Overloads.Pick(string)"].Line);
     }
+
+    /// <summary>
+    /// A method states its own type parameters in the indexed signature but not in the indexed name, so the
+    /// symbol store's <c>Pick&lt;T&gt;</c> form matched no key at all and every generic method came back
+    /// with no file or line. The non-generic sibling is here to prove the added key separates them rather
+    /// than merging both onto one site.
+    /// </summary>
+    [Fact]
+    public async Task LocatesAMethodDeclaringItsOwnTypeParameters()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "Generic.cs"), """
+            namespace N;
+            public class Generic
+            {
+                public int Pick(int only) => only;
+                public T Pick<T>(T only) => only;
+            }
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal)
+        {
+            "N.Generic.Pick<T>(T)",
+            "N.Generic.Pick(int)",
+        });
+
+        Assert.Equal(2, located.Count);
+        Assert.Equal(5, located["N.Generic.Pick<T>(T)"].Line);
+        Assert.Equal(4, located["N.Generic.Pick(int)"].Line);
+    }
 }
