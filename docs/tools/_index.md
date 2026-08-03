@@ -32,7 +32,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | Is the server answering at all | `ping` | `server.md` | — |
 
 Read a `.cs` file only for lines you are about to edit that `get_symbol` did not return. Non-C#
-files (`.csproj`, `.json`, `.md`, `.sh`) are normal `Read`/`Grep` territory.
+files (`.csproj`, `.json`, `.md`, `.cmd`) are normal `Read`/`Grep` territory.
 
 ## Typical chains
 

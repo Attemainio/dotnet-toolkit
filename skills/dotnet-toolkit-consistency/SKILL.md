@@ -18,7 +18,7 @@ a claim to verify against it, never the reverse: if a doc and the code disagree,
 
 Get the current, complete list directly from the source — don't trust any doc's existing tool list,
 including this skill's own examples below; that is exactly the kind of claim being audited. **Not
-`grep`**: `guard-cs-bash-read.sh` blocks shell reads of solution `.cs` files, and rightly — this is a
+`grep`**: the `guard-cs-bash-read` hook blocks shell reads of solution `.cs` files, and rightly — this is a
 symbol query, not a text search.
 
 ```
@@ -111,27 +111,28 @@ Report each finding as: the memory or CLAUDE.md paragraph, its category, and the
 should carry it. Do not copy a category-(c) fact into a shipped file to close a finding — categorising
 it correctly *is* closing it.
 
-**5. Hooks and scripts.** Read `hooks/hooks.json` and every script it points at
-(`scripts/guard-cs-edit.sh`, `scripts/guard-cs-read.sh`, `scripts/guard-cs-bash-read.sh`,
-`scripts/hint-reload-new-cs-file.sh`, `scripts/run-server.sh`, `scripts/build-plugin.sh`), plus
-`scripts/lib-cs-membership.sh` (the solution-membership check shared by the two read guards, not itself
-registered in `hooks/hooks.json`). Specifically:
-   - Does the deny/hint message text in each guard script still name the correct tool(s) and describe the
-     correct procedure (`validate_patch`'s current argument names, `search_index`/`get_symbol` for the
-     read guards, `reload_workspace(scope: "all")` for the reload hint)? A guard script's message is read
-     at the exact moment a caller is blocked — a stale one teaches the wrong fix at the worst moment.
-   - Does `hooks/hooks.json` still point at scripts that exist, with matchers (`Edit`/`Write`/`NotebookEdit`/
-     `Read`/`Bash`) that match what `docs/hook-reference.md` and `docs/architecture.md`'s "Packaging"
-     section claim they do?
-   - Any new script under `scripts/` not mentioned in `docs/hook-reference.md` or
-     `docs/architecture.md`'s "Packaging" section is a finding (see Step 6).
-   - `hooks/hooks.json`'s matchers key on tool name only, not on which agent issues the call, so they
-     fire for `dotnet-code-review` too. Two things must stay true together: (a) the agent's `tools:`
-     list never grants `Edit`/`Write`/`NotebookEdit` — `memory: project` makes the harness grant them
-     anyway, which is why its Boundaries section has to carry the weight; (b) its Process step 2 still
-     sends it to `search_index`/`get_symbol` first and to `Read` only when a symbol lookup didn't give
-     it the lines — a narrow fallback `guard-cs-read.sh` still enforces, not an escape hatch. Either
-     one drifting is a finding here, not just in Step 4's table.
+**5. Hooks and launch path.** All four hooks are `hook <name>` subcommands of the published server
+binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the four `Guard*`/`ReloadHint`
+files carry the messages, `CsFileMembership.cs`/`BashCommandScanner.cs` are shared with no `hooks.json`
+entry. Read those with `get_symbol` (not `grep`), plus `hooks/hooks.json` and `.mcp.json`:
+   - Does each guard's deny/hint text still name the correct tool(s) and procedure (`validate_patch`'s
+     current argument names, `search_index`/`get_symbol` for the read guards,
+     `reload_workspace(scope: "all")` for the reload hint)? It is read at the exact moment a caller is
+     blocked — a stale one teaches the wrong fix at the worst moment.
+   - Does `hooks/hooks.json` name subcommands `HookCli` actually dispatches, with matchers
+     (`Edit`/`Write`/`NotebookEdit`/`Read`/`Bash`) matching `docs/hook-reference.md` and
+     `docs/architecture.md`'s "Packaging" section?
+   - **Nothing shipped at runtime may require a shell.** Every `.mcp.json`/`hooks.json` command must be
+     a `dotnet <dll> …` invocation; a `.sh`/`.ps1` entry point, a shebang, or a `node`/`python3`/`jq`
+     dependency is a finding. An MCP stdio server is spawned directly, so a script launcher cannot run
+     on Windows at all, and a Store-stubbed `python3` makes a guard fail open while looking healthy.
+     `scripts/` holds developer conveniences only; anything new there or in `Hooks/` unmentioned by
+     `docs/hook-reference.md` or "Packaging" is a Step 6 finding.
+   - Matchers key on tool name, not on which agent calls, so they fire for `dotnet-code-review` too.
+     Both must hold: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` — `memory: project`
+     makes the harness grant them anyway, which is why Boundaries carries the weight; (b) its Process
+     step 2 still goes to `search_index`/`get_symbol` first and to `Read` only when a symbol lookup
+     didn't give it the lines — a narrow fallback `guard-cs-read` still enforces, not an escape hatch.
 
 **6. New or modified files nothing else references.** This is the drift-detection step, not just a
 per-file check: `git status`/`git diff --stat` (or `git log -p` for a stated commit range) against the

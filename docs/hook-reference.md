@@ -2,11 +2,31 @@
 
 The plugin ships four hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
-plugin removes them. All four read their JSON payload through whichever of `node`, `python3`, or `jq` is
-present (none is guaranteed — `jq` is absent on this repo's own dev box, and Claude Code's native
-installer means `node` cannot be assumed) and **fail open** (allow the call) if none is available.
+plugin removes them.
 
-## `guard-cs-edit.sh` — PreToolUse on `Edit`/`Write`/`NotebookEdit`
+Every hook is a subcommand of the published server binary, invoked as
+`dotnet "${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll" hook <name>`, implemented under
+`src/DotnetToolkit.McpServer/Hooks/`. That is the whole cross-platform story: the plugin already
+requires the .NET runtime, so a hook needs no shell, no shebang, and no JSON interpreter beyond
+`System.Text.Json`.
+
+> **Why they aren't shell scripts any more.** They were, until the plugin was tested against a
+> Windows-installed Claude Code. Two failures, both structural: a `.sh` file with a shebang cannot be
+> executed where `bash` is not the shell, and the scripts' `node` → `python3` → `jq` JSON-extraction
+> chain found none of the three — `python3` resolved to the Microsoft Store alias stub, which exits 0
+> and prints nothing, so extraction "succeeded" with empty fields and every guard fell through to its
+> allow branch. The guards were designed to fail open on a *missing* interpreter; a *stubbed* one made
+> them fail open silently while looking healthy.
+
+They still **fail open** by design: an unparseable payload, an unresolvable project root, or an
+unexpected exception exits 0 (allow). These are workflow guards, not a security boundary, and must
+never wedge the user's editing. Denial is exit code 2 plus stderr, so no guard needs a JSON *writer* on
+the path that has to be reliable.
+
+Each hook adds roughly 70ms per matched tool call — one short-lived .NET process that returns before
+MSBuild discovery or host startup runs.
+
+## `hook guard-cs-edit` — PreToolUse on `Edit`/`Write`/`NotebookEdit`
 
 Blocks `Edit`/`Write`/`NotebookEdit` on an **existing** `.cs` file and returns the `validate_patch`
 procedure in the deny message instead. This enforces the write path: applying through `validate_patch`
@@ -20,15 +40,16 @@ Creating a **new** `.cs` file with `Write` is allowed, because `validate_patch`'
 The deny message restates the current `validate_patch` call procedure, and points a **pure rename** at
 `rename_symbol` instead — hand-authoring call-site edits misses interface, virtual and delegate dispatch,
 which is exactly the mistake a blocked `Edit` is usually about to make. When either procedure changes,
-this script's message must change with it (see `docs/architecture.md`'s "Changing the tool surface").
+`Hooks/GuardCsEdit.cs`'s message must change with it (see `docs/architecture.md`'s "Changing the tool
+surface").
 
-## `guard-cs-read.sh` — PreToolUse on `Read`
+## `hook guard-cs-read` — PreToolUse on `Read`
 
 Blocks `Read` on a `.cs` file that a project actually compiles, in favor of `search_index`/`get_symbol` —
 the read-side counterpart of the edit guard.
 
-Solution membership is decided from the filesystem alone, in `scripts/lib-cs-membership.sh` (shared with
-`guard-cs-bash-read.sh` below, so the two can never disagree on the answer): a hook is a separate process
+Solution membership is decided from the filesystem alone, in `Hooks/CsFileMembership.cs` (shared with
+`guard-cs-bash-read` below, so the two can never disagree on the answer): a hook is a separate process
 with no access to the MCP stdio pipe, so it cannot ask the running server's `WorkspaceHost` whether a
 file belongs to the loaded solution. What it checks statically:
 
@@ -39,30 +60,35 @@ file belongs to the loaded solution. What it checks statically:
   ordinary case and is not treated as nested.
 - If a governing `.csproj` is found, its `<Compile Remove>` globs are checked too — a file excluded from
   compilation (the way `DotnetToolkit.McpServer.Tests.csproj` excludes `fixtures/**`) is **allowed**.
+- A file that is not under the project root at all is **allowed** without walking, so the climb can
+  never escape past the root into whatever `.sln`/`.csproj` happens to sit above it on the filesystem.
+
+Path comparison follows the filesystem's own case rules — ordinal on Linux, case-insensitive elsewhere —
+so the walk terminates at the root on Windows and macOS even when the two paths disagree on casing.
 
 This is a heuristic, not an MSBuild evaluation: conditions, multi-targeting, and unusual glob forms
 aren't handled, and it cannot see runtime state — a file genuinely governed by a project is still blocked
 even while the server's workspace is `index_only`/degraded, because that is state a static check has no
 way to observe.
 
-## `guard-cs-bash-read.sh` — PreToolUse on `Bash`
+## `hook guard-cs-bash-read` — PreToolUse on `Bash`
 
-Closes the gap `guard-cs-read.sh` structurally cannot: its matcher is the `Read` tool by name, so a shell
+Closes the gap `guard-cs-read` structurally cannot: its matcher is the `Read` tool by name, so a shell
 command that dumps the same file's bytes into the transcript via `Bash` (`cat`, `sed`, `head`, `tail`,
 `grep`/`egrep`/`fgrep`/`rg`/`ag`, `awk`/`gawk`, `nl`, `tac`, `bat`, or `less`/`more`) is invisible to it —
 a different tool name, same underlying read. This hook watches `Bash` instead and applies the identical
-membership question via the same shared `scripts/lib-cs-membership.sh`.
+membership question via the same shared `Hooks/CsFileMembership.cs`.
 
-It is not a shell parser: it splits the command on pipeline/statement separators (`| ; & && ||`), takes
-each segment's first word as the invoked command, and — only for a segment whose command is in the
-blocklist above (overridable via `DOTNET_TOOLKIT_READ_BLOCKLIST`) — looks for a bare `.cs`-suffixed
-argument token.
+It is not a shell parser: `Hooks/BashCommandScanner.cs` splits the command on pipeline/statement
+separators (`| ; & && ||`), takes each segment's first word as the invoked command — with any directory
+and a trailing `.exe` stripped — and, only for a segment whose command is in the blocklist above
+(overridable via `DOTNET_TOOLKIT_READ_BLOCKLIST`), looks for a bare `.cs`-suffixed argument token.
 
 **Separators inside quotes or backslash-escaped are not separators.** This matters more than it sounds:
 splitting `grep -n "Alpha\|Beta" Foo.cs | head` textually pushes the `.cs` path into a segment starting
 `Beta"`, which is not a read utility, while the segment starting `grep` carries no path — so a
 multi-term grep, the most common way to search several terms at once, read compiled C# unguarded. Fixed
-by a quote/escape-aware scan; `scripts/guard-cs-bash-read.sh`'s comment carries the worked example.
+by a quote/escape-aware scan, covered by `BashCommandScannerTests`.
 
 Quoted paths with spaces, variable-expanded paths, and heredocs are still not recognized; that
 under-detection is deliberate (same fail-open posture as the other guards), not a security boundary meant
@@ -77,7 +103,7 @@ allows: `search_index` is still the right tool for finding a declared symbol, an
 instruction in CLAUDE.md covers it, but no hook enforces that here. It matters most for
 `dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright.
 
-## `hint-reload-new-cs-file.sh` — PostToolUse on `Write`
+## `hook hint-reload-new-cs-file` — PostToolUse on `Write`
 
 Fires when a `Write` creates a brand-new `.cs` file (the one case the edit guard allows through). Both
 knowledge tiers are mtime-polling, not filesystem watchers, so a new file is invisible to the syntax
@@ -88,29 +114,26 @@ solution`.
 A hook process has no access to the MCP stdio pipe, so it cannot call `reload_workspace` through the
 running session — but the server also exposes `Control/ControlServer.cs`, a loopback TCP listener on
 `127.0.0.1` started alongside the other background services, whose port is published as plain text at
-`CacheDir/control.port`. This hook reads that port, sends `rescan` (synchronous — a syntax-index sweep,
-no MSBuild — the hook waits for the result) and then `reload` (fire-and-forget — starts the background
-MSBuildWorkspace reload and returns immediately, since that can run far longer than the hook's timeout),
-and reports both results in the injected `additionalContext`, telling Claude to check `workspace_status`
-before the next `validate_patch`/`get_symbol` call on the new file.
+`CacheDir/control.port`. `Hooks/ControlClient.cs` reads that port, sends `rescan` (synchronous — a
+syntax-index sweep, no MSBuild — the hook waits for the result) and then `reload` (fire-and-forget —
+starts the background MSBuildWorkspace reload and returns immediately, since that can run far longer
+than the hook's timeout), and reports both results in the injected `additionalContext`, telling Claude
+to check `workspace_status` before the next `validate_patch`/`get_symbol` call on the new file.
 
-Falls back to the old reminder-only text — "call `reload_workspace(scope: "all")` and wait for
+Falls back to the reminder-only text — "call `reload_workspace(scope: "all")` and wait for
 `workspace_status`" — if the control channel is unreachable for any reason (a server built before this
 feature existed, a missing port file, a refused connection, no response within the timeout). Fails open
 the same way every other hook here does.
 
-The JSON reply is built by the same interpreter that parsed the payload rather than hand-interpolated,
-since `file_path` is caller-controlled text (a Windows path's backslashes) that has no business near
-manual JSON string escaping.
+The JSON reply is serialized, never hand-interpolated, since `file_path` is caller-controlled text (a
+Windows path's backslashes) that has no business near manual JSON string escaping.
 
-## Related scripts (not hooks)
+## Related files
 
-`scripts/lib-cs-membership.sh` is the shared solution-membership check sourced by `guard-cs-read.sh` and
-`guard-cs-bash-read.sh` — not registered in `hooks/hooks.json` itself, since it has no `PreToolUse`/
-`PostToolUse` entry of its own. `scripts/run-server.sh` launches the MCP server (registered via
-`.mcp.json`), preferring a user-local `~/.dotnet` install over `dotnet` on `PATH`. `scripts/build-plugin.sh`
-publishes the server to `dist/` — required after any change under `src/` for the plugin to serve the new
-build.
+`scripts/build-plugin.sh` and `scripts/build-plugin.cmd` publish the server to `dist/` — required after
+any change under `src/` for the plugin to serve the new build. Both are thin wrappers over
+`dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`, which is the canonical command; they are
+developer conveniences, and nothing the plugin ships at runtime executes a shell.
 
 `scripts/format-json.cs` is a standalone `dotnet run` file-based program (not part of any project, so the
 read guards leave it alone) that pretty-prints one JSON file — for inspecting the compact caches under

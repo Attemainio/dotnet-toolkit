@@ -51,7 +51,7 @@ to hold that down, and changing them without understanding the trade re-inflates
 - **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
   declaration-layer → body-layer → references per symbol.
 
-A related constraint: `guard-cs-read.sh` blocks `Read` on `.cs` files a project compiles, and
+A related constraint: the `guard-cs-read` hook blocks `Read` on `.cs` files a project compiles, and
 `PreToolUse` hooks fire for subagents too. The agent cannot be told to "just read whole files" — MCP
 retrieval is the only available path for in-scope C#, which is why the batching above matters.
 

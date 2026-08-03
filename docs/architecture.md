@@ -44,6 +44,9 @@ are always rebuildable from source.
 - `Workspace/SolutionLocator.cs` — auto-discovers the target solution (`*.slnx` > `*.sln` > `*.csproj`,
   root + one level deep) under `CLAUDE_PROJECT_DIR` (the *target* repo — not this repo, when installed
   as a plugin). `SlnxParser.cs` handles `.slnx`.
+- `Workspace/MSBuildRegistration.cs` — picks which installed SDK's MSBuild loads projects (newest wins;
+  `DOTNET_TOOLKIT_DOTNET_ROOT` pins one) and registers it before any Roslyn MSBuild code runs. See
+  "Environment" below for why the wrong choice degrades silently.
 - `Workspace/ToolkitConfig.cs` — optional per-repo `.claude/dotnet-toolkit/config.json`: solution
   override, `devlogDir` (legacy, devlog import only), `excludeGlobs`, and `defaultFormat` (`toon`
   default / `compact` / `json`) via `Output/Formats.Render`.
@@ -75,9 +78,12 @@ are always rebuildable from source.
   `get_semantic_diff`.
 - `Control/ControlServer.cs` — a loopback TCP listener (127.0.0.1, OS-assigned port published at
   `CacheDir/control.port`) letting a hook trigger an index rescan (`rescan`, synchronous) or a
-  background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by
-  `scripts/hint-reload-new-cs-file.sh`. **Not a security boundary** — loopback-only, same trust level as
-  the MCP session.
+  background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by the
+  `hook hint-reload-new-cs-file` subcommand through `Hooks/ControlClient.cs`. **Not a security
+  boundary** — loopback-only, same trust level as the MCP session.
+- `Hooks/` — the four Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
+  as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
+  `BashCommandScanner.cs` carry the logic the read guards share. `docs/hook-reference.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -123,18 +129,21 @@ the tool surface and checks each against `Tools/*.cs`.
 
 ## Packaging
 
-`.claude-plugin/plugin.json` is the manifest. `.mcp.json` registers the MCP server via
-`scripts/run-server.sh`, which prefers a user-local `~/.dotnet` install (needed where the system
-`dotnet` predates net10.0).
+`.claude-plugin/plugin.json` is the manifest. `.mcp.json` registers the MCP server as
+`dotnet ${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll` — a bare command plus arguments, because
+an MCP stdio server is spawned directly rather than through a shell, so a `.sh` launcher is unrunnable
+on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs anyway.
 
 **The published server in `dist/` is what actually runs — after editing anything under `src/`, re-run
-`./scripts/build-plugin.sh`.**
+`dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
+`scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships four hooks — `guard-cs-edit.sh`, `guard-cs-read.sh`, `guard-cs-bash-read.sh`,
-`hint-reload-new-cs-file.sh` — documented in `docs/hook-reference.md`. They travel with the plugin, so a
-consuming repo gets the enforcement from installation alone. They read their JSON payload through
-whichever of `node`/`python3`/`jq` is present and **fail open** when none is: a workflow guard must never
-wedge editing.
+`hooks/hooks.json` ships four hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
+`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file` — all subcommands of that same published
+binary, documented in `docs/hook-reference.md`. They travel with the plugin, so a consuming repo gets
+the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
+open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
+runtime requires a shell, a shebang, or `node`/`python3`/`jq`.
 
 Guard deny messages point at `docs/tools/<tool>.md` rather than restating a tool's manual — the message
 fires often, the manual is read once.
@@ -159,11 +168,21 @@ follow them.
 
 ## Environment: build with the same SDK the server uses
 
-`scripts/run-server.sh` prefers a user-local `~/.dotnet` when present. If the `dotnet` on `PATH` is a
-*different* net10 SDK, building with it rewrites `obj/project.assets.json` for the wrong MSBuild and the
-server's next workspace load fails with `The "ResolvePackageAssets" task failed`. `workspace_status` then
-reports DEGRADED and semantic results go silently **incomplete rather than erroring** — the dangerous
-part, since answers still come back.
+`Workspace/MSBuildRegistration.cs` chooses which SDK's MSBuild the workspace loads projects with, before
+any `Microsoft.CodeAnalysis.Workspaces.MSBuild` code runs. This was a shell launcher's job until the
+plugin had to run on Windows; it is now one implementation for every platform, and the chosen SDK is
+logged to stderr at startup (`MSBuild: ...`) because a wrong choice degrades quietly.
 
-Check `dotnet --list-sdks`. If they differ, build with `~/.dotnet/dotnet`, or repair with
-`~/.dotnet/dotnet restore` followed by `reload_workspace`.
+`MSBuildLocator.RegisterDefaults()` alone is not enough: its .NET SDK discovery runs relative to the
+`dotnet` host that started the process, so a server launched from a system-wide host never sees a newer
+user-local SDK. The candidates from that query are therefore pooled with the SDKs under
+`~/.dotnet`, and the highest version wins. Setting `DOTNET_TOOLKIT_DOTNET_ROOT` to a .NET install root
+pins that install's newest SDK instead, overriding discovery entirely.
+
+The failure this prevents: if the SDK that *built* the projects differs from the one MSBuild loads them
+with, `obj/project.assets.json` was written for the wrong MSBuild and the workspace load fails with
+`The "ResolvePackageAssets" task failed`. `workspace_status` then reports DEGRADED and semantic results
+go silently **incomplete rather than erroring** — the dangerous part, since answers still come back.
+
+Check `dotnet --list-sdks` against the `MSBuild:` startup line. If they differ, build with the SDK the
+server picked, or repair with a `restore` from that SDK followed by `reload_workspace`.

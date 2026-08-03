@@ -1,10 +1,15 @@
 # Force LF in the working tree for all text files. Windows-side tooling kept CRLF-ing checkouts,
-# which broke real things: guard-cs-read.sh's shebang became "bash\r" (every hook invocation then
-# failed open), and CRLF inside test raw-string literals failed two CompactFormatter tests. Shell
-# scripts, C# sources, and hook JSON are load-bearing about this; the blanket rule keeps diffs
-# clean everywhere else too.
+# which broke real things: a guard script's shebang became "bash\r" (every hook invocation then
+# failed open), and CRLF inside test raw-string literals failed two CompactFormatter tests. The
+# shebang case is gone now that hooks run as `dotnet <dll> hook <name>` rather than as shell scripts,
+# but C# sources and hook JSON are still load-bearing about this; the blanket rule keeps diffs clean
+# everywhere else too.
 * text=auto eol=lf
 *.sh text eol=lf
 *.cs text eol=lf
 *.csproj text eol=lf
 hooks/hooks.json text eol=lf
+
+# The one exception: cmd.exe needs CRLF. A batch file with LF line endings misparses multi-line
+# constructs, so build-plugin.cmd must not be normalized with everything else.
+*.cmd text eol=crlf

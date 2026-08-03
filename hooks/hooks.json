@@ -1,5 +1,5 @@
 {
-  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), and refreshes the workspace (via a loopback control channel, falling back to a reminder) after creating a new .cs file",
+  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), and refreshes the workspace (via a loopback control channel, falling back to a reminder) after creating a new .cs file. Every hook is a subcommand of the published server binary, so it runs wherever the .NET runtime the plugin already requires runs - no shell, no shebang, no jq/node/python3.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-edit.sh",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook guard-cs-edit",
             "timeout": 10,
             "statusMessage": "Checking C# write path..."
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-read.sh",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook guard-cs-read",
             "timeout": 10,
             "statusMessage": "Checking C# read path..."
           }
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/guard-cs-bash-read.sh",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook guard-cs-bash-read",
             "timeout": 10,
             "statusMessage": "Checking Bash command for a raw C# read..."
           }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hint-reload-new-cs-file.sh",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook hint-reload-new-cs-file",
             "timeout": 10,
             "statusMessage": "Checking whether the workspace needs a reload..."
           }

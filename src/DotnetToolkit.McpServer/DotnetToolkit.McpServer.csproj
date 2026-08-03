@@ -24,4 +24,10 @@
     <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The Hooks/ types are internal (they are not consumer surface) but are the plugin's enforcement
+         path, so they need direct tests rather than only end-to-end ones. -->
+    <InternalsVisibleTo Include="DotnetToolkit.McpServer.Tests" />
+  </ItemGroup>
+
 </Project>

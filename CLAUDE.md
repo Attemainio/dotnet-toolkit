@@ -49,11 +49,12 @@ does not exist yet — change it through `validate_patch` after that.
 - Full arguments and every failure mode: **`docs/tools/validate_patch.md`**.
 
 **Use shell and plain file tools for what the MCP surface doesn't cover**: `dotnet build` / `dotnet
-test` / `./scripts/build-plugin.sh`, `git`, and reading or editing non-C# files (Markdown, JSON, `.sh`,
+test` / `dotnet publish`, `git`, and reading or editing non-C# files (Markdown, JSON, `.cmd`,
 `.csproj`, skill and agent definitions).
 
-**Before finishing**, run `dotnet test` and, if anything under `src/` changed, `./scripts/build-plugin.sh`
-— `dist/` is what actually runs, so a server change is not delivered until it is republished.
+**Before finishing**, run `dotnet test` and, if anything under `src/` changed, re-publish to `dist/`
+— `dist/` is what actually runs, so a server change is not delivered until it is republished. **`dist/`
+now also carries the hooks**, so a change under `Hooks/` is live only after republishing too.
 
 ## Commands
 
@@ -61,17 +62,22 @@ test` / `./scripts/build-plugin.sh`, `git`, and reading or editing non-C# files 
 dotnet build                        # build the solution
 dotnet test                         # unit + MSBuildWorkspace integration tests
 dotnet test --filter FullyQualifiedName~ClassName   # a single test class
-./scripts/build-plugin.sh           # publish to dist/; required after any src/ change
+dotnet publish src/DotnetToolkit.McpServer -c Release -o dist   # required after any src/ change
 ```
+
+`scripts/build-plugin.sh` and `scripts/build-plugin.cmd` are thin wrappers over that publish line.
+Nothing the plugin ships at runtime runs a shell: `.mcp.json` and `hooks/hooks.json` both invoke
+`dotnet <dll>` so the plugin works on Windows as well as WSL/Linux/macOS.
 
 `dotnet test` includes `WorkspaceIntegrationTests`, which loads a fixture solution via
 `MSBuildWorkspace` — expect it to be slower than the pure unit tests.
 
 `TreatWarningsAsErrors` is set repo-wide (`Directory.Build.props`), so a build with warnings fails.
 
-**If more than one net10 SDK is installed, build with the same one `scripts/run-server.sh` picks**
-(`~/.dotnet/dotnet` here). Building with a different one silently degrades the server's workspace —
-symptoms and repair in `docs/architecture.md`.
+**If more than one net10 SDK is installed, build with the same one the server registers for MSBuild**
+(`~/.dotnet/dotnet` here). It picks the newest installed SDK and logs `MSBuild: ...` to stderr at
+startup; `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install. Building with a different one silently
+degrades the server's workspace — symptoms and repair in `docs/architecture.md`.
 
 ## Where to read what
 
@@ -92,7 +98,8 @@ Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/`. Re-run `./scripts/build-plugin.sh` after any server change.
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the four hooks. Re-publish after any
+  server change.
 - **Tool signature changes break in-process callers** — the tests call these methods positionally — and
   **any response-shape change needs `Contracts/Contract.cs` bumped.**
 - **Change detection is mtime-polling, not filesystem watchers**, so it works on WSL `/mnt/*` where

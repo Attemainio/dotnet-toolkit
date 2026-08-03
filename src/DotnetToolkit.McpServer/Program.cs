@@ -1,19 +1,26 @@
 using DotnetToolkit.McpServer.Control;
 using DotnetToolkit.McpServer.Devlog;
+using DotnetToolkit.McpServer.Hooks;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Workspace;
-using Microsoft.Build.Locator;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+// A `hook` invocation runs one Claude Code guard against stdin and exits, and is handled before
+// anything else: hooks run once per tool call, so MSBuild discovery and host startup would be pure
+// latency there, and no guard needs either.
+if (await HookCli.TryRunAsync(args) is { } hookExitCode)
+{
+    return hookExitCode;
+}
+
 // Locate the installed .NET SDK's MSBuild before any Microsoft.CodeAnalysis.Workspaces.MSBuild
 // code runs; MSBuildWorkspace resolves MSBuild assemblies through this registration.
-if (!MSBuildLocator.IsRegistered)
-    MSBuildLocator.RegisterDefaults();
+var msbuildRegistration = MSBuildRegistration.Register();
 
 var builder = Host.CreateEmptyApplicationBuilder(settings: null);
 
@@ -51,6 +58,11 @@ builder.Services
 
 var app = builder.Build();
 
+// Reported at startup because a workspace loaded by the wrong SDK degrades quietly - projects load
+// with missing references instead of failing - and this is the only line that says which one won.
+app.Services.GetRequiredService<ILogger<Program>>().LogInformation(
+    "MSBuild: {Registration}", msbuildRegistration);
+
 // Start both knowledge tiers in the background so the MCP handshake completes
 // well inside Claude Code's ~5s startup timeout; tools await readiness themselves.
 app.Services.GetRequiredService<ProjectIndex>().StartInitialization();
@@ -71,3 +83,6 @@ DevlogMigration.Run(
     app.Services.GetRequiredService<ILogger<Program>>());
 
 await app.RunAsync();
+
+// Explicit because the hook branch above returns a value, which makes the entry point int-returning.
+return 0;

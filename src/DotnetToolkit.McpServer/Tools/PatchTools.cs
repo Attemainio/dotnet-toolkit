@@ -293,7 +293,12 @@ public static class PatchTools
                 var document = forked.GetDocument(docId)!;
                 var text = await document.GetTextAsync();
                 var path = document.FilePath ?? locator.AbsPath(document.Name);
-                await File.WriteAllTextAsync(path, text.ToString());
+
+                // Write back in the encoding the file was read in. The default here is UTF-8 without a
+                // BOM, which silently strips the BOM Visual Studio puts on files it creates - a
+                // whole-file diff on Windows for a one-line patch.
+                var encoding = text.Encoding ?? new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+                await File.WriteAllTextAsync(path, text.ToString(), encoding);
             }
             return true;
         }

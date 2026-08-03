@@ -152,6 +152,7 @@ public static class PatchSandbox
     {
         error = null;
         var current = text;
+        var lineEnding = DominantLineEnding(text);
         foreach (var edit in descendingEdits)
         {
             if (edit.StartLine < 1 || edit.EndLine < edit.StartLine || edit.EndLine > current.Lines.Count)
@@ -161,8 +162,52 @@ public static class PatchSandbox
             }
             var start = current.Lines[edit.StartLine - 1].Start;
             var end = current.Lines[edit.EndLine - 1].End;
-            current = current.WithChanges(new TextChange(TextSpan.FromBounds(start, end), edit.NewText));
+            current = current.WithChanges(
+                new TextChange(TextSpan.FromBounds(start, end), Retarget(edit.NewText, lineEnding)));
         }
         return current;
+    }
+
+    /// <summary>How many leading lines to sample when deciding a file's line ending.</summary>
+    private const int LineEndingSampleSize = 200;
+
+    /// <summary>The line ending the file already uses, so an applied patch does not mix the two.</summary>
+    /// <param name="text">The document text being edited.</param>
+    /// <returns><c>"\r\n"</c> for a file that is predominantly CRLF, <c>"\n"</c> otherwise.</returns>
+    /// <remarks>
+    /// newText arrives over JSON with LF endings whatever the file on disk uses. Splicing it verbatim into
+    /// a CRLF checkout - the Windows default in any repo without a .gitattributes forcing LF - leaves the
+    /// file mixed, so every applied patch shows up in git as touching lines it never changed.
+    /// </remarks>
+    internal static string DominantLineEnding(SourceText text)
+    {
+        var crlf = 0;
+        var lf = 0;
+        var sampled = Math.Min(text.Lines.Count, LineEndingSampleSize);
+        for (var i = 0; i < sampled; i++)
+        {
+            var line = text.Lines[i];
+            switch (line.EndIncludingLineBreak - line.End)
+            {
+                case 2:
+                    crlf++;
+                    break;
+                case 1:
+                    lf++;
+                    break;
+            }
+        }
+
+        return crlf > lf ? "\r\n" : "\n";
+    }
+
+    /// <summary>Rewrites a patch hunk's line endings to match the file it is being spliced into.</summary>
+    /// <param name="newText">The replacement text as the caller sent it.</param>
+    /// <param name="lineEnding">The file's own line ending, from <see cref="DominantLineEnding"/>.</param>
+    /// <returns>The same text with every line break rewritten to <paramref name="lineEnding"/>.</returns>
+    internal static string Retarget(string newText, string lineEnding)
+    {
+        var normalized = newText.Replace("\r\n", "\n");
+        return lineEnding == "\n" ? normalized : normalized.Replace("\n", lineEnding);
     }
 }

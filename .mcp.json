@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "dotnet": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"
+      "command": "dotnet",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll"]
     }
   }
 }

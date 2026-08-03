@@ -113,8 +113,12 @@ Not in a public marketplace yet — the repo itself is the install source.
 ```bash
 git clone https://github.com/Attemainio/dotnet-toolkit dotnet-toolkit
 cd dotnet-toolkit
-./scripts/build-plugin.sh     # publishes the server to dist/ — required once, and after every update
+dotnet publish src/DotnetToolkit.McpServer -c Release -o dist   # required once, and after every update
 ```
+
+On Windows, `scripts\build-plugin.cmd` runs the same command; on Linux/macOS, `./scripts/build-plugin.sh`
+does. Everything the plugin ships at runtime — the MCP server and all four hooks — is invoked as
+`dotnet <dll>`, so no shell is involved once it is installed.
 
 ### 2. Load the plugin
 
@@ -182,7 +186,7 @@ it before posting if your repo is private.
 
 <!-- TODO(visual): screenshot of a self-eval report -->
 
-> **After any update**, re-run `./scripts/build-plugin.sh`. It republishes over `dist/`, which is what
+> **After any update**, re-publish to `dist/`. It republishes over `dist/`, which is what
 > running servers execute — so it disconnects the MCP server in every open session. Run
 > `/plugin reload-plugins` or restart to pick the rebuilt server up.
 
@@ -266,12 +270,13 @@ forces a rebuild.
 ```bash
 dotnet build
 dotnet test                    # unit + MSBuildWorkspace integration tests
-./scripts/build-plugin.sh
+dotnet publish src/DotnetToolkit.McpServer -c Release -o dist
 ```
 
 `TreatWarningsAsErrors` is set repo-wide, so a build with warnings fails. If more than one .NET 10 SDK
-is installed, build with the same one `scripts/run-server.sh` picks — see `docs/architecture.md`'s
-Environment section for the symptoms and the repair.
+is installed, build with the same one the server picks for MSBuild — it logs `MSBuild: ...` to stderr at
+startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins it. See `docs/architecture.md`'s Environment section for
+the symptoms and the repair.
 
 Layout: `src/DotnetToolkit.McpServer/` (the server — `Tools/` is the MCP surface), `tests/`, `skills/`,
 `agents/`, `.claude/rules/` (coding standards), `docs/`, `.claude-plugin/` (manifests), `.mcp.json`.
