@@ -1,6 +1,6 @@
 ---
 name: dotnet-toolkit-init
-description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Writes an always-loaded protocol rule into .claude/rules/ that mandates the MCP tools over Grep/Read/find for C#, and copies the plugin's coding-standards files (the full list lives in .claude/rules/csharp-standards.md's index) alongside it, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
+description: Use when the user asks to set up, install, wire up, or apply dotnet-toolkit's tool-usage and coding-standards rules into a project — e.g. "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo". Copies the plugin's two always-loaded rules into .claude/rules/ (tool-protocol.md, which mandates the MCP tools over Grep/Read/find for C# and delegating exploration to the dotnet-explore agent, plus csharp-standards.md) and the coding-standards files they index (the full list lives in .claude/rules/csharp-standards.md's index) alongside it, checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
 ---
 
 # Wiring dotnet-toolkit into a project
@@ -22,11 +22,11 @@ alone entirely.
 fire when the built-in `Read` tool touches a matching file — and with this plugin installed, `.cs`
 contact goes through the MCP tools or is blocked by the read/edit guards, so a `paths: ["**/*.cs"]` rule
 would almost never load (verified against the official docs, 2026-07; an earlier version of this skill
-wrote exactly that and its rule rarely fired). The protocol rule below therefore ships **always-loaded**
-(no `paths:`) and is kept short because it costs its tokens in every session. It loads *alongside*
+wrote exactly that and its rule rarely fired). The two rules this skill copies therefore ship **always-loaded**
+(no `paths:`) and are kept short because they cost their tokens in every session. It loads *alongside*
 CLAUDE.md with the same priority — never tell the user it "overrides" anything. The standards copies keep
 `paths: ["**/*.cs"]` for the opposite reason: it keeps them **out** of the launch context; they are read
-on demand via the protocol rule's index and the `dotnet-change` skill's pre-edit step. The actual
+on demand via `csharp-standards.md`'s index and the `dotnet-change` skill's pre-edit step. The actual
 enforcement is the plugin's `PreToolUse` hooks (see `docs/hook-reference.md`), which travel with the
 plugin and need no per-repo setup.
 
@@ -38,18 +38,25 @@ exact content and wait for a yes.
 
 | File(s) | Content |
 | --- | --- |
-| `.claude/rules/dotnet-toolkit-csharp.md` | the protocol rule (template below): tool table, write path, standards index, write-time checklist. **Always-loaded** — no `paths:` frontmatter. |
+| `.claude/rules/tool-protocol.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/tool-protocol.md`: tool table, the `dotnet-explore` delegation rule, write path. **Always-loaded** — no `paths:` frontmatter |
+| `.claude/rules/csharp-standards.md` | **verbatim copy** of the plugin's file: the standards index, its per-file trigger conditions, and the write-time checklist. **Always-loaded** — no `paths:` frontmatter |
 | `.claude/rules/{naming,styling,best-practices,antipatterns,architecture,api-design,error-handling,resource-management,performance,concurrency,security,testing,xml-documentation}.md` | verbatim copies of the plugin's standards files from `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` (the current list always matches `csharp-standards.md`'s index) — the repo owns editable copies; re-running this skill refreshes them (diffed, backed up) |
+
+Everything is copied rather than templated, so the plugin and every consuming repo run the *same*
+rule text. There is no inline template in this skill to drift out of step with the plugin's own
+`.claude/rules/` — a copy step cannot diverge the way a second authored copy did.
 
 The standards are copied rather than referenced so the repo can edit them into its own convention set.
 A repo that would rather track the plugin's versions can decline the copies in Step 5 and rely on
 `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` reads plus `.claude/dotnet-toolkit/<name>.md` overrides — say
-this option exists when presenting the plan.
+this option exists when presenting the plan. **The two always-loaded rules are not optional**, though:
+declining them leaves the repo with no protocol at all.
 
-**The protocol rule is the repo's entire always-loaded footprint, and its budget is ~6 KB (~1.6k
-tokens).** It declares *when* to use the tools and *where* the procedure lives; it is not a copy of
-the procedure. Per-tool arguments, the full `validate_patch` walkthrough, and failure modes stay in
-`${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md` and the `dotnet-change` skill, read on demand.
+**The two always-loaded rules are the repo's entire always-loaded footprint, budgeted at ~6 KB each
+(`tool-protocol.md`, `csharp-standards.md`).** They declare *when* to use the tools and
+*where* the procedure lives; they are not a copy of the procedure. Per-tool arguments, the full
+`validate_patch` walkthrough, and failure modes stay in `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`
+and the `dotnet-change` skill, read on demand.
 
 ### What is deliberately *not* written into the repo
 
@@ -106,118 +113,38 @@ Then decide:
   it (defer to the existing guidance, skip the overlapping copies, replace the older guidance) before
   going further.
 
-## Step 4 — Draft the protocol rule
+## Step 4 — Stage the rule copies
 
-Write `.claude/rules/dotnet-toolkit-csharp.md` with this content. Note there is deliberately **no
-`paths:` frontmatter** — see the loading-mechanics paragraph above; adding one would make the rule
-almost never load.
+The two always-loaded rules are **copied verbatim**, not authored here:
 
-```markdown
-# C# in this repo: dotnet-toolkit MCP tools and coding standards
-
-This repo has the dotnet-toolkit plugin installed — a Roslyn-powered MCP server. Its tools are the
-default path for C#, not Grep, Glob, `find`, `ls`, `cat`, bare `Read`, or `Edit`/`Write`.
-
-Grep and Read give **wrong answers** on C#, not merely slower ones: text search cannot see interface,
-virtual, or delegate dispatch, counts comment and string matches as real hits, silently under-reports
-when output is truncated, and returns one fragment of a partial class with no signal the rest exists.
-
-| Instead of | Use |
+| Source (plugin) | Destination (target repo) |
 | --- | --- |
-| `grep`/Grep for a type or member name | `search_index` (all terms in ONE call — they are OR-ed and ranked) |
-| `Read` on a `.cs` file | `get_symbol` (whole symbol across partials; `include` picks the fields) |
-| `grep` for callers or implementors | `get_references` (Roslyn semantic model) |
-| `find`/`ls`/Glob to map a subsystem | `get_scope` |
-| Tracing a call chain by hand | `get_call_slice` |
-| Who eventually calls/is called by a symbol, several levels deep | `get_call_hierarchy` |
-| A type's full base chain, interfaces, and derived/implementing types | `get_type_hierarchy` |
-| Opening every `.csproj` to trace project references by hand | `get_project_graph` |
-| Manually tracing project references looking for a cycle | `detect_circular_dependencies` |
-| `git diff` to judge a change | `get_semantic_diff` |
-| Guessing why code looks the way it does | `search_log` |
-| Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
-| `Edit`/`Write` then `dotnet build` | `validate_patch` |
-| Search-and-replace, or one patch per call site, to rename something | `rename_symbol` |
+| `${CLAUDE_PLUGIN_ROOT}/.claude/rules/tool-protocol.md` | `.claude/rules/tool-protocol.md` |
+| `${CLAUDE_PLUGIN_ROOT}/.claude/rules/csharp-standards.md` | `.claude/rules/csharp-standards.md` |
 
-`PreToolUse` hooks enforce all three sides: `Read` on a compiled `.cs` file, a `Bash` command reading
-the same bytes (`cat`/`grep`/`sed`/etc.), and `Edit`/`Write` on an existing one are all blocked —
-reaching for any of them costs a round trip and returns nothing. The hooks travel with the plugin;
-nothing repo-local to maintain.
+Read both from the plugin now, so Step 5 can show the user the exact text that will land. Neither
+carries `paths:` frontmatter — that is what makes them always-loaded; see the loading-mechanics
+paragraph above. Do not add one, and do not edit the text on the way through: a repo that wants
+different wording edits its copy afterwards, or overrides per file via
+`.claude/dotnet-toolkit/<name>.md`.
 
-## Writing
+`tool-protocol.md` points at `${CLAUDE_PLUGIN_ROOT}/docs/...` for every procedure detail. Those paths
+resolve only while the plugin is installed, which is deliberate — see "What is deliberately *not*
+written".
 
-`validate_patch` is the write path and the **only** writer to the development log. An edit that
-bypasses it is a change whose reasoning is gone when the conversation ends; `search_log` cannot
-recover it and the next session re-derives or silently contradicts it.
-
-The shape of a call: `get_symbol` for `contentVersion` + the `declarationSites` line span, then
-`validate_patch` with `baseVersions`, line-span `edits`, `applyOnSuccess: true`, and an `intent` in
-user terms. On failure, amend through the returned `draftId` rather than rebuilding the patch.
-
-**Rewriting a body means fetching the body.** `get_symbol` narrows its `contentVersion` to the layers
-it actually served, so the default fetch leases the declaration only — a patch that changes a body
-against it is rejected with `error: "unleased_body"`. Use `include: "all"` (or any include carrying
-`source`/`bodyOutline`/`mechanicalFacts`), which is what you want anyway when editing the text.
-
-"Too large or too interleaved to decompose" is not a reason to fall back to `Edit`. Split it into
-more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
-legitimately outside this: `Write` the file, then change it through `validate_patch`.
-
-**A pure rename is `rename_symbol`, not a set of patches.** It derives every reference edit from the
-compiler's graph — across projects, through interface/virtual/delegate dispatch a hand-written patch set
-misses — then runs the same ladder and writes the same log entry. It takes a single `baseVersion` string,
-and `applyOnSuccess: false` rehearses the whole rename and reports the blast radius without writing.
-
-**This repo's `.editorconfig` decides what blocks** — validation grades as `dotnet build` does. Never
-suppress with a pragma or edit `.editorconfig` to get past a rule; raise it and let the user decide.
-
-Full procedure, arguments, and failure modes: `${CLAUDE_PLUGIN_ROOT}/docs/tools/validate_patch.md`,
-`${CLAUDE_PLUGIN_ROOT}/docs/tools/rename_symbol.md`, and the `dotnet-change` skill — all read on demand,
-so none costs anything until it is needed.
-
-## Coding standards — read before writing C#
-
-The standards live beside this rule in `.claude/rules/` and are **read on demand, not auto-loaded**
-(their `paths:` frontmatter only keeps them out of the launch context). Before the first C# edit of a
-session, read the relevant ones (the `dotnet-change` skill makes this a required step):
-
-- **always**: `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`
-- project/namespace boundaries, new abstraction: `architecture.md` · public/internal signature change:
-  `api-design.md` · exceptions/retries/timeouts: `error-handling.md` ·
-  `IDisposable`/streams/pooling: `resource-management.md` ·
-  endpoints/auth/SQL/config/logging/crypto: `security.md` · hot paths/buffers/SIMD/`unsafe`:
-  `performance.md` · awaits/locks/tasks/shared state: `concurrency.md` · tests: `testing.md` ·
-  shared catalog: `antipatterns.md`
-
-The plugin's `dotnet-code-review` agent validates against the same files at review time (every
-aspect in one pass) — this list exists to reduce how often it finds something, not to replace it.
-
-## Write-time checklist — the highest-cost-if-caught-late items
-
-- **No credential-shaped literal in source** — configuration comes from `IConfiguration`/environment/
-  a secret store, never a string literal, even a placeholder-looking one.
-- **No string-concatenated/interpolated SQL** in a raw-SQL API call — parameterize.
-- **Every controller/endpoint gets an explicit `[Authorize]` or `[AllowAnonymous]`.**
-- **New tests exercise real dependencies, not an in-memory database substitute**, for anything
-  asserting constraint/transaction/query-translation behavior the substitute doesn't share.
-
-Which tool answers which question: `${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md` (the router — start
-here). How to call one: `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`. Read the single tool you need,
-not the directory.
-```
-
-If Step 3 found a scoped-but-resolvable overlap, add one sentence noting the boundary — e.g. "For
-non-.NET code, `<other plugin>` remains the tool of record; this rule only governs `.cs`." One sentence;
-don't restate the other plugin's docs.
+If Step 3 found a scoped-but-resolvable overlap with another plugin, append one sentence to the
+copied `tool-protocol.md` noting the boundary — e.g. "For non-.NET code, `<other plugin>` remains the
+tool of record; this rule only governs `.cs`." One sentence; don't restate the other plugin's docs,
+and don't otherwise diverge the copy.
 
 ## Step 5 — Present the plan, then wait
 
 Show the user, in chat (not applied yet):
-- The full protocol-rule content and its path.
+- The full content of both always-loaded rules (`tool-protocol.md`, `csharp-standards.md`) and their paths.
 - The list of standards files to be copied, per `csharp-standards.md`'s index (titles + one line each, not full contents — offer
   to show any in full), and the skip-copies alternative from "What gets written".
 - One line on what Step 3 found, and how it was handled (collisions included).
-- One line stating plainly that the protocol rule is always-loaded (rules load independently of
+- One line stating plainly that both rules are always-loaded (rules load independently of
   CLAUDE.md, alongside it, same priority — not above it), that the standards copies load only when
   read, and that the `PreToolUse` hooks are the actual enforcement. CLAUDE.md itself is untouched.
 
@@ -231,13 +158,13 @@ not been shown yet.
 1. For every file about to be written that already exists (a re-run, or a collision the user resolved
    as "replace"), copy it to `.claude/dotnet-toolkit/backups/<name>.md.<UTC timestamp>.bak` first.
    Keep backups after a successful apply.
-2. Write the protocol rule and the approved standards copies. They're markdown, so `Write`/`Edit` is
-   correct — `validate_patch` is for `.cs`, and the hooks don't touch these files.
+2. Copy the two always-loaded rules and write the approved standards copies. They're markdown, so
+   `Write`/`Edit` is correct — `validate_patch` is for `.cs`, and the hooks don't touch these files.
 3. Confirm back: what was written, what was backed up, and how to undo.
 
 ## Step 7 — Re-running (update, not duplicate)
 
-A re-run is a refresh: diff each existing file against the current template/plugin copy (the tool
+A re-run is a refresh: diff each existing file against the current plugin copy (the tool
 surface or the standards may have changed since), show *those diffs* in Step 5 instead of full text,
 back up per Step 6, and replace content in place — same paths, no new files. Preserve a consuming
 repo's local edits to its standards copies by showing the diff rather than silently overwriting; if
@@ -249,7 +176,7 @@ alongside the refresh (see "Undoing this later"), since the rule files alone are
 
 ## Undoing this later
 
-- **Remove everything**: delete `.claude/rules/dotnet-toolkit-csharp.md` and the standards copies
+- **Remove everything**: delete `.claude/rules/tool-protocol.md`, `.claude/rules/csharp-standards.md`, and the standards copies
   (or restore from `.claude/dotnet-toolkit/backups/`). That is the complete list of files this skill
   ever creates outside `.claude/dotnet-toolkit/`.
 - **Runtime leftovers**: `.claude/dotnet-toolkit/cache/` is the server's rebuildable SQLite store and

@@ -55,7 +55,8 @@ than clean. The agent's own process lives in `agents/dotnet-code-review.md` (sel
 Installing the plugin makes the tools *available*; nothing makes a fresh session in a consuming repo
 *prefer* them or follow the standards — plugins cannot ship auto-loading rules, only a repo's own
 `.claude/rules/` is scanned. This skill writes that guidance into the target repo: an always-loaded
-protocol rule (tool table, write path, standards index, write-time checklist) plus copies of the
+two always-loaded rules — `tool-protocol.md` (tool table, `dotnet-explore` delegation, write path) and
+`csharp-standards.md` (standards index, write-time checklist) — copied verbatim, plus copies of the
 standards files (list in `.claude/rules/csharp-standards.md`'s index) into the repo's `.claude/rules/`.
 Approval-gated, backed up, additive — it never touches
 the repo's CLAUDE.md, and uninstall is deleting the listed files.
@@ -67,13 +68,13 @@ correctly", "what does uninstalling leave behind", "audit the init skill".
 
 Builds the expected asset inventory from the plugin tree itself and sorts every shipped file into one
 of four delivery mechanisms — *ships active* (MCP server, hooks, skills, agent), *must be copied*
-(the protocol rule and standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path* (`docs/`), and
+(the two always-loaded rules and the standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path* (`docs/`), and
 *created at runtime* (`cache/`, `backups/`, `config.json`). It then checks `dotnet-toolkit-init`'s
 "what gets written", "what is deliberately not written", and "undoing this later" sections against
 that inventory, and in a consuming repo checks the state actually on disk.
 
 Also enforces the two boundaries the installation is defined by: the consumer's CLAUDE.md is never
-touched (no marker block, no dotnet-toolkit content), and the protocol rule stays a **declaration**
+touched (no marker block, no dotnet-toolkit content), and `tool-protocol.md` stays a **declaration**
 of when and how — budget ~6 KB — with the full workflow behind on-demand pointers. Read-only: it
 reports and may offer to re-run `dotnet-toolkit-init`, never installs on its own. Complements
 `dotnet-toolkit-consistency`, which checks the same files for *accuracy* rather than *delivery*.

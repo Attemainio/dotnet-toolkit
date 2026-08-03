@@ -1,6 +1,6 @@
 ---
 name: dotnet-toolkit-install-check
-description: Use when verifying that dotnet-toolkit is correctly and completely installed into a repo, that dotnet-toolkit-init's procedure actually covers everything the plugin ships, or that uninstalling leaves nothing behind — "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "what does uninstalling leave behind", "audit the init skill". Builds the expected asset inventory from the plugin tree itself, then checks dotnet-toolkit-init's install and uninstall procedures against it and (in a consuming repo) the installed state on disk. Also enforces the always-loaded footprint budget: the consumer's CLAUDE.md is never touched, and the protocol rule stays a short declaration of when and how, not a copy of the workflow. Read-only — it reports and offers to re-run init, it never installs on its own.
+description: Use when verifying that dotnet-toolkit is correctly and completely installed into a repo, that dotnet-toolkit-init's procedure actually covers everything the plugin ships, or that uninstalling leaves nothing behind — "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "what does uninstalling leave behind", "audit the init skill". Builds the expected asset inventory from the plugin tree itself, then checks dotnet-toolkit-init's install and uninstall procedures against it and (in a consuming repo) the installed state on disk. Also enforces the always-loaded footprint budget: the consumer's CLAUDE.md is never touched, and the two copied rules stay short declarations of when and how, not copies of the workflow. Read-only — it reports and offers to re-run init, it never installs on its own.
 ---
 
 # Auditing the installation
@@ -45,7 +45,7 @@ is any shipped file that lands in none of them, or that init handles as if it we
 | # | Mechanism | What it covers | Reaches the consumer by | Uninstall |
 | --- | --- | --- | --- | --- |
 | 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the four `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
-| 2 | **Must be copied** | `.claude/rules/dotnet-toolkit-csharp.md` (the protocol rule, written from init's template) and the standards copies enumerated by `.claude/rules/csharp-standards.md`'s index | `dotnet-toolkit-init` writing them into the repo's own `.claude/rules/` | **explicit deletion** — init's "Undoing this later" list is the only thing that removes them |
+| 2 | **Must be copied** | `.claude/rules/tool-protocol.md` and `.claude/rules/csharp-standards.md` (both always-loaded, copied verbatim from the plugin) plus the standards copies enumerated by `csharp-standards.md`'s index | `dotnet-toolkit-init` writing them into the repo's own `.claude/rules/` | **explicit deletion** — init's "Undoing this later" list is the only thing that removes them |
 | 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/{agent,hook,skill,tool}-reference.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named in mechanism-2 files and in the skills | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |
 
@@ -76,7 +76,7 @@ Specific drift to look for, in the order it usually appears:
 1. **A standards file added to `.claude/rules/` but not to init's copy list.** Init's list must match
    `csharp-standards.md`'s index exactly — that index is the enumerator, init's table is a copy of it,
    and copies diverge. Check both directions.
-2. **A tool added but not in the protocol rule's tool table.** The template embeds its own table for
+2. **A tool added but not in `tool-protocol.md`'s tool table.** That rule embeds its own table for
    consumers, and it drifts independently of `docs/tools/_index.md`. The template's table is
    *"instead of X, use Y"* — so it carries every tool that replaces something a session would
    otherwise reach for, and legitimately omits the meta tools that replace nothing:
@@ -96,7 +96,7 @@ ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
 ```
 
 - Every mechanism-2 file init promised is present.
-- The protocol rule has **no `paths:` frontmatter** — with one it would almost never load, since
+- Both copied rules have **no `paths:` frontmatter** — with one they would almost never load, since
   path-scoped rules fire only on built-in `Read` and `.cs` contact here goes through the MCP tools or
   is blocked by the guards.
 - The standards copies **do** carry `paths: ["**/*.cs"]`, which is what keeps them out of the launch
@@ -117,7 +117,7 @@ repo pays regardless of task.
   prior version of init. A consumer's CLAUDE.md is for that project's own architecture, commands, and
   conventions. If a marker block is found, the finding is "remove it and rely on the rule file",
   which init's Step 7 already knows how to do.
-- **`.claude/rules/dotnet-toolkit-csharp.md` must stay a declaration, not a workflow.** Budget: **≤ 6
+- **`.claude/rules/tool-protocol.md` must stay a declaration, not a workflow.** Budget: **≤ 6
   KB (~1.6k tokens)**. It answers *when* to use the tools and *how to reach* the procedure — a tool
   table, a short write-path statement, the standards index, and the write-time checklist. It must not
   grow a full `validate_patch` walkthrough, per-tool argument documentation, or failure-mode
@@ -125,7 +125,7 @@ repo pays regardless of task.
   both read on demand.
 
 ```bash
-for f in .claude/rules/dotnet-toolkit-csharp.md CLAUDE.md; do
+for f in .claude/rules/tool-protocol.md .claude/rules/csharp-standards.md CLAUDE.md; do
     [ -f "$f" ] && printf "%-46s %6d B  ~%.1fk tok\n" "$f" $(wc -c < "$f") $(echo "$(wc -c < "$f")/3800" | bc -l)
 done
 ```
@@ -157,14 +157,15 @@ Walk four scenarios and name, for each, the file the consumer would actually rea
 
 | Scenario | Must be reachable via |
 | --- | --- |
-| Find a symbol and its callers | protocol rule's tool table → `docs/tools/_index.md` → `docs/tools/<tool>.md` |
-| Change a method | protocol rule's write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
-| Rename a symbol | protocol rule's write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
+| Find a symbol and its callers | `tool-protocol.md`'s tool table → `docs/tools/_index.md` → `docs/tools/<tool>.md` |
+| Change a method | `tool-protocol.md`'s write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
+| Rename a symbol | `tool-protocol.md`'s write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill → `dotnet-code-review` agent → the copied `.claude/rules/` standards |
-| Know which standards to read before editing | the protocol rule's standards index (which is the consumer's replacement for `csharp-standards.md`) |
+| Map an unfamiliar change onto the code before editing | `tool-protocol.md`'s exploring section → the `dotnet-explore` agent |
+| Know which standards to read before editing | the copied `csharp-standards.md` — the same index the plugin itself uses, not a consumer-only variant |
 
 A scenario that can only be completed by reading this repo's `CLAUDE.md` is a finding, and the fix is
-to move that knowledge into a shipped file — the protocol-rule template, a skill, or a
+to move that knowledge into a shipped file — one of the two copied rules, a skill, or a
 `docs/tools/<tool>.md`. `dotnet-toolkit-consistency` owns the converse check (that this repo's own
 always-loaded instructions and the maintainer's accumulated knowledge are embedded somewhere
 consumer-reachable); if this step finds a gap, say which of the two skills should fix it.

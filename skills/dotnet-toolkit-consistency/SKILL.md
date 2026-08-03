@@ -72,6 +72,7 @@ missing (a tool that exists but appears nowhere in it):
 | `docs/tool-reference.md` | now an **index only** — the file table plus the conventions that hold across every tool. Check its table lists every file in `docs/tools/`. It must not re-acquire per-tool detail; that is what was split out |
 | `CLAUDE.md`'s "Non-negotiable workflow" and "Where to read what" | that they still route to `docs/tools/_index.md` and the other reference files rather than carrying a copy of any table. A per-tool table, architecture rundown, or skill catalog reappearing here is drift — each was moved out deliberately, and two copies always diverge |
 | `docs/architecture.md`'s `Tools/` table | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new row. Also its Id-namespace table, subsystem list, and "Changing the tool surface" consequences (positional test callers, `Contracts/Contract.cs` bump) |
+| `.claude/rules/tool-protocol.md` | always-loaded here **and** copied verbatim into consuming repos by init, so drift ships. Its tool table lists every tool from Step 0; its exploring section names `dotnet-explore` and when to skip it; its write path matches `validate_patch`'s current arguments. No `paths:` frontmatter, and every `${CLAUDE_PLUGIN_ROOT}/docs/...` path resolves |
 | `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table lists exactly the standards files present in `.claude/rules/`, and its `validate_patch` line matches the current write path. That table's "When" column doubles as the **reviewer's trigger table**, so each condition must be an *observable property of the code* (awaits/locks, hot path, public surface change), not a topic a reviewer can't match against retrieved source; the always-loaded core it names must match `agents/dotnet-code-review.md`'s exactly |
 | `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
 | every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
@@ -90,7 +91,8 @@ describing the tools are *accurate*. This step checks they are *reachable from a
 this repo's `CLAUDE.md` does not exist and this repo's `.claude/rules/csharp-standards.md` was never
 copied. Every operational instruction must therefore live in something that ships: a skill, the agent
 file, a `.claude/rules/` standards file (copied by init), a `docs/` file reachable by
-`${CLAUDE_PLUGIN_ROOT}` path, or `dotnet-toolkit-init`'s protocol-rule template.
+`${CLAUDE_PLUGIN_ROOT}` path, or one of the two always-loaded rules init copies
+(`.claude/rules/tool-protocol.md`, `.claude/rules/csharp-standards.md`).
 
 Two sweeps, both cheap:
 
@@ -171,7 +173,7 @@ Budgets, and why each one is a correctness bug rather than a cost note, are stat
   always-loaded files, both deliberately indexes. Content rather than pointers is the drift: architecture
   belongs in `docs/architecture.md`, per-tool detail in `docs/tools/`, catalogs in
   `docs/skill-reference.md` / `docs/agent-reference.md`.
-- **`dotnet-toolkit-init`'s protocol-rule template over ~6 KB** — the always-loaded footprint it
+- **`.claude/rules/tool-protocol.md` over ~6 KB** — half the always-loaded footprint it
   writes into every *consuming* repo. Procedure detail belongs behind its
   `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md` pointers. `dotnet-toolkit-install-check` owns this
   check too; either finding it is fine, both missing it is not.

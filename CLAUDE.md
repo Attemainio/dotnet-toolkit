@@ -15,42 +15,13 @@ back to shell.
 
 ## Non-negotiable workflow
 
-**Explore C# through the MCP tools**, not Grep, Glob, `find`, `ls`, `cat`, or bare `Read` on `.cs`
-files. Pick the tool via `docs/tools/_index.md`, then read that one `docs/tools/<tool>.md` for how to
-call it — don't read the whole directory, and don't read `Tools/*.cs` to learn a signature.
+The tool protocol — MCP tools over Grep/`Read` for C#, delegating an unknown symbol sweep to the
+`dotnet-explore` agent, and `validate_patch` as the only write path — lives in
+**`.claude/rules/tool-protocol.md`**. It is always-loaded alongside this file, and is the same rule
+`dotnet-toolkit-init` copies into consuming repos. It is deliberately not repeated here: a rule that
+lives only in `CLAUDE.md` never reaches a consumer, and two copies always diverge.
 
-**Change existing `.cs` files through `validate_patch`.** A `PreToolUse` hook blocks
-`Edit`/`Write`/`NotebookEdit` on an existing `.cs` file; a blocked edit is the hook working, not a bug.
-Creating a *new* `.cs` file with `Write` is allowed, because `baseVersions` needs a `symbolId` that
-does not exist yet — change it through `validate_patch` after that.
-
-- The call: `get_symbol` for `contentVersion` + `declarationSites` (with `include: "all"` when the edit
-  rewrites a body — the default token carries no `body` layer and is rejected as `unleased_body`), then
-  `validate_patch` with `baseVersions`, line-span `edits`, `applyOnSuccess: true`, and an `intent`. On
-  failure, amend the returned `draftId` rather than rebuilding the patch.
-- **Always give a real `intent`.** Applying with one is what appends to the development log — only
-  `validate_patch` and `rename_symbol` do; an `Edit` that slips past the guard is reasoning `search_log`
-  can never recover. The compile check is the cheap half — the log entry is the unrecoverable half.
-- **A pure rename goes through `rename_symbol`, not a chain of patches** — it derives every call-site
-  edit from the compiler's reference graph, so it cannot miss interface/virtual/delegate dispatch the way
-  hand-authored edits do, and runs the same ladder and log. **`docs/tools/rename_symbol.md`**.
-- **"Too large or interleaved to decompose" is not a reason to use `Edit`.** It has been used as one
-  twice, and was wrong both times: split it into more `validate_patch` calls, one per touched symbol,
-  sharing one `intent`. If a lapse happens anyway, backfill it immediately with a follow-up call — an
-  identity edit still carries a real `intent` into the log.
-- **Validation grades exactly as `dotnet build` does.** The repo's `.editorconfig` and
-  `TreatWarningsAsErrors` are honored, and analyzer rules (`CA*`, anything from a NuGet analyzer package)
-  run over the changed documents: effective severity `error` blocks the patch, `warning`/`suggestion` is
-  reported in the response's `checks` block and does not. Lowering a rule's severity in `.editorconfig`
-  is a legitimate answer to an analyzer failure — say so rather than working around the rule.
-- **A passing result states its own scope.** Every response carries `checks` with the rungs that ran,
-  what each covered, and a `notAssessed` list. Report what it actually says; never turn a clean rung into
-  a broader claim than the scope it names.
-- Full arguments and every failure mode: **`docs/tools/validate_patch.md`**.
-
-**Use shell and plain file tools for what the MCP surface doesn't cover**: `dotnet build` / `dotnet
-test` / `dotnet publish`, `git`, and reading or editing non-C# files (Markdown, JSON, `.cmd`,
-`.csproj`, skill and agent definitions).
+What this repo adds on top, because it is the plugin's own source tree:
 
 **Before finishing**, run `dotnet test` and, if anything under `src/` changed, re-publish to `dist/`
 — `dist/` is what actually runs, so a server change is not delivered until it is republished. **`dist/`
@@ -90,10 +61,10 @@ degrades the server's workspace — symptoms and repair in `docs/architecture.md
 | What a hook blocks and why | `docs/hook-reference.md` |
 | What a skill is for | `docs/skill-reference.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/agent-reference.md` |
-| Finding what a change touches before making it | delegate to the `dotnet-explore` agent — it returns `symbolId`s, use sites and blast radius, and cannot edit |
+| Changing either always-loaded rule, or what init ships | `.claude/rules/tool-protocol.md` + `csharp-standards.md`; `skills/dotnet-toolkit-init/SKILL.md` copies both |
 
-Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only
-`csharp-standards.md` is always present.
+Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only `tool-protocol.md` and
+`csharp-standards.md` are always present, because only those two lack `paths:` frontmatter.
 
 ## Non-obvious invariants
 
@@ -138,11 +109,13 @@ failure mode. Both limits are enforced by `dotnet-toolkit-consistency`:
   first 5,000 tokens of each invoked skill (25k shared across all of them), so a larger skill is
   silently truncated mid-session — its later sections stop existing while its decision table still
   points at them. Push per-tool mechanics into `docs/tools/<tool>.md`, read on demand with no such cliff.
-- **This file and `.claude/rules/csharp-standards.md` are the only always-loaded files.** Everything
-  added to them is paid by every session regardless of task. Prefer a skill or a `docs/` file with a
-  pointer from here. Keep this file under **~10 KB (~150 lines)** and
-  `csharp-standards.md` under ~6 KB; an architecture rundown, tool catalog, skill catalog, or per-tool
-  procedure growing back here is the regression to watch for.
+- **Three files are always-loaded: this one, `.claude/rules/tool-protocol.md`, and
+  `.claude/rules/csharp-standards.md`** — the two rules because they alone carry no `paths:`
+  frontmatter. Everything added to any of them is paid by every session regardless of task, and the
+  two rules are paid again by every *consuming* repo, since init copies both. Prefer a skill or a
+  `docs/` file with a pointer. Keep this file under **~10 KB (~150 lines)**, and `tool-protocol.md`
+  and `csharp-standards.md` each under ~6 KB; an architecture rundown, tool catalog, skill catalog,
+  or per-tool procedure growing back into any of them is the regression to watch for.
 
 # Compact instructions
 
