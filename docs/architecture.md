@@ -59,7 +59,12 @@ are always rebuildable from source.
   Roslyn symbols. See "Id namespaces" below.
 - `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution, optionally seeded from a
   draft's proposed text), `ChangeClassifier.cs` (declaration delta → change kinds),
-  `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4),
+  `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4, then the analyzer pass),
+  `AnalyzerRunner.cs` (runs each project's referenced `DiagnosticAnalyzer`s over the changed documents —
+  `Compilation.GetDiagnostics()` runs none of them, so without this every `CA*`/`IDE*` rule an
+  `.editorconfig` configures was invisible to validation), `CheckReport.cs` (the `checks` block: which
+  rungs ran over what, analyzer findings by severity, and an explicit not-assessed list, so a clean run
+  is distinguishable from an unexamined one),
   `DiagnosticDistiller.cs` (root causes, suggested inspections, and the `locations` where each error
   landed in the proposed text's coordinates), `PatchDraftStore.cs` (bounded, 15-minute in-memory store
   of validated-but-unapplied patches — deliberately *not* in SQLite, since a draft describes a fork of
@@ -82,6 +87,7 @@ are always rebuildable from source.
   | `GraphTools.cs` | `get_project_graph`, `detect_circular_dependencies` |
   | `HistoryTools.cs` | `get_semantic_diff`, `search_log` |
   | `PatchTools.cs` | `validate_patch` |
+  | `RenameTools.cs` | `rename_symbol` |
   | `MetricsTools.cs` | `get_retrieval_metrics` |
   | `ServerTools.cs` | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` |
 

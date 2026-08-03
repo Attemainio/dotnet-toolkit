@@ -16,6 +16,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | Who calls it — just the list, one hop, **high fan-in** | `get_call_hierarchy(maxDepth: 1)` | `get_call_hierarchy.md` | `get_references` — 8× the tokens at 105 callers. Below ~a dozen callers it inverts: take `get_references` and get the sites free |
 | Where exactly it's called — file, line, snippet | `get_references(direction: "callers")` | `get_references.md` | Grep the name — misses interface dispatch, returns comment hits |
 | Implementations, derived types, overrides | `get_references(direction: "implementations"\|"overrides")` | `get_references.md` | Grep for `: IFoo` |
+| Where a **type** is used — a class, record or delegate as a field, parameter, return or event type | `get_references(direction: "callers")` on the type | `get_references.md` | Grep the type name — hits comments, misses aliases |
 | What is callable at a cursor — locals, inherited, extension methods | `get_scope` | `get_scope.md` | Guess, or grep for a helper that may not apply |
 | Whether known X reaches known Y, and through what | `get_call_slice` | `get_call_slice.md` | Walk outward with repeated `get_references` |
 | Who *eventually* calls this, several levels up | `get_call_hierarchy` | `get_call_hierarchy.md` | Chain `get_references` by hand |
@@ -25,6 +26,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | What a commit or branch actually changed | `get_semantic_diff` | `get_semantic_diff.md` | Read `git diff` and infer |
 | Why past code looks the way it does | `search_log` | `search_log.md` | Guess from the code |
 | **To change a `.cs` file** | `validate_patch` | `validate_patch.md` | `Edit`/`Write`/`dotnet build` |
+| **To rename a symbol and all its references** | `rename_symbol` | `rename_symbol.md` | `validate_patch` per call site; search-and-replace |
 | Where your tokens went | `get_retrieval_metrics` | `get_retrieval_metrics.md` | — |
 | Is the index/workspace warm | `workspace_status`, then `reload_workspace` | `server.md` | — |
 | Is the server answering at all | `ping` | `server.md` | — |
@@ -43,6 +45,9 @@ The common routes:
 - **"How does X reach Y?"** → `get_call_slice` — both endpoints must already be named.
 - **"I need to change this method."** → `get_symbol` (keep `contentVersion` +
   `declarationSites`) → `validate_patch` with `applyOnSuccess: true` and an `intent`.
+- **"Rename this."** → `get_symbol` (keep `contentVersion`) → `rename_symbol` dry run to see the
+  blast radius → the same call with `applyOnSuccess: true` and an `intent`. Never a chain of
+  `validate_patch` calls: the reference rewrite is Roslyn's job, not yours to author.
 - **"What did this branch change, and why?"** → `get_semantic_diff` → `search_log`.
 
 ## Workspace readiness
@@ -73,3 +78,8 @@ with.
 Fields that are absent carry no information: `limitedBy` appears only when something limited the
 answer, `changed` only when `false`, `truncated` only when true. **Absent is not zero** — an absent
 `tests` means "not computed", not "no tests".
+
+The write path states the same distinction positively rather than by omission: `validate_patch` and
+`rename_symbol` return a **`checks`** block on every call, listing which validation rungs ran and over
+what, the analyzer pass's findings by severity, and an explicit `notAssessed` list. Report the scope it
+names — a clean rung is clean over what `scope` says, nothing wider. See `validate_patch.md`.

@@ -59,6 +59,7 @@ tell you it doesn't know.
 | How the projects fit together | `get_project_graph`, `detect_circular_dependencies` |
 | What actually changed, and why it was done that way | `get_semantic_diff`, `search_log` |
 | Is this edit safe | `validate_patch` |
+| Rename this everywhere it is used | `rename_symbol` |
 | Where the tokens went | `get_retrieval_metrics` |
 
 Plus four housekeeping tools you rarely call by hand: `workspace_status`, `reload_workspace`,
@@ -67,6 +68,21 @@ Plus four housekeeping tools you rarely call by hand: `workspace_status`, `reloa
 **A validated write path.** `validate_patch` compiles your change in a forked in-memory solution, runs
 the cheapest sufficient level of a validation ladder, and reports honestly whether that level was
 *enough* for the kind of change you made. Nothing reaches disk unless it holds.
+
+**Your `.editorconfig` decides what counts as broken.** The ladder grades exactly as `dotnet build`
+does: `.editorconfig` severities and `TreatWarningsAsErrors` are honored, and the analyzers your
+projects already reference (`CA*`, any NuGet analyzer package) run over the changed documents — a rule
+you set to `error` blocks the patch, warnings and suggestions are reported and don't. So a change that
+passes here doesn't fail your build for a rule the tool didn't know about.
+
+**Clean is reported, not implied.** Every result carries a `checks` block saying which rungs ran and
+over what, what the analyzers found at each severity, and — explicitly — what went unexamined. A silent
+success can't tell you whether something was checked and found fine or never checked at all; this can.
+
+**Renames the compiler computes, not you.** `rename_symbol` rewrites a symbol and every reference to it
+from Roslyn's own reference graph — across projects, through interface and virtual dispatch — validates
+the result through the same ladder, and records it in the same log. `applyOnSuccess: false` rehearses the
+whole thing and tells you the blast radius without writing a byte.
 
 **A development log that answers "why".** Every applied patch records its intent. `search_log` reads it
 back — so the next session finds out an approach was already tried and rejected, instead of re-proposing
@@ -181,7 +197,7 @@ happens underneath:
 |---|---|
 | "Where is the fee calculation?" | `search_index` ranks every matching symbol in one call — terms are OR-ed, so several names cost one round trip |
 | "What breaks if I change this signature?" | `get_references` walks the semantic model, including interface and virtual dispatch |
-| "Rename this and fix the callers" | `validate_patch` compiles each change in memory; nothing lands unless it holds |
+| "Rename this and fix the callers" | `rename_symbol` derives every call-site edit from the compiler's reference graph, then compiles the result in memory; nothing lands unless it holds |
 | "Why is this written this way?" | `search_log` returns the recorded intent from when it was written |
 | "Review this subsystem" | `dotnet-code-review` runs with fresh context against the shared standards |
 

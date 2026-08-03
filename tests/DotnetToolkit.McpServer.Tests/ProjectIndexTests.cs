@@ -214,4 +214,80 @@ public sealed class ProjectIndexTests : IDisposable
         Assert.Equal(5, located["N.Generic.Pick<T>(T)"].Line);
         Assert.Equal(4, located["N.Generic.Pick(int)"].Line);
     }
+
+    [Fact]
+    public async Task LocatesTheSynthesizedEntryPointOfATopLevelStatementsFile()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "App.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(_root, "src", "Program.cs"), """
+            using System;
+            Console.WriteLine(1);
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        // "Program.Main" is the name SymbolIndexBuilder stores the semantic entry point under. Until the
+        // syntax tier offered the same key this returned nothing, so search_index reported the row with no
+        // file/line and ANY pathPrefix silently excluded it -- an unlocated hit is treated as out of scope,
+        // which made Program.cs look unreachable through the tools.
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal) { "Program.Main" });
+
+        var site = Assert.Single(located).Value;
+        Assert.Equal("src/Program.cs", site.File);
+        Assert.Equal(1, site.Line);
+    }
+
+    [Fact]
+    public async Task SynthesizedEntryPointIsScopedToFilesAProjectCompiles()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "App.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(_root, "src", "Program.cs"), "System.Console.WriteLine(1);");
+
+        // The synthesized type is called Program whatever the file is named, so every top-level-statements
+        // file in the tree competes for one key. A sample solution under tests/ is its own independent
+        // tree and a standalone `dotnet run` script belongs to no project at all — indexing those left
+        // three equally-good candidates and Disambiguate correctly resolved to none, dropping the location
+        // of the one entry point that mattered.
+        var fixture = Path.Combine(_root, "tests", "Sample");
+        Directory.CreateDirectory(fixture);
+        File.WriteAllText(Path.Combine(fixture, "Sample.slnx"), "<Solution />");
+        File.WriteAllText(Path.Combine(fixture, "Sample.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(fixture, "Program.cs"), "System.Console.WriteLine(2);");
+
+        Directory.CreateDirectory(Path.Combine(_root, "scripts"));
+        File.WriteAllText(Path.Combine(_root, "scripts", "Program.cs"), "System.Console.WriteLine(3);");
+
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal) { "Program.Main" });
+
+        Assert.Equal("src/Program.cs", Assert.Single(located).Value.File);
+    }
+
+    [Fact]
+    public async Task LocatesGenericsWhateverTheirTypeParametersAreNamedOrSpaced()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "Shapes.cs"), """
+            namespace N;
+            public class Cache<TKey,TValue>
+            {
+                public TValue Convert<TInput,TResult>(TInput input) => default!;
+                public TItem Only<TItem>(TItem item) => item;
+            }
+            public delegate TOut Mapper<TIn,TOut>(TIn input);
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal)
+        {
+            "N.Cache<TKey, TValue>",
+            "N.Cache<TKey, TValue>.Convert<TInput, TResult>(TInput)",
+            "N.Cache<TKey, TValue>.Only<TItem>(TItem)",
+            "N.Mapper<TIn, TOut>",
+        });
+
+        Assert.Equal(2, located["N.Cache<TKey, TValue>"].Line);
+        Assert.Equal(4, located["N.Cache<TKey, TValue>.Convert<TInput, TResult>(TInput)"].Line);
+        Assert.Equal(5, located["N.Cache<TKey, TValue>.Only<TItem>(TItem)"].Line);
+        Assert.Equal(7, located["N.Mapper<TIn, TOut>"].Line);
+    }
 }

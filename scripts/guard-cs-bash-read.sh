@@ -11,8 +11,9 @@
 # guard-cs-read.sh's, so both scripts share lib-cs-membership.sh rather than answering it twice.
 #
 # What this does NOT try to do: parse the command line like a real shell would. It splits on pipeline/
-# statement separators (| ; && ||), takes each segment's first word as the invoked command, and — for a
-# segment whose command is a known read utility — looks for a .cs-suffixed argument token, stripping one
+# statement separators (| ; & && ||) **that are not inside quotes or backslash-escaped**, takes each
+# segment's first word as the invoked command, and — for a segment whose command is a known read utility
+# — looks for a .cs-suffixed argument token, stripping one
 # matching pair of leading/trailing quote characters (" or ') from each token first, since `for tok in $seg`
 # word-splits an already-expanded string without re-parsing quotes as shell syntax — a token that arrived
 # as "path/Foo.cs" would otherwise still carry its trailing `"` and silently fail the `*.cs` suffix match.
@@ -73,8 +74,48 @@ root="$(cd "$root" 2>/dev/null && pwd -P)" || exit 0
 
 blocklist=" ${DOTNET_TOOLKIT_READ_BLOCKLIST:-cat sed head tail less more awk gawk grep egrep fgrep rg ag nl tac bat} "
 
-# Split on pipeline/statement separators into one candidate command per line.
-segments=$(printf '%s' "$command" | sed -E 's/(\|\||&&|[|;])/\n/g')
+# Split on pipeline/statement separators into one candidate command per line, HONORING QUOTES.
+#
+# This was a plain `sed 's/[|;]/\n/g'`, which split on separators inside quoted strings too. That made
+# the single most common grep idiom in this repo a silent bypass:
+#
+#     grep -n "Alpha\|Beta\|Gamma" src/Foo.cs | head
+#
+# split into `grep -n "Alpha\`, `Beta\`, `Gamma" src/Foo.cs `, ` head` — the segment carrying the .cs
+# path now begins with `Gamma"`, which is not a read utility, and the segment beginning with `grep`
+# carries no .cs token. Neither half of the check fired, so every multi-term grep read compiled C#
+# unguarded. Observed exactly that way: two greps over Program.cs and ContextTools.cs went through
+# while the single-term greps beside them were correctly blocked.
+#
+# A hand-rolled scan rather than a sed/awk expression because the state needed (in single quotes, in
+# double quotes, previous char was a backslash) is not regular. Backslash is an escape everywhere
+# except inside single quotes, matching the shell.
+segment_command() {
+    local s="$1" out="" i c quote="" esc=0
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        if [ "$esc" = 1 ]; then out+="$c"; esc=0; continue; fi
+        if [ "$quote" = "'" ]; then
+            [ "$c" = "'" ] && quote=""
+            out+="$c"; continue
+        fi
+        if [ "$c" = '\' ]; then out+="$c"; esc=1; continue; fi
+        if [ "$quote" = '"' ]; then
+            [ "$c" = '"' ] && quote=""
+            out+="$c"; continue
+        fi
+        case "$c" in
+            '"'|"'") quote="$c"; out+="$c" ;;
+            '|'|';'|'&') out+=$'\n' ;;
+            *) out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# `||` and `&&` collapse to two consecutive newlines; the empty segment is skipped by the loop below,
+# so they need no separate case.
+segments=$(segment_command "$command")
 
 while IFS= read -r seg; do
     [ -n "${seg// /}" ] || continue

@@ -70,6 +70,28 @@ content:
   56:                 terms.Add($"\"{candidate.Replace("\"", "\"\"")}\"*");
 ```
 
+## Named types (including delegates)
+
+A class, record, interface or delegate has no call sites of its own, so `callers` on one answers the
+question that *was* asked — which members reference the type — rather than an empty list: the field,
+parameter, return type, event declaration or construction site, one item per referencing member.
+
+```
+get_references(symbol: "Sample.Lib.Transform")
+```
+
+```
+targetSymbolId: sym_9a97...
+items[3]{symbolId,displayString,sites}:
+  ...,"DelegateSample.Apply/2",[{Lib/DelegateSample.cs,34,"public int Apply(Transform transform, int value)"}]
+  ...,"DelegateSample.Applied",[{Lib/DelegateSample.cs,23,"public event Transform? Applied;"}]
+  ...,"DelegateSample.Describe/2",[{Lib/DelegateSample.cs,45,"public string Describe(Projector<int, string> projector, int value)"}]
+dispatchKind: delegate
+```
+
+For an interface, `implementations` still answers "who implements it" — `callers` answers the different
+question of who merely mentions the type.
+
 ## Next steps
 
 - **Need the tree, not one hop** → `get_call_hierarchy` — `get_call_hierarchy.md`

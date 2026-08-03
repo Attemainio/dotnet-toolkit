@@ -11,13 +11,60 @@ namespace DotnetToolkit.McpServer.Indexing;
 /// </summary>
 public static partial class OutlineBuilder
 {
-    public static FileEntry Build(string text, long mtimeTicks, long length)
+    /// <summary>Parses one C# file into its outline of namespaces and declared types.</summary>
+    /// <param name="synthesizeEntryPoint">
+    /// Whether a top-level-statements file should also yield the compiler-synthesized <c>Program.Main</c>.
+    /// The CALLER decides: the synthesized type is always named Program regardless of the file, so every
+    /// such file in a repo claims the same name. Legal C# allows only one entry point per project, so this
+    /// is unambiguous within a solution — but the index scans the whole tree, including sample solutions
+    /// under tests/ and stray `dotnet run` scripts that no project compiles. Synthesizing for all of them
+    /// gives ProjectIndex.Disambiguate several equally-good candidates and it correctly resolves to none,
+    /// dropping the location for the one entry point that actually mattered.
+    /// </param>
+    public static FileEntry Build(string text, long mtimeTicks, long length, bool synthesizeEntryPoint = true)
     {
         var root = CSharpSyntaxTree.ParseText(text).GetCompilationUnitRoot();
         var namespaces = new List<string>();
         var types = new List<TypeEntry>();
         Collect(root.Members, "", "", namespaces, types);
+        if (synthesizeEntryPoint)
+            AddTopLevelStatementEntryPoint(root, types);
         return new FileEntry(mtimeTicks, length, namespaces, types);
+    }
+
+    /// <summary>
+    /// Records the compiler-synthesized entry point of a top-level-statements file as an ordinary
+    /// <c>Program.Main</c> type-and-member, so the syntax tier can locate it like any other declaration.
+    /// </summary>
+    /// <remarks>
+    /// Top-level statements declare no type node, so <c>Collect</c> walks straight past them and the file
+    /// contributes nothing here. <c>SymbolIndexBuilder.IndexTopLevelStatements</c> does record the semantic
+    /// entry point, deliberately under the name "Program.Main" so it is findable — but
+    /// <c>ProjectIndex.LocateWithDocs</c> only offers location keys built from <see cref="TypeEntry"/> and
+    /// <see cref="MemberEntry"/>, so that row matched nothing and came back locationless. Every response
+    /// needing a site then dropped it silently: search_index returned the row with no file/line, and ANY
+    /// pathPrefix filter excluded it outright, since an unlocated hit is treated as out of scope. That is
+    /// the same shape as the generic-method key bug fixed in LocateWithDocs — the row exists, the location
+    /// key never matches — and it made Program.cs look unreachable through the tools.
+    /// </remarks>
+    private static void AddTopLevelStatementEntryPoint(CompilationUnitSyntax root, List<TypeEntry> types)
+    {
+        if (!root.Members.OfType<GlobalStatementSyntax>().Any())
+            return;
+
+        // The synthesized type is named Program whatever the file is called, and the whole compilation
+        // unit is its declaration — matching the span get_symbol reports for the semantic entry point, so
+        // the two tiers agree rather than offering a caller two different line ranges for one symbol.
+        var span = root.GetLocation().GetLineSpan();
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        const string EntryPointType = "Program";
+
+        types.Add(new TypeEntry(
+            "Type", EntryPointType, EntryPointType, Namespace: "", Doc: null, Bases: [], Modifiers: "",
+            startLine, endLine,
+            [new MemberEntry("Method", "Main", "Main()", Doc: null, startLine, endLine, IsPublic: false)],
+            [], IsPublic: false));
     }
 
     private static void Collect(
@@ -49,7 +96,7 @@ public static partial class OutlineBuilder
 
     private static TypeEntry BuildType(BaseTypeDeclarationSyntax type, string containerFq, string ns)
     {
-        var name = type.Identifier.Text + (type is TypeDeclarationSyntax { TypeParameterList: { } tp } ? tp.ToString() : "");
+        var name = type.Identifier.Text + (type is TypeDeclarationSyntax { TypeParameterList: { } tp } ? RenderTypeParameters(tp) : "");
         var fq = Combine(containerFq, name);
         var kind = type switch
         {
@@ -101,13 +148,20 @@ public static partial class OutlineBuilder
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
     {
-        var name = del.Identifier.Text + (del.TypeParameterList?.ToString() ?? "");
+        var name = del.Identifier.Text + RenderTypeParameters(del.TypeParameterList);
         var fq = Combine(containerFq, name);
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
         return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
             [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del));
     }
+
+    // The stored name is matched against the form the Roslyn-derived symbol store asks for, and that form
+    // is canonical -- "<TKey, TValue>", the identifiers only, one space after each comma. ToString() would
+    // reproduce whatever the source wrote instead, so "class Cache<TKey,TValue>" or an attributed or
+    // variant parameter list came back locationless however the parameters were named.
+    private static string RenderTypeParameters(TypeParameterListSyntax? list) =>
+        list is null ? "" : $"<{string.Join(", ", list.Parameters.Select(p => p.Identifier.Text))}>";
 
     private static MemberEntry? BuildMember(MemberDeclarationSyntax member, bool isInterface)
     {
@@ -116,7 +170,7 @@ public static partial class OutlineBuilder
         {
             case MethodDeclarationSyntax m:
             {
-                var name = m.Identifier.Text + (m.TypeParameterList?.ToString() ?? "");
+                var name = m.Identifier.Text + RenderTypeParameters(m.TypeParameterList);
                 return new MemberEntry("M", m.Identifier.Text,
                     $"{name}{RenderParams(m.ParameterList)} -> {m.ReturnType}",
                     DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m));

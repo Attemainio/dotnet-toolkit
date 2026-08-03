@@ -95,6 +95,11 @@ Do this instead:
 A change that feels too large or too interleaved to decompose is still not a reason to fall back to
 ${tool} — split it into more validate_patch calls, one per touched symbol, sharing one intent.
 
+If the change is a pure RENAME, do not hand-author the call-site edits at all: rename_symbol takes the
+symbol, the new name and its contentVersion, derives every reference edit from the compiler's own graph
+(including interface, virtual and delegate dispatch, which a hand-written patch set misses), and runs
+the same ladder and the same log entry. See ${DOCS}/rename_symbol.md
+
 Full arguments, the sufficiency triple, and every failure mode (unheld_symbol, stale_workspace,
 stale_index_only_id): ${DOCS}/validate_patch.md
 

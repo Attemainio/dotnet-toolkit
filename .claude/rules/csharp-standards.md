@@ -54,5 +54,13 @@ Hold these without needing a review pass to catch them:
 - **New tests exercise real dependencies, not an in-memory database substitute**, for anything asserting
   constraint/transaction/query-translation behavior the substitute doesn't share.
 
+Anything in this file that an analyzer can check mechanically, the analyzers now do: `validate_patch`
+runs the projects' referenced analyzers over the changed documents at the severities `.editorconfig`
+configures, blocking at `error` and reporting at `warning`. That is a floor under these standards, not a
+replacement — the judgment calls above (which abstraction, which name, what a boundary owns) have no
+rule to enforce them.
+
 And the one mechanical rule: **C# edits go through `validate_patch`** (`docs/tools/validate_patch.md`
-carries the full procedure; CLAUDE.md states the rule) — it is the only writer to the development log.
+carries the full procedure; CLAUDE.md states the rule) — a pure rename goes through `rename_symbol`
+(`docs/tools/rename_symbol.md`) instead. Those two are the development log's only writers; anything
+that reaches a `.cs` file another way leaves no record of why.

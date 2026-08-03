@@ -1,0 +1,24 @@
+root = true
+
+# Every rule below is scoped to ONE fixture file on purpose.
+#
+# A severity raised under [*.cs] applies to the whole Lib project, so the moment any committed fixture
+# file violated it the project would stop compiling and every integration test that reaches the
+# project_compile rung would fail for an unrelated reason. Per-file sections keep each rule's blast
+# radius to the single file whose test needs it, and the committed files themselves are clean — the
+# violation is introduced by the patch under test, which is the thing actually being measured.
+
+# Compiler diagnostics: promoted and silenced. Proves Diagnostic.Severity reaching the ladder is the
+# EFFECTIVE severity, resolved from this file by MSBuildWorkspace's SyntaxTreeOptionsProvider.
+[SeveritySample.cs]
+dotnet_diagnostic.CS0219.severity = error
+dotnet_diagnostic.CS0168.severity = none
+
+# Analyzer diagnostics: CA1822 ("member does not access instance data") is off by default, so naming a
+# severity here is also what enables it. Error blocks a patch exactly as dotnet build would fail.
+[AnalyzerBlockSample.cs]
+dotnet_diagnostic.CA1822.severity = error
+
+# The same rule at warning severity, which must be reported and must NOT block.
+[AnalyzerAdvisorySample.cs]
+dotnet_diagnostic.CA1822.severity = warning

@@ -39,6 +39,10 @@ public sealed class ProjectIndex : IDisposable
     /// </summary>
     private Dictionary<string, long>? _projectFiles;
 
+    // Which files may contribute a synthesized Program.Main. Cached because computing it walks the tree
+    // for project files, and invalidated only when a project/solution file actually moves.
+    private EntryPointScope? _entryPointScope;
+
     private volatile string _state = "not-started";
     public string State => _state;
     public int FileCount => _files.Count;
@@ -137,11 +141,18 @@ public sealed class ProjectIndex : IDisposable
                 }
             }
 
+            // Computed ONCE per sweep, never per file: it walks the tree for project files, and the parse
+            // loop below runs over every changed .cs on what may be slow /mnt/* IO.
+            _entryPointScope ??= BuildEntryPointScope();
+            var entryPointScope = _entryPointScope;
+
             Parallel.ForEach(toParse, item =>
             {
                 try
                 {
-                    var entry = OutlineBuilder.Build(File.ReadAllText(item.Abs), item.Mtime, item.Len);
+                    var entry = OutlineBuilder.Build(
+                        File.ReadAllText(item.Abs), item.Mtime, item.Len,
+                        synthesizeEntryPoint: entryPointScope.Covers(item.Rel));
                     lock (changed)
                     {
                         if (!next.ContainsKey(item.Rel))
@@ -163,6 +174,8 @@ public sealed class ProjectIndex : IDisposable
             // Only on the full sweep, and read before the .cs notifications go out so a project-file
             // reload is not raced by the per-document patch it would discard anyway.
             var projectFilesMoved = full && SweepProjectFiles();
+            if (projectFilesMoved)
+                _entryPointScope = null;   // a moved .csproj/.sln can change which files a project compiles
 
             if (changed.Count > 0 || structural)
             {
@@ -259,6 +272,66 @@ public sealed class ProjectIndex : IDisposable
             ".csproj" or ".props" or ".targets" or ".sln" or ".slnx" => true,
             _ => false,
         };
+
+    /// <summary>
+    /// Which repo-relative files belong to a project this solution compiles, for deciding whether a
+    /// top-level-statements file may contribute its synthesized <c>Program.Main</c> to the index.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same rule <c>scripts/lib-cs-membership.sh</c> applies for the read guards: a file
+    /// is in scope when some ancestor directory holds a <c>.csproj</c> and no ancestor below the repo root
+    /// holds its own <c>.sln</c>/<c>.slnx</c>. The nested-solution test is what excludes a test fixture's
+    /// throwaway sample solution, and the <c>.csproj</c> requirement is what excludes a standalone
+    /// <c>dotnet run</c> script. Both otherwise claim the name Program alongside the real entry point.
+    /// </remarks>
+    private sealed record EntryPointScope(HashSet<string> ProjectDirs, HashSet<string> NestedSolutionDirs)
+    {
+        public bool Covers(string relPath)
+        {
+            var dir = ParentOf(relPath);
+            var underAProject = false;
+            while (true)
+            {
+                // The repo root's own solution is the one being indexed, so only a solution BELOW the root
+                // marks an independent tree — hence the non-empty test rather than checking the root too.
+                if (dir.Length > 0 && NestedSolutionDirs.Contains(dir))
+                    return false;
+                underAProject |= ProjectDirs.Contains(dir);
+                if (dir.Length == 0)
+                    return underAProject;
+                dir = ParentOf(dir);
+            }
+        }
+
+        private static string ParentOf(string path)
+        {
+            var slash = path.LastIndexOf('/');
+            return slash < 0 ? "" : path[..slash];
+        }
+    }
+
+    private EntryPointScope BuildEntryPointScope()
+    {
+        var projectDirs = new HashSet<string>(StringComparer.Ordinal);
+        var nestedSolutionDirs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var abs in EnumerateProjectFiles())
+        {
+            var rel = _locator.RelPath(abs);
+            var slash = rel.LastIndexOf('/');
+            var dir = slash < 0 ? "" : rel[..slash];
+            switch (Path.GetExtension(abs).ToLowerInvariant())
+            {
+                case ".csproj":
+                    projectDirs.Add(dir);
+                    break;
+                case ".sln" or ".slnx":
+                    if (dir.Length > 0)
+                        nestedSolutionDirs.Add(dir);
+                    break;
+            }
+        }
+        return new EntryPointScope(projectDirs, nestedSolutionDirs);
+    }
 
     /// <summary>
     /// Re-stats the project files and reports whether any moved since the last full sweep.

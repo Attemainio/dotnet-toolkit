@@ -282,7 +282,9 @@ public static class PatchTools
             : await RunAsync();
     }
 
-    private static async Task<bool> CommitAsync(Solution forked, IReadOnlyList<DocumentId> changedDocs, SolutionLocator locator)
+    // internal, not private: rename_symbol produces a validated fork the same way a patch does, and must
+    // reach disk through this one writer so both tools share the identical commit semantics.
+    internal static async Task<bool> CommitAsync(Solution forked, IReadOnlyList<DocumentId> changedDocs, SolutionLocator locator)
     {
         try
         {
@@ -301,7 +303,9 @@ public static class PatchTools
         }
     }
 
-    private static void AppendLog(
+    // internal: the development log has exactly one writer, and rename_symbol's applies must land in it
+    // under the same schema as a patch's rather than through a second, drifting copy.
+    internal static void AppendLog(
         FeatureLogStore featureLog, string taskId, string patchId, string intent, string[]? tags,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder, ValidationLevel required)
     {
@@ -366,22 +370,44 @@ public static class PatchTools
                 totalRaw = distillation.TotalRaw,
                 totalSuppressed = distillation.TotalSuppressed,
             },
+            // Emitted on every run, pass or fail: which rungs ran and over what, what the analyzer pass
+            // found at each severity, and what went unchecked. A clean run has to say so explicitly --
+            // an absent diagnostics block alone cannot distinguish "found nothing" from "looked at nothing".
+            checks = CheckReport.Build(ladder, locator),
             draft,
         };
     }
 
     private static (string Reason, string NextAction) Verdict(ValidationLadder.LadderResult ladder, ValidationLevel required, bool isSufficient)
     {
+        var analyzers = ladder.Analyzers;
         if (isSufficient)
-            return ($"Validated to {required.Wire()}.", "None — change is validated to the required level.");
+        {
+            var advisory = analyzers switch
+            {
+                { Ran: true } a when a.Warnings.Count + a.Suggestions.Count > 0 =>
+                    $" {a.Warnings.Count} analyzer warning(s) and {a.Suggestions.Count} suggestion(s) in checks.analyzers; neither blocks.",
+                { IsClean: true } => " Analyzers clean over the changed documents.",
+                _ => "",
+            };
+            return ($"Validated to {required.Wire()}.{advisory}", "None — change is validated to the required level.");
+        }
         if (!ladder.Succeeded)
-            return ($"Validation failed at {ladder.Completed.Wire()}.",
-                "Fetch the suggested symbols, revise the patch, and resubmit.");
+        {
+            // An analyzer error is a different fix from a compile error: the rule's severity is the repo's
+            // own .editorconfig/warnaserror choice, so changing that configuration is a legitimate response.
+            return analyzers is { Ran: true, Errors.Count: > 0 }
+                ? ("Analyzer diagnostics at effective severity error blocked the change.",
+                    "Fix the reported analyzer errors, or lower their severity in .editorconfig if the rule is wrong for this repo.")
+                : ($"Validation failed at {ladder.Completed.Wire()}.",
+                    "Fetch the suggested symbols, revise the patch, and resubmit.");
+        }
         return ($"Healthy through {ladder.Completed.Wire()} but the change requires {required.Wire()}.",
             $"Re-call validate_patch with requestedLevel={required.Wire()}.");
     }
 
-    private static ValidationLevel Raise(ValidationLevel computed, string? requestedLevel)
+    // internal: shared with rename_symbol so requestedLevel means the same thing on both tools.
+    internal static ValidationLevel Raise(ValidationLevel computed, string? requestedLevel)
     {
         if (string.IsNullOrWhiteSpace(requestedLevel))
             return computed;

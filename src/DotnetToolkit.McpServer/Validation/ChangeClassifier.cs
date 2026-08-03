@@ -211,7 +211,7 @@ public static class ChangeClassifier
     /// changes of one member share a name for remove+add pairing.</summary>
     private static string NameKey(string key)
     {
-        var slash = key.LastIndexOf('/');
+        var slash = key.IndexOf('/', StringComparison.Ordinal);
         return slash < 0 ? key : key[..slash];
     }
 
@@ -273,10 +273,10 @@ public static class ChangeClassifier
             switch (node)
             {
                 case BaseTypeDeclarationSyntax or DelegateDeclarationSyntax
-                    or BaseMethodDeclarationSyntax or PropertyDeclarationSyntax or EventDeclarationSyntax:
+                    or BaseMethodDeclarationSyntax or BasePropertyDeclarationSyntax:
                     map[KeyOf(node)] = node;
                     break;
-                case FieldDeclarationSyntax field:
+                case BaseFieldDeclarationSyntax field:
                     foreach (var v in field.Declaration.Variables)
                         map[KeyOf(node) + "$" + v.Identifier.Text] = node;
                     break;
@@ -308,13 +308,28 @@ public static class ChangeClassifier
     {
         BaseTypeDeclarationSyntax t => "type " + t.Identifier.Text,
         DelegateDeclarationSyntax d => "delegate " + d.Identifier.Text,
-        MethodDeclarationSyntax m => $"method {m.Identifier.Text}/{m.ParameterList.Parameters.Count}",
-        ConstructorDeclarationSyntax c => $"ctor/{c.ParameterList.Parameters.Count}",
+        MethodDeclarationSyntax m => $"method {m.Identifier.Text}/{m.TypeParameterList?.Parameters.Count ?? 0}/{ParamKey(m.ParameterList)}",
+        ConstructorDeclarationSyntax c => $"ctor/{ParamKey(c.ParameterList)}",
+        DestructorDeclarationSyntax => "dtor",
+        OperatorDeclarationSyntax o => $"operator {o.OperatorToken.Text}/{ParamKey(o.ParameterList)}",
+        ConversionOperatorDeclarationSyntax cv => $"conversion {Tokens(cv.Type)}/{ParamKey(cv.ParameterList)}",
+        IndexerDeclarationSyntax ix => $"indexer/{ParamKey(ix.ParameterList)}",
         PropertyDeclarationSyntax p => "prop " + p.Identifier.Text,
         EventDeclarationSyntax e => "event " + e.Identifier.Text,
+        EventFieldDeclarationSyntax => "eventfield",
         FieldDeclarationSyntax => "field",
         _ => decl.Kind().ToString(),
     };
+
+    // Parameter COUNT alone is not a key: Tokens(SyntaxNode?) and Tokens<T>(SyntaxList<T>) both keyed
+    // as method Tokens/1, so BuildMap's dictionary kept only the last of the two and a body edit to the
+    // other produced no detected change at all -- no escalation, no stale/unleased-body check, and an
+    // empty change list in the devlog entry. Carrying the parameter types (and, at the call site, the
+    // method's own type-parameter count) makes every overload its own key.
+    private static string ParamKey(BaseParameterListSyntax? list) =>
+        list is null
+            ? "0"
+            : $"{list.Parameters.Count}({string.Join(',', list.Parameters.Select(p => Tokens(p.Type)))})";
 
     // ---- syntax comparison helpers -------------------------------------------
 
@@ -322,7 +337,7 @@ public static class ChangeClassifier
     {
         if (model is null)
             return null;
-        if (node is FieldDeclarationSyntax field)
+        if (node is BaseFieldDeclarationSyntax field)
             return model.GetDeclaredSymbol(field.Declaration.Variables[0]);
         if (node is CompilationUnitSyntax unit)
         {

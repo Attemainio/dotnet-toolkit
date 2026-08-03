@@ -137,6 +137,7 @@ when output is truncated, and returns one fragment of a partial class with no si
 | Guessing why code looks the way it does | `search_log` |
 | Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
 | `Edit`/`Write` then `dotnet build` | `validate_patch` |
+| Search-and-replace, or one patch per call site, to rename something | `rename_symbol` |
 
 `PreToolUse` hooks enforce all three sides: `Read` on a compiled `.cs` file, a `Bash` command reading
 the same bytes (`cat`/`grep`/`sed`/etc.), and `Edit`/`Write` on an existing one are all blocked —
@@ -162,8 +163,17 @@ against it is rejected with `error: "unleased_body"`. Use `include: "all"` (or a
 more `validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
 legitimately outside this: `Write` the file, then change it through `validate_patch`.
 
+**A pure rename is `rename_symbol`, not a set of patches.** It derives every reference edit from the
+compiler's graph — across projects, through interface/virtual/delegate dispatch a hand-written patch set
+misses — then runs the same ladder and writes the same log entry. It takes a single `baseVersion` string,
+and `applyOnSuccess: false` rehearses the whole rename and reports the blast radius without writing.
+
+**This repo's `.editorconfig` decides what blocks** — validation grades as `dotnet build` does. Never
+suppress with a pragma or edit `.editorconfig` to get past a rule; raise it and let the user decide.
+
 Full procedure, arguments, and failure modes: `${CLAUDE_PLUGIN_ROOT}/docs/tools/validate_patch.md`,
-and the `dotnet-change` skill — both read on demand, so neither costs anything until it is needed.
+`${CLAUDE_PLUGIN_ROOT}/docs/tools/rename_symbol.md`, and the `dotnet-change` skill — all read on demand,
+so none costs anything until it is needed.
 
 ## Coding standards — read before writing C#
 

@@ -23,6 +23,7 @@ catalog. Read them in this order:
 | `get_semantic_diff` | `docs/tools/get_semantic_diff.md` |
 | `search_log` | `docs/tools/search_log.md` |
 | `validate_patch` | `docs/tools/validate_patch.md` |
+| `rename_symbol` | `docs/tools/rename_symbol.md` |
 | `get_retrieval_metrics` | `docs/tools/get_retrieval_metrics.md` |
 | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` | `docs/tools/server.md` |
 

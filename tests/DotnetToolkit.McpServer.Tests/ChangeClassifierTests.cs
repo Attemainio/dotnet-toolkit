@@ -246,4 +246,85 @@ public sealed class ChangeClassifierTests
         var ladder = await ValidationLadder.RunAsync(forked, [docId], ValidationLevel.ProjectCompile);
         Assert.True(ladder.Succeeded);
     }
+
+    private const string MemberKeySource = """
+        namespace Demo;
+
+        public class Widget
+        {
+            public string Render(int value) => value.ToString();
+
+            public string Render(string value) => value;
+
+            public int Echo(int value) => value;
+
+            public T Echo<T>(T value)
+            {
+                return value;
+            }
+
+            public event System.Action? Spun;
+
+            public int this[int index] => index;
+        }
+        """;
+
+    [Fact]
+    public async Task BodyChange_ToOneOfTwoSameArityOverloads_IsDetected()
+    {
+        var (solution, docId) = NewSolution(MemberKeySource);
+        var forked = Fork(solution, docId, MemberKeySource.Replace(
+            "public string Render(int value) => value.ToString();",
+            "public string Render(int value) => value.ToString(\"D\");"));
+
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes);
+        Assert.Equal("string Widget.Render(int value)", change.DisplayString);
+        Assert.Equal([ChangeKind.Body], change.Kinds);
+    }
+
+    [Fact]
+    public async Task BodyChange_ToAGenericMethodWithASameArityNonGenericSibling_IsDetected()
+    {
+        var (solution, docId) = NewSolution(MemberKeySource);
+        var forked = Fork(solution, docId, MemberKeySource.Replace(
+            "        return value;",
+            "        var echoed = value; return echoed;"));
+
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes);
+        Assert.Equal("T Widget.Echo<T>(T value)", change.DisplayString);
+        Assert.Equal([ChangeKind.Body], change.Kinds);
+    }
+
+    [Fact]
+    public async Task EventFieldTypeChange_IsDetected()
+    {
+        var (solution, docId) = NewSolution(MemberKeySource);
+        var forked = Fork(solution, docId, MemberKeySource.Replace(
+            "public event System.Action? Spun;",
+            "public event System.Action<int>? Spun;"));
+
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes);
+        Assert.Contains("Spun", change.DisplayString, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IndexerBodyChange_IsDetected()
+    {
+        var (solution, docId) = NewSolution(MemberKeySource);
+        var forked = Fork(solution, docId, MemberKeySource.Replace(
+            "public int this[int index] => index;",
+            "public int this[int index] => index + 1;"));
+
+        var (changes, _) = await ChangeClassifier.DetectAsync(solution, forked, [docId]);
+
+        var change = Assert.Single(changes);
+        Assert.Equal([ChangeKind.Body], change.Kinds);
+        Assert.Contains("this[", change.DisplayString, StringComparison.Ordinal);
+    }
 }

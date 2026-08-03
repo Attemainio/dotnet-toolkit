@@ -41,7 +41,18 @@ public sealed record FileEntry(
 /// <summary>The on-disk cache of every file's <see cref="Indexing.FileEntry"/>, keyed by absolute path.</summary>
 public sealed class IndexDocument
 {
-    public const int CurrentVersion = 3;
+    /// <summary>Schema/content stamp for the on-disk index cache; a mismatch makes LoadCache discard it.</summary>
+    /// <remarks>
+    /// Bump this for a change to what <see cref="OutlineBuilder"/> PRODUCES, not just to the record shapes
+    /// it produces them into. Cache entries are keyed on each file's mtime and length, so an indexer that
+    /// starts emitting something new for an unchanged file keeps serving the old entry forever — the new
+    /// behavior then appears to work in unit tests and to do nothing at all through the server.
+    ///
+    /// 4 added the synthesized Program.Main of a top-level-statements file, which every earlier cache
+    /// records as an empty type list. 5 scoped that to files a project actually compiles, so a cache
+    /// written by 4 holds entries for a test fixture's and a loose script's Program too.
+    /// </remarks>
+    public const int CurrentVersion = 5;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

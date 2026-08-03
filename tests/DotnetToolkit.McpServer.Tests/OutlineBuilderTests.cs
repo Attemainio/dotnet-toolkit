@@ -210,4 +210,30 @@ public class OutlineBuilderTests
         Assert.Equal(blockNs.Namespaces, fileNs.Namespaces);
         Assert.Equal(blockNs.Types.Single().FqName, fileNs.Types.Single().FqName);
     }
+
+    [Fact]
+    public void TopLevelStatementsIndexTheSynthesizedEntryPoint()
+    {
+        var entry = Build("using System;\nConsole.WriteLine(1);\nConsole.WriteLine(2);\n");
+
+        // Program.Main is the name SymbolIndexBuilder stores the semantic entry point under, so this is
+        // the key ProjectIndex.LocateWithDocs has to be able to offer — without it the row resolves to no
+        // site, search_index reports no file/line, and every pathPrefix filter silently excludes it.
+        var program = Assert.Single(entry.Types);
+        Assert.Equal("Program", program.FqName);
+        var main = Assert.Single(program.Members);
+        Assert.Equal("Main", main.Name);
+
+        // Spans the whole compilation unit, matching what get_symbol reports for the semantic entry point.
+        Assert.Equal(1, program.Line);
+        Assert.Equal(main.Line, program.Line);
+        Assert.Equal(main.EndLine, program.EndLine);
+    }
+
+    [Fact]
+    public void FileWithoutTopLevelStatementsGainsNoSyntheticEntryPoint()
+    {
+        Assert.Empty(Build("namespace A;\n").Types);
+        Assert.Equal("A.X", Build("namespace A;\npublic class X { }").Types.Single().FqName);
+    }
 }

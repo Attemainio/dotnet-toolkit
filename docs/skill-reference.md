@@ -27,7 +27,8 @@ error.
 Carries the `validate_patch` protocol: `baseVersions` from `get_symbol`'s `contentVersion`, applying
 straight through with `applyOnSuccess: true` rather than dry-running first, the sufficiency triple, the
 required `intent`, batching from `suggestedInspection`, and amending a failed patch through its
-`draftId` instead of resubmitting it. Also carries the pre-edit standards step: before the first C# edit of a session,
+`draftId` instead of resubmitting it. Routes a **pure rename** away to `rename_symbol`, which derives the
+call-site edits rather than having them authored. Also carries the pre-edit standards step: before the first C# edit of a session,
 read the relevant `.claude/rules/` standards per `csharp-standards.md`'s index, and give any touched
 symbol lacking a `<summary>` one in the same edit.
 

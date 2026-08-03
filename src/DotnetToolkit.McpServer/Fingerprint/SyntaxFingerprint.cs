@@ -31,9 +31,18 @@ public static class SyntaxFingerprint
                 SyntaxNode? body = (SyntaxNode?)m.Body ?? m.ExpressionBody;
                 return (Hash(TokensExcluding(m, body)), body is null ? null : Hash(AllTokens(body)));
             }
-            case PropertyDeclarationSyntax p:
+            case BasePropertyDeclarationSyntax p:
             {
-                SyntaxNode? body = (SyntaxNode?)p.ExpressionBody ?? p.AccessorList;
+                // Indexers and event declarations are property-shaped too; keying only on
+                // PropertyDeclarationSyntax dropped them to the default arm, which hashes the whole
+                // declaration as decl and hands out no body layer -- so an indexer body rewrite read as a
+                // signature change and never demanded a body lease.
+                SyntaxNode? body = p switch
+                {
+                    PropertyDeclarationSyntax { ExpressionBody: { } propertyBody } => propertyBody,
+                    IndexerDeclarationSyntax { ExpressionBody: { } indexerBody } => indexerBody,
+                    _ => p.AccessorList,
+                };
                 return (Hash(TokensExcluding(p, body)), body is null ? null : Hash(AllTokens(body)));
             }
             case BaseFieldDeclarationSyntax f:

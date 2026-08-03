@@ -17,8 +17,10 @@ not a bug — rebuild the change as `validate_patch` calls.
 Creating a **new** `.cs` file with `Write` is allowed, because `validate_patch`'s `baseVersions` needs a
 `symbolId` that does not exist yet; change the file through `validate_patch` after creation.
 
-The deny message restates the current `validate_patch` call procedure — when that procedure changes, this
-script's message must change with it (see `docs/architecture.md`'s "Changing the tool surface").
+The deny message restates the current `validate_patch` call procedure, and points a **pure rename** at
+`rename_symbol` instead — hand-authoring call-site edits misses interface, virtual and delegate dispatch,
+which is exactly the mistake a blocked `Edit` is usually about to make. When either procedure changes,
+this script's message must change with it (see `docs/architecture.md`'s "Changing the tool surface").
 
 ## `guard-cs-read.sh` — PreToolUse on `Read`
 
@@ -51,10 +53,18 @@ command that dumps the same file's bytes into the transcript via `Bash` (`cat`, 
 a different tool name, same underlying read. This hook watches `Bash` instead and applies the identical
 membership question via the same shared `scripts/lib-cs-membership.sh`.
 
-It is not a shell parser: it splits the command on pipeline/statement separators (`| ; && ||`), takes
+It is not a shell parser: it splits the command on pipeline/statement separators (`| ; & && ||`), takes
 each segment's first word as the invoked command, and — only for a segment whose command is in the
 blocklist above (overridable via `DOTNET_TOOLKIT_READ_BLOCKLIST`) — looks for a bare `.cs`-suffixed
-argument token. Quoted paths with spaces, variable-expanded paths, and heredocs are not recognized; that
+argument token.
+
+**Separators inside quotes or backslash-escaped are not separators.** This matters more than it sounds:
+splitting `grep -n "Alpha\|Beta" Foo.cs | head` textually pushes the `.cs` path into a segment starting
+`Beta"`, which is not a read utility, while the segment starting `grep` carries no path — so a
+multi-term grep, the most common way to search several terms at once, read compiled C# unguarded. Fixed
+by a quote/escape-aware scan; `scripts/guard-cs-bash-read.sh`'s comment carries the worked example.
+
+Quoted paths with spaces, variable-expanded paths, and heredocs are still not recognized; that
 under-detection is deliberate (same fail-open posture as the other guards), not a security boundary meant
 to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are never touched, so
 `git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
@@ -101,3 +111,8 @@ manual JSON string escaping.
 `.mcp.json`), preferring a user-local `~/.dotnet` install over `dotnet` on `PATH`. `scripts/build-plugin.sh`
 publishes the server to `dist/` — required after any change under `src/` for the plugin to serve the new
 build.
+
+`scripts/format-json.cs` is a standalone `dotnet run` file-based program (not part of any project, so the
+read guards leave it alone) that pretty-prints one JSON file — for inspecting the compact caches under
+`.claude/dotnet-toolkit/cache/` without a Python dependency:
+`dotnet run scripts/format-json.cs -- <path>`. Nothing invokes it automatically.

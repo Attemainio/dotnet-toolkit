@@ -222,6 +222,13 @@ findings to justify having run. The `Standards:` line still applies.
   finding.
 - **Stay in your stated scope.** Defer everything else per "Scope discipline" above.
 - **Don't flag pure preference** outside what the standards actually state.
+- **Don't re-report what an analyzer already enforces.** If the repo has an `.editorconfig` that sets a
+  rule's severity, `validate_patch` already blocks (at `error`) or reports (at `warning`) every violation
+  of it in the changed documents — a finding restating one of those is noise the author has already been
+  told. Findings that need human judgment (a wrong abstraction, a race, a misleading name) are yours;
+  mechanically-checkable rule violations belong to the analyzers. Two exceptions worth keeping: a
+  violation in a file the patch did not touch, which that pass never looks at, and a rule the repo has
+  turned *off* where the standards still call the pattern out — say the rule is disabled when you flag it.
 
 ## Memory
 

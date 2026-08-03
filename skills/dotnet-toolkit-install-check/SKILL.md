@@ -159,6 +159,7 @@ Walk four scenarios and name, for each, the file the consumer would actually rea
 | --- | --- |
 | Find a symbol and its callers | protocol rule's tool table → `docs/tools/_index.md` → `docs/tools/<tool>.md` |
 | Change a method | protocol rule's write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
+| Rename a symbol | protocol rule's write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill → `dotnet-code-review` agent → the copied `.claude/rules/` standards |
 | Know which standards to read before editing | the protocol rule's standards index (which is the consumer's replacement for `csharp-standards.md`) |
 

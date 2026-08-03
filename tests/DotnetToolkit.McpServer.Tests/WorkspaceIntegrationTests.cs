@@ -142,7 +142,11 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
 /// SampleSolution workspace. Requires the .NET SDK.
 /// </summary>
 [Trait("Category", "Integration")]
-public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixture>
+// A shared collection rather than IClassFixture, so a second integration test class costs nothing:
+// the fixture copies the sample solution to a temp dir, restores it and loads an MSBuildWorkspace,
+// which is the most expensive thing in the suite to do twice.
+[Collection("SampleSolution")]
+public sealed class WorkspaceIntegrationTests
 {
     private readonly SampleSolutionFixture _f;
 
@@ -1049,6 +1053,135 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
     }
 
+    [Fact]
+    public async Task RenameSymbol_InterfaceMember_DryRunReachesImplementersAndCrossProjectCallers()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.IWidget.Spin"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Rotate",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.False(root.GetProperty("applied").GetBoolean());   // dry run: nothing reaches disk
+
+        var files = RenamedFiles(root);
+        // The declaration and both implementers live in Widget.cs; the only call site is in a DIFFERENT
+        // project, reached through interface dispatch — precisely what a text search cannot resolve.
+        Assert.Contains(files.Keys, f => f.EndsWith("Lib/Widget.cs", StringComparison.Ordinal));
+        Assert.Contains(files.Keys, f => f.EndsWith("App/Program.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RenameSymbol_RenameInComments_EditsWhatTheDefaultLeavesAlone()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.IWidget.Spin"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var version = sym.GetProperty("contentVersion").GetString()!;
+
+        // Program.cs carries the name in a comment and a string literal as well as in the call. Both
+        // extra occurrences are textual guesses, so they must stay opt-in: the default run has to leave
+        // them alone, and asking for comments has to actually reach one.
+        var byDefault = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate", version)));
+        var withComments = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate", version, renameInComments: true)));
+
+        var program = byDefault.Keys.Single(f => f.EndsWith("App/Program.cs", StringComparison.Ordinal));
+        Assert.True(withComments[program] > byDefault[program],
+            $"renameInComments should add edits in Program.cs: {byDefault[program]} -> {withComments[program]}");
+    }
+
+    [Fact]
+    public async Task RenameSymbol_AppliesRewritesEveryReferenceAndLogsOnce()
+    {
+        // The fixture runs on a throwaway temp copy, so this apply's disk write is discarded on dispose.
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Origin",
+            sym.GetProperty("contentVersion").GetString()!,
+            applyOnSuccess: true, intent: "rename the rename fixture's seed accessor"));
+
+        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+
+        var rename = root.GetProperty("rename");
+        Assert.Equal("Origin", rename.GetProperty("newName").GetString());
+        Assert.Equal(1, rename.GetProperty("filesChanged").GetInt32());
+        // The declaration plus every reference: Doubled(), RenameSampleUser.Use, and the <see cref="Seed"/>.
+        Assert.True(rename.GetProperty("occurrencesRewritten").GetInt32() >= 3, root.GetRawText());
+
+        // The apply is only half the point — a rename that reaches disk without a development-log entry
+        // is reasoning search_log can never recover.
+        var newSymbolId = rename.GetProperty("newSymbolId").GetString()!;
+        Assert.NotEmpty(_f.FeatureLog.RecentForSymbolWithChain(newSymbolId, 50));
+    }
+
+    [Fact]
+    public async Task RenameSymbol_RenamingAType_ReportsANewSymbolIdAndTheFileRenameHint()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSampleUser"));
+        var oldSymbolId = sym.GetProperty("symbolId").GetString()!;
+        var root = Root(await RenameSymbolCall(
+            oldSymbolId, "RenameSampleConsumer", sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+
+        // ChangeClassifier pairs a renamed METHOD by its name-stripped signature but has no such key for a
+        // type, so a renamed type arrives as an unpaired removed+added pair whose removed half still
+        // carries the old id. Deriving newSymbolId from the old id therefore echoed the old id straight
+        // back, and the method-rename test above could never catch it.
+        var rename = root.GetProperty("rename");
+        Assert.Equal("Type", rename.GetProperty("kind").GetString());
+        Assert.NotEqual(oldSymbolId, rename.GetProperty("newSymbolId").GetString());
+    }
+
+    [Fact]
+    public async Task RenameSymbol_TypeNamedAfterItsFile_SaysTheFileWasNotRenamed()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Widget"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Sprocket",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        // Renaming the file is deliberately out of scope, so the response has to say so rather than leave
+        // Widget.cs quietly holding a type called Sprocket.
+        var hint = root.GetProperty("fileRenameHint").GetString()!;
+        Assert.Contains("Lib/Widget.cs", hint, StringComparison.Ordinal);
+        Assert.Contains("Sprocket.cs", hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RenameSymbol_KeywordName_IsRejectedBeforeAnyValidation()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Doubled"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "class",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.Equal("invalid_name", root.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task RenameSymbol_StaleBaseVersion_IsRejected()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Doubled"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Trebled", "decl:deadbeefdead"));
+
+        Assert.Equal("stale_base", root.GetProperty("error").GetString());
+    }
+
+    /// <summary>Relative file path -> edit count, from a rename response's files array.</summary>
+    private static Dictionary<string, int> RenamedFiles(JsonElement root) =>
+        root.GetProperty("files").EnumerateArray()
+            .ToDictionary(f => f.GetProperty("file").GetString()!, f => f.GetProperty("occurrences").GetInt32(), StringComparer.Ordinal);
+
+    private Task<string> RenameSymbolCall(
+        string symbol, string newName, string? baseVersion, bool applyOnSuccess = false, string? intent = null,
+        bool renameInComments = false) =>
+        RenameTools.RenameSymbol(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            symbol, newName, baseVersion, applyOnSuccess, intent,
+            renameOverloads: false, renameInComments: renameInComments, renameInStrings: false,
+            requestedLevel: null, tags: null, taskId: null);
+
     /// <summary>
     /// An identity edit (newText identical to what's already on disk) makes ChangeClassifier report no
     /// Change for the touched symbol, since nothing differs -- that used to mean the stale-base check
@@ -1744,4 +1877,53 @@ public sealed class WorkspaceIntegrationTests : IClassFixture<SampleSolutionFixt
         PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
             drafts ?? new PatchDraftStore(TimeProvider.System),
             baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null, draftId: draftId);
+
+    [Fact]
+    public async Task SearchIndex_FindsTopLevelGenericAndNestedDelegates()
+    {
+        var rows = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Transform Projector Progress",
+            kinds: "delegate", groupBy: "none")).GetProperty("items"));
+
+        var names = rows.Select(row => row["name"].GetString()!).ToList();
+        Assert.Contains(names, name => name.EndsWith("Transform", StringComparison.Ordinal));
+        Assert.Contains(names, name => name.Contains("Projector<TInput, TResult>", StringComparison.Ordinal));
+        Assert.Contains(names, name => name.Contains("DelegateSample.Progress", StringComparison.Ordinal));
+        Assert.All(rows, row => Assert.True(row.ContainsKey("file") && row.ContainsKey("line"),
+            "a delegate hit must carry its location"));
+    }
+
+    [Fact]
+    public async Task GetSymbol_OnADelegate_ReportsDelegateKindAndItsDocs()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Transform"));
+        Assert.Equal("Delegate", root.GetProperty("content").GetProperty("kind").GetString());
+
+        var documented = Root(await GetSymbol("Sample.Lib.Transform", "xmlDoc"));
+        Assert.Contains("Transforms an integer",
+            documented.GetProperty("content").GetProperty("xmlDoc").GetProperty("summary").GetString()!,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReferences_OnADelegateType_FindsTheMembersDeclaredWithIt()
+    {
+        var root = Root(await GetReferences("Sample.Lib.Transform", "callers"));
+        var displays = TableRows(root.GetProperty("items"))
+            .Select(item => item["displayString"].GetString() ?? "").ToList();
+
+        Assert.Equal("delegate", root.GetProperty("dispatchKind").GetString());
+        Assert.Contains(displays, d => d.Contains("Apply", StringComparison.Ordinal));
+        Assert.Contains(displays, d => d.Contains("Applied", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetReferences_OnAMethodUsedAsADelegateTarget_FindsTheConversionSite()
+    {
+        var root = Root(await GetReferences("Sample.Lib.DelegateSample.Double", "callers"));
+        var displays = TableRows(root.GetProperty("items"))
+            .Select(item => item["displayString"].GetString() ?? "").ToList();
+
+        Assert.Contains(displays, d => d.Contains("ApplyDouble", StringComparison.Ordinal));
+    }
 }

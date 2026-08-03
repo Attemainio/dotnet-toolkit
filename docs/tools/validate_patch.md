@@ -1,4 +1,7 @@
-# `validate_patch` — the only way `.cs` edits should reach disk
+# `validate_patch` — how authored `.cs` edits reach disk
+
+> A **pure rename** is `rename_symbol`'s job, not this tool's — it derives the call-site edits from the
+> compiler's reference graph instead of asking you to write them. See `rename_symbol.md`.
 
 Replaces: `Edit`/`Write` on a `.cs` file, followed by `dotnet build` and hoping. Runs your edit against a
 **forked in-memory solution** and reports honestly whether the result compiles at the level the change
@@ -10,7 +13,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 | `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. With `draftId`, the spans address the **draft's** proposed text instead, and the array may be empty. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
-| `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — this is the only thing that writes to the development log. |
+| `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — applying with one is what writes to the development log (this tool and `rename_symbol` are its only writers). |
 | `tags` | Optional `string[]` stored alongside the development-log entry. Rarely used; `search_log` has no tag filter today, so a tag is descriptive metadata rather than a retrieval key. |
 | `draftId` | Amend a previous unapplied patch instead of resubmitting it — see "Amending instead of resubmitting" below. |
 
@@ -27,6 +30,53 @@ objects), `suppressedDiagnostics` (downstream errors that vanish once the root c
 chase them), `fixHint`, and `locations` (up to three `{file, line, column, excerpt}` entries saying
 exactly where the error landed). Fetch everything suggested and submit one revised patch; never resubmit
 unchanged or fix causes one at a time.
+
+## `checks` — what the run actually examined
+
+Every response carries a `checks` block, pass or fail. It exists because `succeeded: true` with no
+`diagnostics` is *silence*, and silence reads the same whether a check ran and found nothing or never
+ran at all — so a clean result has to state its own scope.
+
+```json
+"checks":{
+  "levels":[{"level":"parse","succeeded":true,"durationMs":4,"scope":"1 changed document(s)"},
+            {"level":"project_compile","succeeded":true,"durationMs":611,"scope":"DotnetToolkit.McpServer"}],
+  "analyzers":{"ran":true,"skipReason":null,"analyzerCount":8,"documentCount":1,"durationMs":900,
+               "clean":false,"errorCount":0,
+               "warnings":{"count":2,"truncated":0,"items":[{"id":"CA1822","message":"…","file":"…","line":16,"column":18}]},
+               "suggestions":{"count":0,"truncated":0,"items":[]}},
+  "notAssessed":["levels not run: targeted_tests, solution_validate",
+                 "analyzers covered 1 changed document(s); analyzer findings in files this patch did not touch are not assessed"]
+}
+```
+
+- **`levels`** — every rung that ran, with the `scope` it ran over (document count, or the project names
+  compiled). A rung reporting `succeeded: true` without a scope would be an assurance it never earned.
+- **`analyzers`** — the pass that runs the projects' referenced analyzers (`CA*`, and anything from a
+  NuGet analyzer package) over the changed documents. `warnings` and `suggestions` are advisory and
+  never block; their `count` is the untruncated total, `items` is capped at 15 per severity.
+- **`notAssessed`** — the gaps, in plain language. Always non-empty in practice: the analyzer pass only
+  looks at files the patch touched, which is stated on every run.
+
+## `.editorconfig` decides severity, and severity decides blocking
+
+The repo's `.editorconfig` and `TreatWarningsAsErrors` are honored, because `Diagnostic.Severity` from
+the workspace is already the **effective** severity — MSBuildWorkspace builds a `SyntaxTreeOptionsProvider`
+from the `.editorconfig` chain. The grading rule is exactly `dotnet build`'s:
+
+| Effective severity | Effect |
+|---|---|
+| `error` — including a warning promoted by `dotnet_diagnostic.XXNNNN.severity = error` or `TreatWarningsAsErrors` | **Blocks.** `succeeded: false`, nothing applied, reported under `diagnostics`. |
+| `warning`, `suggestion` | Reported under `checks.analyzers`, never blocks. |
+| `none`/`silent` | Not reported at all. |
+
+So a rule your `.editorconfig` calls an error fails the patch here for the same reason it would fail the
+build — and lowering that rule's severity in `.editorconfig` is a legitimate response to the failure, not
+a workaround. `nextAction` says so when the failure came from an analyzer rather than the compiler.
+
+Analyzers run **after** the compile rungs pass, never before: analyzing code that does not bind buries
+the real error under cascade findings. A run that fails a rung reports `analyzers.ran: false` with a
+`skipReason`, not a clean analyzer result.
 
 ## Amending instead of resubmitting
 
@@ -157,4 +207,5 @@ See `skills/dotnet-change/SKILL.md` for the full write loop.
 - **`unheld_symbol`** → merge that one entry into `baseVersions` via the same `draftId`.
 - **`unleased_body`** → refetch that symbol with a body-serving include (`all`/`source`/`bodyOutline`/`mechanicalFacts`) and merge the wider version in via the same `draftId`.
 - **`stale_workspace`** → `reload_workspace`, re-fetch `get_symbol` (spans move), then resubmit.
+- **The change is only a rename** → `rename_symbol` — `rename_symbol.md`. Don't author the call-site edits.
 - **Need the callers before changing a signature** → `get_references` — `get_references.md`

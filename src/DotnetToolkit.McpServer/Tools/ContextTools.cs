@@ -449,6 +449,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "dispatch, counts comment and string matches as hits, and silently drops sites when output is truncated. "
         + "Returns every real call site, no false positives, and reports how many text-only matches it excluded "
         + "as excludedTextMatches (callers direction only). "
+        + "A named type (class, record, interface, delegate) has no call sites of its own, so callers on one "
+        + "reports the members that REFERENCE it — the field, parameter, return type or construction site. "
         + "dispatchKind is reported once at the top level, not per item — it describes the TARGET symbol's own "
         + "dispatch (direct/virtual/interface/delegate), which is identical for every item in one call by "
         + "construction. Each item carries symbolId, displayString (a compact name/arity form, e.g. "
@@ -1325,6 +1327,12 @@ private sealed record RefItem(string SymbolId, string Version, string DisplayStr
 
 private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
     {
+        // A named type is not invocable, so FindCallersAsync answers nothing for one. Delegates are the
+        // case that made this visible -- a delegate type is USED by the members that declare, construct or
+        // invoke it, and "who uses this type" came back as an empty list instead.
+        if (sym is INamedTypeSymbol type)
+            return await TypeReferences(type, solution, locator, includeBodies);
+
         var dispatch = DispatchKindOf(sym);
         var items = new List<RefItem>();
         foreach (var caller in await SymbolFinder.FindCallersAsync(sym, solution))
@@ -1347,6 +1355,68 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 TestAttributes.IsTestMethod(caller.CallingSymbol)));
         }
         return items;
+    }
+
+    /// <summary>Members that reference a named type, grouped one item per referencing member.</summary>
+    private static async Task<List<RefItem>> TypeReferences(INamedTypeSymbol type, Solution solution, SolutionLocator locator, bool includeBodies)
+    {
+        var dispatch = DispatchKindOf(type);
+        var sitesByOwner = new Dictionary<ISymbol, List<(string File, int Line, string Snippet)>>(SymbolEqualityComparer.Default);
+        foreach (var reference in await SymbolFinder.FindReferencesAsync(type, solution))
+        {
+            foreach (var location in reference.Locations)
+            {
+                if (!location.Location.IsInSource)
+                    continue;
+                var owner = await OwningMemberAsync(location);
+                if (owner is null)
+                    continue;
+
+                var span = location.Location.GetLineSpan();
+                var lineIndex = span.StartLinePosition.Line;
+                var snippet = location.Location.SourceTree?.GetText().Lines[lineIndex].ToString().Trim() ?? "";
+                if (!sitesByOwner.TryGetValue(owner, out var sites))
+                    sitesByOwner[owner] = sites = [];
+                sites.Add((locator.RelPath(span.Path), lineIndex + 1, snippet));
+            }
+        }
+
+        return sitesByOwner
+            .Select(pair => new RefItem(
+                SymbolKey.IdOf(pair.Key),
+                VersionOf(pair.Key).ToString(),
+                pair.Key.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                CompactDisplay(pair.Key),
+                pair.Value,
+                dispatch,
+                includeBodies ? SourceOf(pair.Key) : null,
+                TestAttributes.IsTestMethod(pair.Key)))
+            .ToList();
+    }
+
+    /// <summary>The member declaration enclosing a reference, or the enclosing symbol when there is none.</summary>
+    /// <remarks>
+    /// GetEnclosingSymbol alone answers the containing TYPE for a reference sitting in a field or
+    /// event-field declaration, which would collapse every such use onto one item; walking to the owning
+    /// member declaration keeps the event or field itself as the reported user.
+    /// </remarks>
+    private static async Task<ISymbol?> OwningMemberAsync(ReferenceLocation location)
+    {
+        var root = await location.Document.GetSyntaxRootAsync();
+        var model = await location.Document.GetSemanticModelAsync();
+        if (root is null || model is null)
+            return null;
+
+        var member = root.FindNode(location.Location.SourceSpan)
+            .AncestorsAndSelf()
+            .OfType<MemberDeclarationSyntax>()
+            .FirstOrDefault();
+        return member switch
+        {
+            BaseFieldDeclarationSyntax field => model.GetDeclaredSymbol(field.Declaration.Variables[0]),
+            null => model.GetEnclosingSymbol(location.Location.SourceSpan.Start),
+            _ => model.GetDeclaredSymbol(member),
+        };
     }
 
 
@@ -1398,6 +1468,9 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
 
     private static string DispatchKindOf(ISymbol target)
     {
+        if (target is INamedTypeSymbol { TypeKind: TypeKind.Delegate })
+            return "delegate";
+
         if (target.ContainingType?.TypeKind == TypeKind.Interface)
             return "interface";
         if (target is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke })
@@ -1527,7 +1600,7 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     /// Accepts either a name spec or a <c>sym_…</c> identifier handed out by a previous response,
     /// mapping the latter back to a resolvable name via the symbol index.
     /// </summary>
-    private static string ResolveHandle(string symbol, SymbolStore symbolStore)
+    internal static string ResolveHandle(string symbol, SymbolStore symbolStore)
     {
         if (!symbol.StartsWith("sym_", StringComparison.Ordinal))
             return symbol;
@@ -1612,7 +1685,9 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
 
     // ---- shared helpers -------------------------------------------------------
 
-    private static ContentVersion VersionOf(ISymbol symbol)
+    // internal: rename_symbol checks a caller's held baseVersion against the same syntax-layer token
+    // get_symbol minted, so the two must be computed by one function rather than two.
+    internal static ContentVersion VersionOf(ISymbol symbol)
     {
         var reference = symbol.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)

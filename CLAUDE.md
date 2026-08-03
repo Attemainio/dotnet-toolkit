@@ -28,13 +28,24 @@ does not exist yet — change it through `validate_patch` after that.
   rewrites a body — the default token carries no `body` layer and is rejected as `unleased_body`), then
   `validate_patch` with `baseVersions`, line-span `edits`, `applyOnSuccess: true`, and an `intent`. On
   failure, amend the returned `draftId` rather than rebuilding the patch.
-- **Always give a real `intent`.** Applying with one is the only thing that appends to the development
-  log; an `Edit` that slips past the guard is reasoning `search_log` can never recover. The compile
-  check is the cheap half of the tool — the log entry is the half that is unrecoverable later.
+- **Always give a real `intent`.** Applying with one is what appends to the development log — only
+  `validate_patch` and `rename_symbol` do; an `Edit` that slips past the guard is reasoning `search_log`
+  can never recover. The compile check is the cheap half — the log entry is the unrecoverable half.
+- **A pure rename goes through `rename_symbol`, not a chain of patches** — it derives every call-site
+  edit from the compiler's reference graph, so it cannot miss interface/virtual/delegate dispatch the way
+  hand-authored edits do, and runs the same ladder and log. **`docs/tools/rename_symbol.md`**.
 - **"Too large or interleaved to decompose" is not a reason to use `Edit`.** It has been used as one
   twice, and was wrong both times: split it into more `validate_patch` calls, one per touched symbol,
   sharing one `intent`. If a lapse happens anyway, backfill it immediately with a follow-up call — an
   identity edit still carries a real `intent` into the log.
+- **Validation grades exactly as `dotnet build` does.** The repo's `.editorconfig` and
+  `TreatWarningsAsErrors` are honored, and analyzer rules (`CA*`, anything from a NuGet analyzer package)
+  run over the changed documents: effective severity `error` blocks the patch, `warning`/`suggestion` is
+  reported in the response's `checks` block and does not. Lowering a rule's severity in `.editorconfig`
+  is a legitimate answer to an analyzer failure — say so rather than working around the rule.
+- **A passing result states its own scope.** Every response carries `checks` with the rungs that ran,
+  what each covered, and a `notAssessed` list. Report what it actually says; never turn a clean rung into
+  a broader claim than the scope it names.
 - Full arguments and every failure mode: **`docs/tools/validate_patch.md`**.
 
 **Use shell and plain file tools for what the MCP surface doesn't cover**: `dotnet build` / `dotnet

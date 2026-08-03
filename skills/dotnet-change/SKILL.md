@@ -12,6 +12,16 @@ only if the result is genuinely sufficient. Disk is never touched otherwise.
 
 Use `Edit`/`Write` directly only for non-C# files (csproj, json, md).
 
+**A pure rename goes to `rename_symbol`, not here.** If the whole change is "call this something else",
+`mcp__plugin_dotnet-toolkit_dotnet__rename_symbol` derives every call-site edit from the compiler's own
+reference graph, validates it through this same ladder, and writes the same development-log entry — see
+`docs/tools/rename_symbol.md`. Authoring those edits yourself as a chain of `validate_patch` calls misses
+interface, virtual and delegate dispatch. Two differences from the rest of this skill: it takes a single
+`baseVersion` string rather than a `baseVersions` map (only one symbol is named — the rest is derived),
+and a dry run (`applyOnSuccess: false`) **is** worth it on a widely-referenced symbol, because the blast
+radius is the thing you cannot predict. Rename *plus* other edits: rename first, then `validate_patch`
+the rest against freshly fetched versions.
+
 ## Before the first C# edit of a session: read the standards
 
 The canonical coding standards live in `.claude/rules/` (in a consuming repo:
@@ -155,6 +165,39 @@ are trivia-blind) — would otherwise floor at `parse`. Parse cannot tell a harm
 `using Nope.Missing;`, which is syntactically perfect and fails to bind. So a patch that changed
 text but no symbol is floored at `project_compile` instead. If you see `detectedChanges: []` with
 `requiredLevel: parse`, that is a bug, not a cheap green.
+
+## `checks` — what a green actually covered
+
+Every response also carries a `checks` block, on success as well as failure, because
+`succeeded: true` with no diagnostics is silence — and silence reads the same whether a check
+ran clean or never ran. Three parts: `levels` (each rung with the `scope` it ran over),
+`analyzers` (the pass over the changed documents), and `notAssessed` (the gaps, spelled out).
+
+**Report the scope it names, not a broader claim.** `checks.notAssessed` always says that
+analyzer findings in files the patch did not touch were not looked at — so "no analyzer
+warnings" means *in the changed documents*, never repo-wide.
+
+## Severity is the repo's `.editorconfig` decision, not this tool's
+
+The ladder grades exactly as `dotnet build` does. `.editorconfig` and `TreatWarningsAsErrors`
+are both honored, and the projects' referenced analyzers (`CA*`, any NuGet analyzer package)
+now run over the changed documents — `Compilation.GetDiagnostics()` runs none of them, so
+before this they were invisible to validation and a patch could pass here and fail the build.
+
+| Effective severity | Effect |
+|---|---|
+| `error` — natively, or promoted by `dotnet_diagnostic.XXNNNN.severity = error` / `TreatWarningsAsErrors` | Blocks. `succeeded: false`, nothing applied, reported under `diagnostics`. |
+| `warning`, `suggestion` | Reported under `checks.analyzers`. Never blocks. |
+| `none`/`silent` | Not reported. |
+
+When a failure came from an analyzer rather than the compiler, `nextAction` says so. Two valid
+responses: fix the code, or lower that rule's severity in `.editorconfig` if it is wrong for
+this repo. The second is a real answer, not a workaround — but it is the *user's* call, so
+raise it rather than editing `.editorconfig` unasked. Never suppress with a pragma to get past
+a rule the repo deliberately turned on.
+
+Analyzers run only after the compile rungs pass. A run that failed a rung reports
+`analyzers.ran: false` with a `skipReason` — that is "not assessed", not "clean".
 
 ## When validation fails
 
