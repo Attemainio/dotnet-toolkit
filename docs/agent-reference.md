@@ -138,8 +138,34 @@ the handoff is `symbolId` + locations, and the caller leases its own version. Th
 First runs, on `get_symbol`'s `include` grammar, on adding a fifth hook subcommand, and on the
 provisional-id prefixes: **39k–58k subagent tokens over 18–26 tool calls**, returning ~1–2 KB of map.
 Spot-checked against source, the substance held (`HookCli`'s dispatch switch located exactly; caller
-counts matching `referenceCounts`), and that ratio is the whole argument for the agent — the fan-out is
-paid in a context that gets discarded.
+counts matching `referenceCounts`).
+
+A fourth probe (the loopback control server) was measured exactly, by snapshotting
+`get_retrieval_metrics` either side of it: **23 calls returning 11,450 tokens** of tool responses,
+handed back as a ~975-token report. That is the whole argument for the agent — **a 12× reduction in what
+lands in the main window**, with the fan-out paid in a context that is then discarded.
+
+**It is not a token saving, and shouldn't be sold as one.** That probe billed 38.8k subagent tokens to
+keep 11.5k out of the main window, so total spend rose ~3–4×. What it buys is window *occupancy*:
+retrieval in the main context is paid once and then carried for every remaining turn of the session,
+and it is what drives a session toward the auto-compaction cliff that truncates invoked skills. Two
+honest deflators on the 12×: a main agent that already knows the codebase would have spent maybe 5–7k
+rather than 11.5k on the same question (so ~5–6× like-for-like), and delegation costs ~1.1k plus an
+~80–100s round trip on the caller's side. For anything answerable in two calls, delegating is worse —
+which is what `dotnet-change`'s pointer says.
+
+Reproducing any of this needs the agent's `taskId`. The agent file requires it — one `explore_<slug>` id
+minted per run, passed on every call except `workspace_status` (which takes no arguments and records no
+telemetry), and echoed in the report's **Target** line — so that
+`get_retrieval_metrics(groupBy: "task", taskIds: [...])` gives one exploration's exact cost. Without it
+the ambient session id is shared with the main agent and snapshot-subtraction is the only method.
+
+**Unverified as of this writing, for a reason worth knowing when you tune this agent: the harness
+appears to snapshot an agent definition when the plugin loads, not when a subagent spawns.** Three
+probes run after edits to the file all behaved like the pre-edit version — no `taskId`, no
+`What would need to change` section, and a call count above the budget then in force. So any change here
+needs a session/plugin restart before a probe can test it, and a probe run in the same session as the
+edit measures the old file. Don't read such a run as the instruction being ignored.
 
 Three things the probes changed in the agent file, worth knowing before tuning it again:
 

@@ -111,6 +111,15 @@ full blast radius, not a target. Batch to stay inside it: one `search_index` wit
 reach was requested. Do not fetch bodies to explain what code does — that is the caller's read, and
 reading it here means the tokens are paid twice.
 
+**Pass the same `taskId` on every call.** Mint one at the start from the task itself —
+`explore_<short_slug>`, e.g. `explore_control_port` — and pass it unchanged on all of them.
+`workspace_status` is the one exception: it takes no arguments and records no telemetry. Every session
+talking to this server shares one ambient session id, so a `taskId` is the *only* thing that separates
+your calls from the main agent's; without it your cost can be recovered only by snapshotting
+`get_retrieval_metrics` around your whole run. Report the id (see Output format) so the caller can read
+your exact cost back with `get_retrieval_metrics(groupBy: "task", taskIds: [...])` — that is also how
+anyone checks whether the 20-call ceiling is actually holding.
+
 ## Output format
 
 Exactly these sections, in this order. Omit a section only when it would be empty, except
@@ -119,6 +128,7 @@ Exactly these sections, in this order. Omit a section only when it would be empt
 ```
 ## Target
 <one line: the task restated as symbols>
+taskId: <the id you passed on every call> — <n> calls used of 20
 
 ## Entry points
 | symbolId | kind | file:line | why it matters |
