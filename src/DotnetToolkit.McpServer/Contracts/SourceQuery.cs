@@ -6,6 +6,8 @@ namespace DotnetToolkit.McpServer.Contracts;
 /// <c>"source:code-comments"</c>). There is no additive <c>+tag</c> form — a caller starts from a mode's
 /// own default (everything, for <see cref="SourceMode.Full"/>; no doc-comment tags but attributes and
 /// <c>//</c> comments still on, for <see cref="SourceMode.Code"/>) and only ever strips further.
+/// <c>-lineNumbers</c> is the one modifier that subtracts from the rendering rather than from the
+/// source text — see <see cref="ExcludeLineNumbers"/>.
 /// </summary>
 public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedTags, bool ExcludeAttributes, bool ExcludeComments)
 {
@@ -32,7 +34,7 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
     };
 
     /// <summary>Every recognized modifier name, doc tags first — echoed in error detail text.</summary>
-    public static readonly IReadOnlyList<string> ModifierNames = [.. DocTagLocalNames.Keys, "attributes", "comments"];
+    public static readonly IReadOnlyList<string> ModifierNames = [.. DocTagLocalNames.Keys, "attributes", "comments", "lineNumbers"];
 
     /// <summary>
     /// The absolute file line ranges the caller narrowed <c>source</c> to via an <c>@</c> selector
@@ -44,6 +46,20 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
     /// a span taken from any earlier response stays directly usable.
     /// </remarks>
     public IReadOnlyList<LineRange> Lines { get; init; } = [];
+
+    /// <summary>
+    /// Whether <c>-lineNumbers</c> asked for <c>source</c> to render as contiguous <c>@start-end</c>
+    /// spans of bare text instead of a per-line numbered gutter.
+    /// </summary>
+    /// <value>
+    /// True when the caller subtracted <c>lineNumbers</c>; false for the default numbered rendering.
+    /// </value>
+    /// <remarks>
+    /// Aimed at reading rather than editing. The gutter is what makes a line directly usable as a
+    /// <c>validate_patch</c> span; without it a line has to be counted forward from its span header, so
+    /// a caller about to edit should fetch with the numbers left on.
+    /// </remarks>
+    public bool ExcludeLineNumbers { get; init; }
 
     /// <summary>
     /// Parses the text after <c>source:</c> (e.g. <c>"full-remarks-attributes"</c>, <c>"code@46-76"</c>)
@@ -96,6 +112,7 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
         var excludedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var excludeAttributes = false;
         var excludeComments = false;
+        var excludeLineNumbers = false;
         foreach (var token in rest.Split('-', StringSplitOptions.RemoveEmptyEntries))
         {
             if (string.Equals(token, "attributes", StringComparison.OrdinalIgnoreCase))
@@ -108,6 +125,13 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
                 excludeComments = true;
                 continue;
             }
+            // Unlike the doc-tag modifiers below, this one is a rendering choice rather than a doc
+            // section, so it is legal under both modes.
+            if (string.Equals(token, "lineNumbers", StringComparison.OrdinalIgnoreCase))
+            {
+                excludeLineNumbers = true;
+                continue;
+            }
 
             var match = DocTagLocalNames.Keys.FirstOrDefault(k => string.Equals(k, token, StringComparison.OrdinalIgnoreCase));
             if (match is null || mode == SourceMode.Code)
@@ -115,7 +139,11 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
             excludedTags.Add(DocTagLocalNames[match]);
         }
 
-        return new SourceQuery(mode, excludedTags, excludeAttributes, excludeComments) { Lines = lines };
+        return new SourceQuery(mode, excludedTags, excludeAttributes, excludeComments)
+        {
+            Lines = lines,
+            ExcludeLineNumbers = excludeLineNumbers,
+        };
     }
 
     /// <summary>

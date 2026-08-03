@@ -62,7 +62,10 @@ public static class ContextTools
         + "that REPLACES the default rather than adding to it. Components: source, xmlDoc, "
         + "mechanicalFacts, bodyOutline, referenceCounts, recentLog, members, attributes, baseType, "
         + "interfaces, usings. "
-        + "source:code drops the leading /// doc comment; appending @ plus absolute file line ranges "
+        + "source:code drops the leading /// doc comment; -lineNumbers replaces the per-line NN: gutter "
+        + "with one @start-end header per contiguous run — ~18% cheaper to read, but a line must then be "
+        + "counted forward from its header before it is usable as a validate_patch span, so fetch with "
+        + "the gutter on when about to edit; appending @ plus absolute file line ranges "
         + "returns only those lines (source:code@46-76;79-83) — the way to read one region of a long "
         + "member instead of all of it. Use symbols instead of symbol to fetch several at once. "
         + "Full component semantics, the @ and -modifier grammar, and worked examples: "
@@ -78,7 +81,7 @@ public static class ContextTools
         [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
             + "names that replaces the default set exactly: source (optionally source:code, either mode "
-            + "with -tag/-attributes/-comments subtracted, and/or an @ line selection returning only those "
+            + "with -tag/-attributes/-comments/-lineNumbers subtracted, and/or an @ line selection returning only those "
             + "absolute file lines, e.g. source:code@46-76;79-83), xmlDoc, mechanicalFacts, bodyOutline, "
             + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings. See "
             + "docs/tools/get_symbol.md for what each returns, the full @ grammar, and why source "
@@ -840,7 +843,7 @@ private static async Task<object> BuildContent(
             origin = sym.Locations.Any(l => l.IsInSource) ? "source" : "external",
             containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
-            source,
+            source = RenderSource(source, components.SourceQuery),
             // Emitted only for a slice, because only a slice can mislead: contentVersion is fingerprinted
             // over the whole symbol, so a caller leasing off a fragment would otherwise hold a token for
             // content it never saw. "kept/whole", or "none/whole" when the ranges missed the declaration
@@ -1058,10 +1061,48 @@ private static object? ContainingType(ISymbol sym)
     /// validate_patch startLine/endLine without a separate get_symbol round trip.</summary>
     private sealed record SourceLine(int Line, string Text);
 
+    /// <summary>One contiguous run of a symbol's <c>source</c> under <c>-lineNumbers</c>: the run's
+    /// absolute <c>start-end</c> file line span, plus its lines as bare text.</summary>
+    private sealed record SourceSpan(string Lines, IReadOnlyList<string> Text);
+
     private static IReadOnlyList<SourceLine> SplitLines(string text, int startLine) =>
         text.Replace("\r\n", "\n").Split('\n')
             .Select((line, i) => new SourceLine(startLine + i, line))
             .ToArray();
+
+    /// <summary>
+    /// Renders a symbol's source either as the default per-line <c>{line, text}</c> list or, when
+    /// <c>-lineNumbers</c> was requested, as one <c>{lines, text}</c> entry per contiguous run.
+    /// </summary>
+    /// <returns>Null only when there was no source to render, so an absent component stays absent.</returns>
+    /// <remarks>
+    /// Grouping into runs is what keeps the numberless form honest: <c>-modifier</c> exclusions and an
+    /// <c>@</c> selection both drop lines, and bare text carrying no span headers would read as
+    /// contiguous code across a gap that is really there.
+    /// </remarks>
+    private static object? RenderSource(IReadOnlyList<SourceLine>? lines, SourceQuery query)
+    {
+        if (lines is null)
+            return null;
+        if (!query.ExcludeLineNumbers)
+            return lines;
+
+        var spans = new List<SourceSpan>();
+        var runStart = 0;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (i + 1 < lines.Count && lines[i + 1].Line == lines[i].Line + 1)
+                continue;
+
+            var text = new string[i - runStart + 1];
+            for (var j = 0; j < text.Length; j++)
+                text[j] = lines[runStart + j].Text;
+            spans.Add(new SourceSpan($"{lines[runStart].Line}-{lines[i].Line}", text));
+            runStart = i + 1;
+        }
+
+        return spans;
+    }
 
     private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SourceQuery? query = null)
     {
@@ -1638,7 +1679,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
             return null;
 
         var version = "decl:index";
-        IReadOnlyList<SourceLine>? source = null;
+        object? source = null;
         try
         {
             var text = File.ReadAllText(locator.AbsPath(hit.File));
@@ -1652,7 +1693,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 var (decl, body) = SyntaxFingerprint.Compute(normalized);
                 version = ContentVersion.Of(decl, body).ToString();
                 if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
-                    source = SourceLinesOf(normalized, parts.SourceQuery);
+                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery), parts.SourceQuery);
             }
         }
         catch

@@ -194,7 +194,7 @@ public static class Formats
             case JsonObject obj:
                 foreach (var key in obj.Select(kv => kv.Key).ToList())
                 {
-                    if (TryRenderSourceLineArray(obj[key], out var raw) || TryRenderOutlineArray(obj[key], out raw))
+                    if (TryRenderSourceLineArray(obj[key], out var raw) || TryRenderSourceSpanArray(obj[key], out raw) || TryRenderOutlineArray(obj[key], out raw))
                     {
                         obj[key] = RawBlockToken(blocks.Count);
                         blocks.Add((key, raw));
@@ -229,6 +229,38 @@ public static class Formats
                 || o["text"] is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
                 return false;
             sb.Append(line).Append(": ").Append((string)textVal!).Append('\n');
+        }
+        if (sb.Length > 0)
+            sb.Length--;
+        raw = sb.ToString();
+        return true;
+    }
+
+    /// <summary>True (with the rendered block) only for an array whose every element is exactly a
+    /// {lines: string, text: string[]} pair — the shape <see cref="ContextTools.SourceSpan"/> serializes
+    /// to when <c>-lineNumbers</c> replaced the per-line gutter with contiguous runs.</summary>
+    /// <remarks>Each run is introduced by an <c>@start-end</c> header, deliberately the same syntax
+    /// <c>get_symbol</c>'s own <c>@</c> line selector accepts, so a span read off one response is
+    /// directly reusable as the next call's selection.</remarks>
+    private static bool TryRenderSourceSpanArray(JsonNode? node, out string raw)
+    {
+        raw = "";
+        if (node is not JsonArray arr || arr.Count == 0)
+            return false;
+        var sb = new StringBuilder();
+        foreach (var item in arr)
+        {
+            if (item is not JsonObject o || o.Count != 2
+                || o["lines"] is not JsonValue spanVal || spanVal.GetValueKind() != JsonValueKind.String
+                || o["text"] is not JsonArray textArr)
+                return false;
+            sb.Append('@').Append((string)spanVal!).Append('\n');
+            foreach (var line in textArr)
+            {
+                if (line is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
+                    return false;
+                sb.Append((string)textVal!).Append('\n');
+            }
         }
         if (sb.Length > 0)
             sb.Length--;

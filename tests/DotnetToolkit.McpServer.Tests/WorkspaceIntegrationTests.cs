@@ -841,6 +841,38 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal("6-13/6-13", content.GetProperty("sourceLines").GetString());
     }
 
+    /// <summary>
+    /// -lineNumbers replaces the per-line gutter with one span entry per contiguous run, so an
+    /// unbroken declaration comes back as a single span of bare text carrying no line property.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceCodeMinusLineNumbers_ReturnsOneSpanOfBareText()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code-lineNumbers")).GetProperty("content");
+        var spans = content.GetProperty("source").EnumerateArray().ToArray();
+
+        var span = Assert.Single(spans);
+        Assert.Equal("6-13", span.GetProperty("lines").GetString());
+        Assert.False(span.TryGetProperty("line", out _));
+        Assert.Contains(span.GetProperty("text").EnumerateArray(), t => t.GetString()!.Contains("WithOwnLineAttribute"));
+    }
+
+    /// <summary>
+    /// A line an exclusion dropped breaks the declaration into two runs, and each run states its own
+    /// absolute span — so bare text never reads as contiguous across a gap that is really there.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_MinusCommentsMinusLineNumbers_SplitsRunsAtTheDroppedLine()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-comments-lineNumbers")).GetProperty("content");
+        var spans = content.GetProperty("source").EnumerateArray().ToArray();
+
+        Assert.Equal(["5-7", "9-13"], spans.Select(s => s.GetProperty("lines").GetString()));
+        Assert.DoesNotContain(
+            spans.SelectMany(s => s.GetProperty("text").EnumerateArray()),
+            t => t.GetString()!.Contains("standalone comment"));
+    }
+
     /// <summary>Disjoint ranges are separated by ';', since ',' already separates include's components.</summary>
     [Fact]
     public async Task GetSymbol_SeveralLineRanges_AreSemicolonSeparated()
