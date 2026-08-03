@@ -58,14 +58,18 @@ public static class PatchSandbox
     {
         var forked = solution;
         var changed = new List<DocumentId>();
+        // Path-keyed, so the filesystem's own case rules decide what "the same file" means. Ordinal
+        // here would split src/Foo.cs and src/foo.cs into two groups on Windows, and the second would
+        // fork from text the first had already edited - reported as stale_workspace, which describes
+        // neither the cause nor the fix.
         var editsByPath = edits
-            .GroupBy(e => locator.AbsPath(e.File), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<PatchEdit>)[.. g], StringComparer.Ordinal);
+            .GroupBy(e => locator.AbsPath(e.File), PathComparison.Comparer)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<PatchEdit>)[.. g], PathComparison.Comparer);
 
         // A draft's files are re-forked even when this call edits none of them: an amend touching one file
         // must still carry the rest of the draft's proposed text into the fork, or the parts of the patch
         // it is not correcting would silently vanish.
-        var paths = editsByPath.Keys.Union(draft?.Proposed.Keys ?? [], StringComparer.Ordinal).ToList();
+        var paths = editsByPath.Keys.Union(draft?.Proposed.Keys ?? [], PathComparison.Comparer).ToList();
 
         foreach (var path in paths)
         {
@@ -131,8 +135,10 @@ public static class PatchSandbox
         Result result, Solution original, IReadOnlyDictionary<string, string> baseVersions,
         CancellationToken cancellationToken = default)
     {
-        var proposed = new Dictionary<string, SourceText>(StringComparer.Ordinal);
-        var baseline = new Dictionary<string, SourceText>(StringComparer.Ordinal);
+        // Keyed by Roslyn's own document FilePath, which need not agree on case with the path the
+        // caller sent; ApplyAsync looks these up by the caller's spelling, so the comparer has to match.
+        var proposed = new Dictionary<string, SourceText>(PathComparison.Comparer);
+        var baseline = new Dictionary<string, SourceText>(PathComparison.Comparer);
 
         foreach (var docId in result.ChangedDocuments)
         {

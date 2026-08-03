@@ -44,6 +44,10 @@ are always rebuildable from source.
 - `Workspace/SolutionLocator.cs` — auto-discovers the target solution (`*.slnx` > `*.sln` > `*.csproj`,
   root + one level deep) under `CLAUDE_PROJECT_DIR` (the *target* repo — not this repo, when installed
   as a plugin). `SlnxParser.cs` handles `.slnx`.
+- `Workspace/PathComparison.cs` — the one definition of what "the same file" means: ordinal on Linux,
+  case-insensitive elsewhere. Every path equality test, prefix test, and path-keyed dictionary goes
+  through it, because a site that quietly keeps `StringComparer.Ordinal` only misbehaves on the
+  platforms this repo's tests don't run on.
 - `Workspace/MSBuildRegistration.cs` — picks which installed SDK's MSBuild loads projects (newest wins;
   `DOTNET_TOOLKIT_DOTNET_ROOT` pins one) and registers it before any Roslyn MSBuild code runs. See
   "Environment" below for why the wrong choice degrades silently.

@@ -139,7 +139,8 @@ public sealed class SolutionLocator
     public string AbsPath(string relative)
     {
         var abs = Path.GetFullPath(Path.Combine(Root, relative));
-        if (abs != Root && !abs.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        if (!PathComparison.Equal(abs, Root)
+            && !abs.StartsWith(Root + Path.DirectorySeparatorChar, PathComparison.Comparison))
             throw new ArgumentException($"Path escapes the project root: {relative}");
         return abs;
     }

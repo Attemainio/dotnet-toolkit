@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using DotnetToolkit.McpServer.Workspace;
 
 namespace DotnetToolkit.McpServer.Hooks;
 
@@ -156,8 +157,9 @@ internal static partial class CsFileMembership
         }
 
         pattern.Append('$');
+        pattern.Append('$');
         var options = RegexOptions.CultureInvariant;
-        if (!OperatingSystem.IsLinux())
+        if (PathComparison.Comparison == StringComparison.OrdinalIgnoreCase)
         {
             options |= RegexOptions.IgnoreCase;
         }
@@ -199,15 +201,11 @@ internal static partial class CsFileMembership
     /// <param name="right">Second path.</param>
     /// <returns>True when both name the same location.</returns>
     /// <remarks>
-    /// Windows and macOS default to case-insensitive filesystems; Linux does not. An ordinal compare
-    /// everywhere would make the walk's own termination test (<c>directory == root</c>) fail on Windows
-    /// whenever Claude Code and the shell disagreed on a drive letter's case, walking past the root.
+    /// Matters here because the walk's own termination test is <c>directory == root</c>: an ordinal
+    /// compare would miss the root on Windows whenever the two disagreed on a drive letter's case, and
+    /// climb past it.
     /// </remarks>
-    private static bool PathsEqual(string left, string right) =>
-        string.Equals(
-            left.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            right.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+    private static bool PathsEqual(string left, string right) => PathComparison.Equal(left, right);
 
     private static string Relative(string from, string to) =>
         Path.GetRelativePath(from, to).Replace('\\', '/');
