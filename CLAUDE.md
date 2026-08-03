@@ -90,6 +90,7 @@ degrades the server's workspace — symptoms and repair in `docs/architecture.md
 | What a hook blocks and why | `docs/hook-reference.md` |
 | What a skill is for | `docs/skill-reference.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/agent-reference.md` |
+| Finding what a change touches before making it | delegate to the `dotnet-explore` agent — it returns `symbolId`s, use sites and blast radius, and cannot edit |
 
 Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only
 `csharp-standards.md` is always present.

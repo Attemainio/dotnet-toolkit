@@ -23,7 +23,7 @@ symbol query, not a text search.
 
 ```
 get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools",
-                     "PatchTools", "MetricsTools", "ServerTools"], include: "members")
+                     "PatchTools", "RenameTools", "MetricsTools", "ServerTools"], include: "members")
 ```
 
 Each `[McpServerToolType]` class's public methods **are** its tools, one per method, and the response
@@ -79,7 +79,8 @@ missing (a tool that exists but appears nowhere in it):
 | `skills/dotnet-toolkit-install-check/SKILL.md` | the installation audit. Its Step 1 inventory must cover every top-level directory the plugin actually ships (`skills/`, `agents/`, `hooks/`, `docs/`, `docs/tools/`, `.claude/rules/`, `scripts/`, `.mcp.json`) under one of its four delivery mechanisms, and its Step 6 scenario table must resolve to files that exist. It audits init; this skill audits it |
 | `skills/dotnet-toolkit-selfeval/SKILL.md` | the efficiency probe matrix. Check that its Step 2 families still cover every tool from Step 0; that the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`) are still exactly the ones with no `ToolTelemetry.Record`/`RecordPatch` call; and that its `taskId`/`taskIds`/`groupBy:"task"` measurement recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed there as unmeasurable understates what the evaluation can see |
 | `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. Check: `tools:` frontmatter matches Step 0's read-side subset (nothing stale, and still excluding `get_project_graph`/`detect_circular_dependencies`, withheld as out of a scope slice's reach); every tool it names in Process, evidence bars, and Boundaries is granted there *and* behaves as described; its standards core and per-aspect fold-ins resolve to real `.claude/rules/` files; it still requires the `Standards:` line; and it has **not** re-acquired a `skills:` grant or a directive to read `docs/agent-reference.md` — both removed to hold the per-instance token baseline down |
-| `docs/agent-reference.md` | **human-facing only; the agent must not be told to read it.** Check it does not contradict the agent file (authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists. Anything here duplicating the agent file is drift waiting to happen — prefer a pointer |
+| `agents/dotnet-explore.md` | the navigator's **complete, self-contained** instructions. Its router must name no write tool as callable, and three properties are load-bearing (rationale in `docs/agent-reference.md`, not here): **no writer and no `memory:` key** in `tools:`, `Read` whitelisted to `docs/tools/<tool>.md` only, and no relaying of a `contentVersion` |
+| `docs/agent-reference.md` | covers **both** agents; **human-facing only — neither agent is told to read it.** Check it does not contradict the agent file (authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists. Anything here duplicating the agent file is drift waiting to happen — prefer a pointer |
 | `docs/hook-reference.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
 | `docs/skill-reference.md` | one entry per skill under `skills/`, none stale, none missing |
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
@@ -128,11 +129,13 @@ entry. Read those with `get_symbol` (not `grep`), plus `hooks/hooks.json` and `.
      on Windows at all, and a Store-stubbed `python3` makes a guard fail open while looking healthy.
      `scripts/` holds developer conveniences only; anything new there or in `Hooks/` unmentioned by
      `docs/hook-reference.md` or "Packaging" is a Step 6 finding.
-   - Matchers key on tool name, not on which agent calls, so they fire for `dotnet-code-review` too.
-     Both must hold: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` — `memory: project`
-     makes the harness grant them anyway, which is why Boundaries carries the weight; (b) its Process
-     step 2 still goes to `search_index`/`get_symbol` first and to `Read` only when a symbol lookup
-     didn't give it the lines — a narrow fallback `guard-cs-read` still enforces, not an escape hatch.
+   - Matchers key on tool name, not on which agent calls, so they fire for both subagents too. For
+     `dotnet-code-review`: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` — `memory:
+     project` makes the harness grant them anyway, which is why Boundaries carries the weight; (b) its
+     Process step 2 still goes to `search_index`/`get_symbol` first and to `Read` only when a symbol
+     lookup didn't give it the lines — a narrow fallback `guard-cs-read` still enforces, not an escape
+     hatch. For `dotnet-explore` the guard is only a backstop — its own file bans `Read` on `.cs`
+     outright, so a denial there means that file drifted.
 
 **6. New or modified files nothing else references.** This is the drift-detection step, not just a
 per-file check: `git status`/`git diff --stat` (or `git log -p` for a stated commit range) against the

@@ -1,14 +1,17 @@
-# Agent reference: dotnet-code-review
+# Agent reference
 
-This plugin ships one review subagent, `dotnet-code-review` (`agents/dotnet-code-review.md`) — a
-read-only **validation layer** that checks code against the standards in `.claude/rules/`, not a source
-of standards itself.
+This plugin ships two subagents, both read-only in intent and both self-contained:
 
-**This document is human-facing. The agent does not read it.** `agents/dotnet-code-review.md` is
-self-contained: process, standards-loading rule, evidence bars, review modes, scope discipline, output
-format, boundaries, and memory discipline all live there, and that file is the authority. This one
-describes the design for maintainers — if the two disagree, the agent file is right and this one is
-stale.
+- **`dotnet-code-review`** (`agents/dotnet-code-review.md`) — a **validation layer** that checks code
+  against the standards in `.claude/rules/`, not a source of standards itself. Runs *after* code exists.
+- **`dotnet-explore`** (`agents/dotnet-explore.md`) — a **navigator** that maps a task onto the
+  codebase's symbols and reference graph. Runs *before* code is written. See the section at the end.
+
+**This document is human-facing. Neither agent reads it.** Each agent file is self-contained — process,
+loading rules, output format, boundaries — and is the authority. This one describes the design for
+maintainers; if the two disagree, the agent file is right and this one is stale.
+
+Everything from here to the `dotnet-explore` section is about `dotnet-code-review`.
 
 It used to be a mandatory second read for the agent (~2.7k tokens on top of its own file, which the
 harness already puts in the system prompt), duplicating the agent file on scope discipline and the
@@ -75,10 +78,84 @@ resolved tool list *does* include `Write` and `Edit`. What keeps it from touchin
 docs, or config is the Memory and Boundaries sections of the agent file, not a capability boundary.
 Don't reason about this agent as if it were sandboxed.
 
-## Adding an aspect
+## Adding an aspect (dotnet-code-review)
 
 A new aspect is a new `.claude/rules/*.md` file, a row in `csharp-standards.md`'s index (with a "When"
 condition stated as an observable property of the code, so the reviewer's trigger matching can use it),
 and one entry in the agent file's per-aspect evidence disciplines — never a new agent file. Decide
 explicitly whether it joins the always-loaded core or the triggered set; the core should only grow for
 something both cheap and high-cost-if-missed, which is why `security.md` is in it.
+
+# dotnet-explore
+
+A Haiku-model **navigator**: given a task someone is about to perform, it returns where that task lives
+— entry-point `symbolId`s, direct references by relation, affected files grouped by project, the
+transitive reach when asked, and a `Suggested next calls` list the main agent can execute verbatim. It
+draws the map; it never builds on it, and it never judges what it finds.
+
+It exists because the main agent's fan-out phase is the cheapest work in a change and the most
+context-expensive to keep: a dozen `search_index`/`get_references`/`get_symbol` responses stay in the
+main window for the rest of the session, when all that survives their usefulness is a handful of
+`symbolId`s and file paths. Delegating the fan-out to Haiku pays for the wide search in a context that
+is then discarded, and returns only the residue. `dotnet-change`'s step 2 ("know the blast radius")
+points at it for exactly that reason.
+
+## Read-only *is* a capability boundary here — unlike the reviewer
+
+Deliberately **no `memory:` key.** That is the whole difference from `dotnet-code-review`, whose
+`memory: project` makes the harness grant `Write`/`Edit` back so it can maintain its memory namespace
+(see "Read-only is by instruction, not by capability" above). `dotnet-explore` gets no memory namespace,
+so its resolved tool list contains no writer at all: no `Write`, `Edit`, `NotebookEdit`,
+`validate_patch`, or `rename_symbol`. Adding project memory to this agent would silently hand it
+`Write`/`Edit` and turn a real boundary back into an instruction — don't, and if a future version
+genuinely needs memory, the trade has to be stated in the agent file's Hard boundaries section.
+
+## Tool grant
+
+Every read-side MCP tool, **including `get_project_graph` and `detect_circular_dependencies`** — the two
+the reviewer is denied. The reasoning inverts: those answer solution-wide questions a disjoint review
+slice structurally cannot ask, but "which projects does this change reach" is precisely a blast-radius
+question, so they are core here.
+
+Plus `Read`, restricted **by instruction** to `docs/tools/<tool>.md` — the on-demand escape hatch for
+tool mechanics, so the agent file itself can stay a compact router instead of an inlined manual. Its
+Hard boundaries name what is off-limits within that: no `.cs` file (the `guard-cs-read` hook blocks it
+anyway), and specifically not `validate_patch.md`/`rename_symbol.md`, which document a path it has no
+tools for. No `Grep`/`Glob`: a text search over C# is the thing this agent exists to replace, and
+non-C# files are out of scope by design.
+
+## Why it must not report a `contentVersion`
+
+The agent calls `get_symbol` at the *default* include and is forbidden from passing `include: "all"` or
+echoing a `contentVersion`. A version is an edit lease scoped to the layers served, and it goes stale
+the moment anything moves — a main agent that patched against a version relayed through a subagent
+would hit `stale_base` at best and, if the file moved underneath, could revert other changes in it. So
+the handoff is `symbolId` + locations, and the caller leases its own version. That is what the
+`# lease your own contentVersion` comment in its `Suggested next calls` output is for.
+
+## Measured behavior — three probes against this repo
+
+First runs, on `get_symbol`'s `include` grammar, on adding a fifth hook subcommand, and on the
+provisional-id prefixes: **39k–58k subagent tokens over 18–26 tool calls**, returning ~1–2 KB of map.
+Spot-checked against source, the substance held (`HookCli`'s dispatch switch located exactly; caller
+counts matching `referenceCounts`), and that ratio is the whole argument for the agent — the fan-out is
+paid in a context that gets discarded.
+
+Three things the probes changed in the agent file, worth knowing before tuning it again:
+
+- **The call budget was 8–12 and was ignored twice.** A real blast-radius question needs ~20, so the
+  ceiling is now 20 with a stated hard stop. A budget the agent routinely blows through teaches it that
+  the file's limits are soft — pick a number the work actually fits.
+- **It invented a "what would need to change" section, and the section was better than the spec.** It
+  is now part of the contract rather than something the format bans.
+- **It reported a declaration span read off a `search_index` hit** (`113-160` where
+  `declarationSites` says `102-160` — the doc-comment lines). Since the caller anchors an edit there,
+  the file now requires spans from `declarationSites` and nothing else.
+
+## Honesty contract
+
+Same shape as the reviewer's `Standards:` line, applied to retrieval instead of standards: a mandatory
+**Not covered** section carrying `limitedBy` verbatim, the call-budget stop if it hit one, any term that
+returned nothing, and any narrowing of a vague request. A map that says where it ends is useful; one
+that looks complete is dangerous — particularly under `stale` (line numbers already wrong) or
+`degraded` (results possibly wrong, not merely thin).

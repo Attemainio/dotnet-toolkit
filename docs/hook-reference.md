@@ -101,7 +101,9 @@ are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode re
 nothing intercepting it. This is a real hole in read enforcement, not a case the membership check
 allows: `search_index` is still the right tool for finding a declared symbol, and the standing
 instruction in CLAUDE.md covers it, but no hook enforces that here. It matters most for
-`dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright.
+`dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright. `dotnet-explore` closes the
+hole the other way — it is granted neither, and its own instructions forbid `Read` on a `.cs` file at
+all, so for that agent the read guard is a backstop rather than the boundary.
 
 ## `hook hint-reload-new-cs-file` — PostToolUse on `Write`
 

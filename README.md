@@ -92,6 +92,10 @@ it.
 performance, concurrency, security, docs, testing — over one stated scope, against coding standards that
 the writing agent reads too. One source of truth for both sides.
 
+**A read-only exploration agent.** `dotnet-explore` maps a task onto the codebase before anything is
+written: the symbols it touches, who references them, which files and projects are in the blast radius.
+It runs on Haiku with no write tools at all and reports `symbolId`s the main agent can act on directly.
+
 Full tool reference: **[`docs/tools/_index.md`](docs/tools/_index.md)** — the router, one row per
 question, with a detail page per tool.
 
@@ -204,6 +208,7 @@ happens underneath:
 | "Rename this and fix the callers" | `rename_symbol` derives every call-site edit from the compiler's reference graph, then compiles the result in memory; nothing lands unless it holds |
 | "Why is this written this way?" | `search_log` returns the recorded intent from when it was written |
 | "Review this subsystem" | `dotnet-code-review` runs with fresh context against the shared standards |
+| "Where would this feature land?" | `dotnet-explore` maps the task to symbols, use sites and affected projects, and hands back the `symbolId`s — read-only, so it cannot start editing instead |
 
 Guard hooks block `Read`/`Edit` on compiled `.cs` files and tell Claude which tool to use instead, so it
 cannot quietly fall back to text search mid-session.

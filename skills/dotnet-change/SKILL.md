@@ -49,6 +49,11 @@ the same files afterward, but writing to the standard beats fixing to it.
 2. **Know the blast radius.** If you are changing a signature, accessibility, base type or
    interface, call `get_references` first — dependent-compile failures across
    implementations are otherwise guaranteed.
+
+   **Don't know which symbols the task even touches? Delegate the sweep to the `dotnet-explore`
+   agent** rather than fanning out here: it spends the wide `search_index`/`get_references` responses
+   in its own context and returns only `symbolId`s, use sites and affected files. It cannot edit and
+   relays no `contentVersion`, so step 1 stays yours. Skip it when you already know the symbol.
 3. **Check for a summary.** If the symbol you're changing has no `<summary>`
    (`xmlDoc.summary` absent from step 1's fetch, or `search_index`'s `hasSummary` was absent) — add
    one in the *same* patch, following `.claude/rules/xml-documentation.md`'s tag rules: purpose only, 1–2
