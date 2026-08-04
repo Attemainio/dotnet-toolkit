@@ -86,12 +86,13 @@ missing field, since the stale entry deserializes it as `0` — a plausible valu
 - `Output/` — how a response is rendered, never what it contains: `Formats.cs` (the `toon`/`compact`/
   `json` switch and the raw-block splicing TOON needs for source text), `CompactFormatter.cs`,
   `OutlineRenderer.cs`, `SymbolGrouping.cs` (search_index's namespace/file nesting and its collapse
-  rules), and `SymbolShape.cs` (the `L…M…D…C…` retrieval-cost column on a search hit, plus the legend
-  text stated once per envelope). Thresholds live here, not in `Tools/`, so the column and its legend
-  cannot disagree. The column reports under two policies deliberately: `L`/`M` only above a threshold,
-  because `L` is recoverable by arithmetic on the `line`/`endLine` already on the row; `D`/`C` whenever
-  non-zero, because nothing else in the response can recover them, so gating them would make
-  "undocumented" and "not measured" indistinguishable.
+  rules), `ShapeFacts.cs` (the counted facts one symbol's column is built from) and `SymbolShape.cs`
+  (the `P…M…N…L…O…D…C…A…` column on a search hit or a `get_symbol` member row, plus the legend text
+  stated once per envelope). The renderer is deliberately kind-blind and ungated: every non-zero count
+  it is handed is emitted, and **which counts exist is decided where they are gathered** —
+  `ProjectIndex.DocSite` for a search hit, `ContextTools.MemberSiteOf` for a member row. A count left
+  null is one that kind of declaration cannot have, which is what keeps `M` off a method and `P` off a
+  field without a kind-to-letters table here that could drift out of step with either gatherer.
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
 - `Git/` — `GitAnalyzer.cs` (git commands, run in a repository it discovers: the solution root when that
   is inside a work tree, otherwise the repos checked out beneath it) + `SemanticDiff.cs`, behind

@@ -6,74 +6,80 @@ namespace DotnetToolkit.McpServer.Tests;
 public class SymbolShapeTests
 {
     [Fact]
-    public void SmallUndocumentedSymbolGetsNoShapeAtAll()
+    public void SymbolWithNothingToReportGetsNoShapeAtAll()
     {
-        Assert.Null(Gated(line: 750, endLine: 753, memberCount: null));
-        Assert.Null(Gated(line: 10, endLine: 10, memberCount: 3));
+        Assert.Null(SymbolShape.For(default));
+        Assert.Null(SymbolShape.For(new ShapeFacts(MemberCount: 0, DocLines: 0, CommentLines: 0)));
     }
 
     [Fact]
-    public void ThresholdsAreInclusiveOnTheLowSide()
+    public void EveryFactIsReportedAtItsRealValueInAFixedOrder()
     {
-        Assert.Null(Gated(1, SymbolShape.LineThreshold - 1, null));
-        Assert.Equal($"L{SymbolShape.LineThreshold}", Gated(1, SymbolShape.LineThreshold, null));
+        var facts = new ShapeFacts(
+            ParameterCount: 5, MemberCount: 64, NestedCount: 2, LineCount: 1822, LandmarkCount: 11,
+            DocLines: 6, CommentLines: 214, AttributeCount: 3);
 
-        Assert.Null(Gated(1, 1, SymbolShape.MemberThreshold - 1));
-        Assert.Equal($"M{SymbolShape.MemberThreshold}", Gated(1, 1, SymbolShape.MemberThreshold));
-
-        Assert.Null(SymbolShape.For(1, 1, null, docLines: 0, commentLines: SymbolShape.CommentThreshold - 1));
-        Assert.Equal($"C{SymbolShape.CommentThreshold}",
-            SymbolShape.For(1, 1, null, docLines: 0, commentLines: SymbolShape.CommentThreshold));
+        Assert.Equal("P5 M64 N2 L1822 O11 D6 C214 A3", SymbolShape.For(facts));
     }
 
+    // The point of removing the thresholds: a one-line, one-member, one-comment symbol reports exactly
+    // that, so a caller can read the column as a description of the symbol instead of first working out
+    // which of two policies governed each blank.
     [Fact]
-    public void LongDocumentedTypeReportsEveryFactInOrder()
+    public void NoFactIsGatedBySize()
     {
-        Assert.Equal("L1822 M64 D6 C214", SymbolShape.For(25, 1846, 64, docLines: 6, commentLines: 214));
+        Assert.Equal("L1", SymbolShape.For(new ShapeFacts(LineCount: 1)));
+        Assert.Equal("M1", SymbolShape.For(new ShapeFacts(MemberCount: 1)));
+        Assert.Equal("C1", SymbolShape.For(new ShapeFacts(CommentLines: 1)));
+        Assert.Equal("A1", SymbolShape.For(new ShapeFacts(AttributeCount: 1)));
     }
 
     [Fact]
     public void EachPartIsReportedWithoutTheOthers()
     {
-        Assert.Equal("L179", Gated(line: 556, endLine: 734, memberCount: 4));
-        Assert.Equal("M40", Gated(line: 1, endLine: 20, memberCount: 40));
-        Assert.Equal("D9", SymbolShape.For(1, 20, 4, docLines: 9, commentLines: 0));
-        Assert.Equal("C21", SymbolShape.For(1, 20, 4, docLines: 0, commentLines: 21));
+        Assert.Equal("P3", SymbolShape.For(new ShapeFacts(ParameterCount: 3)));
+        Assert.Equal("N4", SymbolShape.For(new ShapeFacts(NestedCount: 4)));
+        Assert.Equal("O7", SymbolShape.For(new ShapeFacts(LandmarkCount: 7)));
+        Assert.Equal("D9", SymbolShape.For(new ShapeFacts(DocLines: 9)));
     }
 
-    // The point of leaving D unconditional: it is recoverable from nothing else on the row, so a symbol
-    // under every gate still reports it rather than leaving "none" and "not measured" identical. C is
-    // gated instead, because acting on it costs the caller their comments - a saving that small does not
-    // buy that loss, so below the threshold the label is not worth printing at all.
+    // A null count is a fact the symbol's kind cannot have; a zero is a measured absence. They render
+    // identically on purpose - nobody is shown "M0" on a method - so only the code that POPULATES the
+    // facts is allowed to tell them apart, and the renderer must elide both.
     [Fact]
-    public void DocsAreReportedBelowEveryThresholdButSparseCommentsAreNot()
+    public void AZeroAndAnInapplicableCountAreBothElided()
     {
-        Assert.Equal("D3", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 0));
-        Assert.Equal("D3", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 1));
-        Assert.Equal("D3 C12", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 12));
+        Assert.Equal("L20", SymbolShape.For(new ShapeFacts(LineCount: 20, MemberCount: 0, LandmarkCount: 0)));
+        Assert.Equal("L20", SymbolShape.For(new ShapeFacts(LineCount: 20, MemberCount: null, LandmarkCount: null)));
     }
 
     [Fact]
     public void UnresolvedOrInvertedSiteReportsNoLineCount()
     {
-        Assert.Null(Gated(line: null, endLine: null, memberCount: null));
-        Assert.Null(Gated(line: 500, endLine: 10, memberCount: null));
+        Assert.Null(ShapeFacts.LinesBetween(null, null));
+        Assert.Null(ShapeFacts.LinesBetween(500, 10));
+        Assert.Equal(1, ShapeFacts.LinesBetween(10, 10));
+        Assert.Equal(4, ShapeFacts.LinesBetween(750, 753));
 
         // A member count still stands on its own when the site did not resolve to a line span.
-        Assert.Equal("M64", Gated(line: null, endLine: null, memberCount: 64));
+        Assert.Equal("M64", SymbolShape.For(new ShapeFacts(
+            MemberCount: 64, LineCount: ShapeFacts.LinesBetween(null, null))));
     }
 
-    // The legend spells both thresholds out for the caller, and const interpolation cannot derive them
-    // from the constants, so nothing but this keeps the two in step after a threshold is ever retuned.
+    // The legend is the caller's only key to the column, so it has to name every letter the renderer can
+    // emit, in the order it emits them, and nothing it cannot - a letter added without a legend entry is
+    // an unreadable column, and a legend entry with no letter behind it is a promise nothing keeps.
     [Fact]
-    public void LegendQuotesTheThresholdsItGatesOn()
+    public void LegendNamesExactlyTheLettersTheRendererCanEmit()
     {
-        Assert.Contains($"L=lines({SymbolShape.LineThreshold}+)", SymbolShape.Legend);
-        Assert.Contains($"M=members({SymbolShape.MemberThreshold}+)", SymbolShape.Legend);
-        Assert.Contains($"C=commentlines({SymbolShape.CommentThreshold}+)", SymbolShape.Legend);
-    }
+        var emitted = SymbolShape.For(new ShapeFacts(
+            ParameterCount: 1, MemberCount: 1, NestedCount: 1, LineCount: 1, LandmarkCount: 1,
+            DocLines: 1, CommentLines: 1, AttributeCount: 1))!;
 
-    /// <summary>A hit with neither docs nor comments, where only the gated facts can fire.</summary>
-    private static string? Gated(int? line, int? endLine, int? memberCount) =>
-        SymbolShape.For(line, endLine, memberCount, docLines: 0, commentLines: 0);
+        var rendered = emitted.Split(' ').Select(part => part[0]);
+        var declared = SymbolShape.Legend.Split(';')[0].Split(' ').Select(part => part[0]);
+
+        Assert.Equal(rendered, declared);
+        Assert.Contains("absent=none", SymbolShape.Legend);
+    }
 }

@@ -425,21 +425,51 @@ public sealed class ProjectIndex : IDisposable
     /// <summary>Where a declaration sits, its extracted XML doc &lt;summary&gt; text if any, its declaration's
     /// own end line, the namespace its declaring type belongs to, which XML doc sections beyond
     /// summary it carries (comma-joined tags, e.g. "remarks,returns") for search_index's xmlDoc filter,
-    /// how many members a type declares, and how many lines its docs and its comments occupy.</summary>
+    /// and every count search_index's shape column is rendered from.</summary>
     /// <remarks>
-    /// <paramref name="MemberCount"/> is null on a member site, which has no members of its own to count.
-    /// It is read straight off the outline the index already built, so it costs nothing to carry; it
-    /// exists so search_index can tell a caller that a hit is worth navigating by member list rather than
-    /// fetching whole.
+    /// The counts split into two groups on purpose. <paramref name="MemberCount"/>,
+    /// <paramref name="NestedCount"/>, <paramref name="ParameterCount"/> and
+    /// <paramref name="LandmarkCount"/> are NULLABLE, and null means the fact cannot apply to this kind
+    /// of declaration — a member has no members, a field has no parameter list, a delegate has no member
+    /// list a caller could navigate by. <paramref name="DocLines"/>, <paramref name="CommentLines"/> and
+    /// <paramref name="AttributeCount"/> are plain counts every declaration can have, where zero means it
+    /// genuinely has none. Both render as an absent letter; the distinction exists so that this is the
+    /// only place deciding which letters a kind can ever show.
     ///
-    /// <paramref name="DocLines"/> and <paramref name="CommentLines"/> are counts, not nullable flags:
-    /// zero means the declaration genuinely has none, which is why search_index reports them on every hit
-    /// instead of only above a threshold. On a TYPE, <paramref name="CommentLines"/> is the transitive
-    /// total across its members — see <see cref="OutlineBuilder.CommentLines"/>.
+    /// They are read straight off the outline the index already built, so they cost nothing to carry.
+    /// On a TYPE, <paramref name="CommentLines"/> is the transitive total across its members — see
+    /// <see cref="OutlineBuilder.CommentLines"/>.
     /// </remarks>
     public sealed record DocSite(
         string File, int Line, int EndLine, string? Doc, string Namespace,
-        string? DocSections = null, int? MemberCount = null, int DocLines = 0, int CommentLines = 0);
+        string? DocSections = null, int? MemberCount = null, int DocLines = 0, int CommentLines = 0,
+        int? NestedCount = null, int? ParameterCount = null, int? LandmarkCount = null,
+        int AttributeCount = 0);
+
+    /// <summary>Members a type entry declares, or null for a delegate.</summary>
+    /// <param name="type">The outline entry to count.</param>
+    /// <returns>The declared-member count, or null when a member list is meaningless for the kind.</returns>
+    /// <remarks>
+    /// A delegate's outline carries one synthesized entry standing for its own signature, so reporting it
+    /// as "1 member" would invite a caller to fetch a member list that does not exist.
+    /// </remarks>
+    private static int? MemberCountOf(TypeEntry type) => type.Kind == "D" ? null : type.Members.Count;
+
+    /// <summary>Parameter count of a delegate's signature, or null for any other kind of type.</summary>
+    /// <param name="type">The outline entry to read.</param>
+    /// <returns>The delegate's declared parameter count, or null.</returns>
+    private static int? DelegateArity(TypeEntry type) =>
+        type.Kind == "D" && type.Members.Count > 0
+        && SymbolResolver.ParameterArity(type.Members[0].Signature) is var arity and >= 0
+            ? arity
+            : null;
+
+    /// <summary>The member's parameter count, or null for a kind that declares no parameter list.</summary>
+    /// <param name="member">The outline entry to read.</param>
+    /// <param name="arity">Its already-computed arity, <c>-1</c> when its signature has no parameter list.</param>
+    /// <returns>The parameter count, or null so a field never reports a structural zero.</returns>
+    private static int? MemberArity(MemberEntry member, int arity) =>
+        arity >= 0 && member.Kind is "M" or "K" ? arity : null;
 
     /// <summary>
     /// Resolves fully-qualified names to their declaration site, in one pass over the index.
@@ -507,14 +537,18 @@ public sealed class ProjectIndex : IDisposable
                     type.FqName,
                     new DocSite(
                         file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections,
-                        type.Members.Count, type.DocLines, type.CommentLines),
+                        MemberCountOf(type), type.DocLines, type.CommentLines,
+                        NestedCount: type.Nested.Count, ParameterCount: DelegateArity(type),
+                        AttributeCount: type.AttributeCount),
                     -1, null, isType: true);
                 foreach (var member in type.Members)
                 {
+                    var arity = SymbolResolver.ParameterArity(member.Signature);
                     var site = new DocSite(
                         file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections,
-                        MemberCount: null, member.DocLines, member.CommentLines);
-                    var arity = SymbolResolver.ParameterArity(member.Signature);
+                        MemberCount: null, member.DocLines, member.CommentLines,
+                        ParameterCount: MemberArity(member, arity), LandmarkCount: member.LandmarkCount,
+                        AttributeCount: member.AttributeCount);
                     var parameterTypes = SymbolResolver.SignatureParameterTypeKey(member.Signature);
                     Offer($"{type.FqName}.{member.Name}", site, arity, parameterTypes, isType: false);
 

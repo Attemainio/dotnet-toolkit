@@ -82,9 +82,12 @@ mid-chain is load-bearing on a cold call. State the *conditional* — suppress w
 ## 3d · Advice: does a field that tells the caller what to do next actually pay?
 
 Most response fields are facts. A few are **advice** — they exist only to change the caller's next call.
-`search_index`'s `shape` column is the current one (`L`/`M` gated at 150 lines / 20 members, `D`/`C`
-whenever non-zero; semantics in `docs/tools/search_index.md`). Advice is the only field class that can be
-*wrong* rather than merely expensive, so it gets its own test: follow it, ignore it, measure both.
+`search_index`'s `shape` column is the current one (`P`/`M`/`N`/`L`/`O`/`D`/`C`/`A`, each emitted at its
+real value whenever non-zero and applicable; semantics in `docs/tools/search_index.md`). Advice is the
+only field class that can be *wrong* rather than merely expensive, so it gets its own test: follow it,
+ignore it, measure both. Since nothing is threshold-gated any more, the question is no longer "did the
+label fire correctly" but "at what value does following it start to pay" — report the crossover, not a
+verdict.
 
 Take a `search_index` result with at least 8 hits spanning labelled and unlabelled rows — Family B's
 matrix keeps one for this. For each hit, run **both** routes to the same stated outcome and record
@@ -92,11 +95,14 @@ matrix keeps one for this. For each hit, run **both** routes to the same stated 
 
 | Label | Outcome wanted | Route it advises | Compare against |
 | --- | --- | --- | --- |
-| `L…` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source"` |
+| `L…` with a large `O…` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source"` |
+| `L…` with a small `O…` | what this member does | `include: "source:code"` whole | `bodyOutline` → `source:code@a-b` |
 | `M…` | what is on this type | `include: "members"` | `include: "source"` |
+| `N…` | what is nested inside | `get_scope` on the file | `include: "source"` |
 | `D…` | the implementation only | `include: "source:code"` | `include: "source:full"` |
 | `C…` | what the body does | `include: "source:code-comments"` | `include: "source:code"` |
-| none | what this does | default `include` | any labelled route above |
+| `A…` | which attributes it carries | `include: "attributes"` | `include: "source"` |
+| small `L`, nothing else | what this does | default `include` | any labelled route above |
 
 Four outcomes, and **three of them are findings**:
 

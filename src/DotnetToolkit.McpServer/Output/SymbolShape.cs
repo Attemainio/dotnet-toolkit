@@ -1,74 +1,61 @@
 namespace DotnetToolkit.McpServer.Output;
 
 /// <summary>
-/// Renders a search-index hit's retrieval shape — how long it is, how many members it declares, and how
-/// many lines of docs and comments it carries — into the terse <c>L1822 M64 D6 C214</c> column
-/// search_index puts beside the hit.
+/// Renders a symbol's retrieval shape — what its own surface is, what fetching it costs, and what that
+/// fetch would contain — into the terse <c>P5 L16 O4 D9</c> column search_index puts beside a hit and
+/// get_symbol puts on a member row.
 /// </summary>
 /// <remarks>
-/// The four facts are reported under two different policies, for one reason.
+/// Every fact is reported at its measured value, and a letter is absent only when that fact is zero or
+/// cannot apply to the symbol's kind. There is no threshold anywhere in here, deliberately: a shape is a
+/// DESCRIPTION of the symbol, not an alarm that did or did not fire, and a caller cannot reason about a
+/// column whose blank means "small" on one letter and "none" on the next. The earlier design gated
+/// lines, members and comments while leaving docs ungated, so an absent <c>L</c> was unreadable without
+/// first knowing which of the two policies governed it.
 ///
-/// <c>L</c>, <c>M</c> and <c>C</c> are THRESHOLD-GATED, emitted only once the symbol is big enough that
-/// the label changes the next call. <c>L</c> is recoverable by arithmetic on the line/endLine the hit
-/// already carries, so printing it always would restate a subtraction the caller can do; printing it on
-/// the few rows where that subtraction changes the next call is what earns its place. The thresholds are
-/// retrieval decisions, not style preferences: above them, <c>get_symbol</c> is cheaper called with
-/// <c>include:"members"</c>, a <c>source:code@from-to</c> range or <c>source:code-comments</c> than with
-/// the default whole fetch. <c>C</c>'s threshold is the highest bar of the three because acting on it
-/// COSTS the caller something — the comments themselves — so a rounding error is not enough; measured
-/// against a real repository it fired on a quarter of all hits to save 1.19x, which is not that trade.
+/// Which letters a kind can show is decided where the facts are gathered, not here — see
+/// <see cref="ShapeFacts"/>. This type only orders and renders them, so there is no kind-to-letters
+/// table to drift out of step with the gatherers.
 ///
-/// <c>D</c> alone is UNCONDITIONAL, elided only at zero. It is not derivable from anything else in the
-/// response, and it is the label that most reliably pays: a modest 1.6x across the great majority of
-/// hits, with nothing lost, since <c>source:code</c> drops only a doc comment <c>xmlDoc</c> serves more
-/// cheaply anyway. So a blank <c>D</c> is a measured zero, while a blank <c>L</c>/<c>M</c>/<c>C</c> only
-/// ever means "below the threshold".
+/// The order is what-it-is, how-big, what-is-inside, what-is-attached: <c>P</c>/<c>M</c>/<c>N</c> name
+/// the symbol's own surface, <c>L</c>/<c>O</c> say what fetching it costs, and <c>D</c>/<c>C</c>/<c>A</c>
+/// say what that fetch would contain.
 /// </remarks>
 public static class SymbolShape
 {
-    /// <summary>Line count at or above which fetching the symbol whole is worth reconsidering.</summary>
-    public const int LineThreshold = 150;
-
-    /// <summary>Declared-member count at or above which the member list is the better way in.</summary>
-    public const int MemberThreshold = 20;
-
-    /// <summary>Comment-line count at or above which dropping the comments is worth what it loses.</summary>
-    public const int CommentThreshold = 10;
-
-    /// <summary>Legend for the shape column, emitted once per response rather than per row.</summary>
+    /// <summary>Legend for the shape column, emitted once per response rather than repeated per row.</summary>
     /// <remarks>
-    /// States both policies, because a blank means different things under each: no
-    /// <c>L</c>/<c>M</c>/<c>C</c> is "below the threshold", while no <c>D</c> is a measured zero. The
-    /// parenthesized numbers mirror <see cref="LineThreshold"/>, <see cref="MemberThreshold"/> and
-    /// <see cref="CommentThreshold"/>, which const interpolation cannot express over an int — a test
-    /// asserts they stay in step.
+    /// Names every letter <see cref="For"/> can emit, in the order it emits them, and states the one
+    /// absence rule that replaced the old split between gated and ungated facts. A test asserts the
+    /// legend and the renderer stay in step.
     /// </remarks>
-    public const string Legend = "L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero";
+    public const string Legend =
+        "P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none";
 
     /// <summary>
-    /// Builds the shape string for one hit, or null when it has nothing to report: a symbol under every
-    /// threshold that carries no docs.
+    /// Builds the shape string for one symbol, or null when it has nothing at all to report — every fact
+    /// either zero or inapplicable, which in practice means a hit whose location never resolved.
     /// </summary>
-    /// <param name="line">The declaration's first line, or null for a hit whose site did not resolve.</param>
-    /// <param name="endLine">The declaration's last line, or null as for <paramref name="line"/>.</param>
-    /// <param name="memberCount">Members the symbol declares; null for anything but a type.</param>
-    /// <param name="docLines">Lines of XML doc comment on the declaration; 0 for none.</param>
-    /// <param name="commentLines">Lines of non-doc comment; on a type, the transitive total.</param>
-    /// <returns><c>"L1822 M64 D6 C214"</c>, any subset of it, or null when every part was elided.</returns>
-    public static string? For(int? line, int? endLine, int? memberCount, int docLines, int commentLines)
+    /// <param name="facts">The counted facts to render; a null count is elided as inapplicable.</param>
+    /// <returns><c>"P5 L16 O4 D9"</c>, any subset of it, or null when every part was elided.</returns>
+    public static string? For(in ShapeFacts facts)
     {
-        var lines = line is { } start && endLine is { } end && end >= start ? end - start + 1 : (int?)null;
-
-        var parts = new List<string>(4);
-        if (lines >= LineThreshold)
-            parts.Add($"L{lines}");
-        if (memberCount >= MemberThreshold)
-            parts.Add($"M{memberCount}");
-        if (docLines > 0)
-            parts.Add($"D{docLines}");
-        if (commentLines >= CommentThreshold)
-            parts.Add($"C{commentLines}");
+        var parts = new List<string>(8);
+        Add(parts, 'P', facts.ParameterCount);
+        Add(parts, 'M', facts.MemberCount);
+        Add(parts, 'N', facts.NestedCount);
+        Add(parts, 'L', facts.LineCount);
+        Add(parts, 'O', facts.LandmarkCount);
+        Add(parts, 'D', facts.DocLines);
+        Add(parts, 'C', facts.CommentLines);
+        Add(parts, 'A', facts.AttributeCount);
 
         return parts.Count == 0 ? null : string.Join(' ', parts);
+
+        static void Add(List<string> parts, char letter, int? count)
+        {
+            if (count is > 0)
+                parts.Add($"{letter}{count}");
+        }
     }
 }

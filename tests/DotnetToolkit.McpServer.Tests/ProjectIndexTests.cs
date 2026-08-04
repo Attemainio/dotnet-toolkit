@@ -216,32 +216,58 @@ public sealed class ProjectIndexTests : IDisposable
     }
 
     /// <summary>
-    /// The member count exists so search_index can flag a type better navigated by its member list than
-    /// fetched whole. A member site has no members of its own and must stay null rather than 0, which
-    /// would read as "a type that declares nothing".
+    /// Which shape letters a kind can ever show is decided here, by which counts the site carries: a
+    /// count left null is one the declaration cannot have, and only a real zero is a measured absence.
+    /// A member site has no members of its own and must stay null rather than 0, which would read as "a
+    /// type that declares nothing".
     /// </summary>
     [Fact]
-    public async Task DocSiteCountsATypesMembersAndLeavesAMembersOwnCountNull()
+    public async Task DocSiteCarriesOnlyTheCountsEachKindCanHave()
     {
         File.WriteAllText(Path.Combine(_root, "src", "Counted.cs"), """
             namespace N;
             public class Counted
             {
-                public int A() => 1;
+                public int A(int x, int y) => x > y ? x : y;
                 public int B() => 2;
                 public int C { get; set; }
+                public class Inner { }
             }
+            public delegate int Chooser(int a, int b);
             """);
         var index = await CreateReadyIndexAsync();
 
         var located = index.LocateWithDocs(new HashSet<string>(StringComparer.Ordinal)
         {
             "N.Counted",
-            "N.Counted.A()",
+            "N.Counted.A(int,int)",
+            "N.Counted.C",
+            "N.Chooser",
         });
 
-        Assert.Equal(3, located["N.Counted"].MemberCount);
-        Assert.Null(located["N.Counted.A()"].MemberCount);
+        var type = located["N.Counted"];
+        Assert.Equal(3, type.MemberCount);
+        Assert.Equal(1, type.NestedCount);
+        Assert.Null(type.ParameterCount);
+        Assert.Null(type.LandmarkCount);
+
+        var method = located["N.Counted.A(int,int)"];
+        Assert.Null(method.MemberCount);
+        Assert.Null(method.NestedCount);
+        Assert.Equal(2, method.ParameterCount);
+        Assert.Equal(0, method.LandmarkCount);
+
+        // An auto-property has neither a parameter list nor a body to outline, so both stay null rather
+        // than reporting a structural zero.
+        var property = located["N.Counted.C"];
+        Assert.Null(property.ParameterCount);
+        Assert.Null(property.LandmarkCount);
+
+        // A delegate's outline carries one synthesized entry for its own signature. That is a parameter
+        // list, not a member list a caller could navigate by.
+        var chooser = located["N.Chooser"];
+        Assert.Null(chooser.MemberCount);
+        Assert.Equal(2, chooser.ParameterCount);
     }
 
     [Fact]

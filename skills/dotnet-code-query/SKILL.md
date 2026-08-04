@@ -82,19 +82,24 @@ smaller. Details in `search_index.md` / `get_symbol.md`.
 
 ## Let the hit tell you how to fetch it
 
-A `search_index` hit carries a `shape` describing what fetching it costs — `L` lines, `M` members,
-`D` doc lines, `C` comment lines — with the legend stated once per response.
+Every `search_index` hit — and every `get_symbol` `members` row — carries a `shape` describing what the
+symbol is and what fetching it costs, with the legend stated once per response: `P` params, `M` members,
+`N` nested types, `L` lines, `O` body-outline landmarks, `D` doc lines, `C` comment lines,
+`A` attributes.
 
-- `L…` (150+) → `include: "bodyOutline"` to map it, then `source:code@from-to` for the part you want.
-- `M…` (20+) → `include: "members"` and navigate by the list.
-- a large `D…` → `include: "source:code"` skips the doc the default fetch would carry.
-- `C…` (10+) → `include: "source:code-comments"` when inspecting behavior, not rationale.
-- no `shape` at all → small, undocumented, uncommented; `get_symbol(symbol: id)` is already right.
+- big `L` + big `O` → `include: "bodyOutline"` to map it, then `source:code@from-to` for the one part
+  you want. Big `L` + small `O` is one long linear block: fetch it.
+- `M…` → `include: "members"`; each row states its own `line` and `shape`, so the next hop is one call.
+- a big `D…` → `include: "source:code"` skips the doc the default fetch would carry.
+- a big `C…` → `include: "source:code-comments"` when inspecting behavior, not rationale.
+- `A…` → `include: "attributes"` reads them without a `source` fetch.
+- small `L` and nothing else → `get_symbol(symbol: id)` is already right.
 - About to **edit** it → `include: "all"` whatever the shape says, for the body-carrying
   `contentVersion`. The shape is about reading cost; it never overrides the write path.
 
-`L`/`M`/`C` appear only above their thresholds, so a blank there means "below it". `D` appears whenever
-non-zero, so a blank there is a measured zero. On a type, `C` totals its members' comments too.
+**Nothing is threshold-gated.** A letter is absent only when its count is zero or the fact cannot apply
+to that kind — a method has no `M`, a field has no `P`, an absent `O` means no body at all. On a type,
+`C` totals its members' comments too.
 
 ## Gate expansion on referenceCounts
 

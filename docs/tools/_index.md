@@ -79,11 +79,11 @@ Fields that are absent carry no information: `limitedBy` appears only when somet
 answer, `changed` only when `false`, `truncated` only when true. **Absent is not zero** — an absent
 `tests` means "not computed", not "no tests".
 
-`search_index`'s `shape` is the one deliberate exception, and its legend states which half of it you
-are reading. The `L`/`M` halves are emitted only above a size threshold, so their absence means "below
-150 lines / 20 members", not "not computed". The `D`/`C` halves (doc lines, comment lines) are emitted
-whenever non-zero, so their absence **does** mean zero — the only field in the whole surface where
-absent is a measurement rather than a silence. Everything else follows the rule above.
+`search_index`'s `shape` (and the same column on `get_symbol`'s `members` rows) is the one deliberate
+exception, and its legend says so: every letter is emitted at its real value, so an absent letter means
+the count is zero or the fact cannot apply to that kind of symbol — never "not computed". It is the one
+place in the whole surface where absence is a measurement rather than a silence. Everything else
+follows the rule above.
 
 The write path states the same distinction positively rather than by omission: `validate_patch` and
 `rename_symbol` return a **`checks`** block on every call, listing which validation rungs ran and over

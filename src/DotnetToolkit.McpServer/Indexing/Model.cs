@@ -5,6 +5,11 @@ namespace DotnetToolkit.McpServer.Indexing;
 /// C class, I interface, S struct, R record, E enum, D delegate,
 /// M method, K constructor, P property/indexer, F field/enum-member, V event.
 /// </summary>
+/// <remarks>
+/// <c>LandmarkCount</c> is null for a member with no executable body of its own — a field, an event, an
+/// auto-property, an abstract or partial method. "No landmarks" and "nowhere for a landmark to be" are
+/// different facts, and search_index's shape column is entitled to report only the first.
+/// </remarks>
 public sealed record MemberEntry(
     string Kind,
     string Name,
@@ -15,7 +20,9 @@ public sealed record MemberEntry(
     bool IsPublic,
     string? DocSections = null,
     int DocLines = 0,
-    int CommentLines = 0);
+    int CommentLines = 0,
+    int AttributeCount = 0,
+    int? LandmarkCount = null);
 
 /// <summary>A syntax-only outline of one type declaration, produced by <see cref="OutlineBuilder"/>.</summary>
 public sealed record TypeEntry(
@@ -33,7 +40,8 @@ public sealed record TypeEntry(
     bool IsPublic,
     string? DocSections = null,
     int DocLines = 0,
-    int CommentLines = 0);
+    int CommentLines = 0,
+    int AttributeCount = 0);
 
 /// <summary>A cached, syntax-only outline of one source file's namespaces and types.</summary>
 public sealed record FileEntry(
@@ -56,9 +64,11 @@ public sealed class IndexDocument
     /// records as an empty type list. 5 scoped that to files a project actually compiles, so a cache
     /// written by 4 holds entries for a test fixture's and a loose script's Program too. 6 added
     /// DocLines/CommentLines, which a cache written by 5 deserializes as 0 — indistinguishable from a
-    /// genuinely undocumented, uncommented symbol, and unfixed until each file's mtime changes.
+    /// genuinely undocumented, uncommented symbol, and unfixed until each file's mtime changes. 7 added
+    /// AttributeCount and LandmarkCount, which a cache written by 6 deserializes as 0 and null: an
+    /// attributed method would report no attributes and no body outline at all.
     /// </remarks>
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

@@ -388,6 +388,61 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// Being told a type has M members is only useful if the member list then says which one to open and
+    /// where it is. A row that carried only a name and a version left that second hop with nothing to go
+    /// on, so every row now states its own line and its own shape.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_MemberRowsCarryTheirOwnLocationAndShape()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Widget", "members")).GetProperty("content");
+
+        var rows = TableRows(content.GetProperty("members")).ToList();
+        Assert.NotEmpty(rows);
+        Assert.All(rows, row => Assert.True(row.ContainsKey("line")));
+        Assert.Contains(rows, row => row.TryGetValue("shape", out var s) && s.GetString() is { Length: > 0 });
+
+        // The legend is stated once beside the list, exactly as search_index states it once per response.
+        Assert.Equal(SymbolShape.Legend, content.GetProperty("shape").GetString());
+    }
+
+    /// <summary>
+    /// A member's file is only news when it is not the type's own — which is exactly the partial-class
+    /// case, and nowhere else. Emitting it on every row would repeat the type's own path per member.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_MemberRowNamesItsFileOnlyWhenItDiffersFromTheTypes()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", "members")).GetProperty("content");
+
+        var rows = TableRows(content.GetProperty("members")).ToList();
+        Assert.Contains(rows, row => row.ContainsKey("file"));
+        Assert.Contains(rows, row => !row.ContainsKey("file"));
+    }
+
+    /// <summary>
+    /// Two producers render the same column: search_index measures a hit off the syntax index, get_symbol
+    /// measures a member off its own syntax. They must agree, or a caller comparing the two reads a
+    /// difference that is not in the code.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_MemberShapeAgreesWithSearchIndexOnTheSameSymbol()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Widget", "members")).GetProperty("content");
+        var member = TableRows(content.GetProperty("members"))
+            .Single(row => row["displayString"].GetString()!.Contains("Spin", StringComparison.Ordinal));
+
+        var hits = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", limit: 20, groupBy: "none"));
+        var hit = TableRows(hits.GetProperty("items"))
+            .Single(row => row["symbolId"].GetString() == member["symbolId"].GetString());
+
+        Assert.Equal(
+            hit.TryGetValue("shape", out var fromSearch) ? fromSearch.GetString() : null,
+            member.TryGetValue("shape", out var fromMember) ? fromMember.GetString() : null);
+    }
+
+    /// <summary>
     /// A test caller is identified by the attribute on its own declaration, not by living in a test
     /// project. The previous project-level check read Project.MetadataReferences, so it depended on how
     /// completely MSBuild had loaded that project — and nothing could ever recompute it, because the
@@ -1308,17 +1363,17 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// The shape column's two halves report under different policies, and the fixture exercises both:
-    /// nothing it declares crosses the line or member threshold, so no hit may carry L or M, while the
-    /// unconditional D/C halves still fire on its one-line-documented members.
+    /// The shape column describes every hit rather than firing above a threshold, so the fixture's small,
+    /// one-line-documented declarations must each report their own real counts — where the gated design
+    /// left all of them with no column at all.
     /// </summary>
     /// <remarks>
-    /// The legend is asserted by value rather than by presence on purpose. It is the only thing telling a
-    /// caller that a missing D means a measured zero and a missing L only means "below the threshold", so
-    /// a reword that quietly drops that distinction has to fail somewhere — here.
+    /// The legend is asserted by value rather than by presence on purpose. It is the caller's only key to
+    /// the column, and the only thing stating that an absent letter means none, so a reword that quietly
+    /// drops that distinction has to fail somewhere — here.
     /// </remarks>
     [Fact]
-    public async Task SearchIndex_GatesLinesAndMembersButAlwaysReportsDocsAndComments()
+    public async Task SearchIndex_DescribesEveryHitRatherThanOnlyLargeOnes()
     {
         var root = Root(await ContextTools.SearchIndex(
             _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin Widget Undocumented",
@@ -1330,8 +1385,11 @@ public sealed class WorkspaceIntegrationTests
             .Select(hit => hit.TryGetValue("shape", out var s) ? s.GetString() : null)
             .ToList();
 
-        Assert.DoesNotContain(shapes, s => s is not null && (s.Contains('L') || s.Contains('M')));
-        Assert.Contains(shapes, s => s is not null && s.StartsWith('D'));
+        Assert.NotEmpty(shapes);
+        Assert.All(shapes, s => Assert.NotNull(s));
+        Assert.Contains(shapes, s => s!.Contains('L'));
+        Assert.Contains(shapes, s => s!.Contains('M'));
+        Assert.Contains(shapes, s => s!.Contains('D'));
     }
 
     /// <summary>

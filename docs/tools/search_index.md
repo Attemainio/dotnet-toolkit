@@ -57,76 +57,89 @@ spans.
 whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
 whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration, or
 whether a large `endLine - line` span is worth mapping with `bodyOutline` first (see "When to reach
-for `bodyOutline`" below) before deciding how much of `source` to fetch. You do not have to do that
-subtraction yourself on the hits where it changes anything — see the `shape` column below.
+for `bodyOutline`" below) before deciding how much of `source` to fetch. You never have to do that
+subtraction yourself — the `shape` column below states the line count on every hit, alongside the
+landmark count that says whether the span is worth outlining at all.
 
 Only split into separate calls when you need different `kinds` filters.
 
-### The `shape` column — what a hit costs to fetch
+### The `shape` column — what a hit is, and what fetching it costs
 
-A hit carries a `shape` whenever it has something to report about its own retrieval cost, and the
-response states the legend once rather than repeating advice on every row. Four facts, one string:
+Every hit whose location resolved carries a `shape`, and the response states the legend once rather
+than repeating advice on every row. Eight facts, one string, **none of them gated by size**:
 
-| Letter | Means | Emitted |
+| Letter | Means | On which kinds |
 |---|---|---|
-| `L` | the declaration's own line count | only at 150+ |
-| `M` | members a type declares (absent on non-types) | only at 20+ |
-| `D` | lines of XML doc comment | whenever non-zero |
-| `C` | lines of non-doc comment (`//`, `/* */`) | only at 10+ |
+| `P` | declared parameters | method, constructor, operator, delegate |
+| `M` | members a type declares, private ones included | class, struct, record, interface, enum |
+| `N` | types declared inside this one | class, struct, record, interface |
+| `L` | the declaration's own line count | anything with a resolved location |
+| `O` | landmarks `get_symbol include:"bodyOutline"` would report — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` | anything with an executable body |
+| `D` | lines of XML doc comment | any |
+| `C` | lines of non-doc comment (`//`, `/* */`) | any |
+| `A` | C# attributes applied to the declaration | any |
 
-Against the `Sample.Lib` test fixture, whose declarations are all small and one-line-documented:
+They are emitted in that order, and **a letter is absent only when its count is zero or the fact
+cannot apply to that kind of symbol.** There is one absence rule, not two: a missing `M` on a method
+means a method has no members, a missing `M` on a class means the class declares none, and neither
+means "below some threshold". That is the whole reason to read the column — it *describes* the symbol
+rather than warning you about it.
+
+Against the `Sample.Lib` test fixture:
 
 ```
 search_index(query: "Widget Spin Undocumented", groupBy: "none", limit: 6)
 ```
 
 ```json
-{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero",
+{"shape":"P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none",
  "items":[
    {"symbolId":"sym_...","kind":"Interface","name":"Sample.Lib.IWidget",
-    "file":"Lib/Widget.cs","line":3,"endLine":6},
+    "file":"Lib/Widget.cs","line":3,"endLine":6,"shape":"M1 L4"},
    {"symbolId":"sym_...","kind":"Class","name":"Sample.Lib.Widget",
-    "file":"Lib/Widget.cs","line":9,"endLine":13,"shape":"D1"},
+    "file":"Lib/Widget.cs","line":9,"endLine":13,"shape":"M1 L5 D1"},
    {"symbolId":"sym_...","kind":"Method","name":"Sample.Lib.Widget.Spin",
-    "file":"Lib/Widget.cs","line":12,"endLine":12,"shape":"D1"},
+    "file":"Lib/Widget.cs","line":12,"endLine":12,"shape":"P1 L1 D1"},
    {"symbolId":"sym_...","kind":"Method","name":"Sample.Lib.DocSectionsFixture.Undocumented",
-    "file":"Lib/Widget.cs","line":42,"endLine":42}]}
+    "file":"Lib/Widget.cs","line":42,"endLine":42,"shape":"L1"}]}
 ```
 
-Nothing there crosses a size threshold, so no `L` or `M` — but `Widget` and `Spin` each report `D1`
-for their one-line `/// <summary>`, and `IWidget` and `Undocumented`, which carry no doc at all, report
-nothing.
+Read the differences: `Widget` and `IWidget` each declare one member; `Spin` takes one parameter and
+has no members to speak of, because a method cannot; `Undocumented` is one line with nothing on it.
+None of that is a warning, and none of it needed a threshold to be worth stating.
 
-#### Why two policies
+#### Which letters go with which kind
 
-`L` and `M` are gated because **`L` is recoverable by arithmetic** on the `line`/`endLine` already on
-the row. Emitting it everywhere would spend tokens restating a subtraction you can do; spending them
-only where that subtraction changes the next call is what earns the column its place.
+The kind decides which facts even exist, so the column reads differently per kind and that is the
+point:
 
-`C` is gated for a different reason: **acting on it costs you something.** `source:code-comments` drops
-the rationale along with the noise, so the saving has to be worth that loss. Measured on a real
-repository, a `C` firing at any non-zero count fired on a quarter of all hits to save 1.19× — not a
-trade worth printing a label for, which is why the threshold is 10 lines.
+| Kind | Typical shape | What it tells you |
+|---|---|---|
+| class / struct / record | `M12 N2 L180 D6 C14 A1` | how wide the surface is, and whether the type is a container of nested types |
+| interface | `M8 L40 D12` | the size of the contract; `L` here is mostly signatures and docs |
+| enum | `M14 L20 D2` | `M` counts enum members |
+| delegate | `P3 L2 D4` | `P` is its signature's arity; a delegate has no member list to fetch |
+| method / constructor / operator | `P4 L84 O11 D6 A1` | arity, size, and how branchy the body is |
+| property | `L6 D3 A1` | an auto-property is `L1`; anything longer has a real accessor body |
+| field / event | `L1 D2 A1` | there is nothing else about them worth a next call |
 
-`D` alone is **unconditional, elided only at zero.** It is not derivable from anything else in the
-response, and it is the label that most reliably pays: a modest 1.6× across the great majority of hits,
-losing nothing, since `source:code` drops only a doc comment `xmlDoc` serves more cheaply anyway. So the
-legend says it: an absent `D` is a measured zero, while an absent `L`/`M`/`C` only means "below the
-threshold".
-
-They are data rather than alarms. `L`/`M` say *don't fetch this whole*; `D`/`C` say *here is what the
-fetch would contain*, so you can reach for `source:code-comments` or `source:code` on evidence rather
-than on a guess.
+`M` and `P` are mutually exclusive by construction, so a row never claims a method has members or a
+field has parameters. `O` appears only where there is a body to outline — a `0` there means "a body
+with no branching", and an absent `O` means "no body at all" (both render as nothing, and neither is
+a reason to call `bodyOutline`).
 
 #### What to do with one
 
 | Shape | Next call |
 |---|---|
-| absent entirely | `get_symbol(symbol: id)` — small, undocumented, uncommented; the default fetch is right |
-| `L…` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the region you want |
-| `M…` | `get_symbol(include: "members")` — navigate by member list rather than reading the type through |
-| a large `D…` | the default fetch already carries that doc; `include: "source:code"` skips it when you only want the implementation |
-| `C…` (only ever emitted at 10+) | `include: "source:code-comments"` when you are inspecting behavior rather than reading rationale |
+| small `L`, no `M`/`O` | `get_symbol(symbol: id)` — the default fetch is right |
+| a big `L` with a big `O` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the one landmark you want |
+| a big `L` with a small `O` | one long linear block; `source:code` whole, or `source:code@from-to` if you already know the region |
+| `M…` | `get_symbol(include: "members")` — navigate by member list rather than reading the type through. Each row states its own `line` and its own shape, so the next hop is one call, not two |
+| `N…` | the nested types are separate symbols; `get_scope` or a `pathPrefix` search reaches them directly |
+| a big `D…` | the default fetch already carries that doc; `include: "source:code"` skips it when you only want the implementation |
+| a big `C…` | `include: "source:code-comments"` when you are inspecting behavior rather than reading rationale — it drops the rationale along with the noise, so weigh the count first |
+| `A…` | `include: "attributes"` reads them without a `source` fetch — the cheap way to check `[Authorize]`/`[Obsolete]` presence |
 | any, but you are about to **edit** it | `include: "all"` regardless of shape — a body patch needs the body-carrying `contentVersion`, which the default fetch does not lease |
 
 #### Two counts that overlap on purpose
@@ -143,14 +156,13 @@ doc comments are a distinct trivia kind and are counted only by `D`.
 
 #### Rendering
 
-When no hit in a table reports anything, that table has no `shape` column at all. When one does, the
-default `toon` rendering pads the *other rows of that same table* to an empty cell rather than lose the
-array its tabular form — which is why the legend states what a blank means, not only what a value
-means.
+Only a hit whose location never resolved has nothing to report, so in practice every table carries the
+column. Where a table mixes resolved and unresolved hits, the default `toon` rendering pads the
+unresolved rows to an empty cell rather than lose the array its tabular form — a blank cell there means
+"this hit has no location", not "this symbol is empty".
 
-The padding is scoped to the table holding the reporting hit, not the response: under a grouped result,
-a namespace/file leaf where every hit is small and undocumented keeps no `shape` column, while a leaf
-holding one that reports carries it for every row. Only the legend is response-wide.
+The padding is scoped to the table holding the reporting hit, not the response; only the legend is
+response-wide, and `get_symbol` states the same legend once beside a `members` list for the same reason.
 
 Narrow to one subsystem with `pathPrefix` (folder or file, repo-root-relative, forward slashes)
 instead of filtering the whole-repo result yourself:
@@ -293,20 +305,20 @@ search_index(query: "Spin", kinds: "method")
 ```
 
 ```json
-{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero",
+{"shape":"P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none",
  "groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
    {"path":"Lib/Pipeline.cs","kind":"Method","symbols":[
-      {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6}]},
+      {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6,"shape":"P2 L1"}]},
    {"path":"Lib/Widget.cs","kind":"Method","symbols":[
-      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12,"endLine":12,"shape":"D1"},
-      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5,"endLine":5,"shape":""},
-      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18,"endLine":18,"shape":""}]}]}]}
+      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12,"endLine":12,"shape":"P1 L1 D1"},
+      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5,"endLine":5,"shape":"P1 L1"},
+      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18,"endLine":18,"shape":"P1 L1"}]}]}]}
 ```
 
-Note the two scopes at work: the legend is response-wide, but only the `Lib/Widget.cs` leaf carries a
-`shape` column — because only it holds a hit that reports one. `Widget.Spin` has a one-line
-`/// <summary>`; its two siblings have none, and are padded to `""` rather than costing that leaf its
-tabular form. The `Lib/Pipeline.cs` leaf has no `shape` column at all.
+Note the two scopes at work: the legend is response-wide, stated once, while the `shape` column itself
+belongs to each leaf's own table. Every row here reports, because every one of these hits resolved to a
+location — the differences between them (`Widget.Spin`'s one-line `/// <summary>`, `SpinTwice`'s extra
+parameter) are what the column is for.
 
 `groupBy: "file"` inverts the nesting to file → namespace → symbols instead. And when a query's
 whole result set shares one namespace *and* one file — `limit: 1` on the query above, isolating

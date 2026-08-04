@@ -117,7 +117,7 @@ public static partial class OutlineBuilder
                 var sig = m.EqualsValue is { } eq ? $"{m.Identifier.Text} = {eq.Value}" : m.Identifier.Text;
                 members.Add(new MemberEntry(
                     "F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true, DocSectionTags(m),
-                    DocLines(m), CommentLines(m)));
+                    DocLines(m), CommentLines(m), AttributeCount(m)));
             }
         }
         else if (type is TypeDeclarationSyntax td)
@@ -147,7 +147,8 @@ public static partial class OutlineBuilder
 
         return new TypeEntry(
             kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type),
-            members, nested, IsPublic(type.Modifiers), DocSectionTags(type), DocLines(type), CommentLines(type));
+            members, nested, IsPublic(type.Modifiers), DocSectionTags(type), DocLines(type), CommentLines(type),
+            AttributeCount(type));
     }
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
@@ -157,7 +158,8 @@ public static partial class OutlineBuilder
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
         return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
-            [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del), DocLines(del), CommentLines(del));
+            [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del), DocLines(del), CommentLines(del),
+            AttributeCount(del));
     }
 
     // The stored name is matched against the form the Roslyn-derived symbol store asks for, and that form
@@ -177,46 +179,87 @@ public static partial class OutlineBuilder
                 var name = m.Identifier.Text + RenderTypeParameters(m.TypeParameterList);
                 return new MemberEntry("M", m.Identifier.Text,
                     $"{name}{RenderParams(m.ParameterList)} -> {m.ReturnType}",
-                    DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m), DocLines(m), CommentLines(m));
+                    DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m), DocLines(m), CommentLines(m),
+                    AttributeCount(m), LandmarkCount(m));
             }
             case ConstructorDeclarationSyntax c:
                 return new MemberEntry("K", c.Identifier.Text,
                     $"{c.Identifier.Text}{RenderParams(c.ParameterList)}",
-                    DocSummary(c), Line(c), EndLine(c), isPublic, DocSectionTags(c), DocLines(c), CommentLines(c));
+                    DocSummary(c), Line(c), EndLine(c), isPublic, DocSectionTags(c), DocLines(c), CommentLines(c),
+                    AttributeCount(c), LandmarkCount(c));
             case PropertyDeclarationSyntax p:
                 return new MemberEntry("P", p.Identifier.Text,
                     $"{p.Identifier.Text}: {p.Type} {Accessors(p)}",
-                    DocSummary(p), Line(p), EndLine(p), isPublic, DocSectionTags(p), DocLines(p), CommentLines(p));
+                    DocSummary(p), Line(p), EndLine(p), isPublic, DocSectionTags(p), DocLines(p), CommentLines(p),
+                    AttributeCount(p), LandmarkCount(p));
             case IndexerDeclarationSyntax ix:
                 return new MemberEntry("P", "this[]",
                     $"this[{RenderParamList(ix.ParameterList.Parameters)}]: {ix.Type}",
-                    DocSummary(ix), Line(ix), EndLine(ix), isPublic, DocSectionTags(ix), DocLines(ix), CommentLines(ix));
+                    DocSummary(ix), Line(ix), EndLine(ix), isPublic, DocSectionTags(ix), DocLines(ix), CommentLines(ix),
+                    AttributeCount(ix), LandmarkCount(ix));
             case FieldDeclarationSyntax f:
             {
                 var v = f.Declaration.Variables.First();
                 return new MemberEntry("F", v.Identifier.Text,
                     $"{v.Identifier.Text}: {f.Declaration.Type}",
-                    DocSummary(f), Line(f), EndLine(f), isPublic, DocSectionTags(f), DocLines(f), CommentLines(f));
+                    DocSummary(f), Line(f), EndLine(f), isPublic, DocSectionTags(f), DocLines(f), CommentLines(f),
+                    AttributeCount(f), LandmarkCount(f));
             }
             case EventFieldDeclarationSyntax ef:
             {
                 var v = ef.Declaration.Variables.First();
                 return new MemberEntry("V", v.Identifier.Text,
                     $"{v.Identifier.Text}: {ef.Declaration.Type}",
-                    DocSummary(ef), Line(ef), EndLine(ef), isPublic, DocSectionTags(ef), DocLines(ef), CommentLines(ef));
+                    DocSummary(ef), Line(ef), EndLine(ef), isPublic, DocSectionTags(ef), DocLines(ef), CommentLines(ef),
+                    AttributeCount(ef), LandmarkCount(ef));
             }
             case EventDeclarationSyntax e:
                 return new MemberEntry("V", e.Identifier.Text,
                     $"{e.Identifier.Text}: {e.Type}",
-                    DocSummary(e), Line(e), EndLine(e), isPublic, DocSectionTags(e), DocLines(e), CommentLines(e));
+                    DocSummary(e), Line(e), EndLine(e), isPublic, DocSectionTags(e), DocLines(e), CommentLines(e),
+                    AttributeCount(e), LandmarkCount(e));
             case OperatorDeclarationSyntax op:
                 return new MemberEntry("M", $"operator {op.OperatorToken.Text}",
                     $"operator {op.OperatorToken.Text}{RenderParams(op.ParameterList)} -> {op.ReturnType}",
-                    DocSummary(op), Line(op), EndLine(op), isPublic, DocSectionTags(op), DocLines(op), CommentLines(op));
+                    DocSummary(op), Line(op), EndLine(op), isPublic, DocSectionTags(op), DocLines(op), CommentLines(op),
+                    AttributeCount(op), LandmarkCount(op));
             default:
                 return null;
         }
     }
+
+    /// <summary>How many C# attributes a declaration applies, or 0 when it carries none.</summary>
+    /// <param name="member">Any member, type or enum-member declaration — all carry attribute lists.</param>
+    /// <returns>The total across every attribute list, not the number of lists.</returns>
+    internal static int AttributeCount(MemberDeclarationSyntax member) =>
+        member.AttributeLists.Sum(list => list.Attributes.Count);
+
+    /// <summary>
+    /// How many control-flow landmarks a member's body contains, or null when it has no executable body
+    /// of its own (a field, an event, an auto-property, an abstract or partial method).
+    /// </summary>
+    /// <param name="member">The member declaration to walk.</param>
+    /// <returns>The landmark count, or null when the member has no body to walk.</returns>
+    /// <remarks>
+    /// Counted with <see cref="Fingerprint.BodyOutlineExtractor"/> itself rather than a second walker
+    /// listing the same syntax kinds, so search_index's <c>O</c> and get_symbol's <c>bodyOutline</c> can
+    /// never report different numbers for the same member.
+    /// </remarks>
+    internal static int? LandmarkCount(MemberDeclarationSyntax member) => member switch
+    {
+        BaseMethodDeclarationSyntax { Body: null, ExpressionBody: null } => null,
+        BaseMethodDeclarationSyntax => Fingerprint.BodyOutlineExtractor.Extract(member).Count,
+        PropertyDeclarationSyntax { ExpressionBody: not null } or IndexerDeclarationSyntax { ExpressionBody: not null } =>
+            Fingerprint.BodyOutlineExtractor.Extract(member).Count,
+        BasePropertyDeclarationSyntax property when HasAccessorBody(property) =>
+            Fingerprint.BodyOutlineExtractor.Extract(member).Count,
+        _ => null,
+    };
+
+    /// <summary>Whether any accessor declares a body of its own, i.e. this is not an auto-property.</summary>
+    private static bool HasAccessorBody(BasePropertyDeclarationSyntax property) =>
+        property.AccessorList is { } list
+        && list.Accessors.Any(a => a.Body is not null || a.ExpressionBody is not null);
 
     private static string Accessors(PropertyDeclarationSyntax p)
     {

@@ -639,11 +639,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "Follow up with get_symbol for the content itself. A hit's line/endLine mark the signature "
         + "line only, EXCLUDING any leading /// doc comment — anchor a validate_patch edit on "
         + "get_symbol's declarationSites span, not this one. "
-        + "A hit's shape column reports what fetching it costs, and the response states its legend once. "
-        + "L/M (emitted only when large) mean fetching that hit whole is the WRONG next call — use "
-        + "get_symbol include:\"members\" or a source:code@from-to range; a large D or C is worth "
-        + "source:code or source:code-comments. An edit target wants include:\"all\" whatever its shape, "
-        + "for the body-carrying contentVersion. "
+        + "A hit's shape column describes what fetching it costs, and the response states its legend "
+        + "once: P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes, "
+        + "each letter absent only when that fact is zero or cannot apply to the hit's kind — so a shape "
+        + "describes the symbol rather than warning about it. A big L with a big O means fetching whole is "
+        + "the WRONG next call: use get_symbol include:\"bodyOutline\" then a source:code@from-to range. A "
+        + "big M wants include:\"members\"; a big D or C is worth source:code or source:code-comments. An "
+        + "edit target wants include:\"all\" whatever its shape, for the body-carrying contentVersion. "
         + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. "
         + "Full grammar, worked examples and response shape: docs/tools/search_index.md.")]
 
@@ -763,11 +765,24 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             }
         }
 
+        // Every letter the shape column can carry, gathered from the site the index already resolved. A
+        // count left null is one this kind of declaration cannot have, which is what keeps M off a method
+        // and P off a field; a hit that never resolved has no facts at all and so shows no column.
+        static ShapeFacts ShapeOf(ProjectIndex.DocSite? site) => site is null
+            ? default
+            : new ShapeFacts(
+                ParameterCount: site.ParameterCount,
+                MemberCount: site.MemberCount,
+                NestedCount: site.NestedCount,
+                LineCount: ShapeFacts.LinesBetween(site.Line, site.EndLine),
+                LandmarkCount: site.LandmarkCount,
+                DocLines: site.DocLines,
+                CommentLines: site.CommentLines,
+                AttributeCount: site.AttributeCount);
+
         // Only the flat envelope needs this precomputed: the grouped one derives the same answer from the
         // rows it is handed. Either way the legend is emitted only when some hit actually carries a shape.
-        var anyShape = limited.Any(r => SymbolShape.For(
-            r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
-            r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0) is not null);
+        var anyShape = limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
 
         object BuildFlatEnvelope() => new
         {
@@ -782,9 +797,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 file = r.Site?.File,
                 line = r.Site?.Line,
                 endLine = r.Site?.EndLine,
-                shape = SymbolShape.For(
-                    r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
-                    r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0),
+                shape = SymbolShape.For(ShapeOf(r.Site)),
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                 summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
             }),
@@ -804,9 +817,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line, r.Site?.EndLine,
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-                    SymbolShape.For(
-                        r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
-                        r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0));
+                    SymbolShape.For(ShapeOf(r.Site)));
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -910,15 +921,29 @@ private static async Task<object> BuildContent(
             ? await ReferenceCounts(sym, solution, symbolStore)
             : null;
 
-        var members = components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
-            ? type.GetMembers().Where(IsListable).Select(m => (object)new
-            {
-                symbolId = SymbolKey.IdOf(m),
-                displayString = m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                kind = SymbolKey.KindOf(m),
-                // decl-layer version so members can be leased without ever fetching their bodies.
-                contentVersion = VersionOf(m).ToString(),
-            }).ToArray()
+        // A member row states where it is and what it costs, not just what it is called: the whole point
+        // of being told a type has M members is to pick one and fetch it, and a row carrying neither a
+        // location nor a shape leaves that second hop with nothing to go on. file is emitted only when it
+        // differs from the type's own primary declaration file, so only a partial pays for the column.
+        var primaryFile = sym.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
+        var memberRows = components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
+            ? type.GetMembers().Where(IsListable).Select(m => (Symbol: m, Site: MemberSiteOf(m))).ToArray()
+            : null;
+        var members = memberRows?.Select(row => (object)new
+        {
+            symbolId = SymbolKey.IdOf(row.Symbol),
+            displayString = row.Symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            kind = SymbolKey.KindOf(row.Symbol),
+            file = row.Site is { } elsewhere && !string.Equals(elsewhere.File, primaryFile, StringComparison.Ordinal)
+                ? locator.RelPath(elsewhere.File)
+                : null,
+            line = row.Site?.Line,
+            shape = row.Site is { } located ? SymbolShape.For(located.Facts) : null,
+            // decl-layer version so members can be leased without ever fetching their bodies.
+            contentVersion = VersionOf(row.Symbol).ToString(),
+        }).ToArray();
+        var memberShapeLegend = memberRows?.Any(row => row.Site is { } s && SymbolShape.For(s.Facts) is not null) == true
+            ? SymbolShape.Legend
             : null;
 
         // baseType/interfaces are type-only, same as members — null for anything else rather than an
@@ -985,6 +1010,8 @@ private static async Task<object> BuildContent(
             bodyOutlineNote = outline?.Note,
             referenceCounts = counts,
             members,
+            // Stated once beside the member list rather than repeated on every row, same as search_index.
+            shape = memberShapeLegend,
             attributes = !hasSource && components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
             // Unconditional like displayString, not an opt-in include component: the literal modifier
             // phrase already subsumes accessibility ("public sealed" states both), so there is no separate
@@ -1957,6 +1984,38 @@ private static SyntaxNode NormalizeDeclNode(SyntaxNode node) =>
         node is VariableDeclaratorSyntax && node.FirstAncestorOrSelf<BaseFieldDeclarationSyntax>() is { } field
             ? field
             : node;
+
+    /// <summary>
+    /// Where one member of a type sits and what retrieval shape it has, computed from its own syntax —
+    /// null for a member with no declaration to walk (compiler-synthesized, or an external symbol).
+    /// </summary>
+    /// <param name="member">The member to locate and measure.</param>
+    /// <returns>Its absolute file path, signature line, and shape facts; null when it has no declaration.</returns>
+    /// <remarks>
+    /// Measured with the same <see cref="OutlineBuilder"/> helpers the syntax index uses, so a member's
+    /// shape here and the same symbol's shape from search_index cannot disagree — a test asserts it.
+    /// <c>Line</c> is the signature line, matching search_index's convention; get_symbol's own
+    /// declarationSites span, which starts at the doc comment, stays the anchor for an edit.
+    /// </remarks>
+    private static (string File, int Line, ShapeFacts Facts)? MemberSiteOf(ISymbol member)
+    {
+        if (member.DeclaringSyntaxReferences.FirstOrDefault() is not { } reference)
+            return null;
+
+        var node = NormalizeDeclNode(reference.GetSyntax());
+        var span = node.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var declaration = node as MemberDeclarationSyntax;
+        var facts = new ShapeFacts(
+            ParameterCount: member is IMethodSymbol method ? method.Parameters.Length : null,
+            LineCount: ShapeFacts.LinesBetween(line, span.EndLinePosition.Line + 1),
+            LandmarkCount: declaration is null ? null : OutlineBuilder.LandmarkCount(declaration),
+            DocLines: OutlineBuilder.DocLines(node),
+            CommentLines: OutlineBuilder.CommentLines(node),
+            AttributeCount: declaration is null ? 0 : OutlineBuilder.AttributeCount(declaration));
+
+        return (reference.SyntaxTree.FilePath, line, facts);
+    }
 
     /// <summary>
     /// A declaration's real boundary for display/editing purposes: <paramref name="node"/>'s own Span

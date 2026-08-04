@@ -26,7 +26,7 @@ search_index(query: "fee calculate tier", limit: 10)
 ```
 
 ```
-shape: "L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero"
+shape: "P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none"
 groupedBy: namespace
 namespaces[2]:
   - name: Billing.Fees
@@ -34,18 +34,18 @@ namespaces[2]:
       - path: src/Billing/Fees/FeeCalculator.cs
         kind: Method
         symbols[2]{symbolId,name,line,endLine,shape}:
-          sym_4c1e9a77b2d0f318,"FeeCalculator.Calculate(Invoice, Customer)",64,152,L88 D6
-          sym_9b30d5e41af7c206,"FeeCalculator.CalculateTier(decimal)",154,171,D4
+          sym_4c1e9a77b2d0f318,"FeeCalculator.Calculate(Invoice, Customer)",64,152,P2 L89 O14 D6
+          sym_9b30d5e41af7c206,"FeeCalculator.CalculateTier(decimal)",154,171,P1 L18 O5 D4
       - path: src/Billing/Fees/TieredFeeStrategy.cs
         kind: Class
-        symbols[1]{symbolId,name,line,endLine}:
-          sym_71ba0c93ee54d18a,TieredFeeStrategy,9,58
+        symbols[1]{symbolId,name,line,endLine,shape}:
+          sym_71ba0c93ee54d18a,TieredFeeStrategy,9,58,M6 L50 D3
   - name: Billing.Invoicing
     files[1]:
       - path: src/Billing/Invoicing/InvoiceBuilder.cs
         kind: Method
-        symbols[1]{symbolId,name,line,endLine}:
-          sym_2ef8ab6104c7d955,"InvoiceBuilder.ApplyFees(InvoiceLine)",81,96,D3
+        symbols[1]{symbolId,name,line,endLine,shape}:
+          sym_2ef8ab6104c7d955,"InvoiceBuilder.ApplyFees(InvoiceLine)",81,96,P1 L16 O3 D3
 termsWithNoHits[1]: tier
 ```
 
@@ -109,13 +109,18 @@ content:
   displayString: FeeCalculator
   declarationSites[1]{file,startLine,endLine}:
     src/Billing/Fees/FeeCalculator.cs,18,1104
-  members[5]{symbolId,displayString,kind,contentVersion}:
-    sym_a4d0117e6c39fb82,"FeeCalculator.FeeCalculator(IFeeStrategy strategy)",Method,"decl:9f7fbdd8b72f|body:257c1be96ae6"
-    sym_4c1e9a77b2d0f318,"decimal FeeCalculator.Calculate(Invoice invoice, Customer customer)",Method,"decl:41b98ff7712a|body:dfbfe6312777"
-    sym_9b30d5e41af7c206,"decimal FeeCalculator.CalculateTier(decimal amount)",Method,"decl:bd84be7dbe29|body:4f36d90fff16"
-    sym_5ce947012b081873,"decimal FeeCalculator.RoundHalfUp(decimal value)",Method,"decl:f3ef1e46968f|body:2436492cabe1"
-    sym_e1fffa1b19b2e0aa,IReadOnlyList<FeeTier> FeeCalculator.Tiers,Property,"decl:06fe50c5de05|body:f75bcaefa9c7"
+  shape: "P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none"
+  members[5]{symbolId,displayString,kind,line,shape,contentVersion}:
+    sym_a4d0117e6c39fb82,"FeeCalculator.FeeCalculator(IFeeStrategy strategy)",Method,52,P1 L4,"decl:9f7fbdd8b72f|body:257c1be96ae6"
+    sym_4c1e9a77b2d0f318,"decimal FeeCalculator.Calculate(Invoice invoice, Customer customer)",Method,64,P2 L89 O14 D6,"decl:41b98ff7712a|body:dfbfe6312777"
+    sym_9b30d5e41af7c206,"decimal FeeCalculator.CalculateTier(decimal amount)",Method,154,P1 L18 O5 D4,"decl:bd84be7dbe29|body:4f36d90fff16"
+    sym_5ce947012b081873,"decimal FeeCalculator.RoundHalfUp(decimal value)",Method,173,P1 L6,"decl:f3ef1e46968f|body:2436492cabe1"
+    sym_e1fffa1b19b2e0aa,IReadOnlyList<FeeTier> FeeCalculator.Tiers,Property,45,L1 D2,"decl:06fe50c5de05|body:f75bcaefa9c7"
 ```
+
+Every row says where it is and what it costs, so the next call is already decided: `Calculate` is 89
+lines with 14 branches (`L89 O14`), which is the one member worth mapping before reading; `RoundHalfUp`
+is six lines with no branching, so there is nothing to map.
 
 **Step 2 — a map of the long method, still without reading it.**
 
