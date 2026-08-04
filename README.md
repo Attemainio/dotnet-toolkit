@@ -347,8 +347,11 @@ your CLAUDE.md**.
 Then confirm the wiring took:
 
 ```
-/dotnet-toolkit-install-check
+/dotnet-toolkit-init
 ```
+
+Re-running it is also the verify-and-refresh path: it checks the installed state, tells you whether
+your copies have fallen behind the plugin, and refreshes only what the plugin changed.
 
 > **After any update**, re-publish to `dist/`. That replaces the server running in every open session, so
 > run `/plugin reload-plugins` or restart to pick the rebuilt one up.
@@ -360,8 +363,8 @@ Then confirm the wiring took:
   `/plugin marketplace remove dotnet-toolkit-local`, then `/plugin reload-plugins`.
 
 The MCP server and the guard hooks travel *with* the plugin — they stop the moment it unloads. If you ran
-`/dotnet-toolkit-init`, the files it wrote into your `.claude/` are yours to keep or delete;
-`/dotnet-toolkit-install-check` lists exactly what a clean removal touches.
+`/dotnet-toolkit-init`, the files it wrote into your `.claude/` are yours to keep or delete; re-running
+it lists exactly what a clean removal touches, as a dry run.
 
 ### If something looks wrong
 

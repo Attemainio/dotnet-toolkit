@@ -62,6 +62,7 @@ degrades the server's workspace — symptoms and repair in `docs/architecture.md
 | What a skill is for | `docs/skill-reference.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/agent-reference.md` |
 | Changing either always-loaded rule, or what init ships | `.claude/rules/tool-protocol.md` + `csharp-standards.md`; `skills/dotnet-toolkit-init/SKILL.md` copies both |
+| Auditing the install procedure, or what a consumer ends up with | `docs/install-audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install-verify.md` (consumer side, run by `dotnet-toolkit-init`) |
 
 Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only `tool-protocol.md` and
 `csharp-standards.md` are always present, because only those two lack `paths:` frontmatter.

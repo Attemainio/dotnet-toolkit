@@ -48,36 +48,31 @@ standards plus only those the scoped code triggers, and an untriggered aspect is
 than clean. The agent's own process lives in `agents/dotnet-code-review.md` (self-contained);
 `docs/agent-reference.md` documents its design for maintainers.
 
-## `dotnet-toolkit-init` — wiring a consuming repo
+## `dotnet-toolkit-init` — the whole consumer lifecycle
 
-**When**: "set up dotnet-toolkit here", "make Claude use the MCP tools in this repo".
+**When**: "set up dotnet-toolkit here", "make Claude use the MCP tools in this repo" — and equally
+"did the init work", "is this repo wired up correctly", "are my copies out of date", "what does
+uninstalling leave behind".
 
 Installing the plugin makes the tools *available*; nothing makes a fresh session in a consuming repo
 *prefer* them or follow the standards — plugins cannot ship auto-loading rules, only a repo's own
-`.claude/rules/` is scanned. This skill writes that guidance into the target repo: an always-loaded
-two always-loaded rules — `tool-protocol.md` (tool table, `dotnet-explore` delegation, write path) and
+`.claude/rules/` is scanned. This skill writes that guidance into the target repo: the two
+always-loaded rules — `tool-protocol.md` (tool table, `dotnet-explore` delegation, write path) and
 `csharp-standards.md` (standards index, write-time checklist) — copied verbatim, plus copies of the
-standards files (list in `.claude/rules/csharp-standards.md`'s index) into the repo's `.claude/rules/`.
-Approval-gated, backed up, additive — it never touches
-the repo's CLAUDE.md, and uninstall is deleting the listed files.
+standards files (list in `.claude/rules/csharp-standards.md`'s index). It also merges the **read-only**
+MCP tools into `.claude/settings.json`'s permission allowlist — without that, every call the rules
+just mandated raises a prompt — while deliberately leaving `validate_patch`/`rename_symbol` out, since
+a write to the user's source should keep asking. What it installed is recorded in
+`.claude/dotnet-toolkit/install.json`.
 
-## `dotnet-toolkit-install-check` — auditing the installation
+**Re-running it is the verify-and-refresh path** (Step 8), which is why there is no separate
+install-check skill. The manifest's per-file hashes let it distinguish *the plugin changed this*
+(refresh silently) from *the repo edited this* (show the diff and ask). It then runs the checklists
+in `docs/install-verify.md`: installed state, always-loaded footprint against its ~6 KB budget, and an
+uninstall dry run. Approval-gated, backed up, additive — it never touches the repo's CLAUDE.md.
 
-**When**: "did the init work", "check the dotnet-toolkit installation", "is this repo wired up
-correctly", "what does uninstalling leave behind", "audit the init skill".
-
-Builds the expected asset inventory from the plugin tree itself and sorts every shipped file into one
-of four delivery mechanisms — *ships active* (MCP server, hooks, skills, agent), *must be copied*
-(the two always-loaded rules and the standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path from a skill* (`docs/`), and
-*created at runtime* (`cache/`, `backups/`, `config.json`). It then checks `dotnet-toolkit-init`'s
-"what gets written", "what is deliberately not written", and "undoing this later" sections against
-that inventory, and in a consuming repo checks the state actually on disk.
-
-Also enforces the two boundaries the installation is defined by: the consumer's CLAUDE.md is never
-touched (no marker block, no dotnet-toolkit content), and `tool-protocol.md` stays a **declaration**
-of when and how — budget ~6 KB — with the full workflow behind on-demand pointers. Read-only: it
-reports and may offer to re-run `dotnet-toolkit-init`, never installs on its own. Complements
-`dotnet-toolkit-consistency`, which checks the same files for *accuracy* rather than *delivery*.
+The *maintainer-side* counterpart — auditing whether this skill's procedure still matches what the
+plugin ships — is `dotnet-toolkit-consistency` Step 4b, via `docs/install-audit.md`.
 
 ## `dotnet-toolkit-consistency` — the self-audit
 
