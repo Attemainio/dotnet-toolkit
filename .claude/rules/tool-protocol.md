@@ -68,9 +68,9 @@ amend the returned `draftId` rather than rebuilding the patch.
 - **A passing result states its own scope.** Report what the response's `checks` and `notAssessed`
   actually say; never turn a clean rung into a broader claim than the scope it names.
 
-Procedure, arguments, and every failure mode: `${CLAUDE_PLUGIN_ROOT}/docs/tools/validate_patch.md`,
-`${CLAUDE_PLUGIN_ROOT}/docs/tools/rename_symbol.md`, and the `dotnet-change` skill — all read on
-demand, so none costs anything until it is needed.
+Procedure, arguments, and every failure mode: invoke the **`dotnet-change`** skill, which opens the
+`validate_patch` and `rename_symbol` docs for you — read on demand, so none of it costs anything
+until it is needed.
 
 ## Coding standards
 
@@ -83,6 +83,6 @@ always-loaded too, so there is no second copy of that list here to drift out of 
 Shell and plain file tools: `dotnet build` / `dotnet test` / `dotnet publish`, `git`, and reading or
 editing non-C# files (Markdown, JSON, `.cmd`, `.csproj`, skill and agent definitions).
 
-Which tool answers which question: `${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md` (the router — start
-here). How to call one: `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`. Read the single tool you need,
-not the directory.
+Which tool answers which question, and how to call it: invoke the **`dotnet-code-query`** skill — it
+routes the question and reads the one per-tool doc it needs. Reach the plugin's own files through a
+skill, never a path: a rule file is delivered literally, so it cannot resolve one.

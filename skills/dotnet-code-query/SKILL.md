@@ -11,8 +11,10 @@ dispatch and delegates that a text search cannot.
 
 Tool names below are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 
-**How to call each tool lives in `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`, one file per tool.
-Read the one you are about to use — not the whole directory.** This skill carries only what applies
+**How to call each tool lives in `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md`, one file per tool —
+except the four server/meta tools (`workspace_status`, `reload_workspace`, `ping`,
+`set_output_format`), which share `docs/tools/server.md`. Read the one you are about to use — not the
+whole directory.** This skill carries only what applies
 across all of them: when to reach for which tool, and the rules that hold on every call.
 
 ## Never fall back to grep

@@ -77,10 +77,18 @@ lower-confidence rather than asserting a violation.
 
 ## Loading the standards — core always, the rest on trigger
 
-The standards live in the plugin's `.claude/rules/`
-(`${CLAUDE_PLUGIN_ROOT}/.claude/rules/<name>.md`). **Check for a repo-local override first**:
-`${CLAUDE_PROJECT_DIR}/.claude/dotnet-toolkit/<name>.md` if it exists, else the bundled default. A
-repo-local file fully replaces the bundled default for that file — don't blend the two.
+Read every standards file **repo-relative**, in this resolution order per file:
+
+1. `.claude/dotnet-toolkit/<name>.md` — a repo-local override. It fully replaces the default for that
+   file; don't blend the two.
+2. `.claude/rules/<name>.md` — where `dotnet-toolkit-init` installs the copies, and where this
+   plugin's own tree keeps the originals.
+
+Do **not** rely on a `${CLAUDE_PLUGIN_ROOT}` path here: expansion inside an agent definition is not
+guaranteed, and an unexpanded path reads as a literal directory that does not exist. If neither
+location has the file, the repo has the plugin but never ran `dotnet-toolkit-init` — say so, name it
+as the fix, and report every standards-derived aspect as **not-assessed**. Reviewing from memory of
+what these files usually say is the one failure mode this section exists to prevent.
 
 **Always read these six**, whatever the scope contains:
 
@@ -88,7 +96,7 @@ repo-local file fully replaces the bundled default for that file — don't blend
 `security.md`
 
 **Read the rest only when the code you retrieved in step 2 triggers them.** The trigger conditions are
-the "When" column of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/csharp-standards.md` — that table is the
+the "When" column of `.claude/rules/csharp-standards.md` — that table is the
 single source of truth for which file covers what, and it is not restated here. Read it, match its
 rows against what is actually in your scope, and load the files that match. In short: `concurrency.md`
 when anything awaits, locks, spawns work, or shares state; `performance.md` for hot paths;

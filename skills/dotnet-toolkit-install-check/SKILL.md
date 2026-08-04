@@ -46,7 +46,7 @@ is any shipped file that lands in none of them, or that init handles as if it we
 | --- | --- | --- | --- | --- |
 | 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the four `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
 | 2 | **Must be copied** | `.claude/rules/tool-protocol.md` and `.claude/rules/csharp-standards.md` (both always-loaded, copied verbatim from the plugin) plus the standards copies enumerated by `csharp-standards.md`'s index | `dotnet-toolkit-init` writing them into the repo's own `.claude/rules/` | **explicit deletion** — init's "Undoing this later" list is the only thing that removes them |
-| 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/{agent,hook,skill,tool}-reference.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named in mechanism-2 files and in the skills | removing the plugin; the references die with it, so **nothing repo-local** |
+| 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/{agent,hook,skill,tool}-reference.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named in the skills — never in a mechanism-2 rule, which cannot expand the variable | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |
 
 Two rules the sorting enforces, both of which have been got wrong before:
@@ -67,9 +67,13 @@ the right place:
 - **Step 6 (apply)** — writes exactly those, backing up any that already exist.
 - **"Undoing this later"** — deletes exactly the mechanism-2 files, names the mechanism-4 paths with a
   disposition, and states that mechanisms 1 and 3 leave with the plugin.
-- **Every `${CLAUDE_PLUGIN_ROOT}/...` path** init writes into the consumer resolves to a file that
-  exists in Step 1's listing. A pointer to a doc that was renamed is the most common single defect
-  here, and it is invisible until a consumer follows it.
+- **No mechanism-2 file contains `${CLAUDE_PLUGIN_ROOT}` at all.** The harness expands that variable
+  in skill content and in hook commands, but **not in a rule file** — a rule is delivered literally,
+  so any such path lands in the consumer as dead text pointing at a directory that does not exist.
+  A rule reaches plugin content by naming the skill that opens it. This is a hard finding, not a
+  style note; it has shipped before and is invisible until a consumer follows the path.
+- **Every `${CLAUDE_PLUGIN_ROOT}/...` path in a *skill*** resolves to a file in Step 1's listing. A
+  pointer to a doc that was renamed is the most common single defect here.
 
 Specific drift to look for, in the order it usually appears:
 
@@ -82,9 +86,11 @@ Specific drift to look for, in the order it usually appears:
    otherwise reach for, and legitimately omits the meta tools that replace nothing:
    `get_retrieval_metrics`, `set_output_format`, `ping`. Any **other** tool present in
    `_index.md`'s router but absent from the template is a finding.
-3. **A new `docs/` file nothing in the template points at.** Not automatically a finding — most docs
-   are reached through `_index.md` — but a *reference* doc (`agent-`, `hook-`, `skill-`,
-   `tool-reference.md`) that no consumer-reachable file names is unreachable from a consuming repo.
+3. **A new `docs/` file nothing points at.** Most docs are reached through `_index.md`; a
+   `docs/tools/<tool>.md` that its router doesn't list *is* a finding. The four `*-reference.md`
+   files are **not** — they are maintainer-facing by design, reached from the plugin's own
+   `README.md` and `CLAUDE.md`, and `agent-reference.md` is deliberately read by neither agent.
+   "Unreferenced from a consuming repo" is their intended state, so don't report it as drift.
 4. **An uninstall list shorter than the write list.** Diff them literally, file by file.
 
 ## Step 3 — Audit the installed state (installed mode only)
@@ -121,8 +127,8 @@ repo pays regardless of task.
   KB (~1.6k tokens)**. It answers *when* to use the tools and *how to reach* the procedure — a tool
   table, a short write-path statement, the standards index, and the write-time checklist. It must not
   grow a full `validate_patch` walkthrough, per-tool argument documentation, or failure-mode
-  narration: those live in `${CLAUDE_PLUGIN_ROOT}/docs/tools/<tool>.md` and the `dotnet-change` skill,
-  both read on demand.
+  narration: those live in the `dotnet-change` and `dotnet-code-query` skills and the per-tool docs
+  they open, all read on demand.
 
 ```bash
 for f in .claude/rules/tool-protocol.md .claude/rules/csharp-standards.md CLAUDE.md; do

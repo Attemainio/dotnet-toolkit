@@ -68,7 +68,7 @@ correctly", "what does uninstalling leave behind", "audit the init skill".
 
 Builds the expected asset inventory from the plugin tree itself and sorts every shipped file into one
 of four delivery mechanisms — *ships active* (MCP server, hooks, skills, agent), *must be copied*
-(the two always-loaded rules and the standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path* (`docs/`), and
+(the two always-loaded rules and the standards copies), *referenced by `${CLAUDE_PLUGIN_ROOT}` path from a skill* (`docs/`), and
 *created at runtime* (`cache/`, `backups/`, `config.json`). It then checks `dotnet-toolkit-init`'s
 "what gets written", "what is deliberately not written", and "undoing this later" sections against
 that inventory, and in a consuming repo checks the state actually on disk.

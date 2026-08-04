@@ -66,7 +66,7 @@ cleaning up at uninstall, is the recurring bug in this procedure.
 | Not written | Why | At uninstall |
 | --- | --- | --- |
 | the MCP server, `hooks/`, `skills/`, `agents/` | they ship *active* with the plugin — the harness discovers them from the plugin manifest, so there is nothing repo-local to install | leave with the plugin; nothing to clean up |
-| `docs/tools/*.md` and `docs/{agent,hook,skill,tool}-reference.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/docs/...` path from the protocol rule and the skills. Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
+| `docs/tools/*.md` and `docs/{agent,hook,skill,tool}-reference.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/docs/...` path from the skills (a rule cannot expand that variable, so it names the skill instead). Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
 | `.claude/dotnet-toolkit/cache/` | created by the server at runtime, self-gitignored, always rebuildable from source | safe to leave; delete the directory for a fully clean removal |
 | `CLAUDE.md` | the project's own file (see above) | never touched, so nothing to undo |
 
@@ -128,9 +128,11 @@ paragraph above. Do not add one, and do not edit the text on the way through: a 
 different wording edits its copy afterwards, or overrides per file via
 `.claude/dotnet-toolkit/<name>.md`.
 
-`tool-protocol.md` points at `${CLAUDE_PLUGIN_ROOT}/docs/...` for every procedure detail. Those paths
-resolve only while the plugin is installed, which is deliberate — see "What is deliberately *not*
-written".
+`tool-protocol.md` names the `dotnet-change` and `dotnet-code-query` skills for every procedure
+detail rather than a `${CLAUDE_PLUGIN_ROOT}/docs/...` path — the harness does **not** expand that
+variable inside a rule file, so a path there would land in the consumer as literal, dead text. Never
+add one while copying. Those skills exist only while the plugin is installed, which is deliberate —
+see "What is deliberately *not* written".
 
 If Step 3 found a scoped-but-resolvable overlap with another plugin, append one sentence to the
 copied `tool-protocol.md` noting the boundary — e.g. "For non-.NET code, `<other plugin>` remains the
@@ -187,8 +189,8 @@ alongside the refresh (see "Undoing this later"), since the rule files alone are
   `<!-- dotnet-toolkit:start -->` to `<!-- dotnet-toolkit:end -->` inclusive, or restore the newest
   backup over `CLAUDE.md`. Current versions never write there, so on a fresh install there is nothing
   to check.
-- **Everything else leaves with the plugin.** The hooks, skills, agent, MCP server, and every
-  `${CLAUDE_PLUGIN_ROOT}/docs/...` the rule points at are gone the moment the plugin is uninstalled —
+- **Everything else leaves with the plugin.** The hooks, skills, agents, MCP server, and every
+  `docs/` file those skills open are gone the moment the plugin is uninstalled —
   no repo-local cleanup, and nothing left instructing a session to call tools that no longer exist.
 
 Confirm the last point rather than asserting it: after the deletions, nothing remaining in the repo
