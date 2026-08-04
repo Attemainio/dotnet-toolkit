@@ -675,6 +675,28 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// Every rendered line carries its real indentation, the FIRST one included.
+    /// </summary>
+    /// <remarks>
+    /// The span opens at the declaration's first token, which sits after the leading whitespace — so the
+    /// first line used to arrive flush-left while every line beneath it kept its indent. That is not
+    /// cosmetic: this tool tells callers to reconstruct a declaration line from this text and hand it
+    /// back as a validate_patch edit, and the reconstructed line was misindented.
+    /// </remarks>
+    [Fact]
+    public async Task GetSymbol_Source_FirstLineKeepsItsIndentation()
+    {
+        foreach (var include in new[] { "source", "source:code" })
+        {
+            var lines = Root(await GetSymbol("Sample.Lib.Widget.Spin", include))
+                .GetProperty("content").GetProperty("source");
+
+            var first = lines[0].GetProperty("text").GetString()!;
+            Assert.NotEqual(first, first.TrimStart());
+        }
+    }
+
+    /// <summary>
     /// source:code on a whole type also strips each MEMBER's own doc comment, not just the type's own —
     /// otherwise a type-level fetch would still carry every member's /// block untouched.
     /// </summary>

@@ -41,10 +41,9 @@ ran at all — so a clean result has to state its own scope.
 "checks":{
   "levels":[{"level":"parse","succeeded":true,"durationMs":4,"scope":"1 changed document(s)"},
             {"level":"project_compile","succeeded":true,"durationMs":611,"scope":"DotnetToolkit.McpServer"}],
-  "analyzers":{"ran":true,"skipReason":null,"analyzerCount":8,"documentCount":1,"durationMs":900,
-               "clean":false,"errorCount":0,
-               "warnings":{"count":2,"truncated":0,"items":[{"id":"CA1822","message":"…","file":"…","line":16,"column":18}]},
-               "suggestions":{"count":0,"truncated":0,"items":[]}},
+  "analyzers":{"ran":true,"analyzerCount":8,"documentCount":1,"durationMs":900,
+               "clean":false,
+               "warnings":{"count":2,"truncated":0,"items":[{"id":"CA1822","message":"…","file":"…","line":16,"column":18}]}},
   "notAssessed":["levels not run: targeted_tests, solution_validate",
                  "analyzers covered 1 changed document(s); analyzer findings in files this patch did not touch are not assessed"]
 }
@@ -54,7 +53,12 @@ ran at all — so a clean result has to state its own scope.
   compiled). A rung reporting `succeeded: true` without a scope would be an assurance it never earned.
 - **`analyzers`** — the pass that runs the projects' referenced analyzers (`CA*`, and anything from a
   NuGet analyzer package) over the changed documents. `warnings` and `suggestions` are advisory and
-  never block; their `count` is the untruncated total, `items` is capped at 15 per severity.
+  never block; their `count` is the untruncated total, `items` is capped at 15 per severity. **Each of
+  `errorCount`/`warnings`/`suggestions` is omitted at zero** — `clean: true` already says it once, and
+  the example above has no `suggestions` key for exactly that reason. What always stays is the scope the
+  verdict covers: `analyzerCount`, `documentCount`, `durationMs`. And when the pass never ran, the block
+  is just `{"ran": false, "skipReason": "…"}` — every other field would be a constant by construction,
+  and `notAssessed` states the consequence in words.
 - **`notAssessed`** — the gaps, in plain language. Always non-empty in practice: the analyzer pass only
   looks at files the patch touched, which is stated on every run.
 

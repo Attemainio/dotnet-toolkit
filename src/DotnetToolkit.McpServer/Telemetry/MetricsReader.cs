@@ -89,6 +89,19 @@ public sealed class MetricsReader
         return $"{column} IN ({string.Join(',', placeholders)})";
     }
 
+    /// <summary>
+    /// Restricts a <c>patch_events</c> aggregate to the rows whose cost is not already counted under
+    /// <c>retrieval_events</c>. Interpolated into a query that aliases <c>patch_events</c> as <c>p</c>.
+    /// </summary>
+    /// <remarks>
+    /// validate_patch writes only <c>patch_events</c>, so its rows have to be folded into any call or
+    /// token total or they vanish entirely. rename_symbol, though, writes to BOTH tables for a single
+    /// invocation under one <c>tool_call_id</c> - folding those in unconditionally reported every rename
+    /// as two calls at twice the tokens it actually returned.
+    /// </remarks>
+    private const string NotAlreadyCounted =
+        "NOT EXISTS (SELECT 1 FROM retrieval_events r WHERE r.tool_call_id = p.tool_call_id)";
+
     private Totals ReadTotals(SqliteConnection connection, string where, List<(string, object)> parameters)
     {
         int toolCalls = 0;
@@ -108,16 +121,17 @@ public sealed class MetricsReader
             }
         }
 
-        int attempts = 0, insufficient = 0, failed = 0;
-        long patchTokens = 0;
+        int attempts = 0, insufficient = 0, failed = 0, patchOnlyCalls = 0;
+        long patchOnlyTokens = 0;
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = $"""
                 SELECT COUNT(*),
                        COALESCE(SUM(CASE WHEN is_sufficient = 0 THEN 1 ELSE 0 END),0),
                        COALESCE(SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END),0),
-                       COALESCE(SUM(returned_tokens),0)
-                FROM patch_events WHERE {where};
+                       COALESCE(SUM(CASE WHEN {NotAlreadyCounted} THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN {NotAlreadyCounted} THEN returned_tokens ELSE 0 END),0)
+                FROM patch_events p WHERE {where};
                 """;
             Bind(cmd, parameters);
             using var reader = cmd.ExecuteReader();
@@ -126,16 +140,20 @@ public sealed class MetricsReader
                 attempts = reader.GetInt32(0);
                 insufficient = reader.GetInt32(1);
                 failed = reader.GetInt32(2);
-                patchTokens = reader.GetInt64(3);
+                patchOnlyCalls = reader.GetInt32(3);
+                patchOnlyTokens = reader.GetInt64(4);
             }
         }
 
         // validate_patch has no retrieval_events row at all - it writes patch_events instead (see
         // TelemetryRecorder.RecordPatch) - so its calls and tokens must be folded in here or they
         // silently vanish from every total this method reports, even though returned_tokens was
-        // recorded for every one of them.
-        toolCalls += attempts;
-        tokensReturned += patchTokens;
+        // recorded for every one of them. Only the rows NotAlreadyCounted admits are folded in:
+        // rename_symbol writes to both tables per call, and counting its patch row too reported one
+        // rename as two calls at double its tokens. attempts/insufficient/failed still count EVERY
+        // patch row - a rename really is a validation attempt, it is only its cost that is already held.
+        toolCalls += patchOnlyCalls;
+        tokensReturned += patchOnlyTokens;
 
         return new Totals(toolCalls, tokensReturned, attempts, insufficient, failed);
     }
@@ -164,7 +182,8 @@ public sealed class MetricsReader
                 FROM (
                     SELECT task_id, returned_tokens, created_at FROM retrieval_events WHERE {where}
                     UNION ALL
-                    SELECT task_id, returned_tokens, created_at FROM patch_events WHERE {where}
+                    SELECT task_id, returned_tokens, created_at FROM patch_events p
+                    WHERE {where} AND {NotAlreadyCounted}
                 )
                 GROUP BY task_id ORDER BY MAX(created_at) DESC;
                 """,
@@ -178,7 +197,8 @@ public sealed class MetricsReader
                 FROM (
                     SELECT session_id, returned_tokens, created_at FROM retrieval_events WHERE {where}
                     UNION ALL
-                    SELECT session_id, returned_tokens, created_at FROM patch_events WHERE {where}
+                    SELECT session_id, returned_tokens, created_at FROM patch_events p
+                    WHERE {where} AND {NotAlreadyCounted}
                 )
                 GROUP BY session_id ORDER BY MAX(created_at) DESC;
                 """,
@@ -186,13 +206,15 @@ public sealed class MetricsReader
             // see the comment in ReadTotals), so the tool-grouped view needs a second branch unioned
             // in under a literal label; patch_events has no tool_name column to group by since it is
             // the only tool writing there, and HAVING with no GROUP BY filters the single whole-table
-            // aggregate row down to nothing when this scope has no patch_events at all.
+            // aggregate row down to nothing when this scope has no patch_events at all. rename_symbol
+            // does carry its own tool_name in retrieval_events, so NotAlreadyCounted is what stops its
+            // patch row being relabelled 'validate_patch' and counted a second time.
             _ => $"""
                 SELECT tool_name, COUNT(*), COALESCE(SUM(returned_tokens),0)
                 FROM retrieval_events WHERE {where} GROUP BY tool_name
                 UNION ALL
                 SELECT 'validate_patch', COUNT(*), COALESCE(SUM(returned_tokens),0)
-                FROM patch_events WHERE {where}
+                FROM patch_events p WHERE {where} AND {NotAlreadyCounted}
                 HAVING COUNT(*) > 0
                 ORDER BY 3 DESC;
                 """,

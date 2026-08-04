@@ -6,7 +6,8 @@ auto-compaction truncates it at — a run needs all four, and a truncated skill 
 last ones.
 
 Every analysis below assumes the probe matrix has already run with per-probe `taskId`s (Step 0), so each
-probe's `(calls, tokens)` is recoverable from one `get_retrieval_metrics(groupBy: "task")` call.
+probe's `(calls, tokens)` is recoverable from one `get_retrieval_metrics(groupBy: "task", since: <today>)`
+call — with the date bound, without which ids reused from a previous run report both runs' totals.
 
 ## 3a · Routes: was the same outcome reachable with fewer calls or fewer tokens?
 
@@ -24,12 +25,17 @@ because the documentation recommending it is wrong.
 | What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol(include: "source")` |
 | What happens near line N of a long member? | `bodyOutline` → `get_symbol(include: "source:code@N-M")` | `get_symbol(include: "source")` |
 | What is its signature? | default `include` | `include: "source"` |
-| What shape are these five symbols? | one `get_symbol(symbols: [...])` | five `get_symbol` calls |
+| What shape are these five symbols? | one `get_symbol(symbols: [...])` — **calls only; see below** | five `get_symbol` calls |
 | Who calls it (just the list, one hop)? | `get_call_hierarchy(maxDepth: 1)` | `get_references` |
 | Where exactly is it called (file/line/snippet)? | `get_references` | repeated file reads |
 | How much does changing it ripple? | `get_call_hierarchy(includeTree: false)` | full tree |
 | What does it implement? | `search_index(implements:)` | `get_type_hierarchy` |
 | How does X reach Y? | `get_call_slice` | repeated `get_references` hops |
+
+The batch row is the one where "cheap" means **fewer calls, not fewer tokens**, and the table should not
+be read as claiming otherwise. Measured at n=5 the batch cost ~8% *more* tokens than five separate
+fetches — `shared` hoisting recovers most of the wrapper, but not the per-entry `results[i]` nesting
+until roughly n=8–10. Four fewer round-trips is still the right trade; asserting a token win is not.
 
 Report each row as `cheap (c calls, t tokens) → expensive (c, t)`. A row where the "expensive" route is
 actually cheaper, or where the cheap route did not answer, is worth more than every row that confirms

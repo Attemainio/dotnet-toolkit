@@ -11,12 +11,30 @@ search_index(query: "fee ledger TryBuy TrySell")     ← one call, all four
 Not this:
 
 ```
-search_index(query: "fee"); search_index(query: "ledger"); ...   ← several × the tokens
+search_index(query: "fee"); search_index(query: "ledger"); ...   ← four round trips for one answer
 ```
 
 Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` finds
 `TryBuy`. When a question spans two subsystems, name both in the same query — the ranking
 puts the symbols matching more of your terms first, which is exactly the overlap you want.
+
+### `limit` is spent globally — read `termsWithNoHits`
+
+The saving from one call is **round trips, not always tokens.** `limit` is applied across the whole
+ranked union, not per term, so a term whose name-matches are far rarer than its neighbours' can be
+squeezed out of the response entirely. Measured on a real repository, `query: "fitness ledger evaluate
+population", limit: 10` came back with ten hits, all of them `Evaluate*` or `PopulationCount` — zero for
+two of the four terms asked about.
+
+Any term the returned hits never covered is named back:
+
+```json
+{"termsWithNoHits":["fitness","ledger"], "items":[ ... ]}
+```
+
+**Never read an absent term as an absent symbol.** When the field appears, either raise `limit` (cap 50)
+or re-ask for the starved terms on their own. The field is emitted only when the query had more than one
+term and something matched; a single-term query returning nothing already says so with an empty `items`.
 
 Each hit carries where it was found, so going straight there costs no second call. `items` is a
 plain array of objects — `symbolId, name, kind, file, line, endLine` on every hit:
@@ -54,7 +72,7 @@ response states the legend once rather than repeating advice on every row. Four 
 | `L` | the declaration's own line count | only at 150+ |
 | `M` | members a type declares (absent on non-types) | only at 20+ |
 | `D` | lines of XML doc comment | whenever non-zero |
-| `C` | lines of non-doc comment (`//`, `/* */`) | whenever non-zero |
+| `C` | lines of non-doc comment (`//`, `/* */`) | only at 10+ |
 
 Against the `Sample.Lib` test fixture, whose declarations are all small and one-line-documented:
 
@@ -63,7 +81,7 @@ search_index(query: "Widget Spin Undocumented", groupBy: "none", limit: 6)
 ```
 
 ```json
-{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines; D/C absent = zero",
+{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero",
  "items":[
    {"symbolId":"sym_...","kind":"Interface","name":"Sample.Lib.IWidget",
     "file":"Lib/Widget.cs","line":3,"endLine":6},
@@ -85,10 +103,16 @@ nothing.
 the row. Emitting it everywhere would spend tokens restating a subtraction you can do; spending them
 only where that subtraction changes the next call is what earns the column its place.
 
-`D` and `C` are **not derivable from anything else in the response**. Gating them would leave
-"undocumented" and "not measured" indistinguishable — the ambiguity `L` never pays, because arithmetic
-recovers it. So they are reported unconditionally and elided only at zero, and the legend says so:
-an absent `D` or `C` is a measured zero, an absent `L` only means "below 150".
+`C` is gated for a different reason: **acting on it costs you something.** `source:code-comments` drops
+the rationale along with the noise, so the saving has to be worth that loss. Measured on a real
+repository, a `C` firing at any non-zero count fired on a quarter of all hits to save 1.19× — not a
+trade worth printing a label for, which is why the threshold is 10 lines.
+
+`D` alone is **unconditional, elided only at zero.** It is not derivable from anything else in the
+response, and it is the label that most reliably pays: a modest 1.6× across the great majority of hits,
+losing nothing, since `source:code` drops only a doc comment `xmlDoc` serves more cheaply anyway. So the
+legend says it: an absent `D` is a measured zero, while an absent `L`/`M`/`C` only means "below the
+threshold".
 
 They are data rather than alarms. `L`/`M` say *don't fetch this whole*; `D`/`C` say *here is what the
 fetch would contain*, so you can reach for `source:code-comments` or `source:code` on evidence rather
@@ -102,7 +126,7 @@ than on a guess.
 | `L…` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the region you want |
 | `M…` | `get_symbol(include: "members")` — navigate by member list rather than reading the type through |
 | a large `D…` | the default fetch already carries that doc; `include: "source:code"` skips it when you only want the implementation |
-| a large `C…` | `include: "source:code-comments"` when you are inspecting behavior rather than reading rationale |
+| `C…` (only ever emitted at 10+) | `include: "source:code-comments"` when you are inspecting behavior rather than reading rationale |
 | any, but you are about to **edit** it | `include: "all"` regardless of shape — a body patch needs the body-carrying `contentVersion`, which the default fetch does not lease |
 
 #### Two counts that overlap on purpose
@@ -269,7 +293,7 @@ search_index(query: "Spin", kinds: "method")
 ```
 
 ```json
-{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines; D/C absent = zero",
+{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines(10+); D absent = zero",
  "groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
    {"path":"Lib/Pipeline.cs","kind":"Method","symbols":[
       {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6}]},

@@ -152,10 +152,11 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal("tsk_probe", Ids.TaskId("  tsk_probe  "));
     }
 
-    private static RetrievalEvent Sample(string session, string task, string tool, int tokens, string? symbolId = null) =>
+    private static RetrievalEvent Sample(string session, string task, string tool, int tokens,
+        string? symbolId = null, string? toolCallId = null) =>
         new()
         {
-            ToolCallId = Ids.ToolCall(),
+            ToolCallId = toolCallId ?? Ids.ToolCall(),
             SessionId = session,
             TaskId = task,
             ToolName = tool,
@@ -182,10 +183,41 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(150, patchGroup.TokensReturned);
     }
 
-    private static TelemetryRecorder.PatchEvent SamplePatch(string session, string task, int tokens) =>
+    /// <summary>
+    /// One call that writes to BOTH tables is one call, at the tokens it returned once.
+    /// </summary>
+    /// <remarks>
+    /// rename_symbol records a patch_events row for the validation AND a retrieval_events row for the
+    /// response, sharing one tool_call_id. Folding patch rows into the totals unconditionally - correct
+    /// while validate_patch was the only writer there - reported every rename as two calls at double its
+    /// real cost, and relabelled its tokens 'validate_patch' in the tool-grouped view.
+    /// </remarks>
+    [Fact]
+    public void OneCallWritingBothTablesIsCountedOnce()
+    {
+        var shared = Ids.ToolCall();
+        _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "rename_symbol", tokens: 400, toolCallId: shared));
+        _recorder.RecordPatch(SamplePatch("ses_a", "tsk_1", tokens: 400, toolCallId: shared));
+
+        var byTool = _metrics.Read("global", null, null, null, "tool");
+        Assert.Equal(1, byTool.Totals.ToolCalls);
+        Assert.Equal(400, byTool.Totals.TokensReturned);
+
+        // The validation itself still counts as an attempt - a rename really is one. Only its COST is
+        // already held by the retrieval row.
+        Assert.Equal(1, byTool.Totals.ValidationAttempts);
+        Assert.Equal("rename_symbol", Assert.Single(byTool.Groups).Key);
+
+        var byTask = Assert.Single(_metrics.Read("global", null, null, null, "task").Groups);
+        Assert.Equal(1, byTask.Calls);
+        Assert.Equal(400, byTask.TokensReturned);
+    }
+
+    private static TelemetryRecorder.PatchEvent SamplePatch(string session, string task, int tokens,
+        string? toolCallId = null) =>
         new()
         {
-            ToolCallId = Ids.ToolCall(),
+            ToolCallId = toolCallId ?? Ids.ToolCall(),
             PatchId = Ids.ToolCall(),
             ValidationAttemptId = Ids.ToolCall(),
             SessionId = session,

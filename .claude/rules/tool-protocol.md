@@ -13,7 +13,7 @@ when output is truncated, and returns one fragment of a partial class with no si
 
 | Instead of | Use |
 | --- | --- |
-| `grep`/Grep for a type or member name | `search_index` (all terms in ONE call — they are OR-ed and ranked) |
+| `grep`/Grep for a type or member name | `search_index` (all terms in ONE call — OR-ed and ranked; `limit` is global, so read `termsWithNoHits`) |
 | `Read` on a `.cs` file | `get_symbol` (whole symbol across partials; `include` picks the fields) |
 | `grep` for callers or implementors | `get_references` (Roslyn semantic model) |
 | `find`/`ls`/Glob to map a subsystem | `get_scope` |

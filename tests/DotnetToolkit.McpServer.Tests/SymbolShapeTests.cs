@@ -20,6 +20,10 @@ public class SymbolShapeTests
 
         Assert.Null(Gated(1, 1, SymbolShape.MemberThreshold - 1));
         Assert.Equal($"M{SymbolShape.MemberThreshold}", Gated(1, 1, SymbolShape.MemberThreshold));
+
+        Assert.Null(SymbolShape.For(1, 1, null, docLines: 0, commentLines: SymbolShape.CommentThreshold - 1));
+        Assert.Equal($"C{SymbolShape.CommentThreshold}",
+            SymbolShape.For(1, 1, null, docLines: 0, commentLines: SymbolShape.CommentThreshold));
     }
 
     [Fact]
@@ -37,13 +41,16 @@ public class SymbolShapeTests
         Assert.Equal("C21", SymbolShape.For(1, 20, 4, docLines: 0, commentLines: 21));
     }
 
-    // The point of making D and C unconditional: they are recoverable from nothing else on the row, so a
-    // symbol under BOTH gates still reports them rather than leaving "none" and "not measured" identical.
+    // The point of leaving D unconditional: it is recoverable from nothing else on the row, so a symbol
+    // under every gate still reports it rather than leaving "none" and "not measured" identical. C is
+    // gated instead, because acting on it costs the caller their comments - a saving that small does not
+    // buy that loss, so below the threshold the label is not worth printing at all.
     [Fact]
-    public void DocsAndCommentsAreReportedBelowEveryThreshold()
+    public void DocsAreReportedBelowEveryThresholdButSparseCommentsAreNot()
     {
         Assert.Equal("D3", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 0));
-        Assert.Equal("D3 C1", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 1));
+        Assert.Equal("D3", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 1));
+        Assert.Equal("D3 C12", SymbolShape.For(1, 4, 1, docLines: 3, commentLines: 12));
     }
 
     [Fact]
@@ -63,6 +70,7 @@ public class SymbolShapeTests
     {
         Assert.Contains($"L=lines({SymbolShape.LineThreshold}+)", SymbolShape.Legend);
         Assert.Contains($"M=members({SymbolShape.MemberThreshold}+)", SymbolShape.Legend);
+        Assert.Contains($"C=commentlines({SymbolShape.CommentThreshold}+)", SymbolShape.Legend);
     }
 
     /// <summary>A hit with neither docs nor comments, where only the gated facts can fire.</summary>

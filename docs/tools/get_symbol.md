@@ -21,7 +21,7 @@ Component names are exactly the response fields they control:
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Members carrying nothing (an empty `throws`/`awaits`/`writes`/`locks`/`implementsMembers`, a null `overrides`) are omitted rather than emitted empty — absence means "none" |
 | `bodyOutline` | Control-flow landmarks inside a method-like body — `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock` — for navigating a long body before deciding what to fetch. Purely syntactic (same cost tier as `source`, not `mechanicalFacts`' semantic-model tier). Under the default `toon` format this renders as a raw indented block, same treatment `source` gets: one `text,startLine,endLine` line per landmark, indented two spaces per nesting level instead of carrying a `depth` number — `format:"json"`/`"compact"` keep the flat `[{text, startLine, endLine, depth}]` array instead, since plain JSON has no indentation of its own to lean on. A bare `try`/`else`/`finally` has no name/condition of its own and is omitted; infer its span from the parent row. `text` is truncated to 28 characters with a trailing `..`, not summarized. Nesting counts among other landmark rows only, not raw syntax depth. Absent, with an explanatory `bodyOutlineNote`, for anything without an executable body of its own (a type, a field, an auto-property) — not a silent double-disappearance. `bodyOutlineNote` also appears (rows still returned) when the declaration is under 40 lines — see below. |
-| `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
+| `referenceCounts` | `{callers, tests}` for a member (never for a type), plus `{implementations, overrides}` — but each of those two only where the symbol's kind makes a non-zero answer possible: `implementations` for an interface, an unsealed class or an interface member; `overrides` for a virtual/abstract member. An enum, a static class or a plain method omits them rather than reporting a structural `0`, and the whole component is absent when nothing is left to report |
 | `recentLog` | Last few dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member; `null` otherwise |
 | `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]` — e.g. `[Authorize(Roles="Admin")]` reads back as `{name: "Authorize", arguments: "Roles = Admin"}`. `name` strips a trailing `Attribute` suffix. Absent when there are none. Suppressed when `source` is also requested |
@@ -58,7 +58,16 @@ Examples:
 - `include: "source:code@120-160"` — one region of a long member. See below for when that pays.
 
 An unrequested component is absent from the JSON entirely, not null, so it costs nothing. A
-misspelled name is an `invalid_component` error rather than being silently dropped.
+misspelled name is an `invalid_component` error rather than being silently dropped, and a malformed
+`source:` entry gets an error about the *source grammar* rather than a list of bare component names —
+`"source:code@70-81-lineNumbers"` is told that the `-modifiers` come **before** the `@` line selection,
+which runs to the end of the entry.
+
+The response's own `components` field reports what was **served**, and is emitted only when that differs
+from what was asked for. Under `include: "all"` on a method, `members`/`baseType`/`interfaces` return
+nothing — correctly, a method has none — and the field names the five that did come back rather than
+advertising eleven. When every requested component was served it is absent, since it would only restate
+the argument.
 
 ### When to slice `source` with `@`, and when not to
 
@@ -84,9 +93,12 @@ Two things to hold when you do slice:
 
 ### Reading without line numbers
 
-`-lineNumbers` drops the per-line `NN:` gutter. Measured over this repo's own `src/`, that is **~18%
-of a `source` payload** — the gutter costs ~3 tokens on every line, several times what indentation
-costs. In exchange the component changes shape: instead of `[{line, text}]` it returns `[{lines, text}]`,
+`-lineNumbers` drops the per-line `NN:` gutter, which costs ~3 tokens on every line. **How much that
+saves is specimen-dependent, and the range is wide**: measured over this repo's own `src/` it is ~18%
+of a `source` payload, but measured over deeply-nested lines in another repo (a lambda inside a method,
+20–28 leading spaces) it was 4.9%. The gutter is a fixed cost per line, so the saving is large on short,
+shallow lines and small on long ones — expect a real but modest win, not a fifth of the payload. In
+exchange the component changes shape: instead of `[{line, text}]` it returns `[{lines, text}]`,
 one entry per **contiguous run**, rendering under `toon` as an `@start-end` header above bare code:
 
 ```
@@ -108,8 +120,8 @@ is normally paid once.
 **This is for reading, not for editing.** The gutter is what makes a line directly usable as a
 `validate_patch` `startLine`/`endLine`; without it a line has to be counted forward from its run's
 header, and a miscount produces a patch that compiles against the wrong span rather than an error.
-Fetch with the numbers left on whenever the next step is an edit — the ~18% is worth it for a read pass
-over unfamiliar code, not for the fetch you are about to patch from.
+Fetch with the numbers left on whenever the next step is an edit — the saving is worth it for a read
+pass over unfamiliar code, not for the fetch you are about to patch from.
 
 Composes with everything else: `"source:code-comments-lineNumbers@46-120"` is legal, and `sourceLines`
 still reports the `kept/whole` span for the `@` part.
@@ -191,7 +203,7 @@ Component names are exactly the response fields they control:
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Members carrying nothing (an empty `throws`/`awaits`/`writes`/`locks`/`implementsMembers`, a null `overrides`) are omitted rather than emitted empty — absence means "none" |
 | `bodyOutline` | Control-flow landmarks inside a method-like body as `[{text, startLine, endLine, depth}]` in `format:"json"`/`"compact"` — under the default `toon` format, `depth` is dropped and nesting instead reads from two-space-per-level indentation on a raw `text,startLine,endLine` block (see below), the same raw-block treatment `source` gets and for the same reason. Purely syntactic (no semantic model, so it costs the same tier as `source`, not `mechanicalFacts`' semantic-model tier) — for navigating a long body without reading it. Covers `switch`/`case`, `if`, `foreach`/`for`/`while`/`do`, `catch`, `using`, `lock`; a bare `try`/`else`/`finally` carries no name or condition of its own and is omitted — its span is inferable from the parent row. `text` is a short label (e.g. `"switch(node)"`, `"if (name.Length > 3)"`), truncated to a 28-character budget with a trailing `..`, not a semantic summary. `depth` (or indentation, under `toon`) counts nesting among *other landmark rows only*, not raw syntax depth — a landmark buried inside several plain blocks isn't deeper than one actually nested inside another landmark. Absent (with an explanatory **`bodyOutlineNote`**, e.g. `"bodyOutline is not applicable to a Type symbol - only a method has an executable body to outline"`) for anything without an executable body of its own (a type, a field, an auto-property) — rather than both fields silently disappearing. `bodyOutlineNote` also appears — without suppressing the rows — when the declaration (doc-comment-inclusive, matching `declarationSites`) is under 40 lines — advisory only ("`source:code` is likely cheaper than this outline") |
-| `referenceCounts` | `{implementations, overrides}` always; adds `{callers, tests}` for a member (never for a type) |
+| `referenceCounts` | `{callers, tests}` for a member (never for a type), plus `{implementations, overrides}` — but each of those two only where the symbol's kind makes a non-zero answer possible: `implementations` for an interface, an unsealed class or an interface member; `overrides` for a virtual/abstract member. An enum, a static class or a plain method omits them rather than reporting a structural `0`, and the whole component is absent when nothing is left to report |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current:true/false` against the live body |
 | `members` | For a type only: `[{symbolId, displayString, kind, contentVersion}]` per member |
 | `attributes` | This symbol's own (non-inherited) C# attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute` suffix (e.g. `[Obsolete]` → `"Obsolete"`); `arguments` is a compact rendering of constructor/named arguments, truncated rather than reproduced in full for a long string. Absent when the symbol has no attributes. Suppressed (absent) when `source` is also requested |
@@ -440,8 +452,15 @@ Concatenate the two for a name you can pass back, or pass the candidate's `symbo
 ```json
 {"error":"ambiguous_symbol","sharedPrefix":"Sample.Lib.Overloads.",
  "candidates":[{"symbolId":"sym_1a2b...","displayString":"Pick(int)"},
-               {"symbolId":"sym_3c4d...","displayString":"Pick(string)"}]}
+               {"symbolId":"sym_3c4d...","displayString":"Pick(string)"}],
+ "totalCandidates":2}
 ```
+
+`candidates` is capped at ten. `totalCandidates` always states how many matched, and `truncated: true`
+appears when the cap bit — with a `message` naming the ways to narrow. **A name like `Run` in a test
+tree can match fifty members, so an absent candidate is not an absent symbol**: qualify the name with
+its containing type or namespace, or append a parameter list, rather than concluding it does not exist.
+`rename_symbol` returns the identical payload from the same renderer.
 
 ## Next steps
 

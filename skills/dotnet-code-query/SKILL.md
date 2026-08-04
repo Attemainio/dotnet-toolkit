@@ -66,8 +66,13 @@ returned.
 
 ```
 search_index(query: "fee ledger TryBuy TrySell")     ← one call, all four
-search_index(query: "fee"); search_index(query: "ledger"); ...   ← several × the tokens
+search_index(query: "fee"); search_index(query: "ledger"); ...   ← four round trips for one answer
 ```
+
+The win is **round trips, not always tokens**: `limit` is spent across the whole ranked union, so a
+term with far rarer name-matches than its neighbours can be crowded out. Any term the hits never
+covered comes back under `termsWithNoHits` — raise `limit` (cap 50) or re-ask for that term alone.
+**Never read an absent term as an absent symbol.**
 
 `get_symbol` takes `symbols: [...]` to fetch a list with one `include`. Batch by default; split only
 when you genuinely need different filters per call. The batch's win is **round trips** — on tokens it
@@ -83,12 +88,12 @@ A `search_index` hit carries a `shape` describing what fetching it costs — `L`
 - `L…` (150+) → `include: "bodyOutline"` to map it, then `source:code@from-to` for the part you want.
 - `M…` (20+) → `include: "members"` and navigate by the list.
 - a large `D…` → `include: "source:code"` skips the doc the default fetch would carry.
-- a large `C…` → `include: "source:code-comments"` when inspecting behavior, not rationale.
+- `C…` (10+) → `include: "source:code-comments"` when inspecting behavior, not rationale.
 - no `shape` at all → small, undocumented, uncommented; `get_symbol(symbol: id)` is already right.
 - About to **edit** it → `include: "all"` whatever the shape says, for the body-carrying
   `contentVersion`. The shape is about reading cost; it never overrides the write path.
 
-`L`/`M` appear only above their thresholds, so a blank there means "below it". `D`/`C` appear whenever
+`L`/`M`/`C` appear only above their thresholds, so a blank there means "below it". `D` appears whenever
 non-zero, so a blank there is a measured zero. On a type, `C` totals its members' comments too.
 
 ## Gate expansion on referenceCounts
@@ -111,7 +116,10 @@ serialization target, or a test/event handler. **Never conclude "dead code" from
 
 A count is **omitted entirely** when it could not be measured. Absent is not 0: absent means
 unknown. `callers`/`tests` are also omitted for named types, where call edges are recorded against
-members.
+members — and `implementations`/`overrides` are omitted wherever the symbol's kind makes them
+structurally impossible (an enum or static class has no implementers, a non-virtual member no
+overriders), which is a *known* zero rather than an unmeasured one. When nothing is left to say, the
+whole `referenceCounts` block is absent.
 
 Before writing a helper that plausibly already exists, check with `search_index` first — one cheap
 call beats a duplicate implementation.

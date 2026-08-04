@@ -34,9 +34,10 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
 ```
 
 `origin` separates what the type itself declares from what it inherits — usually the first
-thing you want to know. Both `origin` and `definedIn` are omitted on a row the
-`receiverType` header already accounts for, and `definedIn` is omitted on a local or parameter (which
-has no declaring type) and carries the *namespace* on a type-kind row. Within one origin, symbols this
+thing you want to know. Both `origin` and `definedIn` carry nothing on a row the `receiverType` header
+already accounts for; `definedIn` likewise on a local or parameter (which has no declaring type), and it
+carries the *namespace* on a type-kind row. "Nothing" reads as an **empty cell** rather than an absent
+field whenever other rows in the same table do carry the column — see "Rendering" below. Within one origin, symbols this
 solution declares come before BCL/NuGet ones, so a crowded cursor does not spend its budget
 alphabetically in the `A`s of the referenced assemblies. Drop `receiver` to ask what is in scope at that
 line generally rather than on one expression.

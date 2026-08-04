@@ -59,6 +59,26 @@ public static class SearchText
         return terms.Count == 0 ? null : string.Join(" OR ", terms);
     }
 
+    /// <summary>The whole terms a query is searched under, in the order they were written.</summary>
+    /// <param name="query">The caller's free-text query.</param>
+    /// <returns>Each segment of two or more characters, deduplicated case-insensitively.</returns>
+    /// <remarks>
+    /// The camel-case sub-parts <see cref="ForQuery"/> additionally matches on are deliberately absent:
+    /// this is the list a caller would recognise as "the things I asked for", and it exists so a response
+    /// can report which of them the ranked union never got round to covering.
+    /// </remarks>
+    public static IReadOnlyList<string> QueryTerms(string query)
+    {
+        var terms = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var segment in Segments(query))
+        {
+            if (segment.Length >= 2 && seen.Add(segment))
+                terms.Add(segment);
+        }
+        return terms;
+    }
+
     /// <summary>Splits on anything that is not a letter or digit: dots, parens, commas, angle brackets.</summary>
     private static IEnumerable<string> Segments(string input)
     {

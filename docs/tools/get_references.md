@@ -8,7 +8,7 @@ string matches as hits, and silently drops sites when output is truncated.
 | `symbol` | Required. Same addressing as `get_symbol`. |
 | `direction` | `callers` (default) \| `implementations` \| `overrides`. |
 | `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source`, including the `toon`-format raw-block rendering (default `false` — fetch bodies only for the ones you'll actually edit). |
-| `fields` | Comma list of extras beyond the default `symbolId`/`displayString`/`sites`: `contentVersion` (this item's own version, for leasing it independently — rarely needed), `signature` (the full parameter-list `displayString` instead of the default compact name/arity form). |
+| `fields` | Comma list of extras beyond the default `symbolId`/`displayString`/`sites`: `contentVersion` (this item's own version, for leasing it independently — rarely needed), `signature` (the full parameter-list `displayString` instead of the default compact name/arity form), `crefs` (also return the XML-doc `<see cref="..."/>` sites excluded by default, each tagged `kind:"cref"`). |
 
 Real call and response (trimmed):
 
@@ -38,6 +38,21 @@ carries `symbolId, displayString, sites` on every call; `contentVersion` (with `
 apply — absent, not `null`, otherwise. `excludedTextMatches` is the count of comment/string matches a
 grep would have wrongly included — 1 here, correctly excluded. `targetSymbolId` is omitted when `symbol`
 was already a `sym_...` id, since it would only restate the input.
+
+### What a site is, and what is not one
+
+**One row per `{file, line}`.** A line naming the symbol several times — a multi-parameter signature, a
+tuple return type that names its own interface — is one site, and its `snippet` is that whole line, so
+nothing the repeats carried is lost. Emitting a byte-identical row per occurrence cost a 585-line fluent
+interface ~1,700 tokens of pure repetition on one call.
+
+**XML-doc `cref` mentions are excluded by default.** Roslyn binds a `<see cref="IWidget"/>` to the
+symbol, so `FindReferences` hands doc comments back among the real sites — the same category as the
+comment and string matches this tool refuses to return, arriving by a different route. They are dropped,
+counted as `excludedDocMentions` (present only when non-zero), and an item left with nothing but doc
+mentions goes with them. On a heavily documented API this is the difference between roughly half the
+response being comments and none of it being. Pass `fields: "crefs"` to get them back, each tagged
+`kind: "cref"` so code sites stay distinguishable.
 
 `includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (shown
 here as `format:"json"`, trimmed to one caller):

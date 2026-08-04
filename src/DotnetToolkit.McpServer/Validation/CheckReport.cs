@@ -61,6 +61,33 @@ public static class CheckReport
                 notAssessed.Add($"analyzer {failed} threw and was dropped; its rules are unassessed");
         }
 
+        // Once ran is false, every remaining field is a constant by construction — zero analyzers over
+        // zero documents in zero milliseconds, not clean, nothing found — so the block collapses to the
+        // two fields that carry the answer and notAssessed states the consequence in words. What stays
+        // under a run that DID happen is the scope the verdict covers, which is this block's whole point.
+        object? analyzerBlock = null;
+        if (analyzers is { Ran: true })
+        {
+            analyzerBlock = new
+            {
+                ran = true,
+                analyzerCount = analyzers.AnalyzerCount,
+                documentCount = analyzers.DocumentCount,
+                durationMs = analyzers.DurationMs,
+                clean = analyzers.IsClean,
+                // Errors are not repeated here: they are the run's FailingDiagnostics and already arrive
+                // distilled under `diagnostics`. Only the advisory tiers, which nothing else reports, do —
+                // and each of the three is omitted at zero, since `clean` already states that case once.
+                errorCount = analyzers.Errors.Count == 0 ? (int?)null : analyzers.Errors.Count,
+                warnings = Advisories(analyzers.Warnings, locator),
+                suggestions = Advisories(analyzers.Suggestions, locator),
+            };
+        }
+        else if (analyzers is not null)
+        {
+            analyzerBlock = new { ran = false, skipReason = analyzers.SkipReason };
+        }
+
         return new
         {
             levels = ladder.Levels.Select(l => new
@@ -70,26 +97,20 @@ public static class CheckReport
                 durationMs = l.DurationMs,
                 scope = l.Scope,
             }),
-            analyzers = analyzers is null ? null : new
-            {
-                ran = analyzers.Ran,
-                skipReason = analyzers.SkipReason,
-                analyzerCount = analyzers.AnalyzerCount,
-                documentCount = analyzers.DocumentCount,
-                durationMs = analyzers.DurationMs,
-                clean = analyzers.IsClean,
-                // Errors are not repeated here: they are the run's FailingDiagnostics and already arrive
-                // distilled under `diagnostics`. Only the advisory tiers, which nothing else reports, do.
-                errorCount = analyzers.Errors.Count,
-                warnings = Advisories(analyzers.Warnings, locator),
-                suggestions = Advisories(analyzers.Suggestions, locator),
-            },
+            analyzers = analyzerBlock,
             notAssessed,
         };
     }
 
-    private static object Advisories(IReadOnlyList<Diagnostic> diagnostics, SolutionLocator locator)
+    /// <summary>Renders one severity's advisory findings, capped.</summary>
+    /// <param name="diagnostics">Every diagnostic reported at this severity.</param>
+    /// <param name="locator">Resolves absolute diagnostic paths to repo-relative ones.</param>
+    /// <returns>The capped items with their counts, or null when this severity found nothing.</returns>
+    private static object? Advisories(IReadOnlyList<Diagnostic> diagnostics, SolutionLocator locator)
     {
+        if (diagnostics.Count == 0)
+            return null;
+
         var items = diagnostics
             .OrderBy(d => d.Id, StringComparer.Ordinal)
             .Take(MaxAdvisoriesPerSeverity)

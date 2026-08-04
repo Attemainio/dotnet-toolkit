@@ -38,17 +38,26 @@ make that delta trustworthy.
 the value is written to the telemetry row and is the only axis that separates concurrent callers — the
 session id is one per *server process*, so every agent talking to this server shares it.
 
-**Give each individual probe its own id** — `p_<family>_<name>`, all sharing one run-wide prefix — and
-read them all back with a **single** `get_retrieval_metrics(groupBy: "task")` at the end. That is one
-call per run instead of two per probe (2 instead of ~130 on a full matrix), and it yields the same
-per-probe numbers, because a per-probe id makes each probe its own group:
+**Give each individual probe its own id** — `p_<family>_<name>_<today>`, all sharing one run-wide prefix
+— and read them all back with a **single** `get_retrieval_metrics(groupBy: "task", since: "<today>")` at
+the end. That is one call per run instead of two per probe (2 instead of ~130 on a full matrix), and it
+yields the same per-probe numbers, because a per-probe id makes each probe its own group:
 
 ```
-<every probe call carries its own taskId, e.g. taskId: "p_C_rt_short">
+<every probe call carries its own taskId, e.g. taskId: "p_C_rt_short_20260804">
 ...
-costs = get_retrieval_metrics(groupBy: "task")     // one call, one row per probe
-cost  = costs.groups["p_C_rt_short"].tokensReturned
+costs = get_retrieval_metrics(groupBy: "task", since: "2026-08-04")   // one call, one row per probe
+cost  = costs.groups["p_C_rt_short_20260804"].tokensReturned
 ```
+
+**Both the date suffix and `since:` are mandatory, and they are not redundant.** The readback defaults
+to `scope: "global"`, and telemetry outlives the server process — so a probe id reused from an earlier
+run comes back as that run's rows summed with this one's, silently doubling the cost of every probe it
+collides on. The matrix below is fixed, which *guarantees* the same names recur run over run; on one
+measured run roughly a third of the ids collided, reporting `p_C_source` at 4,485 tokens against a real
+2,406. Read the `calls` column on every group as a check: any probe issued once whose row says `calls: 2`
+is a collision (or a double-recording bug), and the run's numbers are void until it is explained. The
+instrument check below cannot catch this on its own, since it uses novel ids by construction.
 
 To isolate one probe mid-run instead (a suspected drift, an instrument check), snapshot
 `get_retrieval_metrics(taskIds: [<that id>], groupBy: "tool")` before and after it and subtract the

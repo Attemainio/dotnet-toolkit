@@ -112,13 +112,9 @@ public static class RenameTools
             {
                 return resolution.Candidates.Count == 0
                     ? Fail("symbol_not_found", $"No source symbol matched '{symbol}'.")
-                    : Reject("ambiguous_symbol", Formats.Render(new
-                    {
-                        error = "ambiguous_symbol",
-                        message = "Several symbols match; re-call with one of these exact names (append a "
-                            + "parameter list to pick an overload).",
-                        candidates = resolution.Candidates.Select(c => new { displayString = c.ToDisplayString() }),
-                    }));
+                    : Reject("ambiguous_symbol", ContextTools.AmbiguousSymbol(resolution.Candidates,
+                        "Several symbols match; re-call with one of these exact names (append a "
+                        + "parameter list to pick an overload)."));
             }
 
             var target = SymbolKey.Canonicalize(resolution.Symbol);

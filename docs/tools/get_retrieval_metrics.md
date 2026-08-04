@@ -39,6 +39,13 @@ caller's traffic, out of the number. `groupBy: "task"` then compares whole calle
     "firstSeen":"2026-07-28T09:00:07...","lastSeen":"2026-07-28T09:02:18..."}]}
 ```
 
+**A task id is not unique on its own — bound the read by date too.** `scope` defaults to `global`, and
+telemetry outlives the server process, so a `taskId` reused by an earlier run comes back as both runs'
+rows summed under one key. Any measurement built on a recurring naming scheme (a fixed probe matrix is
+exactly that) needs either a run-unique suffix on every id or a `since: "<today>"` on the readback, and
+preferably both. The `calls` column is the tell: a probe issued once whose row reports `calls: 2` is a
+collision, and every token number in that run is suspect until it is explained.
+
 Five tools record nothing and never appear in these numbers: `ping`, `workspace_status`,
 `set_output_format` and `reload_workspace` are constant-cost control calls, and `get_retrieval_metrics`
 is excluded deliberately — a metrics tool that recorded its own calls would perturb every delta it is
