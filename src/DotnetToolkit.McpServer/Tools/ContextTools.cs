@@ -566,6 +566,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "Follow up with get_symbol for the content itself. A hit's line/endLine mark the signature "
         + "line only, EXCLUDING any leading /// doc comment — anchor a validate_patch edit on "
         + "get_symbol's declarationSites span, not this one. "
+        + "A hit's shape column reports what fetching it costs, and the response states its legend once. "
+        + "L/M (emitted only when large) mean fetching that hit whole is the WRONG next call — use "
+        + "get_symbol include:\"members\" or a source:code@from-to range; a large D or C is worth "
+        + "source:code or source:code-comments. An edit target wants include:\"all\" whatever its shape, "
+        + "for the body-carrying contentVersion. "
         + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. "
         + "Full grammar, worked examples and response shape: docs/tools/search_index.md.")]
 
@@ -669,9 +674,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
 
+        // Only the flat envelope needs this precomputed: the grouped one derives the same answer from the
+        // rows it is handed. Either way the legend is emitted only when some hit actually carries a shape.
+        var anyShape = limited.Any(r => SymbolShape.For(
+            r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
+            r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0) is not null);
+
         object BuildFlatEnvelope() => new
         {
             limitedBy = searchLimitedBy,
+            shape = anyShape ? SymbolShape.Legend : null,
             items = limited.Select(r => new
             {
                 symbolId = r.Hit.SymbolId,
@@ -680,6 +692,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 file = r.Site?.File,
                 line = r.Site?.Line,
                 endLine = r.Site?.EndLine,
+                shape = SymbolShape.For(
+                    r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
+                    r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0),
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                 summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
             }),
@@ -698,7 +713,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 return new SymbolGrouping.Row(
                     r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line, r.Site?.EndLine,
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
-                    summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null);
+                    summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
+                    SymbolShape.For(
+                        r.Site?.Line, r.Site?.EndLine, r.Site?.MemberCount,
+                        r.Site?.DocLines ?? 0, r.Site?.CommentLines ?? 0));
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();

@@ -75,6 +75,22 @@ is roughly a wash with the same fetches made singly, since what every entry shar
 `origin`, a common `containingType`) is lifted into one `shared` block only when that actually renders
 smaller. Details in `search_index.md` / `get_symbol.md`.
 
+## Let the hit tell you how to fetch it
+
+A `search_index` hit carries a `shape` describing what fetching it costs — `L` lines, `M` members,
+`D` doc lines, `C` comment lines — with the legend stated once per response.
+
+- `L…` (150+) → `include: "bodyOutline"` to map it, then `source:code@from-to` for the part you want.
+- `M…` (20+) → `include: "members"` and navigate by the list.
+- a large `D…` → `include: "source:code"` skips the doc the default fetch would carry.
+- a large `C…` → `include: "source:code-comments"` when inspecting behavior, not rationale.
+- no `shape` at all → small, undocumented, uncommented; `get_symbol(symbol: id)` is already right.
+- About to **edit** it → `include: "all"` whatever the shape says, for the body-carrying
+  `contentVersion`. The shape is about reading cost; it never overrides the write path.
+
+`L`/`M` appear only above their thresholds, so a blank there means "below it". `D`/`C` appear whenever
+non-zero, so a blank there is a measured zero. On a type, `C` totals its members' comments too.
+
 ## Gate expansion on referenceCounts
 
 `get_symbol` returns `referenceCounts: { callers, tests, implementations, overrides }`. Use it to

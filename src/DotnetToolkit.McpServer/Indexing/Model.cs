@@ -13,7 +13,9 @@ public sealed record MemberEntry(
     int Line,
     int EndLine,
     bool IsPublic,
-    string? DocSections = null);
+    string? DocSections = null,
+    int DocLines = 0,
+    int CommentLines = 0);
 
 /// <summary>A syntax-only outline of one type declaration, produced by <see cref="OutlineBuilder"/>.</summary>
 public sealed record TypeEntry(
@@ -29,7 +31,9 @@ public sealed record TypeEntry(
     List<MemberEntry> Members,
     List<TypeEntry> Nested,
     bool IsPublic,
-    string? DocSections = null);
+    string? DocSections = null,
+    int DocLines = 0,
+    int CommentLines = 0);
 
 /// <summary>A cached, syntax-only outline of one source file's namespaces and types.</summary>
 public sealed record FileEntry(
@@ -50,9 +54,11 @@ public sealed class IndexDocument
     ///
     /// 4 added the synthesized Program.Main of a top-level-statements file, which every earlier cache
     /// records as an empty type list. 5 scoped that to files a project actually compiles, so a cache
-    /// written by 4 holds entries for a test fixture's and a loose script's Program too.
+    /// written by 4 holds entries for a test fixture's and a loose script's Program too. 6 added
+    /// DocLines/CommentLines, which a cache written by 5 deserializes as 0 — indistinguishable from a
+    /// genuinely undocumented, uncommented symbol, and unfixed until each file's mtime changes.
     /// </remarks>
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

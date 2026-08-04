@@ -55,21 +55,17 @@ To isolate one probe mid-run instead (a suspected drift, an instrument check), s
 probed tool's own `tokensReturned`. Reading one tool's row makes both snapshot calls' own cost and any
 other caller's traffic irrelevant to the number. Never take a per-probe cost from `totals`.
 
-**This is what makes parallel evaluation possible at all.** Several agents can run different probe
-families against the same server simultaneously, each passing its own `taskId` and reading back only its
-own rows; `groupBy: "task"` then shows every family's totals side by side at the end. Without distinct
-`taskId`s the agents silently attribute each other's tokens to themselves, and the whole run is void.
+**This is also what makes parallel evaluation possible**: several agents can run different families
+against one server at once, each reading back only its own rows. Without distinct `taskId`s they
+silently attribute each other's tokens to themselves and the whole run is void.
 
-Before trusting a single number, verify the instrument on a call you can bound by eye:
-
-1. Snapshot, run `search_index(query: "<one distinctive type name>", limit: 3, taskId: <yours>)`, snapshot.
-2. Confirm the delta is non-zero, lands on the `search_index` row, and is plausible for the response you
-   just saw.
-3. Repeat the identical call and confirm the delta is the same. A drifting delta for an identical call
-   means the instrument is unreliable — **stop and report that as `[bug]`**, since every number below
-   depends on it, and a metrics tool that miscounts is itself the most important finding available.
-4. Confirm your `taskIds` filter actually isolates: a snapshot with no `taskIds` should show strictly
-   more calls than the same snapshot filtered to your id (unless you are genuinely alone on the server).
+Before trusting a single number, verify the instrument on a call you can bound by eye. Snapshot, run
+`search_index(query: "<one distinctive type name>", limit: 3, taskId: <yours>)`, snapshot; confirm the
+delta is non-zero, lands on the `search_index` row, and is plausible for the response you just saw. Then
+repeat the identical call: a **drifting delta means the instrument is unreliable — stop and report
+`[bug]`**, since every number below depends on it, and a metrics tool that miscounts is the most
+important finding available. Finally confirm the filter isolates — an unfiltered snapshot should show
+strictly more calls than the same one filtered to your id, unless you are genuinely alone on the server.
 
 **Five tools record no telemetry and cannot be measured this way**: `ping`, `workspace_status`,
 `set_output_format`, `reload_workspace` (constant-cost control calls) and `get_retrieval_metrics` itself
@@ -114,7 +110,7 @@ once with defaults.
 | Family | Tools | Probes |
 | --- | --- | --- |
 | A · Orientation | `ping`, `workspace_status`, `get_project_graph`, `detect_circular_dependencies` | each cold; `workspace_status` again after a `reload_workspace`; `get_project_graph` whole-graph vs scoped to one project; `detect_circular_dependencies` with the unsupported `scope: "type"` |
-| B · Discovery | `search_index` | one multi-term query vs. the same terms as separate calls; `kinds`, `modifiers` (AND semantics), `pathPrefix`, `implements`, `xmlDoc`, `summary: "has"` vs `"full"`; all three `groupBy` values on one identical query; `limit` at 3 / 10 / 50; `origin: "external"` |
+| B · Discovery | `search_index` | one multi-term query vs. the same terms as separate calls; `kinds`, `modifiers` (AND semantics), `pathPrefix`, `implements`, `xmlDoc`, `summary: "has"` vs `"full"`; all three `groupBy` values on one identical query; `limit` at 3 / 10 / 50; `origin: "external"`; one query returning a mix of `shape`-labelled and unlabelled hits, kept for Step 3d |
 | C · Retrieval | `get_symbol` | the full `include` ladder on **one** census symbol (Step 3a); `symbols:[…]` batch vs. N single calls; `source:code@a-b` with several ranges; a subtractive query (`source:full-remarks-attributes`); `-lineNumbers` against the same fetch with the gutter on; an `ambiguous_symbol` case; a symbol that does not exist |
 | D · Relations | `get_references`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_scope` | each on a census symbol; `get_references` on an interface member (dispatch coverage); `get_call_hierarchy` at rising `maxDepth`, `includeTree: false` vs `true`, and the same call at `maxDepth: 1` with default vs. raised `maxChildrenPerNode` (`blastRadius.totalUniqueNodes` must not move, and the capped run must report `truncated`/`omittedChildren`; at greater depths a tighter cap legitimately reaches fewer nodes, so do not assert equality there); `get_scope` with and without `receiver` |
 | E · History | `search_log`, `get_semantic_diff` | `search_log` for a term known to be in the log and one known not to be; `get_semantic_diff` over a recent commit range and over an unresolvable ref |
@@ -124,72 +120,25 @@ once with defaults.
 Errors are probes, not accidents. An error payload's token cost and usability are part of the tool — an
 `ambiguous_symbol` response listing forty candidates with fully-qualified `displayString`s is a finding.
 
-## Step 3 — the three analyses
+## Step 3 — the four analyses
 
-### 3a · Routes: was the same outcome reachable with fewer calls or fewer tokens?
+Every probe feeds four analyses. Each is a different question about the same responses, and a run is not
+complete until all four have been applied or explicitly reported as not applicable:
 
-Score a *route to a stated outcome*, not a single call. Each route costs **(calls, tokens)** — both
-matter, and they trade against each other: a two-call route that costs fewer tokens than a one-call
-route is usually the better one, but say so explicitly rather than ranking on tokens alone.
-
-A cheap route that forced a follow-up call did not answer; its true cost is the sum of both calls. Record
-that honestly — a route that looks cheapest but never suffices is the most expensive finding of all,
-because the documentation recommending it is wrong.
-
-| Outcome wanted | Cheap route | Expensive route |
+| # | Asks | Finds |
 | --- | --- | --- |
-| What is this symbol for? | `search_index(summary: "full")` — answered by the search itself | `search_index` → `get_symbol(include: "source")` |
-| What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol(include: "source")` |
-| What happens near line N of a long member? | `bodyOutline` → `get_symbol(include: "source:code@N-M")` | `get_symbol(include: "source")` |
-| What is its signature? | default `include` | `include: "source"` |
-| What shape are these five symbols? | one `get_symbol(symbols: [...])` | five `get_symbol` calls |
-| Who calls it (just the list, one hop)? | `get_call_hierarchy(maxDepth: 1)` | `get_references` |
-| Where exactly is it called (file/line/snippet)? | `get_references` | repeated file reads |
-| How much does changing it ripple? | `get_call_hierarchy(includeTree: false)` | full tree |
-| What does it implement? | `search_index(implements:)` | `get_type_hierarchy` |
-| How does X reach Y? | `get_call_slice` | repeated `get_references` hops |
+| **3a · Routes** | was the same outcome reachable with fewer calls or fewer tokens? | guidance that recommends the more expensive route |
+| **3b · Redundancy** | does the response restate what the caller already held? | fields that are `restates-input`, `restates-prior`, `constant`, or `unconsulted` |
+| **3c · Noise** | what could be said once instead of many times? | unhoisted repetition, verbose scalars, format overhead, uncapped growth |
+| **3d · Advice** | does a field telling the caller what to do next actually pay? | advice that costs more than ignoring it, is owed but absent, or is unactionable |
 
-Report each row as `cheap (c calls, t tokens) → expensive (c, t)`. A row where the "expensive" route is
-actually cheaper, or where the cheap route did not answer, is worth more than every row that confirms
-the ladder — it means the guidance in `dotnet-code-query`'s protocol is wrong, which is a `[bug]` in the
-docs rather than a `[warning]` about tokens.
+**How to run each — the route tables, the field taxonomy, the advice-vs-default measurement, and the
+ranking rules — is in `${CLAUDE_PLUGIN_ROOT}/docs/selfeval-analyses.md`.** Read it before Step 3; it is
+one file, and the numbers it asks for come from probes already run.
 
-### 3b · Redundancy: does the response restate what the caller already held?
-
-Take each probe's response field by field and classify every field as exactly one of:
-
-- **new** — the caller could not have known it before the call. Keep.
-- **restates-input** — it echoes an argument just passed (the symbol name when queried by
-  fully-qualified name; the `groupBy` value; the file path handed to `get_scope`). Justifiable only when
-  the caller could have passed something ambiguous that the server resolved — say which.
-- **restates-prior** — the preceding call in a realistic chain already stated it. The motivating case:
-  `search_index` returns `kind` per hit, then `get_symbol` on that hit's id returns `kind` again. Verify
-  against the actual two-call sequence, not from memory.
-- **constant** — the same value on every row and every call across the whole matrix (`origin: source`
-  when `origin` already defaults to source). A field that never varies carries no information.
-- **unconsulted** — no branch of a caller's decision depends on it.
-
-Quantify before reporting: measure the field's per-call cost (compare an `include` with and without it
-where possible, otherwise count rendered characters), then multiply by that tool's `calls` from the
-**unfiltered** metrics totals. **Cost × real-world frequency is the ranking key** — a 4-token field on
-the highest-traffic tool outranks a 200-token field on a tool called three times.
-
-For a `restates-prior` field the recommendation is never a blunt "remove it": a field that is redundant
-mid-chain is load-bearing on a cold call. State the *conditional* — suppress when the caller passed a
-`sym_…` id (which only a prior response could have produced), keep when the caller passed a name.
-
-### 3c · Noise: what could be said once instead of many times?
-
-- **Unhoisted repetition** — a value repeated per row that could be a header. `search_index`'s `groupBy`
-  already does this; check whether every other multi-row response (`get_references`, `get_call_slice`,
-  `get_call_hierarchy`, `get_type_hierarchy`, `get_scope`) carries repetition it does not hoist.
-- **Verbose scalars** — fully-qualified `displayString`s where a short name under an existing namespace
-  header would do; absolute paths where root-relative would do.
-- **Format overhead** — from Family G, the per-format cost of one identical response. If `toon` is not
-  cheapest on this specimen, that is a finding about the default.
-- **Uncapped growth** — any response whose size scales with the specimen (all references, all members,
-  all candidates) with no cap or no truncation signal. Uncapped is a `[bug]` waiting for a bigger repo;
-  uncapped *and* without a "there is more" marker is a `[bug]` now.
+Two rules span all four. Rank by **cost × real-world frequency**, never by cost alone — a 4-token field
+on the highest-traffic tool outranks a 200-token field on a tool called three times. And a claim without
+a measured delta is a `[message]`, never a `[warning]`.
 
 ## Severity labels
 

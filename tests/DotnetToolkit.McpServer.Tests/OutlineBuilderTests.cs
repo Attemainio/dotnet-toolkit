@@ -236,4 +236,95 @@ public class OutlineBuilderTests
         Assert.Empty(Build("namespace A;\n").Types);
         Assert.Equal("A.X", Build("namespace A;\npublic class X { }").Types.Single().FqName);
     }
+
+    [Fact]
+    public void DocAndCommentLinesAreCountedPerDeclaration()
+    {
+        var entry = Build("""
+            namespace Contoso;
+
+            /// <summary>
+            /// A three-line doc comment.
+            /// </summary>
+            public sealed class Gadget
+            {
+                // one
+                // two
+                public int Spin() => 0;
+            }
+            """);
+
+        // Three /// lines, not four: trivia's span runs through the newline that ends it, so a naive
+        // end-minus-start over-counts by one and this is where that would show.
+        var type = Assert.Single(entry.Types);
+        Assert.Equal(3, type.DocLines);
+
+        var method = type.Members.Single(m => m.Kind == "M");
+        Assert.Equal(0, method.DocLines);
+        Assert.Equal(2, method.CommentLines);
+    }
+
+    // A type's comment count is what fetching it WHOLE would cost, so it counts its members' comments
+    // as well as its own -- the overlap with each member's own count is deliberate, not a bug.
+    [Fact]
+    public void TypeCommentLinesIncludeItsMembersComments()
+    {
+        var entry = Build("""
+            namespace Contoso;
+
+            public sealed class Gadget
+            {
+                // at class scope
+                private int _count;
+
+                public int Spin()
+                {
+                    // inside a body
+                    return _count;
+                }
+            }
+            """);
+
+        var type = Assert.Single(entry.Types);
+        Assert.Equal(2, type.CommentLines);
+
+        var method = type.Members.Single(m => m.Kind == "M");
+        Assert.Equal(1, method.CommentLines);
+    }
+
+    [Fact]
+    public void MultiLineCommentCountsEveryLineItSpans()
+    {
+        var entry = Build("""
+            namespace Contoso;
+
+            public sealed class Gadget
+            {
+                /* one
+                   two
+                   three */
+                public int Spin() => 0;
+            }
+            """);
+
+        var method = Assert.Single(entry.Types).Members.Single(m => m.Kind == "M");
+        Assert.Equal(3, method.CommentLines);
+    }
+
+    [Fact]
+    public void PlainDeclarationCountsNoDocOrCommentLines()
+    {
+        var entry = Build("""
+            namespace Contoso;
+
+            public sealed class Gadget
+            {
+                public int Spin() => 0;
+            }
+            """);
+
+        var type = Assert.Single(entry.Types);
+        Assert.Equal(0, type.DocLines);
+        Assert.Equal(0, type.CommentLines);
+    }
 }

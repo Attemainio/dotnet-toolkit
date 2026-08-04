@@ -98,9 +98,13 @@ redundancy", or before/after changing a tool's arguments or return shape.
 
 Runs a fixed probe matrix over every shipped tool **against the repo the server is already pointed at**,
 and measures each call's exact token cost from `get_retrieval_metrics` deltas isolated by a
-caller-supplied `taskId`. Reports where the same outcome was reachable with fewer calls or fewer tokens
-(route efficiency), which response fields restate what the caller already knew, and which outputs carry
-noise — labelled `[bug]` / `[warning]` / `[message]`.
+caller-supplied `taskId`. Four analyses run over every probe — routes, redundancy, noise, and whether an
+*advisory* field (`search_index`'s `shape` column) actually pays for itself when followed. Findings are
+labelled `[bug]` / `[warning]` / `[message]`.
+
+How to run each analysis lives in **`docs/selfeval-analyses.md`**, read on demand rather than carried in
+the skill: all four are needed on every run, and a skill over ~5k tokens is silently truncated from the
+end, which would drop the later analyses while its Step 3 table still pointed at them.
 
 The distinction that makes it useful: the consuming repo is the **specimen**, dotnet-toolkit is the
 **subject**. Findings are always improvements to this plugin, never to the specimen's code; the

@@ -9,16 +9,25 @@ namespace DotnetToolkit.McpServer.Output;
 public static class SymbolGrouping
 {
     /// <summary>One search hit, already resolved to its namespace/file and reduced to a member-local name.</summary>
+    /// <remarks>
+    /// <paramref name="Shape"/> is <see cref="SymbolShape"/>'s terse retrieval hint, null on every symbol
+    /// small enough that the default get_symbol fetch is already the right next call.
+    /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
-        int? Line, int? EndLine, bool? HasSummary, string? Summary);
+        int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
     /// (default) vs. file-first nesting; the other axis always nests one level inside it.
     /// </summary>
+    /// <remarks>
+    /// The shape legend is emitted once at the top, and only when some row actually carries a shape —
+    /// a result of ordinary small symbols renders exactly as it did before the column existed.
+    /// </remarks>
     public static Dictionary<string, object?> Build(IReadOnlyList<Row> rows, bool primaryIsNamespace)
     {
+        var shapeLegend = rows.Any(r => r.Shape is not null) ? SymbolShape.Legend : null;
         var primaryGroups = GroupInOrder(rows, primaryIsNamespace ? r => r.Namespace : r => r.File);
         if (primaryGroups.Count == 1)
         {
@@ -26,17 +35,20 @@ public static class SymbolGrouping
                 primaryGroups[0].Rows, primaryIsNamespace ? r => r.File : r => r.Namespace);
             if (onlySecondary.Count == 1)
             {
-                var flat = new Dictionary<string, object?>
-                {
-                    [primaryIsNamespace ? "namespace" : "file"] = primaryGroups[0].Key,
-                    [primaryIsNamespace ? "file" : "namespace"] = onlySecondary[0].Key,
-                };
+                var flat = new Dictionary<string, object?>();
+                if (shapeLegend is not null)
+                    flat["shape"] = shapeLegend;
+                flat[primaryIsNamespace ? "namespace" : "file"] = primaryGroups[0].Key;
+                flat[primaryIsNamespace ? "file" : "namespace"] = onlySecondary[0].Key;
                 AddLeaf(flat, onlySecondary[0].Rows);
                 return flat;
             }
         }
 
-        var top = new Dictionary<string, object?> { ["groupedBy"] = primaryIsNamespace ? "namespace" : "file" };
+        var top = new Dictionary<string, object?>();
+        if (shapeLegend is not null)
+            top["shape"] = shapeLegend;
+        top["groupedBy"] = primaryIsNamespace ? "namespace" : "file";
         top[primaryIsNamespace ? "namespaces" : "files"] = primaryGroups.Select(g =>
         {
             var node = new Dictionary<string, object?> { [primaryIsNamespace ? "name" : "path"] = g.Key };
@@ -77,6 +89,8 @@ public static class SymbolGrouping
             d["line"] = r.Line;
             d["endLine"] = r.EndLine;
         }
+        if (r.Shape is not null)
+            d["shape"] = r.Shape;
         if (r.HasSummary is not null)
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)

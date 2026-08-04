@@ -115,7 +115,9 @@ public static partial class OutlineBuilder
             foreach (var m in en.Members)
             {
                 var sig = m.EqualsValue is { } eq ? $"{m.Identifier.Text} = {eq.Value}" : m.Identifier.Text;
-                members.Add(new MemberEntry("F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true, DocSectionTags(m)));
+                members.Add(new MemberEntry(
+                    "F", m.Identifier.Text, sig, DocSummary(m), Line(m), EndLine(m), true, DocSectionTags(m),
+                    DocLines(m), CommentLines(m)));
             }
         }
         else if (type is TypeDeclarationSyntax td)
@@ -143,7 +145,9 @@ public static partial class OutlineBuilder
                 members.Insert(0, new MemberEntry("K", td.Identifier.Text, $"{td.Identifier.Text}{RenderParams(rp)}", null, Line(td), EndLine(td), true));
         }
 
-        return new TypeEntry(kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type), members, nested, IsPublic(type.Modifiers), DocSectionTags(type));
+        return new TypeEntry(
+            kind, name, fq, ns, DocSummary(type), bases, type.Modifiers.ToString(), Line(type), EndLine(type),
+            members, nested, IsPublic(type.Modifiers), DocSectionTags(type), DocLines(type), CommentLines(type));
     }
 
     private static TypeEntry BuildDelegate(DelegateDeclarationSyntax del, string containerFq, string ns)
@@ -153,7 +157,7 @@ public static partial class OutlineBuilder
         var sigMember = new MemberEntry(
             "M", name, $"{name}{RenderParams(del.ParameterList)} -> {del.ReturnType}", null, Line(del), EndLine(del), true);
         return new TypeEntry("D", name, fq, ns, DocSummary(del), [], del.Modifiers.ToString(), Line(del), EndLine(del),
-            [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del));
+            [sigMember], [], IsPublic(del.Modifiers), DocSectionTags(del), DocLines(del), CommentLines(del));
     }
 
     // The stored name is matched against the form the Roslyn-derived symbol store asks for, and that form
@@ -173,42 +177,42 @@ public static partial class OutlineBuilder
                 var name = m.Identifier.Text + RenderTypeParameters(m.TypeParameterList);
                 return new MemberEntry("M", m.Identifier.Text,
                     $"{name}{RenderParams(m.ParameterList)} -> {m.ReturnType}",
-                    DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m));
+                    DocSummary(m), Line(m), EndLine(m), isPublic, DocSectionTags(m), DocLines(m), CommentLines(m));
             }
             case ConstructorDeclarationSyntax c:
                 return new MemberEntry("K", c.Identifier.Text,
                     $"{c.Identifier.Text}{RenderParams(c.ParameterList)}",
-                    DocSummary(c), Line(c), EndLine(c), isPublic, DocSectionTags(c));
+                    DocSummary(c), Line(c), EndLine(c), isPublic, DocSectionTags(c), DocLines(c), CommentLines(c));
             case PropertyDeclarationSyntax p:
                 return new MemberEntry("P", p.Identifier.Text,
                     $"{p.Identifier.Text}: {p.Type} {Accessors(p)}",
-                    DocSummary(p), Line(p), EndLine(p), isPublic, DocSectionTags(p));
+                    DocSummary(p), Line(p), EndLine(p), isPublic, DocSectionTags(p), DocLines(p), CommentLines(p));
             case IndexerDeclarationSyntax ix:
                 return new MemberEntry("P", "this[]",
                     $"this[{RenderParamList(ix.ParameterList.Parameters)}]: {ix.Type}",
-                    DocSummary(ix), Line(ix), EndLine(ix), isPublic, DocSectionTags(ix));
+                    DocSummary(ix), Line(ix), EndLine(ix), isPublic, DocSectionTags(ix), DocLines(ix), CommentLines(ix));
             case FieldDeclarationSyntax f:
             {
                 var v = f.Declaration.Variables.First();
                 return new MemberEntry("F", v.Identifier.Text,
                     $"{v.Identifier.Text}: {f.Declaration.Type}",
-                    DocSummary(f), Line(f), EndLine(f), isPublic, DocSectionTags(f));
+                    DocSummary(f), Line(f), EndLine(f), isPublic, DocSectionTags(f), DocLines(f), CommentLines(f));
             }
             case EventFieldDeclarationSyntax ef:
             {
                 var v = ef.Declaration.Variables.First();
                 return new MemberEntry("V", v.Identifier.Text,
                     $"{v.Identifier.Text}: {ef.Declaration.Type}",
-                    DocSummary(ef), Line(ef), EndLine(ef), isPublic, DocSectionTags(ef));
+                    DocSummary(ef), Line(ef), EndLine(ef), isPublic, DocSectionTags(ef), DocLines(ef), CommentLines(ef));
             }
             case EventDeclarationSyntax e:
                 return new MemberEntry("V", e.Identifier.Text,
                     $"{e.Identifier.Text}: {e.Type}",
-                    DocSummary(e), Line(e), EndLine(e), isPublic, DocSectionTags(e));
+                    DocSummary(e), Line(e), EndLine(e), isPublic, DocSectionTags(e), DocLines(e), CommentLines(e));
             case OperatorDeclarationSyntax op:
                 return new MemberEntry("M", $"operator {op.OperatorToken.Text}",
                     $"operator {op.OperatorToken.Text}{RenderParams(op.ParameterList)} -> {op.ReturnType}",
-                    DocSummary(op), Line(op), EndLine(op), isPublic, DocSectionTags(op));
+                    DocSummary(op), Line(op), EndLine(op), isPublic, DocSectionTags(op), DocLines(op), CommentLines(op));
             default:
                 return null;
         }
@@ -296,6 +300,66 @@ public static partial class OutlineBuilder
         if (sections.TypeParams is { Count: > 0 }) tags.Add("typeparams");
         if (sections.Exceptions is { Count: > 0 }) tags.Add("exceptions");
         return tags.Count == 0 ? null : string.Join(",", tags);
+    }
+
+    /// <summary>
+    /// How many lines the declaration's own XML doc comment occupies, or 0 when it carries none.
+    /// </summary>
+    /// <remarks>
+    /// search_index reports this unconditionally rather than above a size threshold, unlike the line and
+    /// member counts beside it: those are recoverable from columns the hit already carries, so printing
+    /// them always would restate a subtraction the caller can do. This is derivable from nothing in the
+    /// response, so a blank would leave "undocumented" and "not measured" indistinguishable.
+    /// </remarks>
+    internal static int DocLines(SyntaxNode node) => CountLines(
+        node.GetLeadingTrivia(),
+        SyntaxKind.SingleLineDocumentationCommentTrivia,
+        SyntaxKind.MultiLineDocumentationCommentTrivia);
+
+    /// <summary>
+    /// How many lines the declaration's non-doc comments (<c>//</c> and <c>/* */</c>) occupy, or 0 when
+    /// it carries none.
+    /// </summary>
+    /// <remarks>
+    /// On a TYPE this is the transitive total over every member it declares, not commentary at class
+    /// scope alone — the question it answers is what fetching the whole type would cost, and that is the
+    /// sum. A member's count and its containing type's therefore overlap by design.
+    ///
+    /// Doc comments are a distinct trivia kind and are never counted here, so this and
+    /// <see cref="DocLines"/> partition a declaration's commentary rather than double-counting it.
+    /// </remarks>
+    internal static int CommentLines(SyntaxNode node) => CountLines(
+        node.DescendantTrivia(),
+        SyntaxKind.SingleLineCommentTrivia,
+        SyntaxKind.MultiLineCommentTrivia);
+
+    /// <summary>
+    /// Distinct source lines covered by trivia of either given kind, counting a line once however many
+    /// pieces of trivia touch it.
+    /// </summary>
+    private static int CountLines(IEnumerable<SyntaxTrivia> trivia, SyntaxKind single, SyntaxKind multi)
+    {
+        HashSet<int>? lines = null;
+        foreach (var piece in trivia)
+        {
+            if (!piece.IsKind(single) && !piece.IsKind(multi))
+                continue;
+
+            var span = piece.GetLocation().GetLineSpan();
+            var start = span.StartLinePosition.Line;
+            var end = span.EndLinePosition.Line;
+
+            // Trivia's span runs through the newline that terminates it, which lands EndLinePosition on
+            // column 0 of the FOLLOWING line -- a line the comment itself does not occupy.
+            if (end > start && span.EndLinePosition.Character == 0)
+                end--;
+
+            lines ??= [];
+            for (var line = start; line <= end; line++)
+                lines.Add(line);
+        }
+
+        return lines?.Count ?? 0;
     }
 
     /// <summary>Extracts the &lt;summary&gt; text from raw doc-comment XML (also used for ISymbol docs).</summary>

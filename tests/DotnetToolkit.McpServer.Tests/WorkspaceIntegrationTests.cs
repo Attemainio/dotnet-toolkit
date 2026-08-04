@@ -1286,6 +1286,33 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// The shape column's two halves report under different policies, and the fixture exercises both:
+    /// nothing it declares crosses the line or member threshold, so no hit may carry L or M, while the
+    /// unconditional D/C halves still fire on its one-line-documented members.
+    /// </summary>
+    /// <remarks>
+    /// The legend is asserted by value rather than by presence on purpose. It is the only thing telling a
+    /// caller that a missing D means a measured zero and a missing L only means "below the threshold", so
+    /// a reword that quietly drops that distinction has to fail somewhere — here.
+    /// </remarks>
+    [Fact]
+    public async Task SearchIndex_GatesLinesAndMembersButAlwaysReportsDocsAndComments()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin Widget Undocumented",
+            limit: 20, groupBy: "none"));
+
+        Assert.Equal(SymbolShape.Legend, root.GetProperty("shape").GetString());
+
+        var shapes = TableRows(root.GetProperty("items"))
+            .Select(hit => hit.TryGetValue("shape", out var s) ? s.GetString() : null)
+            .ToList();
+
+        Assert.DoesNotContain(shapes, s => s is not null && (s.Contains('L') || s.Contains('M')));
+        Assert.Contains(shapes, s => s is not null && s.StartsWith('D'));
+    }
+
+    /// <summary>
     /// summary:"has" is a cheap presence check — a documented symbol reports hasSummary:true with no
     /// summary text sent, so a caller can spot "is this documented" without paying for the extracted text.
     /// </summary>

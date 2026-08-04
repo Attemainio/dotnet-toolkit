@@ -39,6 +39,13 @@ works on WSL `/mnt/*` drives where inotify doesn't fire.
 Caches for a target repo live in `.claude/dotnet-toolkit/cache/` under that repo (self-gitignored) and
 are always rebuildable from source.
 
+**Bump `IndexDocument.CurrentVersion` whenever `OutlineBuilder` starts emitting something new** — for a
+change to what it *produces*, not only to the record shapes it produces into. `cache/index.json` keys
+its entries on each file's mtime and length, so an indexer that emits a new field for an unchanged file
+keeps serving the old entry indefinitely: the new behavior passes every unit test (which build outlines
+directly) and does nothing at all through the server. A missing bump on an added count is worse than a
+missing field, since the stale entry deserializes it as `0` — a plausible value, not an obvious gap.
+
 ## Subsystems
 
 - `Workspace/SolutionLocator.cs` — auto-discovers the target solution (`*.slnx` > `*.sln` > `*.csproj`,
@@ -76,6 +83,15 @@ are always rebuildable from source.
   landed in the proposed text's coordinates), `PatchDraftStore.cs` (bounded, 15-minute in-memory store
   of validated-but-unapplied patches — deliberately *not* in SQLite, since a draft describes a fork of
   the currently loaded workspace and is meaningless once that is gone).
+- `Output/` — how a response is rendered, never what it contains: `Formats.cs` (the `toon`/`compact`/
+  `json` switch and the raw-block splicing TOON needs for source text), `CompactFormatter.cs`,
+  `OutlineRenderer.cs`, `SymbolGrouping.cs` (search_index's namespace/file nesting and its collapse
+  rules), and `SymbolShape.cs` (the `L…M…D…C…` retrieval-cost column on a search hit, plus the legend
+  text stated once per envelope). Thresholds live here, not in `Tools/`, so the column and its legend
+  cannot disagree. The column reports under two policies deliberately: `L`/`M` only above a threshold,
+  because `L` is recoverable by arithmetic on the `line`/`endLine` already on the row; `D`/`C` whenever
+  non-zero, because nothing else in the response can recover them, so gating them would make
+  "undocumented" and "not measured" indistinguishable.
 - `Telemetry/` — per-call raw events and the read-side aggregations behind `get_retrieval_metrics`.
 - `Git/` — `GitAnalyzer.cs` (git commands, run in a repository it discovers: the solution root when that
   is inside a work tree, otherwise the repos checked out beneath it) + `SemanticDiff.cs`, behind

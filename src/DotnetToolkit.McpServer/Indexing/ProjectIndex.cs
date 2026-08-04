@@ -423,9 +423,23 @@ public sealed class ProjectIndex : IDisposable
     public sealed record Site(string File, int Line);
 
     /// <summary>Where a declaration sits, its extracted XML doc &lt;summary&gt; text if any, its declaration's
-    /// own end line, the namespace its declaring type belongs to, and which XML doc sections beyond
-    /// summary it carries (comma-joined tags, e.g. "remarks,returns") for search_index's xmlDoc filter.</summary>
-    public sealed record DocSite(string File, int Line, int EndLine, string? Doc, string Namespace, string? DocSections = null);
+    /// own end line, the namespace its declaring type belongs to, which XML doc sections beyond
+    /// summary it carries (comma-joined tags, e.g. "remarks,returns") for search_index's xmlDoc filter,
+    /// how many members a type declares, and how many lines its docs and its comments occupy.</summary>
+    /// <remarks>
+    /// <paramref name="MemberCount"/> is null on a member site, which has no members of its own to count.
+    /// It is read straight off the outline the index already built, so it costs nothing to carry; it
+    /// exists so search_index can tell a caller that a hit is worth navigating by member list rather than
+    /// fetching whole.
+    ///
+    /// <paramref name="DocLines"/> and <paramref name="CommentLines"/> are counts, not nullable flags:
+    /// zero means the declaration genuinely has none, which is why search_index reports them on every hit
+    /// instead of only above a threshold. On a TYPE, <paramref name="CommentLines"/> is the transitive
+    /// total across its members — see <see cref="OutlineBuilder.CommentLines"/>.
+    /// </remarks>
+    public sealed record DocSite(
+        string File, int Line, int EndLine, string? Doc, string Namespace,
+        string? DocSections = null, int? MemberCount = null, int DocLines = 0, int CommentLines = 0);
 
     /// <summary>
     /// Resolves fully-qualified names to their declaration site, in one pass over the index.
@@ -489,10 +503,17 @@ public sealed class ProjectIndex : IDisposable
         {
             foreach (var type in Flatten(entry.Types))
             {
-                Offer(type.FqName, new DocSite(file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections), -1, null, isType: true);
+                Offer(
+                    type.FqName,
+                    new DocSite(
+                        file, type.Line, type.EndLine, type.Doc, type.Namespace, type.DocSections,
+                        type.Members.Count, type.DocLines, type.CommentLines),
+                    -1, null, isType: true);
                 foreach (var member in type.Members)
                 {
-                    var site = new DocSite(file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections);
+                    var site = new DocSite(
+                        file, member.Line, member.EndLine, member.Doc, type.Namespace, member.DocSections,
+                        MemberCount: null, member.DocLines, member.CommentLines);
                     var arity = SymbolResolver.ParameterArity(member.Signature);
                     var parameterTypes = SymbolResolver.SignatureParameterTypeKey(member.Signature);
                     Offer($"{type.FqName}.{member.Name}", site, arity, parameterTypes, isType: false);

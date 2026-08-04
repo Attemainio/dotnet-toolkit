@@ -215,6 +215,35 @@ public sealed class ProjectIndexTests : IDisposable
         Assert.Equal(4, located["N.Generic.Pick(int)"].Line);
     }
 
+    /// <summary>
+    /// The member count exists so search_index can flag a type better navigated by its member list than
+    /// fetched whole. A member site has no members of its own and must stay null rather than 0, which
+    /// would read as "a type that declares nothing".
+    /// </summary>
+    [Fact]
+    public async Task DocSiteCountsATypesMembersAndLeavesAMembersOwnCountNull()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "Counted.cs"), """
+            namespace N;
+            public class Counted
+            {
+                public int A() => 1;
+                public int B() => 2;
+                public int C { get; set; }
+            }
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.LocateWithDocs(new HashSet<string>(StringComparer.Ordinal)
+        {
+            "N.Counted",
+            "N.Counted.A()",
+        });
+
+        Assert.Equal(3, located["N.Counted"].MemberCount);
+        Assert.Null(located["N.Counted.A()"].MemberCount);
+    }
+
     [Fact]
     public async Task LocatesTheSynthesizedEntryPointOfATopLevelStatementsFile()
     {

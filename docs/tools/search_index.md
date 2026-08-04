@@ -39,9 +39,94 @@ spans.
 whether `get_symbol`'s `source` component is worth requesting on this hit before asking for it, or
 whether `mechanicalFacts`/`xmlDoc`/`referenceCounts` alone would do for a large declaration, or
 whether a large `endLine - line` span is worth mapping with `bodyOutline` first (see "When to reach
-for `bodyOutline`" below) before deciding how much of `source` to fetch.
+for `bodyOutline`" below) before deciding how much of `source` to fetch. You do not have to do that
+subtraction yourself on the hits where it changes anything — see the `shape` column below.
 
 Only split into separate calls when you need different `kinds` filters.
+
+### The `shape` column — what a hit costs to fetch
+
+A hit carries a `shape` whenever it has something to report about its own retrieval cost, and the
+response states the legend once rather than repeating advice on every row. Four facts, one string:
+
+| Letter | Means | Emitted |
+|---|---|---|
+| `L` | the declaration's own line count | only at 150+ |
+| `M` | members a type declares (absent on non-types) | only at 20+ |
+| `D` | lines of XML doc comment | whenever non-zero |
+| `C` | lines of non-doc comment (`//`, `/* */`) | whenever non-zero |
+
+Against the `Sample.Lib` test fixture, whose declarations are all small and one-line-documented:
+
+```
+search_index(query: "Widget Spin Undocumented", groupBy: "none", limit: 6)
+```
+
+```json
+{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines; D/C absent = zero",
+ "items":[
+   {"symbolId":"sym_...","kind":"Interface","name":"Sample.Lib.IWidget",
+    "file":"Lib/Widget.cs","line":3,"endLine":6},
+   {"symbolId":"sym_...","kind":"Class","name":"Sample.Lib.Widget",
+    "file":"Lib/Widget.cs","line":9,"endLine":13,"shape":"D1"},
+   {"symbolId":"sym_...","kind":"Method","name":"Sample.Lib.Widget.Spin",
+    "file":"Lib/Widget.cs","line":12,"endLine":12,"shape":"D1"},
+   {"symbolId":"sym_...","kind":"Method","name":"Sample.Lib.DocSectionsFixture.Undocumented",
+    "file":"Lib/Widget.cs","line":42,"endLine":42}]}
+```
+
+Nothing there crosses a size threshold, so no `L` or `M` — but `Widget` and `Spin` each report `D1`
+for their one-line `/// <summary>`, and `IWidget` and `Undocumented`, which carry no doc at all, report
+nothing.
+
+#### Why two policies
+
+`L` and `M` are gated because **`L` is recoverable by arithmetic** on the `line`/`endLine` already on
+the row. Emitting it everywhere would spend tokens restating a subtraction you can do; spending them
+only where that subtraction changes the next call is what earns the column its place.
+
+`D` and `C` are **not derivable from anything else in the response**. Gating them would leave
+"undocumented" and "not measured" indistinguishable — the ambiguity `L` never pays, because arithmetic
+recovers it. So they are reported unconditionally and elided only at zero, and the legend says so:
+an absent `D` or `C` is a measured zero, an absent `L` only means "below 150".
+
+They are data rather than alarms. `L`/`M` say *don't fetch this whole*; `D`/`C` say *here is what the
+fetch would contain*, so you can reach for `source:code-comments` or `source:code` on evidence rather
+than on a guess.
+
+#### What to do with one
+
+| Shape | Next call |
+|---|---|
+| absent entirely | `get_symbol(symbol: id)` — small, undocumented, uncommented; the default fetch is right |
+| `L…` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the region you want |
+| `M…` | `get_symbol(include: "members")` — navigate by member list rather than reading the type through |
+| a large `D…` | the default fetch already carries that doc; `include: "source:code"` skips it when you only want the implementation |
+| a large `C…` | `include: "source:code-comments"` when you are inspecting behavior rather than reading rationale |
+| any, but you are about to **edit** it | `include: "all"` regardless of shape — a body patch needs the body-carrying `contentVersion`, which the default fetch does not lease |
+
+#### Two counts that overlap on purpose
+
+**`M` counts every member the declaration has, private ones included**, since it is read off the same
+syntax outline `line`/`endLine` come from. `get_symbol`'s `members` component lists the public surface,
+which on a helper-heavy type is a much shorter list than `M` led you to expect — that is the two
+components answering different questions, not a miscount.
+
+**`C` on a type is the transitive total across its members**, not commentary at class scope alone: the
+question it answers is what fetching the whole type would cost, and that is the sum. A member's own `C`
+and its containing type's therefore double-count the same lines by design. `D` never overlaps `C` —
+doc comments are a distinct trivia kind and are counted only by `D`.
+
+#### Rendering
+
+When no hit in a table reports anything, that table has no `shape` column at all. When one does, the
+default `toon` rendering pads the *other rows of that same table* to an empty cell rather than lose the
+array its tabular form — which is why the legend states what a blank means, not only what a value
+means.
+
+The padding is scoped to the table holding the reporting hit, not the response: under a grouped result,
+a namespace/file leaf where every hit is small and undocumented keeps no `shape` column, while a leaf
+holding one that reports carries it for every row. Only the legend is response-wide.
 
 Narrow to one subsystem with `pathPrefix` (folder or file, repo-root-relative, forward slashes)
 instead of filtering the whole-repo result yourself:
@@ -169,7 +254,10 @@ Overloads are told apart by parameter count and then by parameter types, so each
 last line (trailing trivia excluded, leading doc comment excluded — so it stays comparable to `line`,
 which never counts the doc comment either) — a cheap size signal for judging whether `get_symbol`'s
 `source` component is worth requesting before asking for it. `ValidatePatch` spans over a hundred
-lines; `LogEntry` is a three-line record — a caller can tell the two apart without a round trip.
+lines; `LogEntry` is a three-line record — a caller can tell the two apart without a round trip. Past
+150 lines or 20 members the server stops making you subtract and says so in the `shape` column, which
+also reports doc and comment lines on every hit that has any. *(This particular capture predates that
+column and omits it; the fixture capture below shows it in place.)*
 
 The same shape of query with the default `groupBy` omitted — a real capture against the fixture
 solution, `"Spin"` matching four methods across two files under one namespace. The namespace and
@@ -181,14 +269,20 @@ search_index(query: "Spin", kinds: "method")
 ```
 
 ```json
-{"groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
+{"shape":"L=lines(150+) M=members(20+) D=doclines C=commentlines; D/C absent = zero",
+ "groupedBy":"namespace","namespaces":[{"name":"Sample.Lib","files":[
    {"path":"Lib/Pipeline.cs","kind":"Method","symbols":[
       {"symbolId":"sym_e5da...","name":"WidgetExtensions.SpinTwice(IWidget,int)","line":6,"endLine":6}]},
    {"path":"Lib/Widget.cs","kind":"Method","symbols":[
-      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12,"endLine":12},
-      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5,"endLine":5},
-      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18,"endLine":18}]}]}]}
+      {"symbolId":"sym_a87e...","name":"Widget.Spin(int)","line":12,"endLine":12,"shape":"D1"},
+      {"symbolId":"sym_ab80...","name":"IWidget.Spin(int)","line":5,"endLine":5,"shape":""},
+      {"symbolId":"sym_0b3a...","name":"TurboWidget.Spin(int)","line":18,"endLine":18,"shape":""}]}]}]}
 ```
+
+Note the two scopes at work: the legend is response-wide, but only the `Lib/Widget.cs` leaf carries a
+`shape` column — because only it holds a hit that reports one. `Widget.Spin` has a one-line
+`/// <summary>`; its two siblings have none, and are padded to `""` rather than costing that leaf its
+tabular form. The `Lib/Pipeline.cs` leaf has no `shape` column at all.
 
 `groupBy: "file"` inverts the nesting to file → namespace → symbols instead. And when a query's
 whole result set shares one namespace *and* one file — `limit: 1` on the query above, isolating
