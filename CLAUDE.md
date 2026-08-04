@@ -58,11 +58,11 @@ degrades the server's workspace — symptoms and repair in `docs/architecture.md
 | Before the first C# edit of a session | `skills/dotnet-change/SKILL.md` + the standards `csharp-standards.md`'s index names for the change |
 | Which coding standard applies | `.claude/rules/csharp-standards.md` (the master index) |
 | Changing server internals, startup order, a subsystem, or packaging | `docs/architecture.md` |
-| What a hook blocks and why | `docs/hook-reference.md` |
-| What a skill is for | `docs/skill-reference.md` |
-| Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/agent-reference.md` |
+| What a hook blocks and why | `docs/references/hooks.md` |
+| What a skill is for | `docs/references/skills.md` |
+| Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/references/agents.md` |
 | Changing either always-loaded rule, or what init ships | `.claude/rules/tool-protocol.md` + `csharp-standards.md`; `skills/dotnet-toolkit-init/SKILL.md` copies both |
-| Auditing the install procedure, or what a consumer ends up with | `docs/install-audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install-verify.md` (consumer side, run by `dotnet-toolkit-init`) |
+| Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-toolkit-init`) |
 
 Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only `tool-protocol.md` and
 `csharp-standards.md` are always present, because only those two lack `paths:` frontmatter.
@@ -103,20 +103,26 @@ message describing it is downstream.
 
 ## Context budget
 
-This plugin's own instruction files are its largest fixed cost, and drift toward verbosity is the
-failure mode. Both limits are enforced by `dotnet-toolkit-consistency`:
+**Split by responsibility, never by byte count.** A file earns its own existence by owning a distinct
+job someone would ask for by name — not by being the overflow of a file that got long. A skill with
+one task keeps its whole procedure inline, however long that runs; `dotnet-toolkit-init` has three
+(install / verify / uninstall) and therefore points at one file per path. Splitting a single-purpose
+file to hit a number produces scatter: two places to update, a pointer that goes stale, and a reader
+who now needs both. That is a worse failure than a long file.
 
-- **No `SKILL.md` over ~5k tokens (~19 KB).** After auto-compaction Claude Code re-attaches only the
-  first 5,000 tokens of each invoked skill (25k shared across all of them), so a larger skill is
-  silently truncated mid-session — its later sections stop existing while its decision table still
-  points at them. Push per-tool mechanics into `docs/tools/<tool>.md`, read on demand with no such cliff.
+There is one place where size is a genuine cost rather than a style question:
+
 - **Three files are always-loaded: this one, `.claude/rules/tool-protocol.md`, and
   `.claude/rules/csharp-standards.md`** — the two rules because they alone carry no `paths:`
-  frontmatter. Everything added to any of them is paid by every session regardless of task, and the
-  two rules are paid again by every *consuming* repo, since init copies both. Prefer a skill or a
-  `docs/` file with a pointer. Keep this file under **~10 KB (~150 lines)**, and `tool-protocol.md`
-  and `csharp-standards.md` each under ~6 KB; an architecture rundown, tool catalog, skill catalog,
-  or per-tool procedure growing back into any of them is the regression to watch for.
+  frontmatter. Everything in them is paid by every session regardless of task, and the two rules are
+  paid again by every *consuming* repo, since init copies both. Keep them declarations of *when* and
+  *where*, not procedure — roughly ~10 KB for this file and ~6 KB per rule, as a target to argue with,
+  not a wall. An architecture rundown, tool catalog, skill catalog, or per-tool procedure growing back
+  into any of them is the regression to watch for, because that content is not always needed.
+
+Skills and `docs/` files are read on demand and cost nothing until invoked, so they carry no such
+limit. `dotnet-toolkit-consistency` enforces the always-loaded budget and flags scatter — a `docs/`
+file no skill needs, or a skill whose pointers fragment one procedure.
 
 # Compact instructions
 

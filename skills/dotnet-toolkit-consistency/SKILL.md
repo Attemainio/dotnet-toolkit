@@ -61,18 +61,31 @@ added to `Tools/*.cs` that fits an existing skill's scope but isn't mentioned th
 a missing doc row. `skills/dotnet-toolkit-init/SKILL.md` embeds its own copy of the tool table for
 *consuming* repos — check that copy separately; it drifts independently of `docs/tools/_index.md`'s router.
 
-**4. Every instruction/guideline file that tells a caller to use the MCP tools.** Each must still
-list every tool from Step 0, with nothing stale (a tool it describes that no longer exists) and
-nothing missing (a tool that exists but appears nowhere in it).
+**4. Every instruction/guideline file that tells a caller to use the MCP tools.** Check each one
+still lists every tool from Step 0, with nothing stale (a tool it describes that no longer exists)
+and nothing missing (a tool that exists but appears nowhere in it):
 
-**The file-by-file checklist is `docs/surface-file-map.md`** — 19 rows, each naming what that file
-must carry. Read it and work it; it is deliberately not restated here, because a second copy of a
-19-row table is exactly the drift this skill exists to catch.
-
-Three of its rows have produced shipped bugs and are worth holding in mind while you read the rest:
-the two always-loaded rules (`tool-protocol.md`, `csharp-standards.md`) are copied verbatim into
-consuming repos, so drift there *ships*; and both agent files are self-contained, so a standards
-pointer that resolves only in this repo is a silent failure everywhere else.
+| File | What it must carry |
+| --- | --- |
+| `docs/tools/_index.md` | **the router** — one row per tool mapping the question it answers to the tool and its detail file; plus the common call chains, workspace readiness, and response conventions (documented once, here, not per tool). A tool missing from this table is unreachable no matter how good its own file is |
+| `docs/tools/<tool>.md` (one per tool, plus `server.md`) | when to reach for it, arguments, one real example call/response, and a **Next steps** footer naming what to call with what it just returned. Every tool from Step 0 has a file; no file names a tool that no longer exists |
+| `docs/references/tools.md` | now an **index only** — the file table plus the conventions that hold across every tool. Check its table lists every file in `docs/tools/`. It must not re-acquire per-tool detail; that is what was split out |
+| `CLAUDE.md`'s "Non-negotiable workflow" and "Where to read what" | that they still route to `docs/tools/_index.md` and the other reference files rather than carrying a copy of any table. A per-tool table, architecture rundown, or skill catalog reappearing here is drift — each was moved out deliberately, and two copies always diverge |
+| `docs/architecture.md`'s `Tools/` table | every `Tools/*.cs` file and the tool names it groups — a new file here (Step 0) needs a new row. Also its Id-namespace table, subsystem list, and "Changing the tool surface" consequences (positional test callers, `Contracts/Contract.cs` bump) |
+| `.claude/rules/tool-protocol.md` | always-loaded here **and** copied verbatim into consuming repos by init, so drift ships. Its tool table lists every tool from Step 0; its exploring section names `dotnet-explore` and when to skip it; its write path matches `validate_patch`'s current arguments. No `paths:` frontmatter, and **no `${CLAUDE_PLUGIN_ROOT}` path anywhere in it** — a rule file is delivered literally, never expanded, so it must reach plugin docs by naming the skill that opens them |
+| `.claude/rules/csharp-standards.md` | the **master index** — its read-before-writing table lists exactly the standards files present in `.claude/rules/`, and its `validate_patch` line matches the current write path. That table's "When" column doubles as the **reviewer's trigger table**, so each condition must be an *observable property of the code* (awaits/locks, hot path, public surface change), not a topic a reviewer can't match against retrieved source; the always-loaded core it names must match `agents/dotnet-code-review.md`'s exactly |
+| `skills/dotnet-change/SKILL.md`'s pre-edit standards step | its own enumeration of the standards files — every file in `csharp-standards.md`'s index appears in it under the right trigger (always / conditional / skim), nothing stale. This list drifts independently of the index and of the agent's list; a file present in two of the three and missing from the one is the usual shape of the bug |
+| every standards file in `.claude/rules/` (per `csharp-standards.md`'s index) | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers between them still resolve |
+| `skills/dotnet-toolkit-init/SKILL.md`'s rule template | its own embedded copy of the tool table and its standards-file list, written into consuming repos — both drift independently. Also the "what is deliberately *not* written" table and the uninstall list: every asset the plugin ships is in exactly one of write / not-written / uninstall, and the write and uninstall lists name the same files |
+| `docs/install/audit.md` | the install-procedure audit this skill runs in Step 4b (maintainer-facing; the consumer never reads it). Its four-mechanism inventory must cover every top-level directory the plugin actually ships (`skills/`, `agents/`, `hooks/`, `docs/`, `docs/tools/`, `.claude/rules/`, `scripts/`, `.mcp.json`), and its reachability scenarios must resolve to files that exist |
+| `docs/install/{install,verify,uninstall}.md` | the three paths `dotnet-toolkit-init` routes to. Check they name the files init actually writes (including the settings allowlist and `install.json`) and no file it doesn't, and that the skill's router table points at all three |
+| `skills/dotnet-toolkit-selfeval/SKILL.md` | the efficiency probe matrix. Check that its Step 2 families still cover every tool from Step 0; that the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`) are still exactly the ones with no `ToolTelemetry.Record`/`RecordPatch` call; and that its `taskId`/`taskIds`/`groupBy:"task"` measurement recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed there as unmeasurable understates what the evaluation can see |
+| `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. Check: `tools:` frontmatter matches Step 0's read-side subset (nothing stale, and still excluding `get_project_graph`/`detect_circular_dependencies`, withheld as out of a scope slice's reach); every tool it names in Process, evidence bars, and Boundaries is granted there *and* behaves as described; its standards core and per-aspect fold-ins resolve to real `.claude/rules/` files, named **repo-relative** and never through `${CLAUDE_PLUGIN_ROOT}` (expansion inside an agent definition is not guaranteed); it still requires the `Standards:` line; and it has **not** re-acquired a `skills:` grant or a directive to read `docs/references/agents.md` — both removed to hold the per-instance token baseline down |
+| `agents/dotnet-explore.md` | the navigator's **complete, self-contained** instructions. Its router must name no write tool as callable, and three properties are load-bearing (rationale in `docs/references/agents.md`, not here): **no writer and no `memory:` key** in `tools:`, `Read` whitelisted to `docs/tools/<tool>.md` only, and no relaying of a `contentVersion` |
+| `docs/references/agents.md` | covers **both** agents; **human-facing only — neither agent is told to read it.** Check it does not contradict the agent file (authoritative), that its tool-grant and token-budget sections match the agent's actual frontmatter and loading rule, and that every tool it names still exists. Anything here duplicating the agent file is drift waiting to happen — prefer a pointer |
+| `docs/references/hooks.md` | describes exactly the hooks `hooks/hooks.json` registers and the behavior their scripts implement — matchers, allow/deny cases, fallback chain |
+| `docs/references/skills.md` | one entry per skill under `skills/`, none stale, none missing |
+| `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
 
 **4b. Consumer reachability — does the plugin work out of the box?** Steps 1–4 check that the files
 describing the tools are *accurate*. This step checks they are *reachable from a consuming repo*, where
@@ -87,7 +100,7 @@ variable expanding), or one of the two always-loaded rules init copies
 describes a file set that grows every time this plugin gains a tool, doc, skill, or standards file.
 When it falls behind, the failure is silent in both directions: an asset ships but never reaches the
 consumer, or the uninstall instructions leave files behind that keep steering a repo that no longer
-has the plugin. **Read `docs/install-audit.md` and run it** — it carries the four-mechanism inventory
+has the plugin. **Read `docs/install/audit.md` and run it** — it carries the four-mechanism inventory
 table, the drift catalog, and the out-of-the-box scenarios. Two findings from it are hard errors
 worth stating here because both have shipped: a `${CLAUDE_PLUGIN_ROOT}` path in a *copied rule* (rule
 files are delivered literally, never expanded — the path is dead in every consumer), and any claim
@@ -122,14 +135,14 @@ entry. Read those with `get_symbol` (not `grep`), plus `hooks/hooks.json` and `.
      `reload_workspace(scope: "all")` for the reload hint)? It is read at the exact moment a caller is
      blocked — a stale one teaches the wrong fix at the worst moment.
    - Does `hooks/hooks.json` name subcommands `HookCli` actually dispatches, with matchers
-     (`Edit`/`Write`/`NotebookEdit`/`Read`/`Bash`) matching `docs/hook-reference.md` and
+     (`Edit`/`Write`/`NotebookEdit`/`Read`/`Bash`) matching `docs/references/hooks.md` and
      `docs/architecture.md`'s "Packaging" section?
    - **Nothing shipped at runtime may require a shell.** Every `.mcp.json`/`hooks.json` command must be
      a `dotnet <dll> …` invocation; a `.sh`/`.ps1` entry point, a shebang, or a `node`/`python3`/`jq`
      dependency is a finding. An MCP stdio server is spawned directly, so a script launcher cannot run
      on Windows at all, and a Store-stubbed `python3` makes a guard fail open while looking healthy.
      `scripts/` holds developer conveniences only; anything new there or in `Hooks/` unmentioned by
-     `docs/hook-reference.md` or "Packaging" is a Step 6 finding.
+     `docs/references/hooks.md` or "Packaging" is a Step 6 finding.
    - Matchers key on tool name, not on which agent calls, so they fire for both subagents too. For
      `dotnet-code-review`: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` — `memory:
      project` makes the harness grant them anyway, which is why Boundaries carries the weight; (b) its
@@ -153,32 +166,34 @@ router *and* its own `docs/tools/<tool>.md`, and a new "when to reach for this" 
 `dotnet-code-query` only if it changes which tool a caller should pick. Update the skill body, not only
 its tool list, so a caller reading the skill gets the same guidance a caller reading the code would.
 
-**7b. Context budget — the size check.** Verbosity drift is as real as factual drift and costs every
-session. Run:
+**7b. Always-loaded budget, and scatter.** Two different checks; don't conflate them.
 
 ```bash
-for f in skills/*/SKILL.md CLAUDE.md .claude/rules/csharp-standards.md; do
+for f in CLAUDE.md .claude/rules/tool-protocol.md .claude/rules/csharp-standards.md; do
     printf "%-50s %6d B  ~%.1fk tok\n" "$f" $(wc -c < "$f") $(echo "$(wc -c < "$f")/3800" | bc -l)
 done
 ```
 
-Budgets, and why each one is a correctness bug rather than a cost note, are stated in CLAUDE.md's
-"Context budget" section — don't restate them here, just enforce them:
+**The budget applies only to the three always-loaded files** — this repo's `CLAUDE.md` (~10 KB) and
+the two rules (~6 KB each), the latter paid again by every consuming repo. They are declarations of
+*when* and *where*; an architecture rundown, tool catalog, or per-tool procedure reappearing in one is
+the drift. Treat the numbers as targets to argue with, not walls, and never fix an overage by deleting
+guidance — move it behind a pointer, or the next session loses the rule.
 
-- **Any `SKILL.md` over ~19 KB (~5k tokens)** — past that, auto-compaction silently drops the skill's
-  later sections while its decision table still points at them. Fix: move per-tool mechanics into
-  `docs/tools/<tool>.md`, leave the routing decision in the skill.
-- **`CLAUDE.md` over ~10 KB (~150 lines)**, **`.claude/rules/csharp-standards.md` over ~6 KB** — the two
-  always-loaded files, both deliberately indexes. Content rather than pointers is the drift: architecture
-  belongs in `docs/architecture.md`, per-tool detail in `docs/tools/`, catalogs in
-  `docs/skill-reference.md` / `docs/agent-reference.md`.
-- **`.claude/rules/tool-protocol.md` over ~6 KB** — half the always-loaded footprint init writes into
-  every *consuming* repo. Procedure detail belongs behind the skills it names, since a rule cannot
-  resolve a path itself.
-- **A `[Description]` attribute that has grown into a manual** (Step 2) — the per-call equivalent.
+**Skills and `docs/` files have no size budget.** They are read on demand and cost nothing until
+invoked. Do not report a long skill as a finding; a single-purpose skill should carry its whole
+procedure inline.
 
-Report each overage with its size, the budget, and which sections to move where. Do not fix an overage
-by deleting guidance — move it behind a pointer, or the next session loses the rule.
+**Scatter is the finding to look for instead**, in both directions:
+
+- A `docs/` file that exists only because some skill got long — one job split across two files, so
+  both must be updated and the pointer can go stale. Fix: fold it back.
+- A skill with **several** named responsibilities carrying all of them inline, where a reader on one
+  path pays for the other two. Fix: one file per path, as `dotnet-toolkit-init` does.
+- A `docs/` file nothing reads (Step 6 catches this) — the terminal form of the first case.
+
+**A `[Description]` attribute that has grown into a manual** (Step 2) is still a finding — that one is
+paid per tool call.
 
 **8. `CLAUDE.md` and `README.md` last.** The two files a fresh session or a new user reads first, so they
 should reflect the *already-corrected* state of everything above rather than being patched independently

@@ -410,9 +410,9 @@ it before posting if your repo is private.
 | | |
 |---|---|
 | [`docs/tools/_index.md`](docs/tools/_index.md) | **Start here** — which tool answers which question, plus a page per tool |
-| [`docs/skill-reference.md`](docs/skill-reference.md) | What each skill does |
-| [`docs/agent-reference.md`](docs/agent-reference.md) | The review and exploration agents |
-| [`docs/hook-reference.md`](docs/hook-reference.md) | The guard hooks and what they block |
+| [`docs/references/skills.md`](docs/references/skills.md) | What each skill does |
+| [`docs/references/agents.md`](docs/references/agents.md) | The review and exploration agents |
+| [`docs/references/hooks.md`](docs/references/hooks.md) | The guard hooks and what they block |
 | [`docs/architecture.md`](docs/architecture.md) | How the server is built: startup, knowledge tiers, subsystems, packaging, configuration |
 | [`CLAUDE.md`](CLAUDE.md) | The operating contract for working on the plugin itself |
 

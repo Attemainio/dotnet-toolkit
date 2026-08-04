@@ -104,7 +104,7 @@ missing field, since the stale entry deserializes it as `0` — a plausible valu
   boundary** — loopback-only, same trust level as the MCP session.
 - `Hooks/` — the four Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
-  `BashCommandScanner.cs` carry the logic the read guards share. `docs/hook-reference.md`.
+  `BashCommandScanner.cs` carry the logic the read guards share. `docs/references/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -161,7 +161,7 @@ on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs a
 
 `hooks/hooks.json` ships four hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
 `hook guard-cs-bash-read`, `hook hint-reload-new-cs-file` — all subcommands of that same published
-binary, documented in `docs/hook-reference.md`. They travel with the plugin, so a consuming repo gets
+binary, documented in `docs/references/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
 runtime requires a shell, a shebang, or `node`/`python3`/`jq`.

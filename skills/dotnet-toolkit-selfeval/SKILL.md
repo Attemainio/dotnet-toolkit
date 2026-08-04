@@ -142,7 +142,7 @@ complete until all four have been applied or explicitly reported as not applicab
 | **3d · Advice** | does a field telling the caller what to do next actually pay? | advice that costs more than ignoring it, is owed but absent, or is unactionable |
 
 **How to run each — the route tables, the field taxonomy, the advice-vs-default measurement, and the
-ranking rules — is in `${CLAUDE_PLUGIN_ROOT}/docs/selfeval-analyses.md`.** Read it before Step 3; it is
+ranking rules — is in `${CLAUDE_PLUGIN_ROOT}/docs/references/selfeval-analyses.md`.** Read it before Step 3; it is
 one file, and the numbers it asks for come from probes already run.
 
 Two rules span all four. Rank by **cost × real-world frequency**, never by cost alone — a 4-token field

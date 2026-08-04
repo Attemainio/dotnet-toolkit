@@ -1,6 +1,6 @@
 # Verifying an installed dotnet-toolkit
 
-The detail behind `dotnet-toolkit-init`'s Step 8. The skill carries the staleness decision table —
+The verify-and-refresh path of `dotnet-toolkit-init`. The skill carries the staleness decision table —
 the part that decides what gets rewritten; this file carries the checklists it runs afterwards. Read
 it when that step fires.
 

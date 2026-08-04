@@ -99,6 +99,6 @@ instance ran:
 `dotnet-code-review` has no `validate_patch` access — it cannot record log entries, and it is
 instructed never to modify code. Note that this is **instruction, not sandboxing**: `memory: project`
 makes the harness grant it `Write`/`Edit` for its own memory namespace, so its resolved tool list does
-include them (see `docs/agent-reference.md`). If the user wants findings actually applied, that's your
+include them (see `docs/references/agents.md`). If the user wants findings actually applied, that's your
 job after reviewing what it reported: apply them through `validate_patch` with an `intent`, which both
 validates the change and records why it was made.

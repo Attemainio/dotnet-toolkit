@@ -44,7 +44,7 @@ go looking for more instructions.
   `include: "source:code@120-160"`). A `PreToolUse` hook blocks it anyway.
 - **`Read` is for one thing only**: a `docs/tools/<tool>.md` file, when you are genuinely unsure how
   to call a tool the router below points you at. Nothing else — not `docs/architecture.md`, not
-  `docs/agent-reference.md`, not `.claude/rules/*`, not `CLAUDE.md`, and specifically **not**
+  `docs/references/agents.md`, not `.claude/rules/*`, not `CLAUDE.md`, and specifically **not**
   `docs/tools/validate_patch.md` or `docs/tools/rename_symbol.md`: those describe a write path you
   do not have, and reading them is pure waste. In the normal case you read no files at all.
 - **Never report a `contentVersion`.** It is an edit lease, it goes stale the moment anything

@@ -29,7 +29,7 @@ straight through with `applyOnSuccess: true` rather than dry-running first, the 
 required `intent`, batching from `suggestedInspection`, and amending a failed patch through its
 `draftId` instead of resubmitting it. Routes a **pure rename** away to `rename_symbol`, which derives the
 call-site edits rather than having them authored. Its blast-radius step routes a not-yet-located change
-out to the `dotnet-explore` agent (`docs/agent-reference.md`) so the wide search is paid in a context
+out to the `dotnet-explore` agent (`docs/references/agents.md`) so the wide search is paid in a context
 that gets discarded. Also carries the pre-edit standards step: before the first C# edit of a session,
 read the relevant `.claude/rules/` standards per `csharp-standards.md`'s index, and give any touched
 symbol lacking a `<summary>` one in the same edit.
@@ -46,7 +46,7 @@ reviewed by parallel instances. Covers how to partition, what context each insta
 results — including the `Standards:` line each instance reports, since the agent loads a fixed core of
 standards plus only those the scoped code triggers, and an untriggered aspect is not-assessed rather
 than clean. The agent's own process lives in `agents/dotnet-code-review.md` (self-contained);
-`docs/agent-reference.md` documents its design for maintainers.
+`docs/references/agents.md` documents its design for maintainers.
 
 ## `dotnet-toolkit-init` — the whole consumer lifecycle
 
@@ -65,14 +65,19 @@ just mandated raises a prompt — while deliberately leaving `validate_patch`/`r
 a write to the user's source should keep asking. What it installed is recorded in
 `.claude/dotnet-toolkit/install.json`.
 
-**Re-running it is the verify-and-refresh path** (Step 8), which is why there is no separate
+**Re-running it is the verify-and-refresh path**, which is why there is no separate
 install-check skill. The manifest's per-file hashes let it distinguish *the plugin changed this*
 (refresh silently) from *the repo edited this* (show the diff and ask). It then runs the checklists
-in `docs/install-verify.md`: installed state, always-loaded footprint against its ~6 KB budget, and an
-uninstall dry run. Approval-gated, backed up, additive — it never touches the repo's CLAUDE.md.
+in `docs/install/verify.md`: installed state, always-loaded footprint, and an uninstall dry run.
+Approval-gated, backed up, additive — it never touches the repo's CLAUDE.md.
+
+The skill itself is a **router**: it decides which of the three paths you are on and reads that one
+file — `docs/install/install.md`, `verify.md`, or `uninstall.md`. The maintainer-side counterpart,
+auditing whether that procedure still matches what the plugin ships, is `dotnet-toolkit-consistency`
+via `docs/install/audit.md`.
 
 The *maintainer-side* counterpart — auditing whether this skill's procedure still matches what the
-plugin ships — is `dotnet-toolkit-consistency` Step 4b, via `docs/install-audit.md`.
+plugin ships — is `dotnet-toolkit-consistency` Step 4b, via `docs/install/audit.md`.
 
 ## `dotnet-toolkit-consistency` — the self-audit
 
@@ -97,7 +102,7 @@ caller-supplied `taskId`. Four analyses run over every probe — routes, redunda
 *advisory* field (`search_index`'s `shape` column) actually pays for itself when followed. Findings are
 labelled `[bug]` / `[warning]` / `[message]`.
 
-How to run each analysis lives in **`docs/selfeval-analyses.md`**, read on demand rather than carried in
+How to run each analysis lives in **`docs/references/selfeval-analyses.md`**, read on demand rather than carried in
 the skill: all four are needed on every run, and a skill over ~5k tokens is silently truncated from the
 end, which would drop the later analyses while its Step 3 table still pointed at them.
 

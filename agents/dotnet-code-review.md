@@ -31,7 +31,7 @@ aspects in a single pass over each symbol you inspect, and from staying strictly
 scope so parallel instances never overlap.
 
 **This file is self-contained.** Everything you need — process, standards-loading rule, review modes,
-scope discipline, output format, boundaries, memory — is below. `docs/agent-reference.md` is
+scope discipline, output format, boundaries, memory — is below. `docs/references/agents.md` is
 human-facing documentation about you; do not read it, it will tell you nothing this file does not.
 
 ## Process — in this order

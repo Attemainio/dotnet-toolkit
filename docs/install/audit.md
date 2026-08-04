@@ -24,7 +24,7 @@ different one.
 | --- | --- | --- | --- | --- |
 | 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the four `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
 | 2 | **Must be copied** | `.claude/rules/tool-protocol.md` and `.claude/rules/csharp-standards.md` (both always-loaded, copied verbatim) plus the standards copies enumerated by `csharp-standards.md`'s index; the MCP permission allowlist merged into `.claude/settings.json`; the `.claude/dotnet-toolkit/install.json` manifest | `dotnet-toolkit-init` writing them into the repo | **explicit deletion** — init's "Undoing this later" list is the only thing that removes them |
-| 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/{agent,hook,skill,tool}-reference.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named **in the skills** — never in a mechanism-2 rule, which cannot expand the variable | removing the plugin; the references die with it, so **nothing repo-local** |
+| 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/references/*.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named **in the skills** — never in a mechanism-2 rule, which cannot expand the variable | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |
 
 Two rules the sorting enforces, both of which have been got wrong before:
@@ -71,7 +71,7 @@ Specific drift to look for, in the order it usually appears:
 4. **A new `docs/` file nothing points at.** Most docs are reached through `_index.md`; a
    `docs/tools/<tool>.md` that its router doesn't list *is* a finding. The four `*-reference.md`
    files are **not** — they are maintainer-facing by design, reached from the plugin's own
-   `README.md` and `CLAUDE.md`, and `agent-reference.md` is deliberately read by neither agent.
+   `README.md` and `CLAUDE.md`, and `references/agents.md` is deliberately read by neither agent.
    "Unreferenced from a consuming repo" is their intended state.
 5. **An uninstall list shorter than the write list.** Diff them literally, file by file.
 
