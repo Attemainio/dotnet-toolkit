@@ -1,5 +1,7 @@
 ![Smarter code understanding for AI-native .NET development: without compiler-aware tooling an agent reads too many files, cannot see code relationships, and pays for context it does not need; dotnet-toolkit adds semantic search, code structure, relationships and git-aware context, for more accurate answers, less unnecessary reading, lower token usage and a faster developer workflow.](docs/assets/hero.png)
 
+<p align="center"><strong>A Claude Code plugin that lets Claude read your C# through the compiler.</strong></p>
+
 ## Example 1 — "Where is the fee calculation?"
 
 ### Without the plugin
