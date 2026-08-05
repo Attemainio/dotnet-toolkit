@@ -139,6 +139,21 @@ public class ParameterTypeKeyTests
     }
 
     /// <summary>
+    /// Extension-method overloads are declared with a leading <c>this</c> parameter modifier that Roslyn's
+    /// own display format never includes, so the parameter-type key on each side has to agree once that
+    /// token is dropped — the case that left <c>search_index</c> reporting no location for either overload
+    /// of an extension method sharing a name and arity.
+    /// </summary>
+    [Fact]
+    public void DropsTheExtensionMethodsOwnThisModifier()
+    {
+        Assert.Equal(
+            SymbolResolver.ParameterTypeKey("Lib.Extensions.Wire(int)"),
+            SymbolResolver.SignatureParameterTypeKey("Wire(this int only) -> int"));
+    }
+
+
+    /// <summary>
     /// A tuple element name belongs to the type on both sides, so it must not be mistaken for the
     /// parameter's own name and dropped.
     /// </summary>

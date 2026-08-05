@@ -286,7 +286,9 @@ public static partial class SymbolResolver
     /// <summary>
     /// One indexed parameter reduced to its type: default value dropped, then the declared name, which is
     /// the last whitespace-separated token — so any <c>out</c>/<c>ref</c>/<c>params</c> modifier stays
-    /// attached to the type, exactly as the store's own type-only form carries it.
+    /// attached to the type, exactly as the store's own type-only form carries it. A leading <c>this</c>
+    /// (an extension method's own receiver parameter) is dropped instead: Roslyn's display format never
+    /// includes it, so the two names would otherwise never agree and the overload would never locate.
     /// </summary>
     private static string TypeOfParameter(string parameter)
     {
@@ -296,6 +298,8 @@ public static partial class SymbolResolver
             declared = declared[..defaultValue];
 
         var tokens = declared.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length > 0 && tokens[0] == "this")
+            tokens = tokens[1..];
         return ShortParams(string.Join(' ', tokens.Length > 1 ? tokens[..^1] : tokens));
     }
 

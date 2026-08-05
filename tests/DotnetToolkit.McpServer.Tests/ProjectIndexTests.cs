@@ -186,6 +186,36 @@ public sealed class ProjectIndexTests : IDisposable
     }
 
     /// <summary>
+    /// An extension method's <c>this</c> parameter modifier is syntax the store's own name never carries
+    /// (Roslyn's display format drops it), so two overloads distinguished only by their receiver type
+    /// must still resolve to their own line rather than both losing their location.
+    /// </summary>
+    [Fact]
+    public async Task LocatesOverloadedExtensionMethodsThatCollideOnNameAndArity()
+    {
+        File.WriteAllText(Path.Combine(_root, "src", "Extensions.cs"), """
+            namespace N;
+            public static class Extensions
+            {
+                public static int Wire(this int only) => only;
+                public static int Wire(this string only) => only.Length;
+            }
+            """);
+        var index = await CreateReadyIndexAsync();
+
+        var located = index.Locate(new HashSet<string>(StringComparer.Ordinal)
+        {
+            "N.Extensions.Wire(int)",
+            "N.Extensions.Wire(string)",
+        });
+
+        Assert.Equal(2, located.Count);
+        Assert.Equal(4, located["N.Extensions.Wire(int)"].Line);
+        Assert.Equal(5, located["N.Extensions.Wire(string)"].Line);
+    }
+
+
+    /// <summary>
     /// A method states its own type parameters in the indexed signature but not in the indexed name, so the
     /// symbol store's <c>Pick&lt;T&gt;</c> form matched no key at all and every generic method came back
     /// with no file or line. The non-generic sibling is here to prove the added key separates them rather
