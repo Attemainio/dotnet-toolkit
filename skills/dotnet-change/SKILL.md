@@ -24,10 +24,13 @@ the rest against freshly fetched versions.
 
 ## Before the first C# edit of a session: read the standards
 
-The canonical coding standards live in `.claude/rules/` (in a consuming repo:
-`${CLAUDE_PLUGIN_ROOT}/.claude/rules/`, or the repo's own copies if `dotnet-toolkit-init` installed
-them; a repo-local override at `.claude/dotnet-toolkit/<name>.md` wins per file). They are **not**
-auto-loaded — this step is what loads them. Per `csharp-standards.md`'s index, read before editing:
+The canonical coding standards are plugin-owned and never copied into a repo, so they are always
+current. **Call `workspace_status` and take its `pluginRoot:` line**, then read
+`<pluginRoot>/standards/<name>.md`. That is the only location — the plugin owns these files and
+nothing copies them into a repo. Never write `${CLAUDE_PLUGIN_ROOT}` into the path: it is not
+expanded here. They are **not** auto-loaded
+and no `paths:` trigger reaches them, so this step is what loads them. Per the standards table in
+`.claude/rules/index.md`, read before editing:
 
 - **always**: `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md`;
 - **when the change touches** project/namespace boundaries or a new abstraction: `architecture.md`;
@@ -41,6 +44,23 @@ auto-loaded — this step is what loads them. Per `csharp-standards.md`'s index,
 
 Once per session is enough — hold them; don't re-read per edit. `dotnet-code-review` validates against
 the same files afterward, but writing to the standard beats fixing to it.
+
+### Write-time checklist — the highest-cost-if-caught-late items
+
+Hold these without needing a review pass to catch them:
+
+- **No credential-shaped literal in source** — configuration comes from `IConfiguration`/environment/a
+  secret store, never a string literal, even a placeholder-looking one.
+- **No string-concatenated/interpolated SQL** in a raw-SQL API call — parameterize.
+- **Every controller/endpoint gets an explicit `[Authorize]` or `[AllowAnonymous]`** — never an unmarked
+  endpoint relying on the global default.
+- **New tests exercise real dependencies, not an in-memory database substitute**, for anything asserting
+  constraint/transaction/query-translation behavior the substitute doesn't share.
+
+Anything an analyzer can check mechanically, the analyzers do: `validate_patch` runs the projects'
+referenced analyzers over the changed documents at the severities `.editorconfig` configures, blocking
+at `error` and reporting at `warning`. That is a floor under these standards, not a replacement — the
+judgment calls above (which abstraction, which name, what a boundary owns) have no rule to enforce them.
 
 ## The loop
 
@@ -56,13 +76,17 @@ the same files afterward, but writing to the standard beats fixing to it.
    relays no `contentVersion`, so step 1 stays yours. Skip it when you already know the symbol.
 3. **Check for a summary.** If the symbol you're changing has no `<summary>`
    (`xmlDoc.summary` absent from step 1's fetch, or `search_index`'s `hasSummary` was absent) — add
-   one in the *same* patch, following `.claude/rules/xml-documentation.md`'s tag rules: purpose only, 1–2
+   one in the *same* patch, following `xml-documentation.md`'s tag rules: purpose only, 1–2
    sentences, never restate the method name, implementation/performance detail goes in
    `<remarks>` not `<summary>`. This isn't optional cleanup — an edit that leaves a touched public
    symbol undocumented is not a finished edit.
 4. **Submit one patch** covering the symbol *and* every call site you already know needs
    updating, with `applyOnSuccess: true` set from the start (see below — do not dry-run first).
 5. **Read the verdict** (below). Fix and resubmit, or you're done.
+
+**"Too large or interleaved to decompose" is not a reason to reach for `Edit`.** Split it into more
+`validate_patch` calls, one per touched symbol, sharing one `intent`. Only new-file creation is
+outside this path: `Write` the file, then change it through `validate_patch` from there on.
 
 **Do not call `validate_patch` twice — once with `applyOnSuccess: false`, then again with
 `applyOnSuccess: true` and the identical `baseVersions`/`edits` — when you already intend to make
@@ -89,6 +113,12 @@ committing to it — that's the rare case, not the default path.
   include list does too. The rejection keeps your text as a draft and lists the current versions, so the
   fix is one amend: resend the `draftId` with the body-carrying version in `baseVersions` and an empty
   `edits` array.
+
+  Two shapes catch people out here. **A comment-only edit inside a body still counts as a body edit** —
+  the check is keyed on the body *text* the edit's line span touches, not on whether a semantic change
+  was detected, and a comment rewrite produces no detected change at all. **A member row from
+  `include: "members"` leases `decl` only** by the same rule: the row served a name, a location and a
+  shape, never a body, so patch a member's body from a `get_symbol` on that member, not from its row.
 
   A `symbolId` not starting with `sym_` — `symidx_` (from `get_symbol`'s syntax-tier fallback,
   `limitedBy: "index_only"`) or `symfb_` (from `SymbolKey.IdOf`'s own no-doc-comment-id fallback) —

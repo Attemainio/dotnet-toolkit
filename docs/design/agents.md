@@ -1,15 +1,15 @@
-# Agent reference
+# Agent design notes
+
+> **Maintainer-facing. No agent or skill reads this file.** Each agent definition is self-contained
+> and authoritative; if this page disagrees with `agents/<name>.md`, the agent file is right and this
+> one is stale. Kept for the rationale that is derivable nowhere else.
 
 This plugin ships two subagents, both read-only in intent and both self-contained:
 
 - **`dotnet-code-review`** (`agents/dotnet-code-review.md`) — a **validation layer** that checks code
-  against the standards in `.claude/rules/`, not a source of standards itself. Runs *after* code exists.
+  against the standards in `standards/`, not a source of standards itself. Runs *after* code exists.
 - **`dotnet-explore`** (`agents/dotnet-explore.md`) — a **navigator** that maps a task onto the
   codebase's symbols and reference graph. Runs *before* code is written. See the section at the end.
-
-**This document is human-facing. Neither agent reads it.** Each agent file is self-contained — process,
-loading rules, output format, boundaries — and is the authority. This one describes the design for
-maintainers; if the two disagree, the agent file is right and this one is stale.
 
 Everything from here to the `dotnet-explore` section is about `dotnet-code-review`.
 
@@ -27,11 +27,11 @@ instance of the same agent is launched per slice, all in a single message. Each 
 everything about its slice; together they cover everything about the target, with no file reviewed
 twice.
 
-The standards are shared: the main agent reads the same `.claude/rules/` files at write time (per
-`csharp-standards.md`'s index), so writer and reviewer work from one source of truth. A consuming repo
-overrides any file by placing its own copy at `.claude/dotnet-toolkit/<name>.md`; the agent checks for
-that override before falling back to the bundled default, and a repo-local file fully replaces the
-bundled one rather than blending with it.
+The standards are shared: the main agent reads the same `standards/` files at write time (per the
+table in `.claude/rules/index.md`), so writer and reviewer work from one source of truth. A consuming repo
+reads exactly the same files the writer does — the plugin's own, resolved through `workspace_status`'s
+`pluginRoot`. There is no per-repo override tier: one copy of each standard exists, so writer and
+reviewer cannot be judging against different text.
 
 The `dotnet-review` skill teaches the main conversation how to partition scope, what to tell each
 instance, and how to merge their output.
@@ -42,10 +42,15 @@ Seven parallel instances each filled to ~160k tokens, starting at ~43k before re
 code, because every instance re-pays an identical fixed cost. Three properties of the agent file exist
 to hold that down, and changing them without understanding the trade re-inflates it:
 
-- **Tiered standards loading.** Six core files always; the other seven only when
-  `csharp-standards.md`'s "When" column matches the retrieved code (~19k → ~7.8k). The cost is that an
-  aspect can go unexamined, so the agent must end every report with a `Standards:` line naming what it
-  loaded and skipped, and an untriggered aspect is reported **not-assessed**, never clean.
+- **The inherited floor.** `CLAUDE.md` and `.claude/rules/index.md` are injected into every subagent
+  with no opt-out, so ~13 KB of Tier-0 text is part of each instance's fixed cost before it reads
+  anything. Trimming those two files is the only lever on it; the agent file cannot decline them, and
+  an instruction telling an agent not to read them saves a round trip, not a byte.
+- **Tiered standards loading.** Six core files always; the other seven only when the standards
+  table's "When" column (in `.claude/rules/index.md`) matches the retrieved code (~19k → ~7.8k). The
+  cost is that an aspect can go unexamined, so the agent must end every report with a `Standards:`
+  line naming what it loaded and skipped, and an untriggered aspect is reported **not-assessed**,
+  never clean.
 - **No `skills:` grant.** `dotnet-code-query` carries the *main agent's* read protocol — task ids,
   expansion gating, the write-path handoff — none of which a read-only reviewer uses. The retrieval
   guidance it does need is inline in the agent file instead. (The skill was 41.5 KB when this
@@ -58,11 +63,9 @@ A related constraint: the `guard-cs-read` hook blocks `Read` on `.cs` files a pr
 `PreToolUse` hooks fire for subagents too. The agent cannot be told to "just read whole files" — MCP
 retrieval is the only available path for in-scope C#, which is why the batching above matters.
 
-## Tool grant
+## Tool grant — why two tools are withheld
 
-The agent has `Read`, `Grep`, `Glob`, and the read-side MCP tools: `search_index`, `get_symbol`,
-`get_references`, `search_log`, `get_scope`, `get_call_slice`, `get_call_hierarchy`,
-`get_type_hierarchy`, `get_semantic_diff`, `workspace_status`.
+The authoritative list is the agent file's `tools:` frontmatter; it is not restated here.
 
 `get_project_graph` and `detect_circular_dependencies` are deliberately **not** granted: they answer
 solution-wide architecture questions (project dependency direction, reference cycles) that a single
@@ -80,7 +83,7 @@ Don't reason about this agent as if it were sandboxed.
 
 ## Adding an aspect (dotnet-code-review)
 
-A new aspect is a new `.claude/rules/*.md` file, a row in `csharp-standards.md`'s index (with a "When"
+A new aspect is a new `standards/*.md` file, a row in `.claude/rules/index.md`'s table (with a "When"
 condition stated as an observable property of the code, so the reviewer's trigger matching can use it),
 and one entry in the agent file's per-aspect evidence disciplines — never a new agent file. Decide
 explicitly whether it joins the always-loaded core or the triggered set; the core should only grow for

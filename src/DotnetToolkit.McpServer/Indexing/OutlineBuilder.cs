@@ -346,16 +346,23 @@ public static partial class OutlineBuilder
     }
 
     /// <summary>
-    /// How many lines the declaration's own XML doc comment occupies, or 0 when it carries none.
+    /// How many lines XML doc comments occupy across the declaration, or 0 when it carries none.
     /// </summary>
     /// <remarks>
     /// search_index reports this unconditionally rather than above a size threshold, unlike the line and
     /// member counts beside it: those are recoverable from columns the hit already carries, so printing
     /// them always would restate a subtraction the caller can do. This is derivable from nothing in the
     /// response, so a blank would leave "undocumented" and "not measured" indistinguishable.
+    ///
+    /// On a TYPE this is the transitive total over every member it declares, exactly as
+    /// <see cref="CommentLines"/> is, and for the same reason: the <c>D</c> column's contract is the
+    /// number of lines <c>source:code</c> strips relative to <c>source:full</c>, and that strip removes
+    /// member doc comments too. Counting only the declaration's own leading trivia under-reported a type
+    /// whose members are themselves documented — 22 against a real 27 on the specimen that found it —
+    /// which is a label pointing the right way while pricing the saving too low.
     /// </remarks>
     internal static int DocLines(SyntaxNode node) => CountLines(
-        node.GetLeadingTrivia(),
+        node.DescendantTrivia(),
         SyntaxKind.SingleLineDocumentationCommentTrivia,
         SyntaxKind.MultiLineDocumentationCommentTrivia);
 
@@ -505,7 +512,18 @@ public static partial class OutlineBuilder
     [GeneratedRegex(@"<exception\s+cref=""(?:[A-Z]:)?([^""]+)""\s*>([\s\S]*?)</exception>")]
     private static partial Regex ExceptionRegex();
 
-    [GeneratedRegex(@"<see\w*\s+\w+=""(?:[A-Z]:)?([^""]+)""\s*/?>")]
+    /// <summary>
+    /// An empty XML-doc reference element that carries its target in an attribute: <c>see</c>/<c>seealso</c>
+    /// (<c>cref</c> or <c>langword</c>), and <c>paramref</c>/<c>typeparamref</c> (<c>name</c>).
+    /// </summary>
+    /// <remarks>
+    /// All four have no element content, so <see cref="TagRegex"/> would erase them outright and leave the
+    /// sentence they were part of missing a word — "Translates every filter on into one WHERE body" for a
+    /// summary written against <c>&lt;paramref name="normalized"/&gt;</c>. Substituting the attribute value
+    /// first is what keeps the rendered sentence readable, and reads as an authoring mistake when it does
+    /// not happen rather than as a rendering fault.
+    /// </remarks>
+    [GeneratedRegex(@"<(?:see\w*|(?:type)?paramref)\s+\w+=""(?:[A-Z]:)?([^""]+)""\s*/?>")]
     private static partial Regex CrefRegex();
 
     [GeneratedRegex(@"<[^>]+>")]

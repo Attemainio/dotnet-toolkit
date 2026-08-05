@@ -1,14 +1,8 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET security
 
-Canonical security standard. Loaded on demand per `csharp-standards.md`'s index; read it before writing
+Canonical security standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before writing
 any C# that touches configuration, SQL, endpoints, auth, logging, or cryptography. `dotnet-code-review`
-validates against it (aspect `[security]`). A consuming repo overrides it via
-`.claude/dotnet-toolkit/security.md`.
+validates against it (aspect `[security]`).
 
 ## Secrets
 

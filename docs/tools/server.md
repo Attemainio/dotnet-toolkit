@@ -19,18 +19,46 @@ back rather than silently defaulting: `"unknown format: yaml (use json|compact|t
 
 # `workspace_status` — is the index/workspace warm
 
-Call this when a semantic tool reports the workspace isn't ready, or before trusting a `0` reference
-count.
+Call this when a semantic tool reports the workspace isn't ready, before trusting a `0` reference
+count, **or to resolve where the plugin's own files live** — see `pluginRoot` below.
 
 Real response, this repo:
 
 ```
 root: /path/to/dotnet-toolkit
+pluginRoot: /path/to/dotnet-toolkit
 solution: dotnet-toolkit.slnx
-index: ready 83 files, 134 types
-workspace: loaded 2 projects in 2.6s
+index: ready 133 files, 220 types
+workspace: loaded 2 projects in 2.3s
   loaded: DotnetToolkit.McpServer, DotnetToolkit.McpServer.Tests
 ```
+
+`root` is the **target repository** being analysed. `pluginRoot` is where **the plugin itself** is
+installed; in this repo they coincide, because the plugin analyses its own source tree.
+
+## `pluginRoot` — the only way to reach the files that ship with the plugin
+
+`${CLAUDE_PLUGIN_ROOT}` is substituted by the harness into `.mcp.json` args, hook commands and skill
+content — but **not** into a rule file or an agent definition, and it is not exported as an
+environment variable a shell can read. So an always-loaded rule cannot name a path to the plugin, and
+neither can a subagent. `workspace_status` reports the value instead, derived at runtime
+(`CLAUDE_PLUGIN_ROOT` if the harness set it, otherwise the directory above the running assembly —
+both the server and the hooks run from `<pluginRoot>/dist/`). That makes it correct on any machine
+and any plugin version, with nothing stored to go stale.
+
+Join it to reach either shipped tree:
+
+| Want | Path |
+|---|---|
+| A tool manual | `<pluginRoot>/docs/tools/<tool>.md` |
+| A coding standard | `<pluginRoot>/standards/<name>.md` |
+
+Each is the single location for that file. Nothing is copied into a consuming repo and there is no
+per-repo override tier, so a resolved path is the answer — there is no second place to look.
+
+Added in contract **3.50**. A server that omits the line predates it and needs republishing to
+`dist/`; `.claude/rules/index.md` and `agents/dotnet-code-review.md` both treat its absence as a
+reason to report standards-derived work as not-assessed rather than to guess a path.
 
 A degraded workspace names the failing project — reference edges from a project MSBuild couldn't
 evaluate contribute nothing, and semantic results from it are incomplete or wrong, not just thin.

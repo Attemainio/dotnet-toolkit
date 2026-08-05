@@ -1,14 +1,8 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET testing
 
 Canonical testing standard: how tests are structured, written, and run. Loaded on demand per
-`csharp-standards.md`'s index; read it before writing or modifying tests. `dotnet-code-review`
-validates against it (aspect `[testing]`). A consuming repo overrides it via
-`.claude/dotnet-toolkit/testing.md`.
+`.claude/rules/index.md`'s standards table; read it before writing or modifying tests. `dotnet-code-review`
+validates against it (aspect `[testing]`).
 
 ## Project layout & running
 

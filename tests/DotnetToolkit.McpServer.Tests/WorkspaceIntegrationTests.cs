@@ -645,6 +645,135 @@ public sealed class WorkspaceIntegrationTests
     private Task<string> ContextToolsCallSlice(string from, string to) =>
         FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, _f.Telemetry, from, to);
 
+    /// <summary>
+    /// A disjoint selection reports the runs it actually holds. Reporting min-to-max claimed the whole
+    /// envelope, which is exactly the string a caller reads as "I have the whole declaration".
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_DisjointLineRanges_ReportRunsNotTheEnvelope()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10;12-13"))
+            .GetProperty("content");
+
+        Assert.Equal(new[] { 9, 10, 12, 13 }, SourceLineNumbers(content));
+        Assert.Equal("9-10;12-13/5-13", content.GetProperty("sourceLines").GetString());
+    }
+
+    /// <summary>
+    /// totalItems stays the FULL count while a page carries fewer, and nextOffset reaches the items the
+    /// page left out — the remainder used to be unreachable by any argument.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_Paging_ReachesItemsPastTheFirstPage()
+    {
+        var total = Root(await GetReferences("Sample.Lib.IWidget", "callers"))
+            .GetProperty("totalItems").GetInt32();
+        Assert.True(total >= 2, $"fixture needs a type with >=2 referencing members, got {total}");
+
+        var first = Root(await ContextTools.GetReferences(
+            _f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, "Sample.Lib.IWidget", "callers", limit: 1));
+        Assert.Single(first.GetProperty("items").EnumerateArray());
+        Assert.Equal(total, first.GetProperty("totalItems").GetInt32());
+        Assert.True(first.GetProperty("truncated").GetBoolean());
+        Assert.Equal(1, first.GetProperty("nextOffset").GetInt32());
+
+        var second = Root(await ContextTools.GetReferences(
+            _f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, "Sample.Lib.IWidget", "callers",
+            limit: 1, offset: 1));
+        Assert.Equal(1, second.GetProperty("offset").GetInt32());
+        Assert.NotEqual(
+            first.GetProperty("items")[0].GetProperty("symbolId").GetString(),
+            second.GetProperty("items")[0].GetProperty("symbolId").GetString());
+    }
+
+    /// <summary>
+    /// A named type has no call edges of its own, so the edge walk alone answered "how much does changing
+    /// this ripple" with a blast radius of 1 however many members referenced it.
+    /// </summary>
+    [Fact]
+    public async Task GetCallHierarchy_NamedTypeRoot_CountsTheMembersThatReferenceIt()
+    {
+        var referencing = Root(await GetReferences("Sample.Lib.IWidget", "callers"))
+            .GetProperty("totalItems").GetInt32();
+        Assert.True(referencing >= 2);
+
+        var root = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.IWidget",
+            maxDepth: 1, includeTree: false));
+
+        var perDepth = root.GetProperty("blastRadius").GetProperty("perDepth")
+            .EnumerateArray().Select(d => d.GetInt32()).ToList();
+
+        Assert.Equal(1, perDepth[0]);
+        Assert.Equal(referencing, perDepth[1]);
+    }
+
+    /// <summary>
+    /// System.Object's members are in scope on every receiver, so they are never what a cursor is deciding
+    /// between. Grouped by origin alone they are all "inherited" and took a full round-robin share of the
+    /// budget — 6 of 15 rows on the specimen that found this.
+    /// </summary>
+    [Fact]
+    public async Task GetScope_ObjectMembersAreAReserve_SpentOnlyWhenNothingElseWaits()
+    {
+        // string overrides Equals/GetHashCode/ToString, so GetType/ReferenceEquals are the only rows
+        // System.Object still declares here -- exactly the ones that must not take a slot while
+        // string's own members are waiting for one. Ordering them last does not achieve that: the
+        // budget's round-robin hands every group it walks a slot per round whatever its position.
+        var narrow = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
+            file: "Lib/BodyOutlineFixture.cs", line: 36, column: 20, receiver: "result",
+            filter: "methods", limit: 5));
+
+        var narrowItems = Names(narrow);
+        Assert.Equal(5, narrowItems.Count);
+        Assert.DoesNotContain(narrowItems, i => i.Contains("GetType(", StringComparison.Ordinal));
+        Assert.DoesNotContain(narrowItems, i => i.Contains("ReferenceEquals(", StringComparison.Ordinal));
+
+        // Reserved, not dropped: on a receiver whose whole surface fits the budget they are still
+        // listed, and listed last. A wide limit on `result` would not show this -- string has more
+        // than the 200 rows limit clamps to, so object's members stay cut off however wide the ask.
+        var wide = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
+            file: "Lib/Pipeline.cs", line: 29, column: 40, receiver: "_widget",
+            filter: "methods", limit: 40));
+
+        var wideItems = Names(wide);
+        Assert.Contains(wideItems, IsObjectMember);
+        var firstObject = wideItems.FindIndex(IsObjectMember);
+        Assert.True(firstObject > 0, "the receiver's own members should come before object's");
+        Assert.All(wideItems.Skip(firstObject), i =>
+            Assert.True(IsObjectMember(i), $"non-object row after the object block: {i}"));
+
+        static List<string> Names(JsonElement root) => root.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("displayString").GetString() ?? "").ToList();
+
+        static bool IsObjectMember(string display) =>
+            display.Contains("Equals(", StringComparison.Ordinal)
+            || display.Contains("GetHashCode(", StringComparison.Ordinal)
+            || display.Contains("GetType(", StringComparison.Ordinal)
+            || display.Contains("ReferenceEquals(", StringComparison.Ordinal)
+            || display.Contains("ToString(", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Slice nodes render compactly by default and carry full signatures only on request — the full form
+    /// spent about a third of a 4-node slice's tokens on parameter lists symbolId already disambiguates.
+    /// </summary>
+    [Fact]
+    public async Task GetCallSlice_RendersCompactlyUnlessSignatureRequested()
+    {
+        var compact = Root(await ContextToolsCallSlice("Sample.Lib.Pipeline.Start", "Sample.Lib.Widget.Spin"))
+            .GetProperty("path").EnumerateArray()
+            .Select(n => n.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.All(compact, d => Assert.DoesNotContain("(", d));
+
+        var signature = Root(await FlowTools.GetCallSlice(
+                _f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, _f.Telemetry,
+                "Sample.Lib.Pipeline.Start", "Sample.Lib.Widget.Spin", fields: "signature"))
+            .GetProperty("path").EnumerateArray()
+            .Select(n => n.GetProperty("displayString").GetString() ?? "").ToList();
+        Assert.Contains(signature, d => d.Contains("(", StringComparison.Ordinal));
+    }
+
     // Call edges are recorded against members, never types, so a type reporting "callers: 0" would
     // assert "nothing uses this" when it simply is not measured at that level. Types omit the field;
     // members still report it.
@@ -1047,6 +1176,24 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains("2 lines", content.GetProperty("bodyOutlineNote").GetString());
     }
 
+    /// <summary>
+    /// Length alone does not make a body worth outlining: a declaration past the worthwhile-line threshold
+    /// whose outline holds almost no landmarks is warned about on DENSITY, so the caller does not pay for
+    /// the outline and then the source fetch it needed anyway.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_BodyOutline_NotesASparseOutlineOverALongBody()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.LongButLinear", include: "bodyOutline")).GetProperty("content");
+
+        Assert.Single(content.GetProperty("bodyOutline").EnumerateArray());
+
+        var note = content.GetProperty("bodyOutlineNote").GetString();
+        Assert.Contains("only 1 entry", note, StringComparison.Ordinal);
+        Assert.Contains("mostly linear", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("is likely cheaper than this outline", note, StringComparison.Ordinal);
+    }
+
     /// <summary>bodyOutline is method-only, like mechanicalFacts's semantic-model facts — a type gets an
     /// explanatory bodyOutlineNote instead of both fields silently disappearing.</summary>
     [Fact]
@@ -1240,6 +1387,48 @@ public sealed class WorkspaceIntegrationTests
         var rename = root.GetProperty("rename");
         Assert.Equal("Type", rename.GetProperty("kind").GetString());
         Assert.NotEqual(oldSymbolId, rename.GetProperty("newSymbolId").GetString());
+    }
+
+    /// <summary>
+    /// A symbolId encodes its containing type, so renaming a type re-keys every member it declares and the
+    /// classifier reports each as a removed+added pair tagged breaking-public — for members whose own names
+    /// never changed. On an 8-member type that was 16 of 24 entries and ~65% of the response.
+    /// </summary>
+    [Fact]
+    public async Task RenameSymbol_TypeRename_CollapsesItsMembersMechanicalRekeys()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "RenamedSample",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+
+        // Seed and Doubled keep their own names; only their ids move. The TYPE's own removed+added pair is
+        // not collapsed -- its name really did change -- so detectedChanges is not expected to be empty.
+        Assert.Equal(2, root.GetProperty("membersRekeyed").GetInt32());
+    }
+
+    /// <summary>
+    /// The tool's advice is to put every term in one call, so one call has to answer for each of them:
+    /// each term takes a floor share of limit before the globally ranked union spends the remainder.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_MultiTermQuery_AnswersForEveryTermAtASmallLimit()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            query: "Widget Pipeline HighGear Overloads", limit: 4, groupBy: "none"));
+
+        var names = root.GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("name").GetString() ?? "").ToList();
+
+        // "Widget" alone matches Widget, IWidget, TurboWidget and WidgetExtensions - enough to take every
+        // slot of a purely global ranked union and leave the other three terms unanswered.
+        Assert.Contains(names, n => n.Contains("Widget", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("Pipeline", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("HighGear", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("Overloads", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1935,6 +2124,85 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// An empty multi-term result is the response carrying no other evidence, so it is the one that most
+    /// needs the missed terms named - the gate that skipped it made silence mean two different things.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_EmptyMultiTermResult_StillNamesTheTermsThatMissed()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Zzqqvv Wwxxyy", limit: 10, groupBy: "none"));
+
+        Assert.Empty(TableRows(root.GetProperty("items")));
+
+        var missed = root.GetProperty("termsWithNoHits").EnumerateArray().Select(t => t.GetString()).ToList();
+        Assert.Contains("Zzqqvv", missed);
+        Assert.Contains("Wwxxyy", missed);
+    }
+
+    /// <summary>
+    /// The common miss is a right name under a wrong qualification, which the index can answer directly
+    /// rather than sending the caller off to search_index for it.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_UnresolvedName_OffersNearMissCandidates()
+    {
+        var root = Root(await GetReferences("Nowhere.Widget", "callers"));
+
+        Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
+
+        var names = root.GetProperty("didYouMean").EnumerateArray()
+            .Select(c => c.GetProperty("name").GetString() ?? "").ToList();
+        Assert.Contains(names, n => n.EndsWith("Widget", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A class has no call sites of its own, so there is no dispatch to describe; a method still has one.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_ClassRoot_OmitsDispatchKindItCannotDescribe()
+    {
+        var typeRoot = Root(await GetReferences("Sample.Lib.Widget", "callers"));
+        var methodRoot = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
+
+        Assert.False(typeRoot.TryGetProperty("dispatchKind", out _));
+        Assert.True(methodRoot.TryGetProperty("dispatchKind", out _));
+    }
+
+    /// <summary>
+    /// A member ROW serves a name, a location and a shape - never a body - so the token it hands over must
+    /// not lease one. Leasing what was never served is exactly what unleased_body exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Members_LeaseDeclarationsOnly()
+    {
+        var rows = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "members"))
+            .GetProperty("content").GetProperty("members"));
+
+        Assert.NotEmpty(rows);
+        Assert.All(rows, row => Assert.DoesNotContain(
+            "body:", row["contentVersion"].GetString() ?? "", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A branch the per-node cap left unexpanded hides the depths past it exactly as maxDepth does, so it
+    /// sets depthCapped too - reporting false there read as "complete to maxDepth".
+    /// </summary>
+    [Fact]
+    public async Task GetCallHierarchy_ChildCapHidingBranches_ReportsDepthCapped()
+    {
+        var capped = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin",
+            maxDepth: 8, maxChildrenPerNode: 1, includeTree: false)).GetProperty("blastRadius");
+        var whole = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin",
+            maxDepth: 8, maxChildrenPerNode: 200, includeTree: false)).GetProperty("blastRadius");
+
+        Assert.True(capped.GetProperty("depthCapped").GetBoolean());
+        Assert.True(!whole.TryGetProperty("depthCapped", out var flag) || !flag.GetBoolean());
+
+    }
+
     /// get_symbol narrows its contentVersion to the layers it actually served, so the default fetch hands
     /// out no body layer -- and a body-rewriting patch built on one was never checked against the body it
     /// overwrites, which is exactly the concurrent-edit case baseVersions exists to reject.
@@ -1960,6 +2228,36 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal(
             "    public int Spin(int turns) => turns * 2;",
             (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/Widget.cs")))[11]);
+    }
+
+    /// <summary>
+    /// A comment-only rewrite produces no semantic change, so keying the lease on the classifier's output
+    /// let it through — while it overwrites body TEXT exactly as a semantic rewrite does, which is the
+    /// concurrent-edit case the lease exists to catch, and a second agent editing comments is precisely
+    /// the likely case.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_CommentOnlyBodyEditWithoutABodyLayer_ReturnsUnleasedBody()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.Classify"));
+        var symbolId = sym.GetProperty("symbolId").GetString()!;
+        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
+        Assert.DoesNotContain("body:", withoutBody);
+
+        var edits = new[]
+        {
+            new PatchEditInput("Lib/BodyOutlineFixture.cs", 12, 12, "        var result = \"\"; // lease probe"),
+        };
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
+            new Dictionary<string, string> { [symbolId] = withoutBody }, edits,
+            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
+
+        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
+        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
+        Assert.Equal(
+            "        var result = \"\";",
+            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/BodyOutlineFixture.cs")))[11]);
     }
 
     [Fact]

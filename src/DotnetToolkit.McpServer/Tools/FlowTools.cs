@@ -37,7 +37,11 @@ public static class FlowTools
         + "Within one origin, symbols this solution declares come first, so a crowded cursor does not spend its "
         + "budget alphabetically in the A's of the referenced assemblies. When more is in scope than limit "
         + "allows, the budget is split across origins so applicable extension methods are never crowded out by "
-        + "a receiver's own members, and totalItems/truncated report what was left out.")]
+        + "a receiver's own members, and totalItems/truncated report what was left out. System.Object's "
+        + "members (Equals, GetHashCode, GetType, ReferenceEquals, ToString) are a RESERVE: they are in scope "
+        + "on every receiver in C#, so they are never what a cursor is deciding between, and they spend only "
+        + "the budget the receiver's own members, inherited members and extensions leave unspent. They are "
+        + "held back, not dropped - a limit wide enough for everything still lists them, last.")]
 
     public static async Task<string> GetScope(
         WorkspaceHost workspace,
@@ -49,7 +53,7 @@ public static class FlowTools
         [Description("Optional variable/expression name; results become what is callable ON it, incl. extension methods.")] string? receiver = null,
         [Description("all | methods | properties | locals | types (default all).")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
-        [Description("Max results (default 40).")] int limit = 40,
+        [Description("Max results (default 40, cap 200).")] int limit = 40,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -113,7 +117,8 @@ public static class FlowTools
             .Where(s => nameContains is null || s.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase))
             .DistinctBy(s => s.ToDisplayString())
             .Select(s => (Symbol: s, Origin: OriginOf(s, receiverType)))
-            .OrderBy(t => OriginRank(t.Origin))
+            .OrderBy(t => ObjectRank(t.Symbol))
+            .ThenBy(t => OriginRank(t.Origin))
             .ThenBy(t => SourceRank(t.Symbol))
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .ToList();
@@ -159,7 +164,10 @@ public static class FlowTools
     [McpServerTool(Name = "get_call_slice")]
     [Description("The shortest call path between two symbols — how a value or control flow reaches its "
         + "destination. Use for 'how does X reach Y' instead of walking the graph with repeated get_references "
-        + "calls. A miss still reports the nearest reachable frontier from each end.")]
+        + "calls. A miss still reports the nearest reachable frontier from each end. Every node renders as a "
+        + "compact containing-type-and-member name with the parameter list dropped — the same shape "
+        + "get_call_hierarchy uses — and symbolId still disambiguates overloads; pass fields:\"signature\" for "
+        + "the full parameter lists instead, which cost about a third of a slice's tokens.")]
     public static async Task<string> GetCallSlice(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
@@ -169,6 +177,7 @@ public static class FlowTools
         [Description("Origin symbol: fully-qualified name, unique suffix, or sym_... id.")] string from,
         [Description("Destination symbol: fully-qualified name, unique suffix, or sym_... id.")] string to,
         [Description("Maximum path length to search (default 8).")] int maxDepth = 8,
+        [Description("Comma list of extra fields: signature (the full parameter-list displayString instead of the default compact name form). Omit for the cheaper default.")] string? fields = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -204,14 +213,29 @@ public static class FlowTools
 
         var result = slice.Find(fromId, toId, Math.Clamp(maxDepth, 1, 20));
 
+        var wantSignature = !string.IsNullOrWhiteSpace(fields)
+            && fields.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(f => string.Equals(f, "signature", StringComparison.OrdinalIgnoreCase));
+
+        IReadOnlyCollection<string> rendered = result.Found
+            ? result.Path
+            : [.. result.ForwardFrontier, .. result.BackwardFrontier];
+        var rows = symbolStore.RowsFor(rendered);
+
+        string Display(string id)
+        {
+            rows.TryGetValue(id, out var row);
+            return DisplayOf(symbolStore, id, row, wantSignature);
+        }
+
         if (!result.Found)
         {
             var miss = Formats.Render(new
             {
                 found = false,
                 nodesExplored = result.NodesExplored,
-                forwardFrontier = result.ForwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
-                backwardFrontier = result.BackwardFrontier.Select(id => symbolStore.DisplayFor(id) ?? id),
+                forwardFrontier = result.ForwardFrontier.Select(Display),
+                backwardFrontier = result.BackwardFrontier.Select(Display),
             });
             return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_slice",
                 requested, miss, resolution: "not_found");
@@ -223,7 +247,7 @@ public static class FlowTools
             path = result.Path.Select(id => new
             {
                 symbolId = id,
-                displayString = symbolStore.DisplayFor(id) ?? id,
+                displayString = Display(id),
             }),
             depth = result.Path.Count - 1,
             nodesExplored = result.NodesExplored,
@@ -233,6 +257,32 @@ public static class FlowTools
             requested, json, symbolId: toId, resolution: "found", returnedSymbols: result.Path.Count);
     }
 
+    /// <summary>
+    /// One node's display form: the compact containing-type-and-member name by default, the full
+    /// parameter-list signature on request.
+    /// </summary>
+    /// <param name="symbolStore">The store to fall back to when the row carries no name.</param>
+    /// <param name="symbolId">The node's symbol id, and the last-resort display.</param>
+    /// <param name="row">That node's stored row.</param>
+    /// <param name="wantSignature">True to render the full signature instead of the compact name.</param>
+    /// <returns>The string to put in a node's <c>displayString</c>.</returns>
+    /// <remarks>
+    /// Shared by get_call_hierarchy and get_call_slice so the two cannot drift apart. The full signature
+    /// with parameter types and default values made an 18-node tree 23x the size of its own
+    /// blastRadius-only summary for no reader benefit, and spent a third of a 4-node slice's tokens on
+    /// ~330 characters of signature per node.
+    /// </remarks>
+    private static string DisplayOf(
+        SymbolStore symbolStore,
+        string symbolId,
+        (string? FqName, string? Kind, string? DisplayString) row,
+        bool wantSignature) =>
+        wantSignature
+            ? row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId
+            : row.FqName is { } fq
+                ? SymbolResolver.MemberWithContainingType(SymbolResolver.NameWithoutParameters(fq))
+                : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
+
 [McpServerTool(Name = "get_call_hierarchy")]
     [Description("An open-ended multi-level call tree from one symbol — 'who eventually calls this, up to the "
         + "entry points' (direction: callers, Visual Studio's View Call Hierarchy) or 'what does this eventually "
@@ -240,7 +290,10 @@ public static class FlowTools
         + "known to and returns one shortest path; this tool needs only a root and returns every branch up to "
         + "maxDepth, plus a blastRadius summary (unique nodes reached, per depth) answering 'if I change this, "
         + "how much does it ripple' without paying for the full tree — set includeTree:false for just that "
-        + "summary plus the root. blastRadius counts every symbol REACHED, including the children a per-node "
+        + "summary plus the root. A named type (class, record, interface, delegate) has no call sites of its "
+        + "own, so a type root's depth-1 children are the members that REFERENCE it — the same set "
+        + "get_references returns — and the walk continues upward from those. blastRadius counts every symbol "
+        + "REACHED, including the children a per-node "
         + "cap left unexpanded, and reports that cap as truncated/omittedChildren in BOTH shapes. A capped "
         + "node's own callers are never visited though, so a lower maxChildrenPerNode still yields a smaller "
         + "total at maxDepth>1 — the cap limits discovery, not just rendering. Every node always carries "
@@ -294,6 +347,19 @@ public static class FlowTools
 
         var result = new CallHierarchy(symbolStore).Build(rootId, callers, maxDepth, maxChildrenPerNode);
 
+        // A named type has no call edges of its own, so the walk above reports a blast radius of 1 for one
+        // however many members use it -- telling a caller asking "can I safely change this record?" that
+        // nothing depends on it, for 45 tokens, in the shape the docs name as THE cheap route for that
+        // question. get_references has always fallen back to a Roslyn scan here; retrying only when the
+        // cheap walk reached nothing keeps that scan off the common path, where a method with callers
+        // never pays for it and a method with genuinely none pays only a store lookup.
+        if (callers && result.TotalUniqueNodes == 1)
+        {
+            var seeds = await TypeSeedIdsAsync(solution, symbolStore, rootId);
+            if (seeds is { Count: > 0 })
+                result = new CallHierarchy(symbolStore).Build(rootId, callers, maxDepth, maxChildrenPerNode, seeds);
+        }
+
         var wantKind = false;
         var wantFile = false;
         var wantLine = false;
@@ -314,15 +380,9 @@ public static class FlowTools
 
         var rows = symbolStore.RowsFor(CollectIds(result.Root));
 
-        // Default displayString is the containing type and member name (parameter list dropped) — the full
-        // signature with types and default values made an 18-node tree 23x the size of its own
-        // blastRadius-only summary for no reader benefit, and the namespace in front of it was another
-        // third of the tree, repeated once per sibling. symbolId still disambiguates overloads, and
-        // fields:"signature" restores the full form. get_references' default rows are the same shape.
+        // Rendering lives in DisplayOf, shared with get_call_slice so the two node shapes cannot drift.
         string DisplayFor(string symbolId, (string? FqName, string? Kind, string? DisplayString) row) =>
-            wantSignature
-                ? row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId
-                : row.FqName is { } fq ? SymbolResolver.MemberWithContainingType(SymbolResolver.NameWithoutParameters(fq)) : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
+            DisplayOf(symbolStore, symbolId, row, wantSignature);
 
         IReadOnlyDictionary<string, ProjectIndex.Site> sites = new Dictionary<string, ProjectIndex.Site>();
         if (wantFile || wantLine)
@@ -513,6 +573,36 @@ public static class FlowTools
     }
 
     /// <summary>
+    /// Depth-1 neighbours for a named-type root: the members that reference it, as symbol ids.
+    /// </summary>
+    /// <param name="solution">The loaded solution to scan.</param>
+    /// <param name="symbolStore">The store to read the root's fully-qualified name from.</param>
+    /// <param name="rootId">The root symbol id.</param>
+    /// <returns>
+    /// The referencing members' ids, or null when the root is not a named type and the edge table's own
+    /// answer therefore stands. The root itself is dropped: a type's members reference their own
+    /// containing type constantly, and seeding the walk with the root would render it as its own caller.
+    /// </returns>
+    private static async Task<IReadOnlyList<string>?> TypeSeedIdsAsync(
+        Solution solution,
+        SymbolStore symbolStore,
+        string rootId)
+    {
+        var fqName = symbolStore.FqNameFor(rootId);
+        if (fqName is null)
+            return null;
+
+        var resolution = await SymbolResolver.ResolveAsync(solution, fqName);
+        if (resolution.Symbol is not INamedTypeSymbol type)
+            return null;
+
+        var members = await TypeReferenceScan.ReferencingMembersAsync(type, solution);
+        return [.. members
+            .Select(SymbolKey.IdOf)
+            .Where(id => !string.Equals(id, rootId, StringComparison.Ordinal))];
+    }
+
+    /// <summary>
     /// Finds the receiver's type by locating the identifier on the line and asking the semantic model.
     /// Position-based rather than name-based lookup, so a shadowed local resolves the way the compiler
     /// would see it.
@@ -589,8 +679,25 @@ public static class FlowTools
     /// </remarks>
     /// <param name="symbol">The in-scope symbol being ordered.</param>
     /// <returns>0 when any of its locations is in source, 1 otherwise.</returns>
+
     private static int SourceRank(ISymbol symbol) =>
         symbol.Locations.Any(location => location.IsInSource) ? 0 : 1;
+
+    /// <summary>
+    /// 1 for a member <see cref="object"/> itself declares, 0 for everything else — the first tiebreak
+    /// within an origin, applied ahead of source-first and alphabetical order.
+    /// </summary>
+    /// <remarks>
+    /// Equals, GetHashCode, GetType, ReferenceEquals and ToString are in scope on every receiver in C#, so
+    /// they carry no information about THIS cursor and are never what a caller is deciding between. Ranked
+    /// only by origin they are ordinary inherited members and sort alphabetically among the useful ones: at
+    /// limit 15 on a builder receiver they took 6 of the 15 rows — 40% of the response — and crowded out two
+    /// of the receiver's own nine methods.
+    /// </remarks>
+    /// <param name="symbol">The in-scope symbol being ordered.</param>
+    /// <returns>1 when its containing type is System.Object, 0 otherwise.</returns>
+    private static int ObjectRank(ISymbol symbol) =>
+        symbol.ContainingType?.SpecialType == SpecialType.System_Object ? 1 : 0;
 
     /// <summary>
     /// Where an in-scope symbol comes from, or null when nothing informative is left to say: a
@@ -638,33 +745,48 @@ public static class FlowTools
         if (ranked.Count <= limit)
             return ranked;
 
+        // Grouped by origin AND by whether System.Object declares the member. The round-robin hands
+        // every group it walks a share per round, so grouping by origin alone gave object's members --
+        // all one origin (inherited) -- a full share however many of the receiver's own methods were
+        // waiting: 6 of 15 rows on the specimen that found this. Ordering that group last is NOT
+        // enough, because a later group still draws once per round; it has to be held back as a
+        // RESERVE tier, walked only once every other group is exhausted and budget is still unspent.
         var groups = ranked
-            .GroupBy(t => t.Origin, StringComparer.Ordinal)
-            .OrderBy(g => OriginRank(g.Key))
-            .Select(g => g.ToList())
+            .GroupBy(t => (t.Origin, Object: ObjectRank(t.Symbol)))
+            .OrderBy(g => g.Key.Object)
+            .ThenBy(g => OriginRank(g.Key.Origin))
+            .Select(g => (g.Key.Object, Items: g.ToList()))
             .ToList();
 
         var taken = new List<(ISymbol Symbol, string Origin)>(limit);
-        for (var round = 0; taken.Count < limit; round++)
-        {
-            var addedThisRound = false;
-            foreach (var group in groups)
-            {
-                if (round >= group.Count)
-                    continue;
+        Fill(0);
+        Fill(1);
 
-                taken.Add(group[round]);
-                addedThisRound = true;
-                if (taken.Count == limit)
+        void Fill(int tier)
+        {
+            var walked = groups.Where(g => g.Object == tier).Select(g => g.Items).ToList();
+            for (var round = 0; taken.Count < limit; round++)
+            {
+                var addedThisRound = false;
+                foreach (var group in walked)
+                {
+                    if (round >= group.Count)
+                        continue;
+
+                    taken.Add(group[round]);
+                    addedThisRound = true;
+                    if (taken.Count == limit)
+                        break;
+                }
+
+                if (!addedThisRound)
                     break;
             }
-
-            if (!addedThisRound)
-                break;
         }
 
         return taken
-            .OrderBy(t => OriginRank(t.Origin))
+            .OrderBy(t => ObjectRank(t.Symbol))
+            .ThenBy(t => OriginRank(t.Origin))
             .ThenBy(t => SourceRank(t.Symbol))
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .ToList();

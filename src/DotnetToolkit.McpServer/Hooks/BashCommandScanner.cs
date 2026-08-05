@@ -143,6 +143,128 @@ internal static class BashCommandScanner
         return candidate;
     }
 
+    /// <summary>
+    /// Directories a segment would search for <c>.cs</c> content <b>without naming a single file</b>.
+    /// </summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <param name="recursesByDefault">
+    /// True for a command that walks a tree with no flag asking it to (<c>rg</c>, <c>ag</c>).
+    /// </param>
+    /// <returns>
+    /// The candidate directories, or empty when the segment neither recurses nor carries a <c>.cs</c>
+    /// glob. A recursing segment with no path operand yields <c>"."</c>, which is what it searches.
+    /// </returns>
+    /// <remarks>
+    /// <see cref="FindCsArgument"/> answers only for a segment that names one existing file, which left
+    /// the broader read unguarded: <c>grep -rn "x" --include=*.cs src/</c> reads every compiled file in the
+    /// tree and names none of them. Its only <c>.cs</c> token sits inside an option flag, so the flag skip
+    /// in <see cref="FindCsArgument"/> discarded it, and the bare operand was a directory. The unguarded
+    /// form therefore read strictly MORE than the guarded one.
+    /// <para>
+    /// The first bare operand is the PATTERN for every command on the read blocklist that takes one, so
+    /// paths start at the second. That is wrong for <c>grep -e PATTERN dir</c>, where the pattern is a flag
+    /// value and the first bare operand is already a path — it over-collects a directory there rather than
+    /// missing one, and the membership check that follows is what decides.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> CsScanRoots(string segment, bool recursesByDefault)
+    {
+        var recurses = recursesByDefault;
+        var csGlob = false;
+        var nonCsFilter = false;
+        var operands = new List<string>();
+
+        var tokens = Tokenize(segment).Skip(1).ToList();
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            if (!token.StartsWith('-'))
+            {
+                operands.Add(token);
+                continue;
+            }
+
+            // A file filter carries its value either as --include=*.cs or as two tokens (rg -g '*.md').
+            // Consuming the second form here is what keeps the pattern out of the path operands below,
+            // where it would otherwise be mistaken for a directory to scan.
+            var equals = token.IndexOf('=');
+            string? name = null;
+            string? value = null;
+            if (equals > 0)
+            {
+                name = token[..equals];
+                value = token[(equals + 1)..];
+            }
+            else if (IsFileFilterFlag(token) && i + 1 < tokens.Count)
+            {
+                name = token;
+                value = tokens[++i];
+            }
+
+            if (value is not null)
+            {
+                if (value.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+                    csGlob = true;
+                else if (IsFileFilterFlag(name!))
+                    nonCsFilter = true;
+                continue;
+            }
+
+            if (token is "--recursive" or "--dereference-recursive")
+                recurses = true;
+            else if (!token.StartsWith("--", StringComparison.Ordinal) && token.Skip(1).Any(c => c is 'r' or 'R'))
+                recurses = true;
+        }
+
+        var paths = operands.Count > 1 ? operands[1..] : [];
+        foreach (var path in paths)
+        {
+            if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) && IsGlob(path))
+            {
+                csGlob = true;
+            }
+        }
+
+        // A filename filter naming something other than *.cs means the walk cannot open a compiled
+        // source file at all, however deep it recurses -- `grep -rn --include=*.md .` reads no C#.
+        // Blocking it was a pure false positive, and one that reads as the guard malfunctioning rather
+        // than protecting anything, since the command it rejected never touched the files it named.
+        if (nonCsFilter && !csGlob)
+        {
+            return [];
+        }
+
+        if (!recurses && !csGlob)
+        {
+            return [];
+        }
+
+        var roots = new List<string>();
+        foreach (var path in paths)
+        {
+            var directory = IsGlob(path) ? Path.GetDirectoryName(path) ?? "." : path;
+            roots.Add(directory.Length == 0 ? "." : directory);
+        }
+
+        return roots.Count > 0 ? roots : ["."];
+    }
+
+    /// <summary>Whether a long flag selects WHICH FILES a tree search opens, e.g. grep's --include.</summary>
+    /// <param name="flag">The flag name, without its value.</param>
+    /// <returns>True for the include-style filters; exclude-style flags are deliberately not listed.</returns>
+    /// <remarks>
+    /// Only include-style filters count. An <c>--exclude=*.cs</c> would narrow the walk AWAY from C#, but
+    /// reading it that way means trusting a flag to prove a negative; leaving it out keeps the guard
+    /// erring toward blocking, which is the safe direction for a walk that would otherwise read source.
+    /// </remarks>
+    private static bool IsFileFilterFlag(string flag) =>
+        flag is "--include" or "--glob" or "--iglob" or "-g";
+
+    /// <summary>Whether a token carries a shell wildcard rather than being a literal path.</summary>
+    /// <param name="token">One tokenized argument.</param>
+    /// <returns>True when the token contains <c>*</c> or <c>?</c>.</returns>
+    private static bool IsGlob(string token) => token.Contains('*') || token.Contains('?');
+
     /// <summary>Splits a segment on whitespace and strips one surrounding pair of quotes per token.</summary>
     /// <param name="segment">One segment from <see cref="Segments"/>.</param>
     /// <returns>The segment's tokens, unquoted.</returns>

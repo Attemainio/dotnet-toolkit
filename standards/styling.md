@@ -1,14 +1,8 @@
----
-paths:
-  - "**/*.cs"
----
-
 # C# styling
 
 Canonical styling standard, targeting modern C# (net8.0+) with nullable reference types enabled. Loaded
-on demand per `csharp-standards.md`'s index; read it before writing C#, and `dotnet-code-review`
-validates against it (aspect `[correctness]`). A consuming repo overrides it via
-`.claude/dotnet-toolkit/styling.md`.
+on demand per `.claude/rules/index.md`'s standards table; read it before writing C#, and `dotnet-code-review`
+validates against it (aspect `[correctness]`).
 
 ## File organization
 

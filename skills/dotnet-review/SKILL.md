@@ -1,6 +1,6 @@
 ---
 name: dotnet-review
-description: Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues, assess performance or concurrency, find dead code/duplication, review XML documentation, check test coverage, or do a security review. Delegates to the plugin's dotnet-code-review subagent — each instance reviews ALL quality aspects of one precisely stated scope, and large targets are partitioned into disjoint scopes reviewed by parallel instances — rather than reviewing inline, since it runs with fresh context and reads the project's standards in .claude/rules/.
+description: Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues, assess performance or concurrency, find dead code/duplication, review XML documentation, check test coverage, or do a security review. Delegates to the plugin's dotnet-code-review subagent — each instance reviews ALL quality aspects of one precisely stated scope, and large targets are partitioned into disjoint scopes reviewed by parallel instances — rather than reviewing inline, since it runs with fresh context and reads the plugin's standards files directly.
 ---
 
 # Delegating to dotnet-code-review
@@ -8,15 +8,16 @@ description: Use when the user asks to review C#/.NET code, check a PR/diff, loo
 This plugin ships one review subagent, `dotnet-code-review`. Each invocation reviews **all quality
 aspects at once** — correctness, naming, styling, best practices, performance, concurrency, security,
 testing, XML documentation, cleanup/duplication — over **one stated scope**. It starts with **no prior
-context of the project**: it reads code and the shared standards in the plugin's `.claude/rules/` (or a
-consuming repo's overrides under `.claude/dotnet-toolkit/`) fresh, like a senior developer seeing the
+context of the project**: it reads code and the shared standards under the plugin's `standards/`
+fresh, like a senior developer seeing the
 codebase for the first time, and reports findings without editing anything. Route review requests to it
 instead of reviewing inline yourself — it reads the actual standards files that you only have a summary
 of.
 
 **It loads standards selectively.** Six files are read every time (`naming`, `styling`,
 `best-practices`, `xml-documentation`, `antipatterns`, `security`); the other seven are read only when
-the retrieved code matches their "When" condition in `csharp-standards.md`. This keeps each instance's
+the retrieved code matches their "When" condition in `.claude/rules/index.md`'s standards table. This
+keeps each instance's
 baseline down — the cost is paid once per parallel instance, so it dominates a multi-instance run — and
 every report ends with a `Standards:` line naming what was loaded and what was not. Treat an
 untriggered aspect as **not assessed**, not clean.
@@ -99,6 +100,6 @@ instance ran:
 `dotnet-code-review` has no `validate_patch` access — it cannot record log entries, and it is
 instructed never to modify code. Note that this is **instruction, not sandboxing**: `memory: project`
 makes the harness grant it `Write`/`Edit` for its own memory namespace, so its resolved tool list does
-include them (see `docs/references/agents.md`). If the user wants findings actually applied, that's your
+include them (see `docs/design/agents.md`). If the user wants findings actually applied, that's your
 job after reviewing what it reported: apply them through `validate_patch` with an `intent`, which both
 validates the change and records why it was made.

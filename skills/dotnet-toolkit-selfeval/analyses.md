@@ -28,8 +28,10 @@ because the documentation recommending it is wrong.
 | What shape are these five symbols? | one `get_symbol(symbols: [...])` — **calls only; see below** | five `get_symbol` calls |
 | Who calls it (just the list, one hop)? | `get_call_hierarchy(maxDepth: 1)` | `get_references` |
 | Where exactly is it called (file/line/snippet)? | `get_references` | repeated file reads |
-| How much does changing it ripple? | `get_call_hierarchy(includeTree: false)` | full tree |
-| What does it implement? | `search_index(implements:)` | `get_type_hierarchy` |
+| How much does changing it ripple? | `get_call_hierarchy(includeTree: false)` — works on a **type** root too, whose depth-1 children are its referencing members | full tree, or `get_references` and counting |
+| What does *this type* implement? | `get_symbol(include: "interfaces")` — one hop, no traversal | `get_type_hierarchy` |
+| What implements *this interface*? | `get_references(direction: "implementations")`, or `search_index(implements:)` when a name filter narrows it further | `get_type_hierarchy` |
+| The full base chain **and** every implementer | `get_type_hierarchy` — this is what it is for | repeated `get_symbol(include: "baseType")` hops |
 | How does X reach Y? | `get_call_slice` | repeated `get_references` hops |
 
 The batch row is the one where "cheap" means **fewer calls, not fewer tokens**, and the table should not

@@ -25,7 +25,8 @@ namespace DotnetToolkit.McpServer.Tools;
 [McpServerToolType]
 public static class ContextTools
 {
-    private const int ReferenceCap = 50;
+    /// <summary>Hard ceiling on one page of get_references items, whatever <c>limit</c> asks for.</summary>
+    private const int ReferenceCap = 200;
     private const int ScopedOverfetchCap = 500;
     private const int SummaryCap = 160;
 
@@ -63,7 +64,8 @@ public static class ContextTools
         + "mechanicalFacts, bodyOutline, referenceCounts, recentLog, members, attributes, baseType, "
         + "interfaces, usings. "
         + "source:code drops the leading /// doc comment; -lineNumbers replaces the per-line NN: gutter "
-        + "with one @start-end header per contiguous run — ~18% cheaper to read, but a line must then be "
+        + "with one @start-end header per contiguous run — it saves the gutter's width, about 6% on a "
+        + "typical member, not the ~18% claimed before it was measured, and a line must then be "
         + "counted forward from its header before it is usable as a validate_patch span, so fetch with "
         + "the gutter on when about to edit; appending @ plus absolute file line ranges "
         + "returns only those lines (source:code@46-76;79-83) — the way to read one region of a long "
@@ -513,8 +515,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "and reported as excludedDocMentions; pass fields:\"crefs\" to get them back, tagged kind:\"cref\". "
         + "isTest is present only when true; content (the inline body) only with includeBodies:true. "
         + "targetSymbolId confirms which overload this answered for; omitted when the caller already passed "
-        + "a sym_... id, since it would only restate the input. truncated, excludedTextMatches and "
-        + "excludedDocMentions are present only when they apply.")]
+        + "a sym_... id, since it would only restate the input. totalItems is always the FULL count rather "
+        + "than the page's, so when it exceeds what came back, truncated is set and nextOffset names the "
+        + "offset that reaches the rest — a symbol with hundreds of referencing members is fully retrievable, "
+        + "one page at a time, and offset echoes back any page you asked past. truncated, excludedTextMatches "
+        + "and excludedDocMentions are present only when they apply.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -522,6 +527,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         TelemetryRecorder telemetry,
         [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
         [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
+        [Description("Max items to return (default 50, cap 200). Lower it when a few worked examples are enough - a high-fan-in symbol's full page is the most expensive response this server produces.")] int limit = 50,
+        [Description("Items to skip before limit (default 0). Pass the previous response's nextOffset to reach the references past the page you already have.")] int offset = 0,
         [Description("Include member bodies inline (default false).")] bool includeBodies = false,
         [Description("Comma list of extra per-item fields: contentVersion (this item's own hash, independent "
             + "of the target symbol's — useful only for a caller manually diffing this item against a later "
@@ -585,8 +592,14 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         }
 
         var ordered = items.OrderBy(i => i.DisplayString, StringComparer.Ordinal).ToList();
-        var truncated = ordered.Count > ReferenceCap;
-        var shown = ordered.Take(ReferenceCap).ToList();
+
+        // Paged rather than hard-capped: at 79 referencing members the old fixed cap returned 50 and left
+        // the remaining 29 unreachable by any argument, while a caller who wanted three still paid for 50.
+        var pageSize = Math.Clamp(limit, 1, ReferenceCap);
+        var skipped = Math.Clamp(offset, 0, ordered.Count);
+        var shown = ordered.Skip(skipped).Take(pageSize).ToList();
+        var nextOffset = skipped + shown.Count;
+        var truncated = nextOffset < ordered.Count;
 
         var excludedComments = normalized == "callers"
             ? await CountTextOnlyMatches(solution, sym.Name)
@@ -595,7 +608,15 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // dispatchKind describes the TARGET symbol (direct/virtual/interface/delegate), computed once here
         // rather than per item — Callers/ToItem already stamp the identical value onto every item, so
         // reporting it per item was pure repetition, never a signal that could vary within one call.
-        var dispatchKind = normalized == "callers" ? DispatchKindOf(sym) : null;
+        // A class/record/struct/interface root is excluded: it has no call sites of its own, so this
+        // direction reports the members that REFERENCE it and there is no dispatch to describe. Emitting
+        // "direct" there stated a fact about nothing, and read as a claim the references are non-virtual.
+        // A DELEGATE type is the exception and keeps its kind: "delegate" is a true statement about how
+        // the members this direction returns actually invoke it, not a default standing in for silence.
+        var dispatchKind = normalized == "callers"
+            && sym is not INamedTypeSymbol { TypeKind: not TypeKind.Delegate }
+            ? DispatchKindOf(sym)
+            : null;
 
         var envelope = new
         {
@@ -611,6 +632,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             }),
             dispatchKind,
             totalItems = ordered.Count,
+            offset = skipped > 0 ? (int?)skipped : null,
+            nextOffset = truncated ? (int?)nextOffset : null,
             truncated = truncated ? true : (bool?)null,
             excludedTextMatches = excludedComments > 0 ? excludedComments : (int?)null,
             excludedDocMentions = docMentions > 0 ? docMentions : (int?)null,
@@ -631,10 +654,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "silently lose hits. "
         + "PUT EVERY TERM YOU ARE LOOKING FOR IN ONE CALL: terms are OR-ed and ranked together, so "
         + "query:\"fee ledger TryBuy TrySell\" answers for all four in one round trip rather than four. "
-        + "limit is spent GLOBALLY across that ranked union, though, so a term with far fewer "
-        + "name-matches than its neighbours can be crowded out of the response entirely: every term the "
-        + "result never covered is named under termsWithNoHits, and the fix is a higher limit (cap 50) or "
-        + "that one term on its own. Never read an absent term as an absent symbol. Partial and "
+        + "Each term gets a FLOOR share of limit before the globally ranked union spends what is left, so "
+        + "a term with far fewer name-matches than its neighbours still reaches the response instead of "
+        + "being crowded out of it. A term the result still never covered is named under termsWithNoHits, "
+        + "and the fix is a higher limit (cap 50) or that one term on its own — with several terms and a "
+        + "small limit each floor is only limit/terms deep. Never read an absent term as an absent symbol. "
         + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. "
         + "Follow up with get_symbol for the content itself. A hit's line/endLine mark the signature "
         + "line only, EXCLUDING any leading /// doc comment — anchor a validate_patch edit on "
@@ -752,18 +776,15 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // A ranked OR spends `limit` globally, so a term whose name-matches are far rarer than its
         // neighbours' can be squeezed out of the response altogether - and a caller told that one call
         // answers for every term reads that silence as "no such symbol". Naming the starved terms is what
-        // makes the one-call route safe to follow. Skipped for a single-term query (an empty result
-        // already says it) and for an empty one (listing every term as unmatched is noise).
-        var termsWithNoHits = new List<string>();
-        if (limited.Count > 0)
-        {
-            var terms = SearchText.QueryTerms(query);
-            if (terms.Count > 1)
-            {
-                termsWithNoHits = [.. terms.Where(t =>
-                    !limited.Any(r => r.Hit.FqName.Contains(t, StringComparison.OrdinalIgnoreCase)))];
-            }
-        }
+        // makes the one-call route safe to follow. Skipped only for a single-term query, whose empty
+        // result already says the same thing. An EMPTY multi-term result is not skipped: that is the one
+        // response carrying no other evidence at all, and "every term" is a materially different answer
+        // from "the filters removed what the terms found" - which the caller can then tell apart by
+        // seeing every term listed here versus none of them.
+        var terms = SearchText.QueryTerms(query);
+        var termsWithNoHits = terms.Count > 1
+            ? terms.Where(t => !limited.Any(r => r.Hit.FqName.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList()
+            : [];
 
         // Every letter the shape column can carry, gathered from the site the index already resolved. A
         // count left null is one this kind of declaration cannot have, which is what keeps M off a method
@@ -939,8 +960,11 @@ private static async Task<object> BuildContent(
                 : null,
             line = row.Site?.Line,
             shape = row.Site is { } located ? SymbolShape.For(located.Facts) : null,
-            // decl-layer version so members can be leased without ever fetching their bodies.
-            contentVersion = VersionOf(row.Symbol).ToString(),
+            // Narrowed to decl, matching what a member ROW actually serves: a name, a location and a shape,
+            // never a body. VersionOf computes both layers, so handing its token over unnarrowed leased a
+            // body this response never showed - the exact thing unleased_body exists to prevent, and the
+            // opposite of what the line above it had claimed since it was written.
+            contentVersion = VersionOf(row.Symbol).Narrow(["decl"]).ToString(),
         }).ToArray();
         var memberShapeLegend = memberRows?.Any(row => row.Site is { } s && SymbolShape.For(s.Facts) is not null) == true
             ? SymbolShape.Legend
@@ -976,6 +1000,11 @@ private static async Task<object> BuildContent(
             // walked. Unconditional: cheap, and callers need it to know why declarationSites/source/xmlDoc
             // came back empty rather than assuming a lookup bug.
             origin = sym.Locations.Any(l => l.IsInSource) ? "source" : "external",
+            // A symbol only a source generator declares IS in source by Roslyn's reckoning, so origin says
+            // "source" - while DeclarationSites deliberately drops obj/** and hands back an empty array.
+            // In source, and nowhere to be found, read together as a lookup bug. Naming it says which of
+            // the two it is, and that there is no span to patch because the file is rewritten every build.
+            generated = IsGeneratedOnly(sym, locator) ? true : (bool?)null,
             containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
             source = RenderSource(source, components.SourceQuery),
@@ -1191,6 +1220,18 @@ private static object? ContainingType(ISymbol sym)
             };
         }).ToArray();
 
+    /// <summary>
+    /// Whether every one of <paramref name="sym"/>'s declarations is source-generator output, and so
+    /// <see cref="DeclarationSites"/> returns an empty array for a symbol that genuinely exists.
+    /// </summary>
+    /// <param name="sym">The symbol whose declaration sites were filtered.</param>
+    /// <param name="locator">Renders each path repo-relative, which is what the generated-path test reads.</param>
+    /// <returns>True only when there is at least one declaration and every one of them was excluded.</returns>
+    internal static bool IsGeneratedOnly(ISymbol sym, SolutionLocator locator) =>
+        sym.DeclaringSyntaxReferences.Length > 0
+        && sym.DeclaringSyntaxReferences.All(r =>
+            SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)));
+
 
     /// <summary>One line of a symbol's <c>source</c> component — 1-based absolute file line plus its
     /// text, so a multi-line declaration renders as a real per-line table (TOON/JSON alike) instead of
@@ -1262,6 +1303,12 @@ private static object? ContainingType(ISymbol sym)
     private static (IReadOnlyList<OutlineRow>? Rows, string? Note)? BodyOutlineFor(ISymbol sym)
     {
         const int minWorthwhileLines = 40;
+
+        // A long body can still be a bad outline target: the note only ever fired on SHORT declarations, so
+        // a 40-150 line member of mostly sequential statements with one branch returned a near-empty outline
+        // and said nothing about it. The caller then paid for the outline AND the source fetch it needed
+        // anyway. Density, not length, is what decides whether an outline describes a body.
+        const int maxLinesPerLandmark = 25;
         if (sym is not IMethodSymbol)
             return (null, $"bodyOutline is not applicable to a {SymbolKey.KindOf(sym)} symbol - only a method has an executable body to outline");
         var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
@@ -1278,7 +1325,12 @@ private static object? ContainingType(ISymbol sym)
         var lineCount = lineSpan.EndLinePosition.Line - lineSpan.StartLinePosition.Line + 1;
         var note = lineCount < minWorthwhileLines
             ? $"declaration is {lineCount} lines (<{minWorthwhileLines}) - source:code is likely cheaper than this outline"
-            : null;
+            : rows.Count * maxLinesPerLandmark < lineCount
+                ? $"declaration is {lineCount} lines but the outline has only {rows.Count} "
+                    + $"entr{(rows.Count == 1 ? "y" : "ies")} - a mostly linear body, so this outline "
+                    + "describes little of it and source:code (or a source:code@from-to range) is likely "
+                    + "the better answer"
+                : null;
         return (rows, note);
     }
 
@@ -1350,11 +1402,43 @@ private static object? ContainingType(ISymbol sym)
             ? lines
             : lines.Where(l => query.Lines.Any(r => r.Contains(l.Line))).ToArray();
 
-    /// <summary>Renders a line list's own extent as <c>"first-last"</c>, or <c>"none"</c> when empty.</summary>
+    /// <summary>
+    /// Renders a line list's extent as <c>"first-last"</c> when it is contiguous, as every contiguous run
+    /// in order (<c>"63-70;146-147"</c>) when it is not, and <c>"none"</c> when empty.
+    /// </summary>
+    /// <remarks>
+    /// The runs are the whole point. A multi-range <c>@</c> selection and a <c>-comments</c> exclusion both
+    /// produce a DISJOINT set, and reporting min-to-max claimed the entire envelope for it: a 10-line answer
+    /// to <c>source:code@63-70;146-147</c> described itself as <c>63-147</c>, which is precisely the string a
+    /// caller reads as "I have the whole member" when it holds 10 of its 85 lines. A contiguous list still
+    /// renders as the single span it always did, and every run emitted here is directly usable as a
+    /// validate_patch startLine/endLine, the same guarantee the per-line numbers carry.
+    /// </remarks>
     /// <param name="lines">The lines to describe.</param>
     /// <returns>A compact span string for the <c>sourceLines</c> field.</returns>
-    private static string LineSpan(IReadOnlyList<SourceLine>? lines) =>
-        lines is { Count: > 0 } ? $"{lines[0].Line}-{lines[^1].Line}" : "none";
+    private static string LineSpan(IReadOnlyList<SourceLine>? lines)
+    {
+        if (lines is not { Count: > 0 })
+            return "none";
+
+        var runs = new List<string>();
+        var start = lines[0].Line;
+        var previous = start;
+        foreach (var line in lines.Skip(1))
+        {
+            if (line.Line == previous + 1)
+            {
+                previous = line.Line;
+                continue;
+            }
+
+            runs.Add($"{start}-{previous}");
+            start = previous = line.Line;
+        }
+
+        runs.Add($"{start}-{previous}");
+        return string.Join(';', runs);
+    }
 
     /// <summary>
     /// Absolute 1-based file lines to drop from <paramref name="node"/>'s rendered source per
@@ -1589,7 +1673,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                     var span = l.GetLineSpan();
                     return (File: locator.RelPath(span.Path), Line: span.StartLinePosition.Line + 1,
                         Snippet: l.SourceTree?.GetText().Lines[span.StartLinePosition.Line].ToString().Trim() ?? "",
-                        IsCref: IsCrefLocation(l));
+                        IsCref: TypeReferenceScan.IsCrefLocation(l));
                 })
                 // One row per {file, line}: a signature or tuple naming the symbol several times on one
                 // line emitted that many byte-identical rows, and since the snippet is the whole line,
@@ -1620,7 +1704,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
             {
                 if (!location.Location.IsInSource)
                     continue;
-                var owner = await OwningMemberAsync(location);
+                var owner = await TypeReferenceScan.OwningMemberAsync(location);
                 if (owner is null)
                     continue;
 
@@ -1629,7 +1713,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 var snippet = location.Location.SourceTree?.GetText().Lines[lineIndex].ToString().Trim() ?? "";
                 if (!sitesByOwner.TryGetValue(owner, out var sites))
                     sitesByOwner[owner] = sites = [];
-                sites.Add((locator.RelPath(span.Path), lineIndex + 1, snippet, IsCrefLocation(location.Location)));
+                sites.Add((locator.RelPath(span.Path), lineIndex + 1, snippet, TypeReferenceScan.IsCrefLocation(location.Location)));
             }
         }
 
@@ -1645,51 +1729,6 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 TestAttributes.IsTestMethod(pair.Key)))
             .ToList();
     }
-
-    /// <summary>The member declaration enclosing a reference, or the enclosing symbol when there is none.</summary>
-    /// <remarks>
-    /// GetEnclosingSymbol alone answers the containing TYPE for a reference sitting in a field or
-    /// event-field declaration, which would collapse every such use onto one item; walking to the owning
-    /// member declaration keeps the event or field itself as the reported user.
-    /// </remarks>
-    private static async Task<ISymbol?> OwningMemberAsync(ReferenceLocation location)
-    {
-        var root = await location.Document.GetSyntaxRootAsync();
-        var model = await location.Document.GetSemanticModelAsync();
-        if (root is null || model is null)
-            return null;
-
-        var member = root.FindNode(location.Location.SourceSpan)
-            .AncestorsAndSelf()
-            .OfType<MemberDeclarationSyntax>()
-            .FirstOrDefault();
-        return member switch
-        {
-            BaseFieldDeclarationSyntax field => model.GetDeclaredSymbol(field.Declaration.Variables[0]),
-            null => model.GetEnclosingSymbol(location.Location.SourceSpan.Start),
-            _ => model.GetDeclaredSymbol(member),
-        };
-    }
-
-    /// <summary>
-    /// Whether a reference sits inside an XML documentation <c>cref</c> rather than in real code.
-    /// </summary>
-    /// <param name="location">A reference site's source location.</param>
-    /// <returns>True when the location resolves through a <c>&lt;see cref="..."/&gt;</c> or similar.</returns>
-    /// <remarks>
-    /// Roslyn binds a cref to the symbol it names, so FindReferences hands doc mentions back alongside
-    /// code. They belong to the same category as the comment and string matches
-    /// <see cref="CountTextOnlyMatches"/> excludes, and this tool's whole claim over grep is that it does
-    /// not return comment matches as hits.
-    /// </remarks>
-    private static bool IsCrefLocation(Location location)
-    {
-        var root = location.SourceTree?.GetRoot();
-        return root is not null
-            && root.FindNode(location.SourceSpan, findInsideTrivia: true, getInnermostNodeForTie: true)
-                .AncestorsAndSelf().Any(n => n is CrefSyntax);
-    }
-
 
     private static async Task<List<RefItem>> Implementations(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
     {
@@ -2070,9 +2109,46 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
                 return (external, null);
             if (await ResolveEntryPointAsync(solution, symbol) is { } entryPoint)
                 return (entryPoint, null);
-            return (null, Formats.Render(new { error = "symbol_not_found", symbol }));
+            return (null, Formats.Render(new
+            {
+                error = "symbol_not_found",
+                symbol,
+                didYouMean = NearMisses(symbolStore, symbol),
+            }));
         }
         return (null, AmbiguousSymbol(resolution.Candidates));
+    }
+
+    /// <summary>
+    /// Ranked index hits for the last segment of a name that did not resolve, so symbol_not_found carries
+    /// something to act on. Null when the segment is too short to rank on or nothing came back.
+    /// </summary>
+    /// <remarks>
+    /// A miss is almost always a NEAR miss - a wrong namespace, a dropped containing type, a plural slip.
+    /// Echoing the unresolved name back told the caller only what it had just sent, so the next move was
+    /// always a search_index round trip for a list the resolver was already positioned to produce.
+    /// </remarks>
+    private static object? NearMisses(SymbolStore symbolStore, string symbol)
+    {
+        const int cap = 5;
+
+        var bare = SymbolResolver.NameWithoutParameters(symbol);
+        var segment = bare[(bare.LastIndexOf('.') + 1)..];
+
+        // Under three characters the ranking is noise; a sym_/symidx_/symfb_ handle is not a name at all,
+        // and a caller holding a stale one needs the id explanation it already gets, not a name guess.
+        if (segment.Length < 3 || segment.StartsWith("sym", StringComparison.Ordinal))
+            return null;
+
+        var hits = symbolStore.Search(segment, null, null, cap);
+        return hits.Count == 0
+            ? null
+            : hits.Select(h => new
+            {
+                symbolId = h.SymbolId,
+                name = SymbolResolver.CompactName(h.FqName),
+                kind = h.Kind,
+            }).ToList();
     }
 
     /// <summary>

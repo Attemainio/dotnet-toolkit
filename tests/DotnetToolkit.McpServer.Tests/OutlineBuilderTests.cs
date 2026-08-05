@@ -292,6 +292,56 @@ public class OutlineBuilderTests
         Assert.Equal(1, method.CommentLines);
     }
 
+    /// <summary>
+    /// An empty XML-doc reference element carries its target in an attribute, so stripping it as a plain
+    /// tag deletes a word from the sentence rather than leaving a gap a reader could notice.
+    /// </summary>
+    [Fact]
+    public void SummaryKeepsEmptyRefElementNames()
+    {
+        var summary = OutlineBuilder.SummaryFromXml("""
+            <member name="M:Contoso.Gadget.Spin">
+              <summary>Translates every filter on <paramref name="normalized"/> into one <c>WHERE</c> body for <typeparamref name="TRecord"/>, like <see cref="T:Contoso.Other"/> does.</summary>
+            </member>
+            """);
+
+        // Without the name substitution this reads "Translates every filter on into one WHERE body for ,
+        // like does." -- which looks like the author wrote it badly, not like a rendering fault.
+        Assert.Equal(
+            "Translates every filter on normalized into one WHERE body for TRecord, like Other does.",
+            summary);
+    }
+
+    /// <summary>
+    /// A type's doc-line count is transitive over its members, exactly as its comment-line count is:
+    /// the D column's contract is what source:code strips relative to source:full, and that strip takes
+    /// member doc comments with it.
+    /// </summary>
+    [Fact]
+    public void TypeDocLinesIncludeItsMembersDocComments()
+    {
+        var entry = Build("""
+            namespace Contoso;
+
+            /// <summary>
+            /// A three-line doc comment.
+            /// </summary>
+            public sealed class Gadget
+            {
+                /// <summary>Documented member.</summary>
+                public int Spin() => 0;
+            }
+            """);
+
+        // 3 at class scope + 1 on the member. Counting only the declaration's own leading trivia gives 3,
+        // which under-reports what fetching the whole type would strip.
+        var type = Assert.Single(entry.Types);
+        Assert.Equal(4, type.DocLines);
+
+        var method = type.Members.Single(m => m.Kind == "M");
+        Assert.Equal(1, method.DocLines);
+    }
+
     [Fact]
     public void MultiLineCommentCountsEveryLineItSpans()
     {

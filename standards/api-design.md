@@ -1,14 +1,8 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET API design
 
-Canonical API-design standard. Loaded on demand per `csharp-standards.md`'s index; read it before
+Canonical API-design standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before
 adding or changing a `public`/`internal` member's signature — nullability, return type, async shape, or
-parameters. `dotnet-code-review` validates against it as part of the `[correctness]` aspect. A consuming
-repo overrides it via `.claude/dotnet-toolkit/api-design.md`.
+parameters. `dotnet-code-review` validates against it as part of the `[correctness]` aspect.
 
 ## Surface area
 

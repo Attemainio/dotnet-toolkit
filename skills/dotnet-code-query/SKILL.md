@@ -58,7 +58,7 @@ non-C# files (csproj, json, md) where Read/Grep are the right tools.
 open-ended walk. For "who calls this, and who calls those, up to the entry points" (Visual Studio's
 *View Call Hierarchy*), use `get_call_hierarchy`.
 
-`${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md` carries the same table plus the common call chains, and
+`.claude/rules/index.md` carries the router table, workspace readiness and response conventions, and
 each `docs/tools/<tool>.md` ends with a **Next steps** section naming what to call with what it just
 returned.
 
@@ -71,10 +71,13 @@ search_index(query: "fee ledger TryBuy TrySell")     ← one call, all four
 search_index(query: "fee"); search_index(query: "ledger"); ...   ← four round trips for one answer
 ```
 
-The win is **round trips, not always tokens**: `limit` is spent across the whole ranked union, so a
-term with far rarer name-matches than its neighbours can be crowded out. Any term the hits never
-covered comes back under `termsWithNoHits` — raise `limit` (cap 50) or re-ask for that term alone.
-**Never read an absent term as an absent symbol.**
+The win is **round trips, not always tokens**. Each term gets a floor share of `limit`
+(`limit / terms`) before the globally ranked union spends the rest, so a term with far rarer
+name-matches than its neighbours still reaches the response — but that floor is shallow (four terms at
+`limit: 10` is two deep each), so it guarantees presence, not coverage. Any term the hits never covered
+comes back under `termsWithNoHits` — raise `limit` (cap 50) or re-ask for that term alone.
+**Never read an absent term as an absent symbol.** The field also appears on a result that came back
+**empty**: every term listed means the terms missed, none listed means a filter removed what they found.
 
 `get_symbol` takes `symbols: [...]` to fetch a list with one `include`. Batch by default; split only
 when you genuinely need different filters per call. The batch's win is **round trips** — on tokens it
@@ -92,6 +95,8 @@ symbol is and what fetching it costs, with the legend stated once per response: 
 - big `L` + big `O` → `include: "bodyOutline"` to map it, then `source:code@from-to` for the one part
   you want. Big `L` + small `O` is one long linear block: fetch it.
 - `M…` → `include: "members"`; each row states its own `line` and `shape`, so the next hop is one call.
+  A row's `contentVersion` is narrowed to `decl` — enough to lease a signature or doc edit, never a body
+  one, since a row never showed you a body.
 - a big `D…` → `include: "source:code"` skips the doc the default fetch would carry.
 - a big `C…` → `include: "source:code-comments"` when inspecting behavior, not rationale.
 - `A…` → `include: "attributes"` reads them without a `source` fetch.
@@ -101,7 +106,7 @@ symbol is and what fetching it costs, with the legend stated once per response: 
 
 **Nothing is threshold-gated.** A letter is absent only when its count is zero or the fact cannot apply
 to that kind — a method has no `M`, a field has no `P`, an absent `O` means no body at all. On a type,
-`C` totals its members' comments too.
+`C` **and `D`** both total its members' counts as well as its own.
 
 ## Gate expansion on referenceCounts
 
@@ -151,10 +156,15 @@ can pass back (or just pass the row's `symbolId`).
 Every content response carries a `contentVersion` like `decl:a1b2…|body:84c3…` — a hash of the
 symbol's declaration and (when fetched) body layers, for your own "has this changed since I last
 looked" comparison. Same `decl` with a different `body` means the API is unchanged and only the
-implementation moved. There is no lease mechanism: every `get_symbol` call always returns full
-content, so there is nothing to hold onto or pass back.
+implementation moved.
 
-`validate_patch` takes these tokens as `baseVersions` — see the `dotnet-change` skill.
+**The token is narrowed to the layers the call actually served**, so two tokens for the same symbol
+from different `include`s are not directly comparable — and the default `standard` fetch carries
+`decl` (+`refs`) and no `body`. That matters the moment retrieval turns into an edit: `validate_patch`
+takes these tokens as `baseVersions`, and rejects a **body**-changing patch built on a token that
+never held the body layer (`error: "unleased_body"`). Fetch with `include: "all"` — or any include
+serving `source`/`bodyOutline`/`mechanicalFacts` — when you are about to rewrite a body, which is
+also when you wanted the text anyway. Full write loop: the `dotnet-change` skill.
 
 ## Workspace readiness and response conventions
 
@@ -165,7 +175,7 @@ failed to load, results may be silently **wrong**, call `workspace_status` and f
 report findings from a degraded workspace without saying so.
 
 Responses are TOON by default and deliberately terse — an absent field carries no information.
-**Absent is not zero.** Full detail on both in `${CLAUDE_PLUGIN_ROOT}/docs/tools/_index.md`.
+**Absent is not zero.** Full detail on both in the always-loaded `.claude/rules/index.md`.
 
 ## Attribution
 

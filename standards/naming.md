@@ -1,13 +1,9 @@
----
-paths:
-  - "**/*.cs"
----
-
 # C# naming
 
-Canonical naming standard. Loaded on demand per `csharp-standards.md`'s index (path-scoping is inert in
-MCP-mediated repos — see that file); read it before writing C#, and `dotnet-code-review` validates
-against it (aspect `[correctness]`). A consuming repo overrides it via `.claude/dotnet-toolkit/naming.md`.
+Canonical naming standard. Loaded on demand per the standards table in `.claude/rules/index.md` —
+these files carry no frontmatter because path-scoping is inert in MCP-mediated repos, so they are
+read by explicit path, never auto-loaded. Read it before writing C#; `dotnet-code-review` validates
+against it (aspect `[correctness]`).
 
 ## Casing
 

@@ -10,6 +10,8 @@ using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
@@ -194,6 +196,21 @@ public static class PatchTools
                             && ContentVersion.Parse(heldVersions[c.OldSymbolId]).Get("body") is null)
                 .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion))
                 .ToList();
+
+            // The classifier reports SEMANTIC changes, so a comment- or doc-comment-only body rewrite
+            // produced no Change at all and never reached the check above -- while the guard's own
+            // rationale ("a concurrent edit to the body would have been overwritten silently") applies to
+            // it identically, and a second agent rewriting comments is precisely the likely case. Keyed on
+            // whether the patch touches body TEXT, which is answerable from the edit spans alone.
+            var textTouched = await BodyTextTouchedIdsAsync(solution, locator, patchEdits, cancellationToken);
+            var alreadyUnleased = unleasedBody.Select(u => u.SymbolId).ToHashSet(StringComparer.Ordinal);
+            unleasedBody.AddRange(textTouched
+                .Where(id => !alreadyUnleased.Contains(id)
+                             && heldVersions.TryGetValue(id, out var held)
+                             && ContentVersion.Parse(held).Get("body") is null
+                             && unchangedVersions.TryGetValue(id, out var current)
+                             && ContentVersion.Parse(current).Get("body") is not null)
+                .Select(id => (SymbolId: id, CurrentVersion: unchangedVersions[id])));
             if (unleasedBody.Count > 0)
                 return Reject("unleased_body", UnleasedBody(unleasedBody,
                     await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken)));
@@ -485,6 +502,75 @@ public static class PatchTools
             current = unleased.Select(c => new { symbolId = c.SymbolId, currentVersion = c.CurrentVersion }),
             draft,
         });
+
+    /// <summary>
+    /// Symbols whose BODY TEXT the patch's edit lines fall inside, whether or not the edit changed
+    /// anything the classifier would call a change.
+    /// </summary>
+    /// <param name="solution">The base solution the edit line numbers address.</param>
+    /// <param name="locator">Resolves an edit's repo-relative path to a document.</param>
+    /// <param name="edits">The patch's edits.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The touched symbols' ids; empty when no edit lands in a body.</returns>
+    /// <remarks>
+    /// Deliberately a TEXT question, not a semantic one: the body lease exists to prove the caller held
+    /// the text it is overwriting, and a comment-only rewrite overwrites text just as a semantic one does.
+    /// An edit landing on a signature or between members touches no body and is unaffected.
+    /// </remarks>
+    private static async Task<IReadOnlyCollection<string>> BodyTextTouchedIdsAsync(
+        Solution solution,
+        SolutionLocator locator,
+        IReadOnlyList<PatchEdit> edits,
+        CancellationToken cancellationToken)
+    {
+        var touched = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var group in edits.GroupBy(e => e.File, StringComparer.OrdinalIgnoreCase))
+        {
+            var documentId = solution.GetDocumentIdsWithFilePath(locator.AbsPath(group.Key)).FirstOrDefault();
+            if (documentId is null || solution.GetDocument(documentId) is not { } document)
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var model = await document.GetSemanticModelAsync(cancellationToken);
+            var text = await document.GetTextAsync(cancellationToken);
+            if (root is null || model is null)
+                continue;
+
+            var members = root.DescendantNodes().OfType<MemberDeclarationSyntax>().ToList();
+            foreach (var edit in group)
+            {
+                if (edit.StartLine < 1 || edit.EndLine < edit.StartLine || edit.EndLine > text.Lines.Count)
+                    continue;
+
+                var span = TextSpan.FromBounds(
+                    text.Lines[edit.StartLine - 1].Start,
+                    text.Lines[edit.EndLine - 1].End);
+
+                foreach (var member in members)
+                {
+                    if (BodySpanOf(member) is not { } body || !body.IntersectsWith(span))
+                        continue;
+                    if (model.GetDeclaredSymbol(member, cancellationToken) is { } symbol)
+                        touched.Add(SymbolKey.IdOf(symbol));
+                }
+            }
+        }
+
+        return touched;
+    }
+
+    /// <summary>The span of a member's executable body, or null when it has none to overwrite.</summary>
+    /// <param name="member">The member declaration to measure.</param>
+    /// <returns>The block, accessor list or expression-body span.</returns>
+    private static TextSpan? BodySpanOf(MemberDeclarationSyntax member) => member switch
+    {
+        BaseMethodDeclarationSyntax { Body: { } block } => block.Span,
+        BaseMethodDeclarationSyntax { ExpressionBody: { } arrow } => arrow.Span,
+        PropertyDeclarationSyntax { AccessorList: { } accessors } => accessors.Span,
+        PropertyDeclarationSyntax { ExpressionBody: { } arrow } => arrow.Span,
+        _ => null,
+    };
 
     private static string StaleBase(IReadOnlyList<(string SymbolId, string CurrentVersion)> stale) =>
         Formats.Render(new

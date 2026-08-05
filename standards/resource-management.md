@@ -1,14 +1,9 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET resource management
 
-Canonical resource-management standard. Loaded on demand per `csharp-standards.md`'s index; read it
+Canonical resource-management standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it
 before implementing `IDisposable`/`IAsyncDisposable`, working with a stream/handle/pooled buffer, or
 deciding who owns disposing a dependency. `dotnet-code-review` validates against it as part of the
-`[correctness]` aspect. A consuming repo overrides it via `.claude/dotnet-toolkit/resource-management.md`.
+`[correctness]` aspect.
 
 ## Disposal ownership
 

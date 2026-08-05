@@ -66,6 +66,21 @@ definition and its call sites can sit in any project that depends on this one, s
 signed off by one project's compile — even when the only detected change in a referencing file reads as
 a body edit.
 
+### `membersRekeyed` — mechanical churn, collapsed
+
+Renaming a type re-keys the `symbolId` of every member it contains, so the raw change list reports each
+one as an `added`/`removed` pair — a 20-member type renders 40 entries that say nothing beyond "the type
+was renamed", which the response already states. Those pairs (solely-`added` matched against
+solely-`removed` by bare name) are collapsed out of the **reported** list and counted instead:
+
+```
+membersRekeyed: 2
+```
+
+This is a **reporting** change only. The full detected set still drives ladder escalation, targeted test
+selection, and diagnostics, so nothing about what gets validated depends on it. A member that genuinely
+changed — not merely re-keyed — does not pair off and stays in the reported list.
+
 ## What this tool deliberately does not do
 
 **It does not rename the file.** When the symbol is a type whose file is named after it, the response

@@ -113,7 +113,7 @@ only the 8 most recent are kept.
 |---|---|
 | `unknown_draft` | Expired, evicted, or never existed. Refetch with `get_symbol` and submit a full patch. |
 | `unheld_symbol` | The patch changes a symbol no `baseVersions` entry covers — an added member anchors to its **containing type**, which is the usual cause. Nothing is wrong with the text, so a draft **is** issued: resend its `draftId` with the reported versions in `baseVersions` and an empty `edits` array. |
-| `unleased_body` | The patch rewrites a **body** against a `contentVersion` that carries no `body` layer, so staleness was only ever verified for the declaration and a concurrent edit to that body would have been overwritten silently. `get_symbol` narrows its token to the layers it served, so the default fetch leases `decl` (+`refs`) only. Same fix shape as `unheld_symbol`, and it likewise keeps a draft: refetch with an include that serves the body (`all`, `source`, `bodyOutline` or `mechanicalFacts`), then resend the `draftId` with that version and an empty `edits` array. The versions the error reports already carry the layer. |
+| `unleased_body` | The patch rewrites a **body** against a `contentVersion` that carries no `body` layer, so staleness was only ever verified for the declaration and a concurrent edit to that body would have been overwritten silently. `get_symbol` narrows its token to the layers it served, so the default fetch leases `decl` (+`refs`) only. Same fix shape as `unheld_symbol`, and it likewise keeps a draft: refetch with an include that serves the body (`all`, `source`, `bodyOutline` or `mechanicalFacts`), then resend the `draftId` with that version and an empty `edits` array. The versions the error reports already carry the layer. **Keyed on the body TEXT the edit touches, not on whether a semantic change was detected** — see below. |
 | `draft_stale` | A file moved in the workspace since the draft forked from it, so its line numbers no longer mean anything. The draft is dropped; rebuild from a fresh `get_symbol`. |
 
 A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — nor when the patch
@@ -129,6 +129,19 @@ trustworthy:
 
 That last split is the useful one: a missing map entry is a metadata gap, not a stale patch, and it used
 to cost a full resend to fix.
+
+**`unleased_body` is keyed on the body text an edit touches, not on the change classifier.** Each edit's
+line span is mapped back to a `TextSpan` in the base document and intersected against each member's body
+span (block, accessor list, or expression body); a symbol found that way while holding a
+declaration-only token is unleased. Keying on *detected* changes could never have covered the case that
+matters most here — a **comment-only** body edit produces no detected change at all, so the symbol was
+never in the collection being filtered, and a default `get_symbol` lease was enough to silently overwrite
+a body that had moved. Rewriting a comment inside a method now requires a body-serving fetch, the same as
+rewriting the statements around it.
+
+One gap remains, and it is pre-existing rather than introduced by that check: the guard fires only when
+you hold a **declaration-only** token for the touched symbol. Holding *nothing* for it still falls to
+`unheld_symbol`, which is also keyed on detected changes.
 
 Real call and response — an intentionally broken addition, `applyOnSuccess: false`:
 

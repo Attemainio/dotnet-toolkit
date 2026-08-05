@@ -16,10 +16,11 @@ back to shell.
 ## Non-negotiable workflow
 
 The tool protocol — MCP tools over Grep/`Read` for C#, delegating an unknown symbol sweep to the
-`dotnet-explore` agent, and `validate_patch` as the only write path — lives in
-**`.claude/rules/tool-protocol.md`**. It is always-loaded alongside this file, and is the same rule
-`dotnet-toolkit-init` copies into consuming repos. It is deliberately not repeated here: a rule that
-lives only in `CLAUDE.md` never reaches a consumer, and two copies always diverge.
+`dotnet-explore` agent, `validate_patch` as the only write path, which standards apply when, and
+which skill to invoke — lives in **`.claude/rules/index.md`**. It is always-loaded alongside this
+file, and is the same rule `dotnet-toolkit-init` copies into consuming repos. It is deliberately not
+repeated here: a rule that lives only in `CLAUDE.md` never reaches a consumer, and two copies always
+diverge.
 
 What this repo adds on top, because it is the plugin's own source tree:
 
@@ -36,36 +37,35 @@ dotnet test --filter FullyQualifiedName~ClassName   # a single test class
 dotnet publish src/DotnetToolkit.McpServer -c Release -o dist   # required after any src/ change
 ```
 
-`scripts/build-plugin.sh` and `scripts/build-plugin.cmd` are thin wrappers over that publish line.
-Nothing the plugin ships at runtime runs a shell: `.mcp.json` and `hooks/hooks.json` both invoke
-`dotnet <dll>` so the plugin works on Windows as well as WSL/Linux/macOS.
-
-`dotnet test` includes `WorkspaceIntegrationTests`, which loads a fixture solution via
-`MSBuildWorkspace` — expect it to be slower than the pure unit tests.
-
-`TreatWarningsAsErrors` is set repo-wide (`Directory.Build.props`), so a build with warnings fails.
+`scripts/build-plugin.sh|.cmd` are thin wrappers over that publish line. Nothing the plugin ships at
+runtime runs a shell: `.mcp.json` and `hooks/hooks.json` both invoke `dotnet <dll>`, so it works on
+Windows as well as WSL/Linux/macOS. `dotnet test` includes `WorkspaceIntegrationTests`, which loads a
+fixture solution via `MSBuildWorkspace` — slower than the pure unit tests. `TreatWarningsAsErrors` is
+set repo-wide (`Directory.Build.props`), so a build with warnings fails.
 
 **If more than one net10 SDK is installed, build with the same one the server registers for MSBuild**
 (`~/.dotnet/dotnet` here). It picks the newest installed SDK and logs `MSBuild: ...` to stderr at
 startup; `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install. Building with a different one silently
-degrades the server's workspace — symptoms and repair in `docs/architecture.md`.
+degrades the server's workspace — symptoms and repair in `docs/design/architecture.md`.
 
 ## Where to read what
 
+Everything a *consumer* needs is routed from `.claude/rules/index.md`, not from here. These rows are
+the maintainer's routes — files a consuming repo does not have.
+
 | When | Read |
 |---|---|
-| Picking a tool for a C# question | `docs/tools/_index.md`, then the one `docs/tools/<tool>.md` |
-| Before the first C# edit of a session | `skills/dotnet-change/SKILL.md` + the standards `csharp-standards.md`'s index names for the change |
-| Which coding standard applies | `.claude/rules/csharp-standards.md` (the master index) |
-| Changing server internals, startup order, a subsystem, or packaging | `docs/architecture.md` |
-| What a hook blocks and why | `docs/references/hooks.md` |
-| What a skill is for | `docs/references/skills.md` |
-| Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/references/agents.md` |
-| Changing either always-loaded rule, or what init ships | `.claude/rules/tool-protocol.md` + `csharp-standards.md`; `skills/dotnet-toolkit-init/SKILL.md` copies both |
+| Changing server internals, startup order, a subsystem, or packaging | `docs/design/architecture.md` |
+| Changing the always-loaded rule, or what init ships | `.claude/rules/index.md`; `skills/dotnet-toolkit-init/SKILL.md` copies it |
+| Changing a coding standard | `standards/<name>.md`, plus its row in `.claude/rules/index.md`'s table |
+| Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/design/agents.md` |
+| Why a hook is built the way it is | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`; nothing routes to this file) |
 | Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-toolkit-init`) |
 
-Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only `tool-protocol.md` and
-`csharp-standards.md` are always present, because only those two lack `paths:` frontmatter.
+**`.claude/rules/index.md` is the only always-loaded rule**, because it is the only file in
+`.claude/rules/` with no frontmatter. The standards under `standards/` are read by explicit path
+only — `paths:` frontmatter would not reliably load them here (see `docs/design/architecture.md`),
+which is why they live outside `.claude/rules/` and carry none.
 
 ## Non-obvious invariants
 
@@ -77,7 +77,9 @@ Standards in `.claude/rules/` are **on-demand reads, not auto-loaded** — only 
   **any response-shape change needs `Contracts/Contract.cs` bumped.**
 - **Change detection is mtime-polling, not filesystem watchers**, so it works on WSL `/mnt/*` where
   inotify doesn't fire. Don't "fix" it into a watcher.
-- Review parallelism is by **scope partition**, one instance per disjoint slice — never by aspect.
+- **`.claude/rules/` holds exactly one file**, and the standards live in `standards/` with no
+  frontmatter. A second unfrontmattered rule, or a `paths:` key reappearing on a standard, is a
+  silent always-loaded regression paid by every session *and* every subagent.
 
 ## Instruction consistency
 
@@ -94,35 +96,20 @@ message describing it is downstream.
 - Anything operational that lives *only* in this file never reaches a consuming repo — which is a
   finding, not a convenience.
 
-## Task clarification
-
-- Resolve uncertainties from repository evidence — code, tests, docs, tool output — before asking.
-- Ask before implementing when ambiguity materially changes scope, behavior, a public API, data
-  compatibility, or what counts as done.
-- Don't ask what the code can answer safely, and don't hold up work that doesn't depend on the answer.
-
 ## Context budget
 
-**Split by responsibility, never by byte count.** A file earns its own existence by owning a distinct
-job someone would ask for by name — not by being the overflow of a file that got long. A skill with
-one task keeps its whole procedure inline, however long that runs; `dotnet-toolkit-init` has three
-(install / verify / uninstall) and therefore points at one file per path. Splitting a single-purpose
-file to hit a number produces scatter: two places to update, a pointer that goes stale, and a reader
-who now needs both. That is a worse failure than a long file.
+**Split by responsibility, never by byte count.** A single-purpose file keeps its whole procedure
+inline however long that runs; splitting to hit a number produces scatter, which is worse.
 
-There is one place where size is a genuine cost rather than a style question:
+Size is a genuine cost in exactly one place: **this file and `.claude/rules/index.md` are
+always-loaded**. Both are paid by every session regardless of task, `index.md` again by every
+consuming repo, and **both are inherited by every subagent with no opt-out** — a seven-way parallel
+review pays them eight times. Keep them declarations of *when* and *where*, not procedure: ~5 KB here,
+~6 KB for the rule, as targets to argue with rather than walls. Skills, `standards/`, and `docs/` are
+read on demand and carry no such limit.
 
-- **Three files are always-loaded: this one, `.claude/rules/tool-protocol.md`, and
-  `.claude/rules/csharp-standards.md`** — the two rules because they alone carry no `paths:`
-  frontmatter. Everything in them is paid by every session regardless of task, and the two rules are
-  paid again by every *consuming* repo, since init copies both. Keep them declarations of *when* and
-  *where*, not procedure — roughly ~10 KB for this file and ~6 KB per rule, as a target to argue with,
-  not a wall. An architecture rundown, tool catalog, skill catalog, or per-tool procedure growing back
-  into any of them is the regression to watch for, because that content is not always needed.
-
-Skills and `docs/` files are read on demand and cost nothing until invoked, so they carry no such
-limit. `dotnet-toolkit-consistency` enforces the always-loaded budget and flags scatter — a `docs/`
-file no skill needs, or a skill whose pointers fragment one procedure.
+`dotnet-toolkit-consistency` Step 7b owns the full policy and enforces it — including what counts as
+scatter, and why an overage is fixed by moving guidance behind a pointer rather than deleting it.
 
 # Compact instructions
 

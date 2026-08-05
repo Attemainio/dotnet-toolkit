@@ -1,4 +1,9 @@
-# Hook reference
+# Hook design notes
+
+> **Maintainer-facing. Nothing routes here, and nothing should** — hooks fire from
+> `hooks/hooks.json` and their deny messages carry the instruction at the moment it is needed. This
+> page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
+> how membership is decided statically, and where enforcement has a known hole.
 
 The plugin ships four hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
@@ -37,10 +42,19 @@ not a bug — rebuild the change as `validate_patch` calls.
 Creating a **new** `.cs` file with `Write` is allowed, because `validate_patch`'s `baseVersions` needs a
 `symbolId` that does not exist yet; change the file through `validate_patch` after creation.
 
+**A `.cs` file no project compiles is also allowed**, decided by the same `Hooks/CsFileMembership.cs`
+the read guards use (below). `validate_patch` resolves edits through the loaded solution and answers
+`file_not_in_solution` for anything outside it, so denying the plain tool there left **no write path at
+all** — the guard was pure obstruction, and its own escape hatch ("ask the user to allow it explicitly")
+was the only way through. This repo's `tests/**/fixtures/SampleSolution` is exactly that case: a nested
+solution deliberately excluded from the build so tests can load it as a workspace of their own. The read
+guard has always gated on membership; the edit guard did not, so the same file was readable and
+uneditable.
+
 The deny message restates the current `validate_patch` call procedure, and points a **pure rename** at
 `rename_symbol` instead — hand-authoring call-site edits misses interface, virtual and delegate dispatch,
 which is exactly the mistake a blocked `Edit` is usually about to make. When either procedure changes,
-`Hooks/GuardCsEdit.cs`'s message must change with it (see `docs/architecture.md`'s "Changing the tool
+`Hooks/GuardCsEdit.cs`'s message must change with it (see `docs/design/architecture.md`'s "Changing the tool
 surface").
 
 ## `hook guard-cs-read` — PreToolUse on `Read`
@@ -99,8 +113,9 @@ to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are n
 name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `Bash` — `Grep` and `Glob`
 are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode returns `.cs` source with
 nothing intercepting it. This is a real hole in read enforcement, not a case the membership check
-allows: `search_index` is still the right tool for finding a declared symbol, and the standing
-instruction in CLAUDE.md covers it, but no hook enforces that here. It matters most for
+allows: `search_index` is still the right tool for finding a declared symbol, and the always-loaded
+`.claude/rules/index.md` covers it (in this repo and in every repo init copied it into), but
+no hook enforces that here. It matters most for
 `dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright. `dotnet-explore` closes the
 hole the other way — it is granted neither, and its own instructions forbid `Read` on a `.cs` file at
 all, so for that agent the read guard is a backstop rather than the boundary.

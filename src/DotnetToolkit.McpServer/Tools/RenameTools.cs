@@ -185,6 +185,10 @@ public static class RenameTools
 
             var (detected, _) = await ChangeClassifier.DetectAsync(solution, forked, changedDocs, cancellationToken);
 
+            // Reported separately from `detected`: escalation, tests and diagnostics below must still see
+            // every change, but the caller-facing list should not restate the mechanical half of it.
+            var reported = WithoutMechanicalRekeys(detected, out var membersRekeyed);
+
             var changedIds = detected.Select(c => c.OldSymbolId).Distinct(StringComparer.Ordinal).ToList();
             var affectedTests = symbolStore.TestsReferencing(changedIds);
             var testedIds = affectedTests.Count > 0
@@ -242,7 +246,8 @@ public static class RenameTools
                     occurrencesRewritten = files.Sum(f => f.Occurrences),
                 },
                 files = files.Select(f => new { file = f.File, occurrences = f.Occurrences }),
-                detectedChanges = detected.Select(c => new
+                membersRekeyed = membersRekeyed == 0 ? (int?)null : membersRekeyed,
+                detectedChanges = reported.Select(c => new
                 {
                     symbolId = c.SymbolId,
                     previousSymbolId = c.OldSymbolId == c.SymbolId ? null : c.OldSymbolId,
@@ -313,6 +318,51 @@ public static class RenameTools
         return applyOnSuccess
             ? await workspace.RunExclusiveApplyAsync(RunAsync)
             : await RunAsync();
+    }
+
+    /// <summary>
+    /// The detected changes worth reporting, with the added/removed pairs a type rename produces for its
+    /// own members collapsed into a count.
+    /// </summary>
+    /// <param name="detected">Every change the classifier attributed to the rename.</param>
+    /// <param name="membersRekeyed">How many members were dropped as mechanical re-keys.</param>
+    /// <returns>The changes to render, in their original order.</returns>
+    /// <remarks>
+    /// A symbolId encodes its containing type, so renaming a type re-keys every member it declares and the
+    /// classifier sees each one as a removal plus an addition — for members whose own names never changed.
+    /// On an 8-member type that was 16 of 24 entries and about 65% of the response, and it tagged each pair
+    /// breaking-public, overstating one breaking change as nine.
+    /// <para>
+    /// Paired by bare member name, so a member genuinely added in the same operation as an unrelated one
+    /// removed under the same name would also collapse. That is the deliberate trade: a rename is not a
+    /// shape-changing edit, and the count still says how many ids moved.
+    /// </para>
+    /// </remarks>
+    private static List<ChangeClassifier.Change> WithoutMechanicalRekeys(
+        List<ChangeClassifier.Change> detected,
+        out int membersRekeyed)
+    {
+        static bool IsSolely(ChangeClassifier.Change change, ChangeKind kind) =>
+            change.Kinds.Count == 1 && change.Kinds.Contains(kind);
+
+        static string BareName(string display)
+        {
+            var withoutParameters = display.Split('(')[0].TrimEnd();
+            var lastDot = withoutParameters.LastIndexOf('.');
+            return lastDot >= 0 ? withoutParameters[(lastDot + 1)..] : withoutParameters;
+        }
+
+        var removed = detected.Where(c => IsSolely(c, ChangeKind.Removed)).Select(c => BareName(c.DisplayString));
+        var added = detected.Where(c => IsSolely(c, ChangeKind.Added)).Select(c => BareName(c.DisplayString)).ToHashSet(StringComparer.Ordinal);
+        var rekeyed = removed.Where(added.Contains).ToHashSet(StringComparer.Ordinal);
+
+        membersRekeyed = rekeyed.Count;
+        if (rekeyed.Count == 0)
+            return detected;
+
+        return [.. detected.Where(c =>
+            !((IsSolely(c, ChangeKind.Added) || IsSolely(c, ChangeKind.Removed))
+              && rekeyed.Contains(BareName(c.DisplayString))))];
     }
 
     /// <summary>The renamed symbol's new id, or null when the classifier's view cannot identify it.</summary>

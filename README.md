@@ -251,10 +251,16 @@ You talk to Claude normally; the skills route the work. What changes is undernea
 | "How does this method work?" | `Read` the whole file it lives in | **`get_symbol`** — that symbol, across every partial file |
 | "What breaks if I change this signature?" | `grep` for the name and hope | **`get_references`** — the compiler's own answer, dispatch included |
 | "Who ends up calling this?" | Trace call sites by hand, one hop at a time | **`get_call_hierarchy`** — the tree, several levels deep |
+| "Does this code path reach that one?" | Follow references outward and hope to meet | **`get_call_slice`** — the shortest path between two named symbols |
+| "What implements this, and what does it inherit?" | Read declarations file by file | **`get_type_hierarchy`** — the whole base chain and every implementer |
+| "What can I call at this line?" | Guess, or grep for a helper that may not apply | **`get_scope`** — locals, inherited members and extension methods in scope |
+| "What did this branch actually change?" | Read `git diff` and infer | **`get_semantic_diff`** — symbols moved and which changes are breaking |
 | "How do these projects fit together?" | Open every `.csproj` | **`get_project_graph`**, **`detect_circular_dependencies`** |
 | "Rename this and fix the callers" | Search-and-replace, then fix the build | **`rename_symbol`** — every edit derived from the reference graph |
 | "Make this change" | `Edit`, then `dotnet build`, then fix | **`validate_patch`** — compiled in memory; nothing lands unless it holds |
 | "Why is this written this way?" | Guess from `git blame` | **`search_log`** — the intent recorded when it was written |
+| "Where did all my context go?" | Guess, or scroll back | **`get_retrieval_metrics`** — token cost per call, attributable per caller |
+| "Give me plain JSON, not TOON" | — | **`set_output_format`** — `toon` (default), `compact`, or `json` for the session |
 | "Where would this feature land?" | Open files until a pattern emerges | **`dotnet-explore`** — symbols, use sites and blast radius, read-only |
 | "Review this subsystem" | Review inline, in a context full of other work | **`dotnet-code-review`** — fresh context, shared standards |
 
@@ -341,8 +347,8 @@ cannot auto-load coding standards, so this step is not optional if you want eith
 ```
 
 It shows you the exact plan and writes only after you approve, backing up anything it touches. It adds
-one small always-loaded rule plus the coding standards to your `.claude/rules/`, and **never modifies
-your CLAUDE.md**.
+two small always-loaded rules — the tool protocol and the coding-standards index — plus the standards
+files themselves to your `.claude/rules/`, and **never modifies your CLAUDE.md**.
 
 Then confirm the wiring took:
 
@@ -376,7 +382,7 @@ it lists exactly what a clean removal touches, as a dry run.
 
 Optional per-repo settings live in `.claude/dotnet-toolkit/config.json` — pinning a solution when several
 exist, and excluding generated code from the index. See
-[`docs/architecture.md`](docs/architecture.md).
+[`docs/design/architecture.md`](docs/design/architecture.md).
 
 ---
 
@@ -409,12 +415,22 @@ it before posting if your repo is private.
 
 | | |
 |---|---|
-| [`docs/tools/_index.md`](docs/tools/_index.md) | **Start here** — which tool answers which question, plus a page per tool |
-| [`docs/references/skills.md`](docs/references/skills.md) | What each skill does |
-| [`docs/references/agents.md`](docs/references/agents.md) | The review and exploration agents |
-| [`docs/references/hooks.md`](docs/references/hooks.md) | The guard hooks and what they block |
-| [`docs/architecture.md`](docs/architecture.md) | How the server is built: startup, knowledge tiers, subsystems, packaging, configuration |
+| [`docs/tools/`](docs/tools/) | One page per tool: arguments, a real call and response, and what to call next. The router that picks between them lives in `.claude/rules/index.md` |
+| [`.claude/rules/index.md`](.claude/rules/index.md) | The one always-loaded rule — the tool table, the standards table, and when to invoke each skill. This is what `dotnet-toolkit-init` installs |
+| [`standards/`](standards/) | The 13 coding standards the reviewer and the writer both read |
+| [`docs/design/`](docs/design/) | Maintainer notes: server architecture, agent design, hook rationale. Nothing reads these at runtime |
 | [`CLAUDE.md`](CLAUDE.md) | The operating contract for working on the plugin itself |
+
+**The skills** (`skills/`), each invoked by name or matched from its description:
+
+| Skill | For |
+|---|---|
+| `dotnet-code-query` | Exploring, searching, inspecting C# — the read protocol |
+| `dotnet-change` | Editing C# — the `validate_patch` write protocol and the pre-edit standards step |
+| `dotnet-review` | Any review request — partitions scope across parallel `dotnet-code-review` instances |
+| `dotnet-toolkit-init` | Install / verify / uninstall in a consuming repo |
+| `dotnet-toolkit-consistency` | Audit whether the docs still match `Tools/*.cs` |
+| `dotnet-toolkit-selfeval` | Measure the tools' token efficiency against the current repo |
 
 ## Development
 
@@ -430,6 +446,6 @@ startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins it.
 
 Layout: `src/DotnetToolkit.McpServer/` (the server — `Tools/` is the MCP surface), `tests/`, `skills/`,
 `agents/`, `.claude/rules/` (coding standards), `docs/`, `.claude-plugin/` (manifests), `.mcp.json`.
-[`docs/architecture.md`](docs/architecture.md) explains how the pieces fit.
+[`docs/design/architecture.md`](docs/design/architecture.md) explains how the pieces fit.
 
 Issues and self-eval reports: **https://github.com/Attemainio/dotnet-toolkit/issues**

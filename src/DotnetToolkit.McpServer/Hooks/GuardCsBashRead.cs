@@ -41,51 +41,151 @@ internal static class GuardCsBashRead
                 continue;
             }
 
-            var argument = BashCommandScanner.FindCsArgument(segment);
-            if (argument is null)
+            if (NamedCompiledFile(segment, context) is { } named)
             {
-                continue;
+                return HookOutcome.Deny(FileMessage(name, named.Argument, named.Project, context));
             }
 
-            var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, argument));
-            if (!File.Exists(absolute))
+            // A recursive or glob-scoped search names no single file, so the check above cannot see it --
+            // and it reads every compiled file under the directory rather than one. Left unguarded, the
+            // broader read was the one that got through: `grep -rn "x" --include=*.cs src/` carried its
+            // only .cs token inside an option flag, which FindCsArgument discards as a flag.
+            if (ScannedProject(segment, name, context) is { } scanned)
             {
-                continue;
+                return HookOutcome.Deny(TreeMessage(name, scanned.Target, scanned.Project, context));
             }
 
-            if (!CsFileMembership.TryResolveOwningProject(absolute, context.Root, out var project))
-            {
-                continue;
-            }
-
-            return HookOutcome.Deny($"""
-                Blocked Bash command '{name}' reading {argument}: it is compiled by {project}, so
-                search_index/get_symbol answer this more cheaply and completely than raw shell text tools - no
-                truncation risk, and no irrelevant methods pulled in alongside the one you want.
-
-                This is the same rule Read is blocked under - running the same read through Bash instead of the
-                Read tool is not a sanctioned way around it.
-
-                Do this instead:
-                  - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - one call, many terms.
-                  - Know the type/member name: get_symbol(symbol: "...").
-                  - Only need part of a long member (what sed -n '120,160p' would have done):
-                    get_symbol(symbol: "...", include: "source:code@120-160").
-                  - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
-                    declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
-                    equivalent yet - say so and ask the user to allow the Bash command explicitly.
-
-                For arguments and worked examples, read the one file for the tool you are about to call:
-                  {context.Doc("search_index")}
-                  {context.Doc("get_symbol")}
-                {context.Doc("_index")} routes any other question to its tool.
-
-                If this genuinely needs raw shell access (the workspace failed to load, or the file's exact
-                formatting/byte layout is itself what you need to see), say so and ask the user to allow it explicitly
-                rather than retrying the same command.
-                """);
         }
 
         return HookOutcome.Allow;
     }
+
+    /// <summary>Enumeration that survives an unreadable subdirectory instead of throwing mid-walk.</summary>
+    private static readonly EnumerationOptions CsScan = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        MatchCasing = MatchCasing.CaseInsensitive,
+    };
+
+    /// <summary>The compiled <c>.cs</c> file a segment names outright, if it names one.</summary>
+    /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>
+    /// <param name="context">The repo root and working directory to resolve against.</param>
+    /// <returns>The argument as written and its owning project, or null when neither applies.</returns>
+    private static (string Argument, string Project)? NamedCompiledFile(string segment, HookContext context)
+    {
+        var argument = BashCommandScanner.FindCsArgument(segment);
+        if (argument is null)
+        {
+            return null;
+        }
+
+        var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, argument));
+        if (!File.Exists(absolute))
+        {
+            return null;
+        }
+
+        return CsFileMembership.TryResolveOwningProject(absolute, context.Root, out var project)
+            ? (argument, project)
+            : null;
+    }
+
+    /// <summary>The first compiled <c>.cs</c> file a recursive or glob-scoped segment would reach.</summary>
+    /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>
+    /// <param name="name">The segment's command name, which decides whether it recurses by default.</param>
+    /// <param name="context">The repo root and working directory to resolve against.</param>
+    /// <returns>
+    /// The directory as written and the project compiling something under it, or null when the segment
+    /// scans no tree or the trees it scans hold nothing compiled — which is what keeps a search over
+    /// docs/ or a non-project folder unaffected.
+    /// </returns>
+    private static (string Target, string Project)? ScannedProject(string segment, string name, HookContext context)
+    {
+        foreach (var root in BashCommandScanner.CsScanRoots(segment, recursesByDefault: name is "rg" or "ag"))
+        {
+            var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, root));
+            if (!Directory.Exists(absolute))
+            {
+                continue;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(absolute, "*.cs", CsScan))
+            {
+                if (CsFileMembership.TryResolveOwningProject(file, context.Root, out var project))
+                {
+                    return (root, project);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The denial for a segment reading one named compiled file.</summary>
+    /// <param name="name">The blocklisted command.</param>
+    /// <param name="argument">The file as the caller wrote it.</param>
+    /// <param name="project">The project compiling it.</param>
+    /// <param name="context">The docs to cite.</param>
+    /// <returns>The message fed back to the agent.</returns>
+    private static string FileMessage(string name, string argument, string project, HookContext context) =>
+        $"""
+        Blocked Bash command '{name}' reading {argument}: it is compiled by {project}, so
+        search_index/get_symbol answer this more cheaply and completely than raw shell text tools - no
+        truncation risk, and no irrelevant methods pulled in alongside the one you want.
+
+        This is the same rule Read is blocked under - running the same read through Bash instead of the
+        Read tool is not a sanctioned way around it.
+
+        Do this instead:
+          - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - one call, many terms.
+          - Know the type/member name: get_symbol(symbol: "...").
+          - Only need part of a long member (what sed -n '120,160p' would have done):
+            get_symbol(symbol: "...", include: "source:code@120-160").
+          - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
+            declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
+            equivalent yet - say so and ask the user to allow the Bash command explicitly.
+
+        For arguments and worked examples, read the one file for the tool you are about to call:
+          {context.Doc("search_index")}
+          {context.Doc("get_symbol")}
+        The always-loaded .claude/rules/index.md routes any other question to its tool and names its file.
+
+        If this genuinely needs raw shell access (the workspace failed to load, or the file's exact
+        formatting/byte layout is itself what you need to see), say so and ask the user to allow it explicitly
+        rather than retrying the same command.
+        """;
+
+    /// <summary>The denial for a segment searching a whole tree of compiled files.</summary>
+    /// <param name="name">The blocklisted command.</param>
+    /// <param name="target">The directory as the caller wrote it.</param>
+    /// <param name="project">A project compiling something under it.</param>
+    /// <param name="context">The docs to cite.</param>
+    /// <returns>The message fed back to the agent.</returns>
+    private static string TreeMessage(string name, string target, string project, HookContext context) =>
+        $"""
+        Blocked Bash command '{name}' searching {target}: it reads every .cs file under it, including files
+        compiled by {project}. search_index answers a symbol search over the whole solution in one call, with
+        no truncation risk and without dumping the matched files' source into the transcript.
+
+        This is the same rule Read and a single-file grep are blocked under. Searching the tree rather than
+        naming a file reads MORE, not less, so it is not a sanctioned way around it.
+
+        Do this instead:
+          - Looking for a declared symbol (a type, method, property, field): search_index(query: "term1 term2
+            ...") - one call, many terms, OR-ed and ranked.
+          - Narrowing to a folder: search_index(query: "...", pathPrefix: "{target}").
+          - Already know the name: get_symbol(symbol: "...").
+          - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
+            declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
+            equivalent yet - say so and ask the user to allow the Bash command explicitly.
+
+        For arguments and worked examples:
+          {context.Doc("search_index")}
+        The always-loaded .claude/rules/index.md routes any other question to its tool and names its file.
+
+        If this genuinely needs raw shell access, say so and ask the user to allow it explicitly rather than
+        retrying the same command.
+        """;
+
 }

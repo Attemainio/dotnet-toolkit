@@ -12,12 +12,18 @@ Report every check as checked-and-clean rather than omitting it. A silent check 
 ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
 ```
 
-- Every file in init's "What gets written" table is present.
-- Both always-loaded rules have **no `paths:` frontmatter**. With one they would almost never load:
-  path-scoped rules fire only when the built-in `Read` touches a matching file, and `.cs` contact in
-  a repo with this plugin goes through the MCP tools or is blocked by the read/edit guards.
-- The standards copies **do** carry `paths: ["**/*.cs"]`, which is what keeps them out of the launch
-  context; they are read on demand through `csharp-standards.md`'s index.
+- Every file in `docs/install/install.md`'s "What gets written" table is present — all three of them.
+- **`.claude/rules/` contains exactly one file, `index.md`, and it has no frontmatter.** A second
+  unfrontmattered file is a second always-loaded rule nobody costed. Any of `tool-protocol.md`,
+  `csharp-standards.md`, or a standards filename still sitting there is a **pre-migration leftover**:
+  it auto-loads, contradicts `index.md`, and in the standards' case keeps a `paths:` trigger that can
+  fire on any `.cs` file no project compiles. Report it and re-run the install path, which cleans it.
+- **No standards files are installed, and that is correct.** They are read from
+  `<pluginRoot>/standards/` on demand — `workspace_status` reports `pluginRoot` — so they cannot go
+  stale here. Their absence is not a
+  broken install — it is the design. There is no per-repo override tier, so a
+  `.claude/dotnet-toolkit/standards/` directory left over from an older install is **dead text**
+  nothing reads: report it for deletion.
 - `.claude/settings.json`'s `permissions.allow` covers the read-only tools and **not**
   `validate_patch`/`rename_symbol` — writers must keep prompting. Their presence is a finding.
 - The plugin is actually connected: `workspace_status` answers, and the solution it resolved is the
@@ -31,12 +37,14 @@ ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
 This is the cost every session in the repo pays regardless of task, so it has a hard number.
 
 ```bash
-for f in .claude/rules/tool-protocol.md .claude/rules/csharp-standards.md CLAUDE.md; do
+for f in .claude/rules/index.md CLAUDE.md; do
     [ -f "$f" ] && printf "%-46s %6d B  ~%.1fk tok\n" "$f" $(wc -c < "$f") $(echo "$(wc -c < "$f")/3800" | bc -l)
 done
 ```
 
-Budget: **≤ 6 KB each** for the two always-loaded rules.
+Budget: **≤ 6 KB** for `index.md`, the one always-loaded rule this plugin installs. Note this cost is
+paid again by **every subagent** — the harness injects always-loaded rules into them with no opt-out,
+so a parallel review multiplies it by the number of instances.
 
 **Never fix an overage by deleting guidance** — move it behind a pointer, or the consumer simply
 loses the rule. And an overage is a finding against the *plugin*, not this repo: the copies are
@@ -49,7 +57,8 @@ sufficient.
 
 ## Would uninstalling leave anything?
 
-Take init's "Undoing this later" list literally as a dry run, and ask what would remain.
+Take `docs/install/uninstall.md`'s "Delete these" list literally as a dry run, and ask what would
+remain.
 
 - Every copied file deleted or restored from `.claude/dotnet-toolkit/backups/`.
 - The `mcp__plugin_dotnet-toolkit_dotnet__*` entries gone from `.claude/settings.json`, with the rest

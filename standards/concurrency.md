@@ -1,15 +1,9 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET concurrency
 
 Canonical concurrency standard: async correctness, synchronization primitives, and deadlock avoidance.
-Loaded on demand per `csharp-standards.md`'s index; read it before writing any C# that awaits, locks,
+Loaded on demand per `.claude/rules/index.md`'s standards table; read it before writing any C# that awaits, locks,
 spawns work, or touches state reachable from more than one thread. `dotnet-code-review` validates
-against it (aspect `[concurrency]`). A consuming repo overrides it via
-`.claude/dotnet-toolkit/concurrency.md`. The *cost* of synchronization in hot paths is `performance.md`'s
+against it (aspect `[concurrency]`). The *cost* of synchronization in hot paths is `performance.md`'s
 territory; correctness is decided here.
 
 ## Async correctness

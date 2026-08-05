@@ -18,23 +18,32 @@ Partial and camel-case-interior terms match: `Ledger` finds `FIFOLedger`, `Try` 
 `TryBuy`. When a question spans two subsystems, name both in the same query — the ranking
 puts the symbols matching more of your terms first, which is exactly the overlap you want.
 
-### `limit` is spent globally — read `termsWithNoHits`
+### Every term gets a floor — but still read `termsWithNoHits`
 
-The saving from one call is **round trips, not always tokens.** `limit` is applied across the whole
-ranked union, not per term, so a term whose name-matches are far rarer than its neighbours' can be
-squeezed out of the response entirely. Measured on a real repository, `query: "fitness ledger evaluate
-population", limit: 10` came back with ten hits, all of them `Evaluate*` or `PopulationCount` — zero for
-two of the four terms asked about.
+The saving from one call is **round trips, not always tokens.**
 
-Any term the returned hits never covered is named back:
+Each term gets a **floor share of `limit`** — `limit / terms`, filled in the order you wrote them —
+before the globally ranked union spends whatever is left. That is what keeps a multi-term query ranked
+*across* its terms rather than being a bare concatenation of per-term lists, while stopping a term with
+far fewer name-matches than its neighbours from being crowded out entirely. Before the floor existed,
+`query: "fitness ledger evaluate population", limit: 10` on a real repository came back with ten hits,
+all of them `Evaluate*` or `PopulationCount` — zero for two of the four terms asked about.
+
+The floor is shallow, so it is a guarantee of *presence*, not of coverage: with four terms and
+`limit: 10` each term is only two deep. A term the result still never covered is named back:
 
 ```json
 {"termsWithNoHits":["fitness","ledger"], "items":[ ... ]}
 ```
 
 **Never read an absent term as an absent symbol.** When the field appears, either raise `limit` (cap 50)
-or re-ask for the starved terms on their own. The field is emitted only when the query had more than one
-term and something matched; a single-term query returning nothing already says so with an empty `items`.
+or re-ask for the starved terms on their own.
+
+The field is emitted for any query of more than one term — **including one that returned nothing at
+all**. That is the response carrying no other evidence, so it is the one that most needs the terms
+named: every term listed means the terms themselves missed, while none listed means the terms matched
+and a filter (`kinds`, `pathPrefix`, `implements`, `xmlDoc`, `modifiers`, `origin`) removed what they
+found. A single-term query is still skipped — its empty `items` already says the same thing.
 
 Each hit carries where it was found, so going straight there costs no second call. `items` is a
 plain array of objects — `symbolId, name, kind, file, line, endLine` on every hit:

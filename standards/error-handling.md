@@ -1,14 +1,9 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET error handling
 
-Canonical error-handling standard. Loaded on demand per `csharp-standards.md`'s index; read it before
+Canonical error-handling standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before
 writing a `try`/`catch`, a retry loop, a timeout, or anything crossing a failure boundary (an external
 call, a queue handler, a background job). `dotnet-code-review` validates against it as part of the
-`[correctness]` aspect. A consuming repo overrides it via `.claude/dotnet-toolkit/error-handling.md`.
+`[correctness]` aspect.
 
 ## Exceptions vs. expected outcomes
 

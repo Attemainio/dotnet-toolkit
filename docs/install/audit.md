@@ -4,7 +4,7 @@ The mechanics behind `dotnet-toolkit-consistency`'s install-procedure audit. The
 to run this and what counts as a finding; this file carries the inventory table, the drift catalog,
 and the reachability scenarios. Read it when that step fires, not before.
 
-**Ground truth is the plugin tree** — `skills/`, `agents/`, `hooks/`, `docs/`, `.claude/rules/`,
+**Ground truth is the plugin tree** — `skills/`, `agents/`, `hooks/`, `docs/`, `standards/`, `.claude/rules/`,
 `.mcp.json`. `skills/dotnet-toolkit-init/SKILL.md` is a *claim* about that tree, checked against it,
 never the reverse. The failure this catches is silent in both directions: an asset ships but never
 reaches the consumer, or the uninstall instructions leave files behind that keep steering a repo that
@@ -13,7 +13,7 @@ no longer has the plugin.
 ## 1. Build the expected inventory
 
 ```bash
-ls skills/ agents/ hooks/ docs/ docs/tools/ .claude/rules/ scripts/
+ls skills/ agents/ hooks/ docs/ docs/tools/ docs/design/ docs/install/ standards/ .claude/rules/ scripts/
 ```
 
 Sort every entry into exactly one of four delivery mechanisms. **The sorting is the audit**: a
@@ -23,8 +23,8 @@ different one.
 | # | Mechanism | What it covers | Reaches the consumer by | Uninstall |
 | --- | --- | --- | --- | --- |
 | 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the four `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
-| 2 | **Must be copied** | `.claude/rules/tool-protocol.md` and `.claude/rules/csharp-standards.md` (both always-loaded, copied verbatim) plus the standards copies enumerated by `csharp-standards.md`'s index; the MCP permission allowlist merged into `.claude/settings.json`; the `.claude/dotnet-toolkit/install.json` manifest | `dotnet-toolkit-init` writing them into the repo | **explicit deletion** — init's "Undoing this later" list is the only thing that removes them |
-| 3 | **Referenced by path** | `docs/tools/_index.md`, one `docs/tools/<tool>.md` per tool plus `server.md`, and `docs/references/*.md` | `${CLAUDE_PLUGIN_ROOT}/docs/...` paths named **in the skills** — never in a mechanism-2 rule, which cannot expand the variable | removing the plugin; the references die with it, so **nothing repo-local** |
+| 2 | **Must be copied** | `.claude/rules/index.md` (the one always-loaded rule, copied verbatim); the MCP permission allowlist merged into `.claude/settings.json`; the `.claude/dotnet-toolkit/install.json` manifest. **`standards/` is deliberately *not* here** — it is mechanism 3 | `dotnet-toolkit-init` writing them into the repo | **explicit deletion** — `docs/install/uninstall.md`'s "Delete these" list is the only thing that removes them |
+| 3 | **Referenced by path** | one `docs/tools/<tool>.md` per tool plus `server.md`, `docs/design/*.md`, `docs/install/*.md`, and **all 13 `standards/*.md`** | `${CLAUDE_PLUGIN_ROOT}/...` paths named **in the skills** — never in a mechanism-2 rule, which cannot expand the variable. The review agent is the one consumer that cannot expand it either, which is why `dotnet-review` resolves the standards root and injects it into each spawn | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |
 
 Two rules the sorting enforces, both of which have been got wrong before:
@@ -38,11 +38,14 @@ Two rules the sorting enforces, both of which have been got wrong before:
 
 ## 2. Audit init's coverage
 
-Read `skills/dotnet-toolkit-init/SKILL.md`. For every inventory entry, confirm it is accounted for in
-the right place: the "What gets written" table lists exactly the mechanism-2 files and nothing from
-1, 3, or 4; the apply step writes exactly those, backing up any that already exist; "Undoing this
-later" deletes exactly the mechanism-2 files, names the mechanism-4 paths with a disposition, and
-states that mechanisms 1 and 3 leave with the plugin.
+Read `skills/dotnet-toolkit-init/SKILL.md` **and the three path files it routes to** — the skill is a
+router, so its claims about the file set now live in `docs/install/install.md`, `verify.md`, and
+`uninstall.md`, and each drifts on its own. For every inventory entry, confirm it is accounted for in
+the right place: `install.md`'s "What gets written" table lists exactly the mechanism-2 files and
+nothing from 1, 3, or 4; its apply step writes exactly those, backing up any that already exist;
+`uninstall.md`'s "Delete these" removes exactly the mechanism-2 files, dispositions the mechanism-4
+paths, and states that mechanisms 1 and 3 leave with the plugin; `verify.md`'s checklists name the
+same files as `install.md`, and the skill's own router table points at all three.
 
 Two path rules:
 
@@ -56,24 +59,28 @@ Two path rules:
 
 Specific drift to look for, in the order it usually appears:
 
-1. **A standards file added to `.claude/rules/` but not to init's copy list.** Init's list must match
-   `csharp-standards.md`'s index exactly — that index is the enumerator, init's table is a copy of
+1. **A standards file added to `standards/` but not to the index's table.** That table is the
+   enumerator for both readers; a file absent from it is never loaded by anyone. Init copies no
+   standards at all now, so there is no copy list to keep in step — but the old failure returns the
+   moment anyone re-adds one. The historical shape of the bug was init's list being a copy of
    it, and copies diverge. Check both directions.
-2. **A tool added but not in `tool-protocol.md`'s tool table.** That rule embeds its own table for
-   consumers, and it drifts independently of `docs/tools/_index.md`. The table is *"instead of X, use
+2. **A tool added but not in `index.md`'s tool table.** That rule embeds its own table for
+   consumers. The table is *"instead of X, use
    Y"* — so it carries every tool that replaces something a session would otherwise reach for, and
    legitimately omits the meta tools that replace nothing: `get_retrieval_metrics`,
-   `set_output_format`, `ping`. Any **other** tool present in `_index.md`'s router but absent from
+   `set_output_format`, `ping`. Any **other** tool shipped in Step 0 but absent from
    the rule is a finding.
 3. **A tool added but not in init's permission allowlist.** The allowlist covers the read-only tools
    only. `validate_patch` and `rename_symbol` are deliberately excluded — a write to the user's
    source should keep prompting — so their absence is correct, and their *presence* is the finding.
-4. **A new `docs/` file nothing points at.** Most docs are reached through `_index.md`; a
-   `docs/tools/<tool>.md` that its router doesn't list *is* a finding. The four `*-reference.md`
+4. **A new `docs/` file nothing points at.** Tool docs are reached through `index.md`'s router; a
+   `docs/tools/<tool>.md` that its router doesn't list *is* a finding. The `docs/design/*.md`
    files are **not** — they are maintainer-facing by design, reached from the plugin's own
-   `README.md` and `CLAUDE.md`, and `references/agents.md` is deliberately read by neither agent.
-   "Unreferenced from a consuming repo" is their intended state.
-5. **An uninstall list shorter than the write list.** Diff them literally, file by file.
+   `README.md` and `CLAUDE.md`, and `design/agents.md` is deliberately read by neither agent.
+   "Unreferenced from a consuming repo" is their intended state. `docs/install/*.md` are reached
+   from `dotnet-toolkit-init`'s router (and `audit.md` from `dotnet-toolkit-consistency`).
+5. **An uninstall list shorter than the write list.** Diff `uninstall.md`'s "Delete these" against
+   `install.md`'s "What gets written", literally, file by file.
 
 ## 3. Out-of-the-box sufficiency
 
@@ -85,16 +92,16 @@ Walk the scenarios and name, for each, the file the consumer would actually reac
 
 | Scenario | Must be reachable via |
 | --- | --- |
-| Find a symbol and its callers | `tool-protocol.md`'s tool table → the `dotnet-code-query` skill → `docs/tools/<tool>.md` |
-| Change a method | `tool-protocol.md`'s write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
-| Rename a symbol | `tool-protocol.md`'s write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
-| Review a change | `dotnet-review` skill → `dotnet-code-review` agent → the copied `.claude/rules/` standards |
-| Map an unfamiliar change onto the code before editing | `tool-protocol.md`'s exploring section → the `dotnet-explore` agent |
-| Know which standards to read before editing | the copied `csharp-standards.md` — the same index the plugin itself uses, not a consumer-only variant |
+| Find a symbol and its callers | `index.md`'s tool table → the `dotnet-code-query` skill → `docs/tools/<tool>.md` |
+| Change a method | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
+| Rename a symbol | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
+| Review a change | `dotnet-review` skill (resolves and injects `Standards root:`) → `dotnet-code-review` agent → `${CLAUDE_PLUGIN_ROOT}/standards/*.md` |
+| Map an unfamiliar change onto the code before editing | `index.md`'s exploring section → the `dotnet-explore` agent |
+| Know which standards to read before editing | the standards table inside the copied `index.md` — the same table the plugin itself uses, not a consumer-only variant |
 | Call a tool without a permission prompt on every use | the allowlist init merges into `.claude/settings.json` |
 
 A scenario completable only by reading this repo's `CLAUDE.md` is a finding, and the fix is to move
-that knowledge into a shipped file — one of the two copied rules, a skill, or a `docs/tools/<tool>.md`.
+that knowledge into a shipped file — the copied `index.md`, a skill, a standard, or a `docs/tools/<tool>.md`.
 
 ## Output format
 

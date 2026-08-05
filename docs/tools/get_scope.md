@@ -102,7 +102,18 @@ alphabetically, so applicable extension methods appear alongside the receiver's 
 being crowded out; `totalItems` and `truncated` then report what was left out. Within one origin,
 source-declared symbols sort ahead of metadata ones: at a cursor with 919 symbols in scope, ordering by
 name alone spent the type share of the budget on `AbandonedMutexException` and friends rather than on
-anything the caller was choosing between. Drop `receiver` to see
+anything the caller was choosing between.
+
+**`System.Object`'s members are a reserve, not just a low rank.** `Equals`, `GetHashCode`, `GetType`,
+`ReferenceEquals` and `ToString` are in scope on every receiver in C#, so they are never what a cursor
+is deciding between. They are held back and spend only the budget the receiver's own members, inherited
+members and extensions leave unspent, then sort last. Ranking them last was **not** enough on its own:
+the round-robin hands every group it walks a slot per round whatever its position, and since object's
+members are all one origin (`inherited`), grouping by origin alone still gave them a full share — 6 of
+15 rows on the specimen that found this, and 4 of 10 on a re-measurement afterwards. They are reserved,
+not dropped: a `limit` wide enough for the whole surface still lists them, at the end.
+
+Drop `receiver` to see
 what's in scope at that line generally. (The line number above
 tracks a real call site in this file; if a future refactor moves it, re-find the receiver with
 `search_index`/`get_symbol` rather than assuming this line still resolves.)

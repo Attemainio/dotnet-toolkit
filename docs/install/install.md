@@ -8,23 +8,34 @@ absolute — these steps stage first, write second.
 
 ## What gets written
 
+**Three items. That is the entire footprint.**
+
 | File(s) | Content |
 | --- | --- |
-| `.claude/rules/tool-protocol.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/tool-protocol.md`: tool table, the `dotnet-explore` delegation rule, write path. **Always-loaded** — no `paths:` frontmatter |
-| `.claude/rules/csharp-standards.md` | **verbatim copy** of the plugin's file: the standards index, its per-file trigger conditions, and the write-time checklist. **Always-loaded** — no `paths:` frontmatter |
-| `.claude/rules/{naming,styling,best-practices,antipatterns,architecture,api-design,error-handling,resource-management,performance,concurrency,security,testing,xml-documentation}.md` | verbatim copies of the plugin's standards files from `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` (the list always matches `csharp-standards.md`'s index) — the repo owns editable copies |
+| `.claude/rules/index.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/index.md`: the tool table, the `dotnet-explore` delegation rule, the write path, the standards table, and when to invoke each skill. **Always-loaded** — no `paths:` frontmatter, and it must be the only file in `.claude/rules/` without any |
 | `.claude/settings.json` | the **read-only** MCP tools merged additively into `permissions.allow` (Step 3) |
 | `.claude/dotnet-toolkit/install.json` | the manifest: plugin version, timestamp, and a hash per copied file |
 
-Everything is copied rather than templated, so the plugin and every consuming repo run the *same*
-rule text. There is no inline template to drift out of step with the plugin's own `.claude/rules/` —
-a copy step cannot diverge the way a second authored copy did.
+It is copied rather than templated, so the plugin and every consuming repo run the *same* rule text.
+There is no inline template to drift out of step with the plugin's own copy — a copy step cannot
+diverge the way a second authored copy did. **`index.md` is not optional**: declining it leaves the
+repo with no protocol at all, and the tools stay available but unused.
 
-The standards are copied rather than referenced so the repo can edit them into its own convention
-set. A repo that would rather track the plugin's versions can decline the copies and rely on
-`${CLAUDE_PLUGIN_ROOT}/.claude/rules/` reads plus `.claude/dotnet-toolkit/<name>.md` overrides — say
-this option exists when presenting the plan. **The two always-loaded rules are not optional**:
-declining them leaves the repo with no protocol at all.
+**The coding standards are not copied.** They live at `${CLAUDE_PLUGIN_ROOT}/standards/*.md` and are
+read from there on demand — by the main agent through `dotnet-change`'s pre-edit step, and by the
+review agent through the absolute `Standards root:` that `dotnet-review` resolves and injects into
+each spawn. Consequences worth stating when presenting the plan:
+
+- A consuming repo is **always on the plugin's current standards**; they cannot go stale, and there
+  is no 13-file refresh to run or conflict to resolve on a plugin update.
+- **There is no per-repo override.** One copy of each standard exists, which is what keeps the
+  writer and the reviewer from judging against different text. A repo that needs different rules
+  writes its own guidance into its own `.claude/rules/`, outside this plugin — say so plainly rather
+  than implying the plugin's standards are editable in place.
+- They are deliberately **not** in `.claude/rules/`. A `paths:`-scoped rule fires only on the
+  built-in `Read` tool, which the guards block for compiled `.cs`, while still firing on `.cs` files
+  no project compiles — so as rules they would load unpredictably rather than on demand. See
+  `docs/design/architecture.md`, "How rules load".
 
 ### What is deliberately *not* written
 
@@ -34,7 +45,7 @@ cleaning up at uninstall, is the recurring bug in this procedure.
 | Not written | Why | At uninstall |
 | --- | --- | --- |
 | the MCP server, `hooks/`, `skills/`, `agents/` | they ship *active* with the plugin — the harness discovers them from the plugin manifest, so there is nothing repo-local to install | leave with the plugin; nothing to clean up |
-| `docs/tools/*.md` and `docs/references/*.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/docs/...` path from the skills (a rule cannot expand that variable, so it names the skill instead). Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
+| `docs/tools/*.md`, `docs/design/*.md`, `standards/*.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/...` path from the skills (a rule cannot expand that variable, so it names the skill instead). Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
 | `.claude/dotnet-toolkit/cache/` | created by the server at runtime, self-gitignored, always rebuildable | safe to leave; delete the directory for a fully clean removal |
 | `CLAUDE.md` | the project's own file | never touched, so nothing to undo |
 
@@ -48,10 +59,13 @@ Read `CLAUDE.md` if present (read-only, for Step 2's conflict check — it is ne
 list `.claude/rules/`. The project's own conventions take priority over anything this adds:
 
 - Never reorder, reword, or remove anything already in `.claude/rules/`.
-- **Name collisions**: if the repo already has a `.claude/rules/naming.md` (or any standards name from
-  `csharp-standards.md`'s index), that file is the repo's own — do not overwrite it. Surface the
-  collision and propose either skipping that copy or writing ours under a `dotnet-toolkit-` prefix,
-  the user's call.
+- **Name collision**: if the repo already has its own `.claude/rules/index.md`, that file is the
+  repo's own — do not overwrite it. Surface the collision and propose writing ours as
+  `.claude/rules/dotnet-toolkit.md` instead, the user's call. Only one file is copied now, so this is
+  the only collision possible.
+- **Legacy layout**: a repo installed before the standards moved has `.claude/rules/tool-protocol.md`,
+  `.claude/rules/csharp-standards.md`, and up to 13 standards files there. Handle them per the
+  migration step below — left in place they auto-load and contradict `index.md`.
 - If an existing rule already covers tool usage, code search, or "how to explore this codebase", read
   it carefully — Step 2 decides whether it complements or conflicts.
 
@@ -76,23 +90,39 @@ the plugin's own tools are for `.cs`. Then decide:
 
 ## Step 3 — Stage the copies and the allowlist
 
-**The rules.** Read both always-loaded rules from `${CLAUDE_PLUGIN_ROOT}/.claude/rules/` now, so the
-approval step can show the exact text that will land. Neither carries `paths:` frontmatter — that is
-what makes them always-loaded. Do not add one, and do not edit the text on the way through: a repo
-that wants different wording edits its copy afterwards, or overrides per file via
-`.claude/dotnet-toolkit/<name>.md`.
+**The rule.** Read `${CLAUDE_PLUGIN_ROOT}/.claude/rules/index.md` now, so the approval step can show
+the exact text that will land. It carries no `paths:` frontmatter — that is what makes it
+always-loaded. Do not add one, and do not edit the text on the way through: a repo that wants
+different wording edits its copy afterwards, or overrides a standard via
+the plugin's `standards/` directory.
 
-`tool-protocol.md` names the `dotnet-change` and `dotnet-code-query` skills for every procedure detail
-rather than a `${CLAUDE_PLUGIN_ROOT}/docs/...` path — the harness does **not** expand that variable
-inside a rule file, so a path there would land in the consumer as literal, dead text. Never add one
-while copying.
+`index.md` names the `dotnet-change`, `dotnet-code-query` and `dotnet-review` skills for every
+procedure detail rather than a `${CLAUDE_PLUGIN_ROOT}/...` path — the harness does **not** expand
+that variable inside a rule file, so a path there would land in the consumer as literal, dead text.
+Never add one while copying. That is also why the standards table in it names bare filenames and not
+their directory: the skills resolve the location.
 
 If Step 2 found a scoped-but-resolvable overlap with another plugin, append one sentence to the
-copied `tool-protocol.md` noting the boundary — e.g. "For non-.NET code, `<other plugin>` remains the
+copied `index.md` noting the boundary — e.g. "For non-.NET code, `<other plugin>` remains the
 tool of record; this rule only governs `.cs`." One sentence; don't restate the other plugin's docs,
 and don't otherwise diverge the copy.
 
-**The allowlist.** A repo whose `tool-protocol.md` says "always use `search_index` instead of grep",
+**Legacy cleanup (hash-verified auto-clean).** If Step 1 found any of `tool-protocol.md`,
+`csharp-standards.md`, or the 13 standards filenames in the repo's `.claude/rules/`, stage their
+removal — left there they auto-load and contradict `index.md`, and the standards keep a `paths:`
+trigger that can fire on any `.cs` file no project compiles. For each one:
+
+- **Hash matches a version this plugin shipped** → remove it silently as part of the refresh. It was
+  never edited, so there is nothing to lose and nothing to ask about.
+- **Hash does not match** → the repo edited it. Show the diff and ask. Offer to carry the edits into
+  a file of the repo's own choosing outside `.claude/rules/`, or to discard them. The plugin no
+  longer reads a repo-local standard from anywhere, so an edited copy left in place would be dead
+  text that still auto-loads — say that when asking. Never delete an edited file without an answer.
+
+This is the same consent model the refresh path already uses for edited copies; it introduces no new
+one. Count the removals in the approval summary.
+
+**The allowlist.** A repo whose `index.md` says "always use `search_index` instead of grep",
 but where every such call raises a permission prompt, is worse than one with no rule: the session is
 told to take a path the harness then interrupts.
 
@@ -116,22 +146,25 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
 
 ## Step 4 — What the approval step must show
 
-- The full content of both always-loaded rules and their paths.
+- The full content of `.claude/rules/index.md` and where it lands.
 - The exact `permissions.allow` entries to be added, and what `.claude/settings.json` looks like after
   the merge. This is a settings change, so it gets shown, not summarized.
-- The standards files to be copied, per `csharp-standards.md`'s index (titles + one line each, not
-  full contents — offer to show any in full), and the skip-copies alternative.
+- That the coding standards are **not** copied — they are read from the plugin, so they stay current
+  — and that there is no per-repo override: the plugin's copy is the only copy.
+- Any legacy files staged for removal, split into "unmodified, removing" and "edited, needs your
+  call" with the diff for each of the latter.
 - One line on what Step 2 found, and how it was handled (collisions included).
-- One line stating plainly that both rules are always-loaded (rules load independently of CLAUDE.md,
-  alongside it, same priority — not above it), that the standards copies load only when read, and
-  that the `PreToolUse` hooks are the actual enforcement. CLAUDE.md itself is untouched.
+- One line stating plainly that `index.md` is always-loaded (rules load independently of CLAUDE.md,
+  alongside it, same priority — not above it) and is inherited by every subagent, that the standards
+  load only when a skill reads them, and that the `PreToolUse` hooks are the actual enforcement.
+  CLAUDE.md itself is untouched.
 
 ## Step 5 — Back up, then apply
 
 1. For every file about to be written that already exists, copy it to
    `.claude/dotnet-toolkit/backups/<name>.<UTC timestamp>.bak` first. Keep backups after a successful
    apply. `.claude/settings.json` is included in this.
-2. Copy the two always-loaded rules and write the approved standards copies. They're markdown, so
+2. Copy `index.md` into `.claude/rules/`, and delete the approved legacy files. It's markdown, so
    `Write`/`Edit` is correct — `validate_patch` is for `.cs`, and the hooks don't touch these files.
 3. Merge the allowlist into `.claude/settings.json`.
 4. Write `.claude/dotnet-toolkit/install.json`:
@@ -140,11 +173,13 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
    {
      "pluginVersion": "<version from the plugin's .claude-plugin/plugin.json>",
      "installedAt": "<UTC ISO-8601>",
-     "files": { ".claude/rules/tool-protocol.md": "<sha256>", "...": "..." }
+     "files": { ".claude/rules/index.md": "<sha256>" }
    }
    ```
 
-   One entry per file copied — not the settings file, whose content is the repo's. The hashes are what
-   let a later run distinguish a plugin change from a local edit; without them a refresh can only ask
-   about every difference. Compute with `sha256sum`.
+   One entry per file copied — currently exactly one, since the standards are no longer copied — and
+   not the settings file, whose content is the repo's. The hash is what lets a later run distinguish a
+   plugin change from a local edit; without it a refresh can only ask about every difference. Compute
+   with `sha256sum`. A manifest still listing standards paths is a pre-migration install; Step 3's
+   legacy cleanup handles it, and the rewritten manifest must not carry those keys forward.
 5. Confirm back: what was written, what was backed up, and how to undo (`docs/install/uninstall.md`).

@@ -30,11 +30,16 @@ public static class ServerTools
     }
 
     [McpServerTool(Name = "workspace_status")]
-    [Description("Status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready.")]
+    [Description("Status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready. Also returns pluginRoot, the plugin's installation directory - join it with standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent definition.")]
     public static string WorkspaceStatus(SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace)
     {
         var sb = new StringBuilder();
         sb.Append("root: ").Append(locator.Root).Append('\n');
+
+        // The session cannot name this itself: ${CLAUDE_PLUGIN_ROOT} is substituted into .mcp.json args,
+        // hook commands and skill content, but never into a rule file or an agent definition. Reporting
+        // it here is what lets an always-loaded rule cite standards/ and docs/tools/ by bare filename.
+        sb.Append("pluginRoot: ").Append(PluginLocation.Resolve(locator.Root)).Append('\n');
 
         // Ambiguity is a decision the server refuses to make, not a missing solution. Say so with the
         // candidates and the exact fix, and make the workspace line below point back here rather than

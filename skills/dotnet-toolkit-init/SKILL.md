@@ -1,6 +1,6 @@
 ---
 name: dotnet-toolkit-init
-description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit in a project — "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Copies the plugin's two always-loaded rules into .claude/rules/ (tool-protocol.md, which mandates the MCP tools over Grep/Read/find for C# and delegating exploration to the dotnet-explore agent, plus csharp-standards.md) and the coding-standards files they index, merges the read-only MCP tools into .claude/settings.json's permission allowlist so they don't prompt on every call, records what it installed in .claude/dotnet-toolkit/install.json, and on a re-run verifies that state and refreshes what the plugin has changed since. Checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
+description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit in a project — "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Copies the plugin's single always-loaded rule into .claude/rules/index.md — the tool table mandating the MCP tools over Grep/Read/find for C#, the dotnet-explore delegation rule, the write path, the standards table, and when to invoke each skill — merges the read-only MCP tools into .claude/settings.json's permission allowlist so they don't prompt on every call, records what it installed in .claude/dotnet-toolkit/install.json, and on a re-run verifies that state and refreshes what the plugin has changed since. Checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
 ---
 
 # Wiring dotnet-toolkit into a project
@@ -20,13 +20,18 @@ alone entirely.
 
 **Be honest with the user about the loading mechanics.** A `paths:`-scoped rule fires only when the
 built-in `Read` touches a matching file — and here `.cs` contact goes through the MCP tools or is
-blocked by the guards, so `paths: ["**/*.cs"]` would almost never load. (An earlier version of this
-skill shipped exactly that, and its rule rarely fired.) Hence the split: the two protocol rules carry
-**no `paths:`** and are always-loaded, which is why they are kept short — they cost tokens in every
-session. The standards copies keep `paths: ["**/*.cs"]` for the opposite reason, to stay **out** of
-the launch context until read on demand. Rules load *alongside* CLAUDE.md at the same priority —
-never tell the user they "override" anything. Actual enforcement is the plugin's `PreToolUse` hooks
-(`docs/references/hooks.md`), which travel with the plugin and need no per-repo setup.
+blocked by the guards, so `paths: ["**/*.cs"]` would almost never load. Worse, it does not reliably
+*suppress* either: the read guard deliberately allows `Read` on `.cs` files no project compiles, so
+such a rule fires unpredictably rather than on demand. (Earlier versions of this skill shipped
+standards as path-scoped rules for exactly this reason, and it was wrong both ways.)
+
+So: **one file is copied**, `index.md`, carrying no `paths:` and therefore always-loaded — which is
+why it is kept short. It costs tokens in every session, and is **inherited by every subagent with no
+opt-out**, so a parallel review pays it once per instance. **The coding standards are not copied at
+all**: they live at `${CLAUDE_PLUGIN_ROOT}/standards/` and are read by explicit path, so a consuming
+repo is always on the current versions and has nothing to refresh. Rules load *alongside* CLAUDE.md
+at the same priority — never tell the user they "override" anything. Actual enforcement is the
+plugin's `PreToolUse` hooks, which travel with the plugin and need no per-repo setup.
 
 **Do not skip the approval step under any circumstances**, even if the user's request sounded like a
 green light to "just do it." These files change how every future session in that repo behaves; show the

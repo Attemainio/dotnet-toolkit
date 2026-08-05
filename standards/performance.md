@@ -1,14 +1,8 @@
----
-paths:
-  - "**/*.cs"
----
-
 # .NET performance
 
 Canonical performance standard, hot-path conventions included. Loaded on demand per
-`csharp-standards.md`'s index; read it before writing loop-heavy, per-request, or per-tick C#.
-`dotnet-code-review` validates against it (aspect `[performance]`). A consuming repo overrides it via
-`.claude/dotnet-toolkit/performance.md`. Threading/atomicity *correctness* (locks, `Interlocked`
+`.claude/rules/index.md`'s standards table; read it before writing loop-heavy, per-request, or per-tick C#.
+`dotnet-code-review` validates against it (aspect `[performance]`). Threading/atomicity *correctness* (locks, `Interlocked`
 semantics, deadlocks) lives in `concurrency.md` — this file only covers their cost.
 
 ## Hot/cold-path classification (apply in this order)

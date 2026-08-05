@@ -42,15 +42,7 @@ internal sealed record HookContext(
             ?? Environment.GetEnvironmentVariable("CLAUDE_PROJECT_DIR")
             ?? Directory.GetCurrentDirectory());
 
-        // CLAUDE_PLUGIN_ROOT is set by Claude Code for a plugin-registered hook. Falling back to the
-        // directory above the running assembly covers a hook invoked straight out of dist/.
-        var pluginRoot = Environment.GetEnvironmentVariable("CLAUDE_PLUGIN_ROOT");
-        if (string.IsNullOrWhiteSpace(pluginRoot))
-        {
-            pluginRoot = Path.GetDirectoryName(AppContext.BaseDirectory.TrimEnd(
-                Path.DirectorySeparatorChar,
-                Path.AltDirectorySeparatorChar)) ?? root;
-        }
+        var pluginRoot = PluginLocation.Resolve(root);
 
         var blocklist = Environment.GetEnvironmentVariable("DOTNET_TOOLKIT_READ_BLOCKLIST") is { } configured
             && !string.IsNullOrWhiteSpace(configured)

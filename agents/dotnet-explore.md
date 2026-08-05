@@ -43,10 +43,13 @@ go looking for more instructions.
 - **Never `Read` a `.cs` file.** `get_symbol` serves source (`include: "source"`, or a region with
   `include: "source:code@120-160"`). A `PreToolUse` hook blocks it anyway.
 - **`Read` is for one thing only**: a `docs/tools/<tool>.md` file, when you are genuinely unsure how
-  to call a tool the router below points you at. Nothing else — not `docs/architecture.md`, not
-  `docs/references/agents.md`, not `.claude/rules/*`, not `CLAUDE.md`, and specifically **not**
+  to call a tool the router below points you at. Nothing else — not `docs/design/architecture.md`,
+  not `docs/design/agents.md`, not `standards/*.md`, and specifically **not**
   `docs/tools/validate_patch.md` or `docs/tools/rename_symbol.md`: those describe a write path you
   do not have, and reading them is pure waste. In the normal case you read no files at all.
+  (`CLAUDE.md` and `.claude/rules/index.md` are a separate matter: the harness injects them into you
+  automatically and there is no way to decline them, so they are already in your context — never
+  spend a `Read` re-opening one.)
 - **Never report a `contentVersion`.** It is an edit lease, it goes stale the moment anything
   moves, and a caller that patches against one you handed over gets `stale_base` at best and a
   silent revert at worst. The caller fetches its own with `get_symbol(include: "all")`. Report

@@ -66,9 +66,13 @@ public sealed class IndexDocument
     /// DocLines/CommentLines, which a cache written by 5 deserializes as 0 — indistinguishable from a
     /// genuinely undocumented, uncommented symbol, and unfixed until each file's mtime changes. 7 added
     /// AttributeCount and LandmarkCount, which a cache written by 6 deserializes as 0 and null: an
-    /// attributed method would report no attributes and no body outline at all.
+    /// attributed method would report no attributes and no body outline at all. 8 made DocLines
+    /// TRANSITIVE, matching CommentLines: a type's D now counts its members' /// lines too, where 7
+    /// counted only the type's own. That is a changed VALUE for an unchanged file rather than a new
+    /// field, so nothing about the cached entry looked wrong -- the fix shipped, every unit test
+    /// passed, and the server went on serving 7's numbers until each file's mtime happened to move.
     /// </remarks>
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     public int Version { get; set; } = CurrentVersion;
     public string Root { get; set; } = "";

@@ -254,7 +254,15 @@ public sealed partial class SymbolStore
     /// <param name="includeModifiers">Modifiers a hit must have.</param>
     /// <param name="excludeModifiers">Modifiers a hit must not have.</param>
     /// <param name="origin">"source" (this repo's own symbols) or "external" (BCL/NuGet symbols referenced from it).</param>
-    /// <returns>Up to <paramref name="limit"/> hits: FTS matches first, then LIKE-matched hits FTS missed, deduplicated by symbol id. Empty when the store is unavailable or the query is blank.</returns>
+    /// <returns>Up to <paramref name="limit"/> hits, deduplicated by symbol id. Empty when the store is unavailable or the query is blank.</returns>
+    /// <remarks>
+    /// A MULTI-TERM query gives each term a floor share of the budget before the globally ranked union
+    /// spends what is left. The union alone is spent in rank order across every term at once, so a term
+    /// with far fewer name-matches than its neighbours could take no slots at all: four exact type names
+    /// at the default limit answered for two of them, and the other two lost every slot to partial
+    /// matches thrown up by the same query. search_index's own advice is to put every term in one call,
+    /// so that one call has to answer for each of them.
+    /// </remarks>
     public IReadOnlyList<SearchHit> Search(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
@@ -263,17 +271,51 @@ public sealed partial class SymbolStore
         if (!_store.Available || string.IsNullOrWhiteSpace(query))
             return [];
 
-        var fts = SearchFts(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers, origin);
-        if (fts.Count >= limit)
-            return fts;
+        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (terms.Length < 2)
+            return Ranked(query, limit);
 
-        // A short FTS result is topped up from the substring matcher rather than replaced by it. The
-        // two answer different questions: FTS matches whole tokens, so "ormat" cannot reach OutputFormat,
-        // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
-        // meant a single weak token match suppressed the substring index entirely.
-        var seen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
-        var topUp = SearchLike(query, includeKinds, excludeKinds, limit, includeModifiers, excludeModifiers, origin).Where(h => seen.Add(h.SymbolId));
-        return [.. fts, .. topUp.Take(limit - fts.Count)];
+        var floor = Math.Max(1, limit / terms.Length);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var results = new List<SearchHit>(limit);
+
+        // Floors first, in the order the caller wrote the terms.
+        foreach (var term in terms)
+            Absorb(Ranked(term, floor));
+
+        // Then the globally ranked union spends the remainder, which is what keeps a multi-term query
+        // ranked ACROSS its terms rather than being a bare concatenation of per-term lists.
+        if (results.Count < limit)
+            Absorb(Ranked(query, limit));
+
+        return results;
+
+        void Absorb(IReadOnlyList<SearchHit> hits)
+        {
+            foreach (var hit in hits)
+            {
+                if (results.Count >= limit)
+                    return;
+                if (seen.Add(hit.SymbolId))
+                    results.Add(hit);
+            }
+        }
+
+        IReadOnlyList<SearchHit> Ranked(string text, int take)
+        {
+            var fts = SearchFts(text, includeKinds, excludeKinds, take, includeModifiers, excludeModifiers, origin);
+            if (fts.Count >= take)
+                return fts;
+
+            // A short FTS result is topped up from the substring matcher rather than replaced by it. The
+            // two answer different questions: FTS matches whole tokens, so "ormat" cannot reach OutputFormat,
+            // while LIKE has no notion of a multi-word query. Gating the fallback on "FTS returned nothing"
+            // meant a single weak token match suppressed the substring index entirely.
+            var ftsSeen = fts.Select(h => h.SymbolId).ToHashSet(StringComparer.Ordinal);
+            var topUp = SearchLike(text, includeKinds, excludeKinds, take, includeModifiers, excludeModifiers, origin)
+                .Where(h => ftsSeen.Add(h.SymbolId));
+            return [.. fts, .. topUp.Take(take - fts.Count)];
+        }
     }
 
     private IReadOnlyList<SearchHit> SearchFts(

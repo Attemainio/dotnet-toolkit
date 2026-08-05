@@ -95,8 +95,18 @@ reporting gap: a node the cap did not expand contributes itself to the count but
 reports `omittedChildren: 18`. Read a capped total as a floor, and never diff two runs whose caps
 differ.
 
-`depthCapped:true` means `Append` has callers beyond `maxDepth:1` — raising `maxDepth` reaches
-`PatchTools.ValidatePatch` (the actual MCP tool entry point) three levels up from this root.
+`depthCapped:true` means **the walk stopped short of exhausting the graph**, so depths past the stopping
+point are unexplored. Two things cause that, and either sets the flag:
+
+- a node at `maxDepth` still had neighbours — here, `Append` has callers beyond `maxDepth:1`; raising it
+  reaches `PatchTools.ValidatePatch` (the actual MCP tool entry point) three levels up from this root;
+- **a neighbour `maxChildrenPerNode` left out**, below `maxDepth`. Such a node is counted but never
+  expanded, so everything past it is unexplored in exactly the way everything past `maxDepth` is.
+
+The second used to be missing, so a walk that hid whole subtrees behind a tight `maxChildrenPerNode`
+answered `depthCapped:false` — read as "complete to `maxDepth`", the one thing it was not. Read
+`depthCapped:false` as "the graph was exhausted"; check `truncated`/`omittedChildren` to tell the two
+causes apart when it is `true`.
 
 A caller resolved through the edge cache but absent from the `symbols` table — a synthesized entry
 point like C#'s top-level-statements `Main`, which `get_references` renders as
@@ -110,6 +120,32 @@ not deduped, since collapsing it would hide a real second route in — but count
 True recursion (a symbol reappearing on its own root-to-node path) stops as a leaf marked
 `recursive:true` rather than looping. Internally capped at a few thousand total nodes as a safety net
 against pathological fan-out, independent of `maxChildrenPerNode`.
+
+### A named type as the root
+
+A class, record, interface or delegate has no call sites of its own, so a type root's **depth-1 children
+are the members that reference it** — the same set `get_references(direction: "callers")` returns on
+that type — and the walk continues upward from those. This makes `includeTree: false` a one-call blast
+radius for "how much does changing this type ripple", where before it reported
+`totalUniqueNodes: 1` — the root and nothing else — for a type with dozens of referencing members:
+
+```
+get_call_hierarchy(symbol: "Indexing.TypeReferenceScan", maxDepth: 2, includeTree: false)
+```
+
+```
+root:
+  symbolId: sym_a25a...
+  displayString: Indexing.TypeReferenceScan
+direction: callers
+blastRadius:
+  totalUniqueNodes: 6
+  perDepth[3]: 1,3,3
+  depthCapped: true
+```
+
+The type seeds are resolved through Roslyn and cost a little more than the cached edge walk, so they are
+computed **only** when the cheap walk found nothing — a member root never pays for them.
 
 ## Next steps
 

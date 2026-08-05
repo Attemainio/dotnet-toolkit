@@ -1,9 +1,12 @@
 # Architecture
 
+> **Maintainer-facing.** No agent or skill is told to read this; `agents/dotnet-explore.md` is
+> explicitly forbidden from opening it. It documents how the server is built, not how to use it.
+
 How `DotnetToolkit.McpServer` is put together, and the packaging that turns it into a Claude Code
 plugin. **Read this when a change touches server internals** — startup order, the two knowledge tiers,
 a subsystem you haven't worked in, or how the plugin is delivered. Ordinary tool *usage* needs none of
-it: `docs/tools/_index.md` routes that.
+it: `.claude/rules/index.md` routes that, and `docs/tools/<tool>.md` has the per-tool manual.
 
 This file is human- and maintainer-facing and is read on demand, so it is deliberately fuller than
 `CLAUDE.md`, which carries only the always-applicable rules and points here.
@@ -46,6 +49,13 @@ keeps serving the old entry indefinitely: the new behavior passes every unit tes
 directly) and does nothing at all through the server. A missing bump on an added count is worse than a
 missing field, since the stale entry deserializes it as `0` — a plausible value, not an obvious gap.
 
+**A changed *value* for an existing field needs the bump just as much as a new field, and hides better.**
+Version 8 is exactly that case: `DocLines` became transitive (a type's `D` now counts its members' `///`
+lines too), so nothing about a cached entry looked wrong — every field was present and plausible. The fix
+shipped, the tests passed, and the server went on serving version 7's numbers until each file's mtime
+happened to move. If you find yourself running `touch` over the tree to make a change take effect, the
+bump is what you actually needed.
+
 ## Subsystems
 
 - `Workspace/SolutionLocator.cs` — auto-discovers the target solution (`*.slnx` > `*.sln` > `*.csproj`,
@@ -71,6 +81,15 @@ missing field, since the stale entry deserializes it as `0` — a plausible valu
   layered version token every content response carries.
 - `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from
   Roslyn symbols. See "Id namespaces" below.
+- `Indexing/TypeReferenceScan.cs` — the one definition of "which members reference this type", shared by
+  `get_references` on a named-type root and `get_call_hierarchy`'s type-root seeding. A named type has no
+  call sites of its own, so both tools answer that question instead; keeping one implementation is what
+  stops them disagreeing about the same type's blast radius. Also owns `IsCrefLocation`, which separates
+  a `<see cref="…"/>` doc mention from a real code site.
+- `PluginLocation.cs` — resolves the plugin's own installation directory at runtime, published as
+  `workspace_status`'s `pluginRoot`. This is the only route from an always-loaded rule or a subagent to
+  the files the plugin ships (`docs/tools/<name>`, `standards/<name>`), because `${CLAUDE_PLUGIN_ROOT}`
+  is not expanded inside a rule or an agent definition. Dropping it strands every standards read.
 - `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution, optionally seeded from a
   draft's proposed text), `ChangeClassifier.cs` (declaration delta → change kinds),
   `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4, then the analyzer pass),
@@ -104,7 +123,7 @@ missing field, since the stale entry deserializes it as `0` — a plausible valu
   boundary** — loopback-only, same trust level as the MCP session.
 - `Hooks/` — the four Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
-  `BashCommandScanner.cs` carry the logic the read guards share. `docs/references/hooks.md`.
+  `BashCommandScanner.cs` carry the logic the read guards share. `docs/design/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -161,7 +180,7 @@ on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs a
 
 `hooks/hooks.json` ships four hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
 `hook guard-cs-bash-read`, `hook hint-reload-new-cs-file` — all subcommands of that same published
-binary, documented in `docs/references/hooks.md`. They travel with the plugin, so a consuming repo gets
+binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
 runtime requires a shell, a shebang, or `node`/`python3`/`jq`.
@@ -171,21 +190,33 @@ fires often, the manual is read once.
 
 ### How rules load
 
-`.claude/rules/csharp-standards.md` is the **master index** for coding standards and the one
-always-loaded rule (no `paths:` frontmatter, deliberately short).
+**`.claude/rules/` holds exactly one file: `index.md`.** It is the only always-loaded rule, because a
+rule with no `paths:` frontmatter loads unconditionally, and it is deliberately short for that reason.
+Both it and `CLAUDE.md` are inherited by every subagent — the harness offers no opt-out, and only the
+built-in Explore and Plan agents skip them — so a seven-way parallel review pays them eight times.
 
-A path-scoped rule fires only when the built-in `Read` tool touches a matching file, and in this repo
-`.cs` contact goes through the MCP tools or is blocked by the guards — so path-scoping `**/*.cs` almost
-never fires here. Every other `.claude/rules/` file is read **explicitly, on demand**: by the main agent
-at write time (via the index and `dotnet-change`'s pre-edit step) and by the review agent per
-invocation. Their `paths: ["**/*.cs"]` frontmatter exists only to keep them out of the launch context,
-not as a load mechanism.
+**Why the coding standards are not rules.** A path-scoped rule fires only when the built-in `Read`
+tool touches a matching file, and here `.cs` contact goes through the MCP tools or is blocked by the
+guards — so `paths: ["**/*.cs"]` almost never fires. Worse, it is not a reliable *suppressor* either:
+`guard-cs-read` deliberately allows `Read` on `.cs` files no project compiles (test fixtures,
+`<Compile Remove>` exclusions, nested throwaway solutions), and reading one of those would have
+matched the glob and injected all thirteen standards — roughly 80 KB — into the session and every
+subagent inheriting it. Non-deterministic and invisible.
 
-A consuming repo can override any standards file by placing its own copy at
-`.claude/dotnet-toolkit/<name>.md`; `dotnet-toolkit-init` can instead copy the whole set into the repo's
-own `.claude/rules/`. These standards are default guidance for **consuming repos** installing this
-plugin, not a description of this repo's own style specifically — though this repo's own code happens to
-follow them.
+So the standards live in **`standards/` at the plugin root, outside any rules directory, with no
+frontmatter at all**. They are read only by explicit path: the main agent at write time through
+`dotnet-change`'s pre-edit step, and the review agent through the absolute `Standards root:` that
+`dotnet-review` resolves and injects into each spawn prompt. That injection exists because
+`${CLAUDE_PLUGIN_ROOT}` expansion is not guaranteed inside an agent definition, while a skill can
+expand it reliably.
+
+Nothing copies them into a consuming repo, so they cannot go stale there, and there is no per-repo
+override tier — one copy of each standard exists, which is what keeps the writer and the reviewer
+from judging against different text. A repo that needs different rules writes its own guidance into
+its own `.claude/rules/`, outside this plugin. These standards are default guidance for **consuming
+repos** installing this
+plugin, not a description of this repo's own style specifically — though this repo's own code happens
+to follow them.
 
 ## Environment: build with the same SDK the server uses
 

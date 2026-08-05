@@ -1,15 +1,9 @@
----
-paths:
-  - "**/*.cs"
----
-
 # Common .NET anti-patterns
 
 Shared catalog read by `dotnet-code-review` and by the main agent before writing C# (per
-`csharp-standards.md`'s index). Each entry names the pattern, why it's a problem, and which **aspect**
+`.claude/rules/index.md`'s standards table). Each entry names the pattern, why it's a problem, and which **aspect**
 owns flagging it — `[correctness]`, `[concurrency]`, `[performance]`, `[cleanup]`, or `[security]` — so
 every finding cites one shared vocabulary instead of divergent definitions of the same issue. A
-consuming repo overrides it via `.claude/dotnet-toolkit/antipatterns.md`.
 
 ## Correctness & design (correctness)
 

@@ -49,7 +49,23 @@ public sealed class CallHierarchy
         bool DepthCapped,
         int OmittedChildren);
 
-    public Result Build(string rootId, bool walkCallers, int maxDepth, int maxChildrenPerNode)
+    /// <summary>Walks the tree from one root, to a bounded depth and per-node width.</summary>
+    /// <param name="rootId">The symbol to walk from.</param>
+    /// <param name="walkCallers">True to walk upward toward entry points, false to walk into callees.</param>
+    /// <param name="maxDepth">Maximum tree depth.</param>
+    /// <param name="maxChildrenPerNode">Maximum children expanded per node.</param>
+    /// <param name="rootNeighbors">
+    /// Depth-1 neighbours to use INSTEAD of the root's own edges, for a root the edge table cannot answer
+    /// for. A named type has no call edges at all, so the caller supplies the members that reference it and
+    /// every depth below is walked from the edge table as usual. Null uses the root's own edges.
+    /// </param>
+    /// <returns>The tree and the blast-radius counters for everything reached from the root.</returns>
+    public Result Build(
+        string rootId,
+        bool walkCallers,
+        int maxDepth,
+        int maxChildrenPerNode,
+        IReadOnlyList<string>? rootNeighbors = null)
     {
         var depthSets = new List<HashSet<string>>();
         var reached = new HashSet<string>(StringComparer.Ordinal);
@@ -69,13 +85,23 @@ public sealed class CallHierarchy
         // was not rendered. Counting only what the tree shows made includeTree:false -- the shape whose
         // whole purpose is answering "how much does changing this ripple" -- report 26 for a symbol with
         // 103 callers, with no truncation marker in that shape to betray it.
+        //
+        // Such a neighbour is also never EXPANDED, so every depth past it is unexplored in exactly the way
+        // the depths past maxDepth are. depthCapped used to be set only for the latter, so a walk that hid
+        // whole subtrees behind maxChildrenPerNode still answered depthCapped:false -- read as "complete
+        // to maxDepth", which is the one thing it was not. Both causes stop the walk short, so both set it.
         void TrackOmitted(IEnumerable<string> neighbors, int depth)
         {
+            var any = false;
             foreach (var neighbor in neighbors)
             {
                 Track(neighbor, depth);
                 omittedTotal++;
+                any = true;
             }
+
+            if (any && depth < maxDepth)
+                depthCapped = true;
         }
 
         Node Walk(string id, HashSet<string> pathAncestors, int depth)
@@ -83,7 +109,9 @@ public sealed class CallHierarchy
             Track(id, depth);
             expanded.Add(id);
 
-            var neighbors = walkCallers ? _symbols.Callers(id) : _symbols.CallTargets(id);
+            var neighbors = depth == 0 && rootNeighbors is not null
+                ? rootNeighbors
+                : walkCallers ? _symbols.Callers(id) : _symbols.CallTargets(id);
 
             if (depth >= maxDepth)
             {

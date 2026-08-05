@@ -8,8 +8,13 @@ repo-local. Everything else leaves with the plugin.
 
 ## Delete these
 
-- `.claude/rules/tool-protocol.md` and `.claude/rules/csharp-standards.md`.
-- The standards copies enumerated by `csharp-standards.md`'s index.
+- `.claude/rules/index.md`.
+- **Legacy, from an install predating the standards move** — delete these too if present, since
+  nothing else will: `.claude/rules/tool-protocol.md`, `.claude/rules/csharp-standards.md`, and any of
+  `naming.md`, `styling.md`, `best-practices.md`, `antipatterns.md`, `architecture.md`,
+  `api-design.md`, `error-handling.md`, `resource-management.md`, `performance.md`, `concurrency.md`,
+  `security.md`, `testing.md`, `xml-documentation.md` under `.claude/rules/`. Check the manifest and
+  the backups before deleting one the repo may have edited.
 - The `mcp__plugin_dotnet-toolkit_dotnet__*` entries in `.claude/settings.json`'s `permissions.allow`
   — **leaving the rest of that file untouched**. It is the repo's own file; init only merged into it.
 - `.claude/dotnet-toolkit/install.json`.
@@ -29,8 +34,8 @@ Runtime paths are not deleted silently. Each gets a stated disposition, even whe
 
 ## Leaves with the plugin — nothing repo-local
 
-The MCP server, the hooks, the skills, the agents, and every `docs/` file those skills open are gone
-the moment the plugin is uninstalled. No repo-local cleanup, and nothing left instructing a session to
+The MCP server, the hooks, the skills, the agents, the `standards/` files, and every `docs/` file
+those skills open are gone the moment the plugin is uninstalled. No repo-local cleanup, and nothing left instructing a session to
 call tools that no longer exist.
 
 **If an old `CLAUDE.md` marker block exists** from a prior version of this skill, delete everything

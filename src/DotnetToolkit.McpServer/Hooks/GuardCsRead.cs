@@ -57,8 +57,8 @@ internal static class GuardCsRead
             For arguments and worked examples, read the one file for the tool you are about to call:
               {context.Doc("search_index")}
               {context.Doc("get_symbol")}
-            {context.Doc("_index")} routes any other question to its tool. Read one file,
-            not the directory.
+            The always-loaded .claude/rules/index.md routes any other question to its tool and names
+            its file. Read one file, not the directory.
 
             If this genuinely needs a raw read (the workspace failed to load, or the file's exact formatting/byte
             layout is itself what you need to see), say so and ask the user to allow it explicitly rather than

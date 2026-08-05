@@ -127,6 +127,16 @@ public sealed class GuardCsEditTests : IClassFixture<HookRepoFixture>
     }
 
     [Fact]
+    public void Evaluate_EditOnFileNoProjectCompiles_Allows()
+    {
+        // validate_patch answers file_not_in_solution for a file outside the loaded solution, so denying
+        // the plain tool here would leave no write path at all. GuardCsRead gates on the same membership.
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsEdit.Evaluate(new HookPayload("Edit", _repo.FileWithoutProject, null), _repo.Context()));
+    }
+
+    [Fact]
     public void Evaluate_WriteCreatingNewCsFile_Allows()
     {
         // A new file has no symbolId to lease a contentVersion against, so it cannot go through
@@ -244,6 +254,45 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
     {
         var command = $"cat {Path.Combine(Path.GetTempPath(), "elsewhere", "Other.cs")}";
 
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    /// <summary>
+    /// A recursive search names no file at all, so the single-file check cannot see it — and it reads every
+    /// compiled file in the tree rather than one. The unguarded form read strictly MORE than the guarded one.
+    /// </summary>
+    /// <remarks>
+    /// The .cs token here sits inside an option flag, which the flag skip in FindCsArgument discards, and the
+    /// only bare operand is a directory. Neither half of the old check fired.
+    /// </remarks>
+    [Theory]
+    [InlineData("grep -rn \"Alpha\" --include=*.cs src/")]
+    [InlineData("grep -r \"Alpha\" src")]
+    [InlineData("rg \"Alpha\" src")]
+    [InlineData("grep -n \"Alpha\" src/App/*.cs")]
+    public void Evaluate_TreeOrGlobScanOverCompiledSources_Denies(string command)
+    {
+        var outcome = GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("searching", outcome.Stderr);
+    }
+
+    /// <summary>
+    /// The membership check is what keeps this from over-blocking: a tree carrying no compiled .cs is
+    /// ordinary text-search territory, whether it holds no C# at all or only Compile-Removed files.
+    /// </summary>
+    [Theory]
+    [InlineData("grep -r \"Alpha\" loose")]
+    [InlineData("grep -rn \"Alpha\" --include=*.cs src/App/fixtures")]
+    // A file filter naming anything but *.cs means the walk cannot open a compiled source file however
+    // deep it recurses, so blocking it was a pure false positive on a command that never touched C#.
+    [InlineData("grep -rn \"Alpha\" --include=*.md .")]
+    [InlineData("rg -g *.md \"Alpha\" src")]
+    public void Evaluate_TreeScanOverNothingCompiled_Allows(string command)
+    {
         Assert.Equal(
             HookOutcome.Allow,
             GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));

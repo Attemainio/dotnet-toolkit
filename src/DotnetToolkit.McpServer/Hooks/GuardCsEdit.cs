@@ -35,6 +35,19 @@ internal static class GuardCsEdit
             return HookOutcome.Allow;
         }
 
+        // A .cs file no project compiles is one validate_patch cannot write either: it resolves edits
+        // through the loaded solution and answers file_not_in_solution for anything outside it. Denying
+        // the plain tool there leaves NO write path at all -- the case that found this is this repo's own
+        // tests/.../fixtures/SampleSolution, deliberately excluded from the build so tests can load it
+        // as a workspace of its own. GuardCsRead has always gated on membership; this guard did not, so
+        // the same file was readable and uneditable. Membership, not the extension, is the real test.
+        var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, file));
+        if (File.Exists(absolute)
+            && !CsFileMembership.TryResolveOwningProject(absolute, context.Root, out _))
+        {
+            return HookOutcome.Allow;
+        }
+
         // $$ raw string: {{expr}} interpolates, a single brace is literal. The message quotes
         // validate_patch's own argument shapes, which are full of braces.
         return HookOutcome.Deny($$"""
