@@ -51,11 +51,10 @@ to hold that down, and changing them without understanding the trade re-inflates
   cost is that an aspect can go unexamined, so the agent must end every report with a `Standards:`
   line naming what it loaded and skipped, and an untriggered aspect is reported **not-assessed**,
   never clean.
-- **No `skills:` grant.** `dotnet-code-query` carries the *main agent's* read protocol — task ids,
-  expansion gating, the write-path handoff — none of which a read-only reviewer uses. The retrieval
-  guidance it does need is inline in the agent file instead. (The skill was 41.5 KB when this
-  decision was made; it is now ~9 KB, with per-tool mechanics moved to `docs/tools/`. The grant is
-  still declined — the reasoning is relevance, not size.)
+- **No `skills:` grant.** There is no read-protocol skill to grant: `dotnet-code-query` held one, but
+  every part of it was a second copy of `index.md`'s router or a `docs/tools/` manual, so it was
+  deleted rather than shrunk again. The retrieval guidance the agent needs is inline in the agent
+  file; routing is the always-loaded rule's job, and per-tool mechanics are one `Read` away.
 - **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
   declaration-layer → body-layer → references per symbol.
 

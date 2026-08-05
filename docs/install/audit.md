@@ -92,7 +92,7 @@ Walk the scenarios and name, for each, the file the consumer would actually reac
 
 | Scenario | Must be reachable via |
 | --- | --- |
-| Find a symbol and its callers | `index.md`'s tool table → the `dotnet-code-query` skill → `docs/tools/<tool>.md` |
+| Find a symbol and its callers | `index.md`'s tool table → the tool's own MCP schema → `docs/tools/<tool>.md` when the schema isn't enough |
 | Change a method | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
 | Rename a symbol | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill (resolves and injects `Standards root:`) → `dotnet-code-review` agent → `${CLAUDE_PLUGIN_ROOT}/standards/*.md` |

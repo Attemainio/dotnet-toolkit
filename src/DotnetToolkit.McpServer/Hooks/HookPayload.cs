@@ -23,6 +23,13 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// </param>
 internal sealed record HookPayload(string ToolName, string? FilePath, string? Command)
 {
+    /// <summary>
+    /// The <c>session_id</c> field, identifying the conversation this hook fired in. Null when the
+    /// harness did not supply one, which a once-per-session hook must treat as "cannot tell" rather
+    /// than as a new session.
+    /// </summary>
+    public string? SessionId { get; init; }
+
     /// <summary>Parses a hook stdin payload, tolerating any shape that is not the expected object.</summary>
     /// <param name="json">The raw stdin text.</param>
     /// <returns>
@@ -68,7 +75,10 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
                 command = ReadString(input, "command");
             }
 
-            return new HookPayload(toolName, filePath, command);
+            return new HookPayload(toolName, filePath, command)
+            {
+                SessionId = ReadString(root, "session_id"),
+            };
         }
     }
 

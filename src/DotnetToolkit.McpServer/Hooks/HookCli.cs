@@ -85,6 +85,8 @@ internal static class HookCli
                 GuardCsBashRead.Evaluate(payload, context),
             "hint-reload-new-cs-file" =>
                 await ReloadHint.EvaluateAsync(payload, context),
+            "hint-write-checklist" when payload.ToolName.EndsWith("__validate_patch", StringComparison.Ordinal) =>
+                WriteChecklistHint.Evaluate(payload),
             _ => HookOutcome.Allow,
         };
     }

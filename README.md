@@ -425,7 +425,6 @@ it before posting if your repo is private.
 
 | Skill | For |
 |---|---|
-| `dotnet-code-query` | Exploring, searching, inspecting C# — the read protocol |
 | `dotnet-change` | Editing C# — the `validate_patch` write protocol and the pre-edit standards step |
 | `dotnet-review` | Any review request — partitions scope across parallel `dotnet-code-review` instances |
 | `dotnet-toolkit-init` | Install / verify / uninstall in a consuming repo |

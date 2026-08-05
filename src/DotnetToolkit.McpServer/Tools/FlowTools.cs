@@ -22,26 +22,24 @@ public static class FlowTools
 {
     [McpServerTool(Name = "get_scope")]
     [Description("What is callable HERE — members, inherited members, locals, parameters and applicable "
-        + "extension methods at a file/line/column, filtered to what is actually accessible from that position. "
-        + "Grep cannot answer this: extension methods share no text with the call site. DIFFERENT from get_symbol's "
-        + "'members' (a type's static declared list, no position involved) — call this when standing at a cursor "
-        + "deciding what to call, before writing a helper that may already exist, or when the receiver's type "
-        + "isn't known yet so get_symbol has no target to query. Each item's displayString has its containing "
-        + "type's prefix stripped. definedIn says where a member comes from, and carries nothing where it "
-        + "would say nothing: a receiverType header already states it, or the item is a local/parameter with "
-        + "no declaring type at all; for a type-kind item it carries that type's NAMESPACE (or its outer "
-        + "type when nested). origin is likewise blank for a plain member once a receiverType header is "
-        + "present, that being the only origin it could then have. Both render as an EMPTY CELL rather than "
-        + "an absent field whenever other rows in the same response do carry them - one array, one row "
-        + "schema - so an empty definedIn/origin means 'nothing to say here', never 'not looked up'. "
-        + "Within one origin, symbols this solution declares come first, so a crowded cursor does not spend its "
-        + "budget alphabetically in the A's of the referenced assemblies. When more is in scope than limit "
-        + "allows, the budget is split across origins so applicable extension methods are never crowded out by "
-        + "a receiver's own members, and totalItems/truncated report what was left out. System.Object's "
-        + "members (Equals, GetHashCode, GetType, ReferenceEquals, ToString) are a RESERVE: they are in scope "
-        + "on every receiver in C#, so they are never what a cursor is deciding between, and they spend only "
-        + "the budget the receiver's own members, inherited members and extensions leave unspent. They are "
-        + "held back, not dropped - a limit wide enough for everything still lists them, last.")]
+        + "extension methods at a file/line/column, filtered to what is actually accessible from that "
+        + "position. Grep cannot answer this: extension methods share no text with the call site. "
+        + "DIFFERENT from get_symbol's 'members' (a type's static declared list, no position involved) — "
+        + "call this when standing at a cursor deciding what to call, before writing a helper that may "
+        + "already exist, or when the receiver's type isn't known yet so get_symbol has no target to "
+        + "query. Each item's displayString has its containing type's prefix stripped, and "
+        + "definedIn/origin render as an EMPTY CELL wherever they would only restate what a receiverType "
+        + "header already said — one array, one row schema, so an empty cell means 'nothing to say "
+        + "here', never 'not looked up'. "
+        + "Within one origin, symbols this solution declares come first, so a crowded cursor does not "
+        + "spend its budget alphabetically in the A's of the referenced assemblies. When more is in "
+        + "scope than limit allows, the budget is split across origins so applicable extension methods "
+        + "are never crowded out by a receiver's own members, and totalItems/truncated report what was "
+        + "left out. System.Object's members (Equals, GetHashCode, GetType, ReferenceEquals, ToString) "
+        + "are a RESERVE: in scope on every receiver in C#, so never what a cursor is deciding between, "
+        + "they spend only the budget the receiver's own members, inherited members and extensions leave "
+        + "unspent — held back, not dropped, and a limit wide enough for everything still lists them, "
+        + "last. Full item semantics, filters and worked examples: docs/tools/get_scope.md.")]
 
     public static async Task<string> GetScope(
         WorkspaceHost workspace,
@@ -167,7 +165,9 @@ public static class FlowTools
         + "calls. A miss still reports the nearest reachable frontier from each end. Every node renders as a "
         + "compact containing-type-and-member name with the parameter list dropped — the same shape "
         + "get_call_hierarchy uses — and symbolId still disambiguates overloads; pass fields:\"signature\" for "
-        + "the full parameter lists instead, which cost about a third of a slice's tokens.")]
+        + "the full parameter lists instead, which cost about a third of a slice's tokens. A node's "
+        + "symbolId is a get_symbol target, not an edit lease: to change one, fetch it with get_symbol "
+        + "first for the contentVersion and declarationSites validate_patch needs.")]
     public static async Task<string> GetCallSlice(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
@@ -286,26 +286,25 @@ public static class FlowTools
                 : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
 
 [McpServerTool(Name = "get_call_hierarchy")]
-    [Description("An open-ended multi-level call tree from one symbol — 'who eventually calls this, up to the "
-        + "entry points' (direction: callers, Visual Studio's View Call Hierarchy) or 'what does this eventually "
-        + "call' (direction: callees). Different from get_call_slice: that tool needs both a known from AND a "
-        + "known to and returns one shortest path; this tool needs only a root and returns every branch up to "
-        + "maxDepth, plus a blastRadius summary (unique nodes reached, per depth) answering 'if I change this, "
-        + "how much does it ripple' without paying for the full tree — set includeTree:false for just that "
-        + "summary plus the root. A named type (class, record, interface, delegate) has no call sites of its "
-        + "own, so a type root's depth-1 children are the members that REFERENCE it — the same set "
-        + "get_references returns — and the walk continues upward from those. blastRadius counts every symbol "
-        + "REACHED, including the children a per-node "
-        + "cap left unexpanded, and reports that cap as truncated/omittedChildren in BOTH shapes. A capped "
-        + "node's own callers are never visited though, so a lower maxChildrenPerNode still yields a smaller "
-        + "total at maxDepth>1 — the cap limits discovery, not just rendering. Every node always carries "
-        + "symbolId (the join key back to get_symbol) and displayString — the containing type and member name "
-        + "with the parameter list dropped (overloads still disambiguate via symbolId); add kind, file, line, "
-        + "or the full signature (signature) via fields. A symbol reached through two different branches (a "
-        + "diamond) legitimately appears twice in the tree but counts once in blastRadius; true recursion (a "
-        + "symbol reappearing on its own path) stops as a leaf marked recursive:true rather than looping. "
-        + "Internally capped at a few thousand total nodes as a safety net against pathological fan-out — use a "
-        + "lower maxDepth or maxChildrenPerNode for a predictably sized answer on a well-connected graph.")]
+    [Description("An open-ended multi-level call tree from one symbol — 'who eventually calls this, up "
+        + "to the entry points' (direction: callers, Visual Studio's View Call Hierarchy) or 'what does "
+        + "this eventually call' (direction: callees). Different from get_call_slice: that tool needs "
+        + "both a known from AND a known to and returns one shortest path; this tool needs only a root "
+        + "and returns every branch up to maxDepth, plus a blastRadius summary (unique nodes reached, per "
+        + "depth) answering 'if I change this, how much does it ripple' without paying for the full tree "
+        + "— set includeTree:false for just that summary plus the root. A named type (class, record, "
+        + "interface, delegate) has no call sites of its own, so a type root's depth-1 children are the "
+        + "members that REFERENCE it — the same set get_references returns — and the walk continues "
+        + "upward from those. blastRadius counts every symbol REACHED, including the children a per-node "
+        + "cap left unexpanded, and reports that cap as truncated/omittedChildren in BOTH shapes. A "
+        + "capped node's own callers are never visited though, so a lower maxChildrenPerNode still "
+        + "yields a smaller total at maxDepth>1 — the cap limits discovery, not just rendering. Every "
+        + "node always carries symbolId (the join key back to get_symbol) and displayString — the "
+        + "containing type and member name with the parameter list dropped (overloads still disambiguate "
+        + "via symbolId); add kind, file, line, or the full signature (signature) via fields. A symbol "
+        + "reached through two branches (a diamond) appears twice in the tree but counts once in "
+        + "blastRadius; true recursion stops as a leaf marked recursive:true rather than looping. "
+        + "Caps, worked examples and the full response shape: docs/tools/get_call_hierarchy.md.")]
     public static async Task<string> GetCallHierarchy(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
@@ -461,7 +460,9 @@ public static class FlowTools
         + "inherited), and derived/implementing types — one hop further than get_symbol/get_references give "
         + "today. derived is a flat ranked list, not a nested tree — get_symbol on any result reveals its own "
         + "immediate base if you need one more level — and is omitted entirely when symbol is not a "
-        + "class/interface (structs/enums/delegates cannot be derived from).")]
+        + "class/interface (structs/enums/delegates cannot be derived from). A result's symbolId is a "
+        + "get_symbol target, not an edit lease: changing an implementer means fetching it with "
+        + "get_symbol first for the contentVersion and declarationSites validate_patch needs.")]
     public static async Task<string> GetTypeHierarchy(
         WorkspaceHost workspace,
         SymbolStore symbolStore,

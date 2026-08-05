@@ -40,7 +40,14 @@
       "Read(//home/atte/.claude/plugins/**)",
       "Read(//home/atte/.claude/**)",
       "Read(//home/atte/**)",
-      "Bash(PATH=/home/atte/.dotnet:__TRACKED_VAR__ ./scripts/build-plugin.sh)"
+      "Bash(PATH=/home/atte/.dotnet:__TRACKED_VAR__ ./scripts/build-plugin.sh)",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test)",
+      "Bash(bash -n scripts/guard-cs-edit.sh)",
+      "Read(//mnt/c/Users/atte9/source/repos/PandaAI/**)",
+      "Read(//mnt/c/Users/atte9/source/repos/PandaAI/.claude/**)",
+      "Bash(bash -n scripts/guard-cs-bash-read.sh)",
+      "mcp__plugin_dotnet-toolkit_dotnet__rename_symbol",
+      "Bash(sort -k2)"
     ]
   },
   "disabledMcpjsonServers": [

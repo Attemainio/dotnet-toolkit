@@ -71,7 +71,7 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the four hooks. Re-publish after any
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the five hooks. Re-publish after any
   server change.
 - **Tool signature changes break in-process callers** — the tests call these methods positionally — and
   **any response-shape change needs `Contracts/Contract.cs` bumped.**

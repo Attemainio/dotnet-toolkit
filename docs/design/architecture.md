@@ -127,9 +127,10 @@ bump is what you actually needed.
   background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by the
   `hook hint-reload-new-cs-file` subcommand through `Hooks/ControlClient.cs`. **Not a security
   boundary** — loopback-only, same trust level as the MCP session.
-- `Hooks/` — the four Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
+- `Hooks/` — the five Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
-  `BashCommandScanner.cs` carry the logic the read guards share. `docs/design/hooks.md`.
+  `BashCommandScanner.cs` carry the logic the read guards share; `WriteChecklistHint.cs` is the one
+  matching an MCP tool rather than a built-in. `docs/design/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -169,6 +170,12 @@ Two consequences that are easy to miss:
 - **Tool signature changes are breaking for in-process callers** — the tests call these methods
   positionally.
 - **Any change to response shape needs `Contracts/Contract.cs` bumped.**
+- **A `[Description]` has a hard ceiling.** The client truncates a method-level description at roughly
+  2 KB, silently — `search_index`'s manual pointer was cut off in production for an unknown length of
+  time before anyone looked. `tests/DotnetToolkit.McpServer.Tests/ToolDescriptionBudgetTests.cs`
+  enforces a 1,900-byte budget over every discovered tool, so the ceiling now fails a build instead of
+  a session. Growing a description past it is a signal to move detail into `docs/tools/<tool>.md`,
+  which the description then points at — not to raise the constant.
 
 Then run the `dotnet-toolkit-consistency` skill, which owns the authoritative list of files describing
 the tool surface and checks each against `Tools/*.cs`.
@@ -184,8 +191,9 @@ on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs a
 `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
 `scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships four hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
-`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file` — all subcommands of that same published
+`hooks/hooks.json` ships five hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
+`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file`, `hook hint-write-checklist` — all
+subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at

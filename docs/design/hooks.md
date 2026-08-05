@@ -5,7 +5,7 @@
 > page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
 > how membership is decided statically, and where enforcement has a known hole.
 
-The plugin ships four hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships five hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
 plugin removes them.
 
@@ -144,6 +144,34 @@ the same way every other hook here does.
 
 The JSON reply is serialized, never hand-interpolated, since `file_path` is caller-controlled text (a
 Windows path's backslashes) that has no business near manual JSON string escaping.
+
+## `hook hint-write-checklist` — PreToolUse on the `validate_patch` MCP tool
+
+The only hook here that matches an MCP tool rather than a built-in one, and the only one that is not a
+guard: it never denies.
+
+Every other hook is **retrospective** — it fires once `Edit`/`Write`/`Bash` has already been reached
+for, which is exactly the wrong tool. A caller who does the right thing and goes straight to
+`validate_patch`, but without invoking `dotnet-change`, trips none of them, so a checklist carried in
+that skill's body would never arrive. This hook closes that gap by putting it in front of the caller at
+the moment it applies, which is also why it does not have to be pre-loaded: the delivery is pull-free.
+**The hook is the checklist's only owner** — `skills/dotnet-change/SKILL.md` points here and deliberately
+keeps no copy, since a copy would drift and would still miss the caller this exists for.
+
+**Once per session, not once per call.** A checklist repeated on every patch of a long editing task is
+noise, and noise gets ignored. `Hooks/WriteChecklistHint.cs` dedupes on a marker file under the OS temp
+directory named for `HookPayload.SessionId` (added to the payload parser for this hook), claimed with
+`FileMode.CreateNew` — so the claim is atomic and two agents sharing one session still produce exactly
+one checklist between them. The marker lives in temp rather than the repo deliberately: a consuming
+repo should not accumulate per-session files.
+
+**No session id means silence.** Without one there is no way to tell a first call from a fiftieth, and
+emitting anyway would spam every patch in the session. The always-loaded rule and the `dotnet-change`
+skill remain the primary carriers; this hook is a backstop, so failing quiet is correct. Every IO
+failure — an existing marker, an unwritable temp directory — takes the same path.
+
+The tool-name check is repeated inside `HookCli`'s switch arm (`EndsWith("__validate_patch")`) rather
+than trusted from `hooks.json` alone, matching how the `guard-cs-*` arms re-check their own tool names.
 
 ## Related files
 

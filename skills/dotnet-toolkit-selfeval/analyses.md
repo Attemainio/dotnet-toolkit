@@ -45,8 +45,8 @@ re-measured.
 
 Report each row as `cheap (c calls, t tokens) → expensive (c, t)`. A row where the "expensive" route is
 actually cheaper, or where the cheap route did not answer, is worth more than every row that confirms
-the ladder — it means the guidance in `dotnet-code-query`'s protocol is wrong, which is a `[bug]` in the
-docs rather than a `[warning]` about tokens.
+the ladder — it means the routing in `.claude/rules/index.md`'s tool table (or the tool's own
+`[Description]`) is wrong, which is a `[bug]` in the docs rather than a `[warning]` about tokens.
 
 ## 3b · Redundancy: does the response restate what the caller already held?
 

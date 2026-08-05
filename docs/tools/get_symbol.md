@@ -16,7 +16,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine` — surviving lines keep their real file number even after a modifier below drops others, never renumbered. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. Suffix the component name with `:code` (`"source:code"`) to drop every `///` doc comment (the requested symbol's own and, for a type, each member's) and get just attributes + body — cheaper when you're about to edit and already have (or don't need) `xmlDoc`. Bare `"source"` is `"source:full"`. Either mode also takes `-modifier` suffixes to subtract further, e.g. `"source:full-remarks-attributes"` (drop just the `<remarks>` tag and all attributes, keep everything else) or `"source:code-comments"` (also drop `//` comments). Doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — same names as `xmlDoc`'s fields) only work under `full`; `attributes`/`comments`/`lineNumbers` work under either. `-lineNumbers` drops the per-line gutter and returns `[{lines, text}]` — one entry per contiguous run — instead; see the section below. No `+tag` exists — a query only ever subtracts from its mode's default, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. Either mode also takes an `@` line selector — see the row below. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line — not one `\n`-escaped string. Each `line` is an absolute file line, directly usable as a `validate_patch` `startLine`/`endLine` — surviving lines keep their real file number even after a modifier below drops others, never renumbered. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead; `format:"json"`/`"compact"` keep the structured array. Suffix the component name with `:code` (`"source:code"`) to drop every `///` doc comment (the requested symbol's own and, for a type, each member's) and get just attributes + body — a **reading** mode, for when you already have (or don't need) `xmlDoc`; edit from `source:full`, and see "Stripped source is for reading" below for why. Bare `"source"` is `"source:full"`. Either mode also takes `-modifier` suffixes to subtract further, e.g. `"source:full-remarks-attributes"` (drop just the `<remarks>` tag and all attributes, keep everything else) or `"source:code-comments"` (also drop `//` comments). Doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — same names as `xmlDoc`'s fields) only work under `full`; `attributes`/`comments`/`lineNumbers` work under either. `-lineNumbers` drops the per-line gutter and returns `[{lines, text}]` — one entry per contiguous run — instead; see the section below. No `+tag` exists — a query only ever subtracts from its mode's default, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. Either mode also takes an `@` line selector — see the row below. |
 | `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), returning only those lines. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (to the declaration's end), `"source@-50"` (from its start), `"source@52"` (one line). Ranges are **absolute file line numbers**, the same ones `declarationSites` and each line's own number report, so a span from any earlier response is reusable as-is; separate several with `;`, **not** `,` (that already separates component names). It is a pure filter — a line a `-modifier` dropped stays dropped even if a range names it, and nothing is ever renumbered. Past the declaration it clamps; entirely outside it returns no lines rather than erroring. A slice adds `sourceLines`: `"kept/whole"` (`"46-76/38-96"`, or `"none/38-96"` on a miss) and restores `displayString`/`modifiers`, since the signature line is usually not in the slice. Rejected with `symbols` (batch) as `lines_with_batch`. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `value` is a property's `<value>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all — a doc comment with a `<returns>` but no `<summary>` still surfaces `xmlDoc.returns` |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Members carrying nothing (an empty `throws`/`awaits`/`writes`/`locks`/`implementsMembers`, a null `overrides`) are omitted rather than emitted empty — absence means "none" |
@@ -101,6 +101,31 @@ Two things to hold when you do slice:
   `"sourceLines":"none/90-94"` instead of an error, because the response still carries the skeleton and
   the real span. If you get `none`, re-read the denominator and ask again — don't conclude the symbol has
   no body.
+- **A slice still leases the body layer, so it is enough to patch from.** `source@18-56` narrows
+  `contentVersion` to `decl|body` exactly as a whole `source` fetch does — the slice is cut from the same
+  body text, so the token must still narrow when that text moves. A second edit into a long member you
+  have already read does **not** need `include: "all"` again.
+
+### Stripped source is for reading, not for anchoring an edit
+
+A `-modifier` removes a line from the **response**, never from the file, and the surviving lines keep
+their absolute numbers. `validate_patch` replaces `startLine`–`endLine` **verbatim**. Put those together
+and a span built from a stripped fetch silently deletes every line the modifier hid inside it:
+
+```
+get_symbol(include: "source:code-comments@40-80")   →  you see 40, 41, 44, 45, …
+validate_patch(startLine: 40, endLine: 80, …)       →  42-43 were `// comments`. They are now gone.
+```
+
+Three fetches hide *interior* lines and are therefore unsafe to anchor on: `-comments`, `-attributes`,
+and `source:code` **on a type** (each member's own doc comment is interior to the type's span). A leading
+`///` doc comment is the safe case by construction — `source:code` drops it from the *start*, so a
+first-line-to-last-line span never covered it, which is also why `declarationSites` (86–94) can be wider
+than what `source:code` returned (90–94).
+
+The rule, then: strip on the way in, fetch whole on the way out. Read with `source:code` or
+`source:code-comments`; patch from `source`/`source:full` with the gutter left on. `-lineNumbers` is
+excluded for the separate reason below.
 
 ### Reading without line numbers
 
@@ -226,7 +251,7 @@ Component names are exactly the response fields they control:
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup, even after modifiers below drop some lines: surviving entries keep their true file line number, never renumbered to close the gap. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. Takes an optional `:full`\|`:code` mode suffix on the component name itself — `"source"`/`"source:full"` (the default) include the declaration's leading `///` doc comment; `"source:code"` is the same span minus that comment (attributes and the body are unchanged), for a caller that only needs enough to modify the code and already has `xmlDoc` or doesn't need it. Either mode additionally accepts subtractive `-modifier` suffixes concatenated onto it, e.g. `"source:full-remarks-attributes"` or `"source:code-comments"`: `full`-only doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — matching `xmlDoc`'s own field names) drop that specific tag from an otherwise-full comment; `attributes`/`comments` (valid under either mode) drop C# attributes / `//` comments; `lineNumbers` (also either mode) drops the per-line number gutter, changing the component's shape to `[{lines, text}]` — see "Reading without line numbers" below. There is no additive `+tag` — a query only ever subtracts from its mode's own default (everything, for `full`; no doc tags but attributes/comments still on, for `code`), so a doc-tag modifier under `code` is rejected as redundant rather than silently accepted. Every subtraction is **whole-line only**: an attribute or comment sharing a line with real code (`[Fact] public void Foo()`, or a trailing `// why`) is left untouched rather than partially rewriting that line. An unrecognized suffix (`"source:bogus"`, `"source:code-remarks"`, `"source@nope"`) is an `invalid_component` error, same as a misspelled component name. Finally, either mode accepts an **`@` line selector** returning only part of the declaration — see the row below. |
+| `source` | Full declaration source as `[{line, text}]`, one entry per physical line, `line` an absolute 1-based file line — not one `\n`/`\"`-escaped string. Each `line` is directly usable as a `validate_patch` `startLine`/`endLine` without a second lookup, even after modifiers below drop some lines: surviving entries keep their true file line number, never renumbered to close the gap. Under the default `toon` format this renders as a raw, fully unescaped `line: text` block instead of that structured array — see the worked example below; `format:"json"`/`"compact"` keep the structured array. Takes an optional `:full`\|`:code` mode suffix on the component name itself — `"source"`/`"source:full"` (the default) include the declaration's leading `///` doc comment; `"source:code"` is the same span minus that comment (attributes and the body are unchanged), for a caller reading the implementation who already has `xmlDoc` or doesn't need it — not for a caller about to patch the span, per "Stripped source is for reading" below. Either mode additionally accepts subtractive `-modifier` suffixes concatenated onto it, e.g. `"source:full-remarks-attributes"` or `"source:code-comments"`: `full`-only doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions` — matching `xmlDoc`'s own field names) drop that specific tag from an otherwise-full comment; `attributes`/`comments` (valid under either mode) drop C# attributes / `//` comments; `lineNumbers` (also either mode) drops the per-line number gutter, changing the component's shape to `[{lines, text}]` — see "Reading without line numbers" below. There is no additive `+tag` — a query only ever subtracts from its mode's own default (everything, for `full`; no doc tags but attributes/comments still on, for `code`), so a doc-tag modifier under `code` is rejected as redundant rather than silently accepted. Every subtraction is **whole-line only**: an attribute or comment sharing a line with real code (`[Fact] public void Foo()`, or a trailing `// why`) is left untouched rather than partially rewriting that line. An unrecognized suffix (`"source:bogus"`, `"source:code-remarks"`, `"source@nope"`) is an `invalid_component` error, same as a misspelled component name. Finally, either mode accepts an **`@` line selector** returning only part of the declaration — see the row below. |
 | `source@lines` | Not a separate component: `@` plus line ranges appended to `source` (after any mode/modifiers), narrowing the returned lines to those ranges — for reading one region of a long member instead of all of it. `"source@46-76"`, `"source:code@46-76;79-83"`, `"source:code-comments@60-"` (line 60 to the declaration's last line), `"source@-50"` (its first line through 50), `"source@52"` (one line). Ranges are **absolute file line numbers** — the same ones `declarationSites` and each rendered line's own `NN:` gutter report — so a span read off any earlier response is directly reusable; separate several with `;`, **not** `,`, which already separates `include`'s component names. Selection is a pure filter that never renumbers a line, so it commutes with the `-modifier` subtractions above: a line those dropped stays dropped even when a range names it. A range running past the declaration clamps to it; one entirely outside it returns no lines rather than erroring. Whenever `@` is used the response adds **`sourceLines`**, a `"kept/whole"` span (`"46-76/38-96"`, or `"none/38-96"` when the ranges missed the declaration entirely — which also states the span that would have worked). Read it: `contentVersion` is still fingerprinted over the **whole** symbol, so it should not be mistaken for confirmation that the whole symbol was seen. Not valid alongside `symbols` (batch) — see the `symbol`/`symbols` row. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, each XML-stripped to plain text; a field is absent when that tag isn't in the doc comment. `params`/`typeParams` are `[{name, text}]` from `<param>`/`<typeparam>`; `exceptions` is `[{type, text}]` from `<exception>`; `inheritdoc` is `true` when `<inheritdoc/>` is present. `xmlDoc` itself is absent only when none of these tags are present at all |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Members carrying nothing (an empty `throws`/`awaits`/`writes`/`locks`/`implementsMembers`, a null `overrides`) are omitted rather than emitted empty — absence means "none" |
@@ -513,11 +538,38 @@ tree can match fifty members, so an absent candidate is not an absent symbol**: 
 its containing type or namespace, or append a parameter list, rather than concluding it does not exist.
 `rename_symbol` returns the identical payload from the same renderer.
 
+## Gate expansion on `referenceCounts`
+
+The `{callers, tests, implementations, overrides}` block is what decides whether an expansion is worth
+the tokens:
+
+- **0 callers** → usually nothing to find; skip `get_references`. **But not if the symbol can be
+  invoked without being named** — see below.
+- **1–5 and you plan a signature change** → fetch them.
+- **more than 5** → fetch the list without bodies first, then bodies only for the ones you will
+  actually edit.
+
+`callers` counts **static call sites in the loaded solution**. Anything a framework invokes by
+reflection is invisible to it. In this plugin's own code `HistoryTools.SearchLog` reports 0 callers and
+`ContextTools.GetSymbol` reports 3, purely because tests call one by name and not the other; both are
+live MCP tools reached the same way. Treat 0 as "no information" rather than "unused" when the symbol is
+an entry point, has a registration attribute, is a DI-registered implementation, a serialization target,
+or a test/event handler. **Never conclude "dead code" from a 0 alone.**
+
+A count is **omitted entirely** when it could not be measured, which is a different thing from the
+structural omissions the component table above describes: absent means unknown there, and known-zero
+here. When nothing is left to say, the whole `referenceCounts` block is absent.
+
+Before writing a helper that plausibly already exists, check with `search_index` first — one cheap call
+beats a duplicate implementation.
+
 ## Next steps
 
-The response's `referenceCounts` gates what is worth fetching next (see "Gate expansion on referenceCounts" in the `dotnet-code-query` skill). From here:
+`referenceCounts` gates what is worth fetching next (above). From here:
 
 - **Expand to call sites** → `get_references` — `get_references.md`
 - **Open-ended caller tree** → `get_call_hierarchy` — `get_call_hierarchy.md`
 - **Only need part of a long member** → re-call with `include: "source:code@120-160"` (above)
+- **Editing part of one you have already read** → `include: "source@120-160"` — unstripped, and the
+  slice leases the body layer, so this is a complete pre-edit fetch (above)
 - **Editing it** → keep `contentVersion` and `declarationSites`, then `validate_patch` — `validate_patch.md`

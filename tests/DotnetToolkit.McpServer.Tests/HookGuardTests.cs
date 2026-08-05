@@ -344,3 +344,78 @@ public sealed class HookPayloadTests
         Assert.Null(payload.FilePath);
     }
 }
+
+public sealed class WriteChecklistHintTests
+{
+    [Fact]
+    public void Evaluate_FirstCallOfSession_EmitsTheChecklist()
+    {
+        var session = NewSession();
+        try
+        {
+            var outcome = WriteChecklistHint.Evaluate(Patch(session));
+
+            Assert.Equal(0, outcome.ExitCode);
+            Assert.NotNull(outcome.Stdout);
+            Assert.Contains("PreToolUse", outcome.Stdout);
+            Assert.Contains("validate_patch", outcome.Stdout);
+        }
+        finally
+        {
+            DeleteMarker(session);
+        }
+    }
+
+    [Fact]
+    public void Evaluate_SecondCallOfSameSession_IsSilent()
+    {
+        var session = NewSession();
+        try
+        {
+            WriteChecklistHint.Evaluate(Patch(session));
+            var second = WriteChecklistHint.Evaluate(Patch(session));
+
+            // A checklist repeated on every patch of a long editing task is noise, and noise is ignored.
+            Assert.Equal(0, second.ExitCode);
+            Assert.Null(second.Stdout);
+        }
+        finally
+        {
+            DeleteMarker(session);
+        }
+    }
+
+    [Fact]
+    public void Evaluate_NoSessionId_IsSilent()
+    {
+        // Without an id there is no way to tell a first call from a fiftieth, so emitting would repeat
+        // the checklist on every patch. The always-loaded rule and the skill carry it instead.
+        var outcome = WriteChecklistHint.Evaluate(new HookPayload("mcp__x__validate_patch", null, null));
+
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Null(outcome.Stdout);
+    }
+
+    [Fact]
+    public void TryParse_PayloadWithSessionId_ReadsIt()
+    {
+        var payload = HookPayload.TryParse("""{"tool_name":"Bash","session_id":"abc123"}""");
+
+        Assert.NotNull(payload);
+        Assert.Equal("abc123", payload.SessionId);
+    }
+
+    private static string NewSession() => Guid.NewGuid().ToString("N");
+
+    private static HookPayload Patch(string session) =>
+        new("mcp__plugin_dotnet-toolkit_dotnet__validate_patch", null, null) { SessionId = session };
+
+    private static void DeleteMarker(string session)
+    {
+        var marker = Path.Combine(Path.GetTempPath(), "dotnet-toolkit-hooks", $"{session}.patched");
+        if (File.Exists(marker))
+        {
+            File.Delete(marker);
+        }
+    }
+}

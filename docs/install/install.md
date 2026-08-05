@@ -96,7 +96,7 @@ always-loaded. Do not add one, and do not edit the text on the way through: a re
 different wording edits its copy afterwards, or overrides a standard via
 the plugin's `standards/` directory.
 
-`index.md` names the `dotnet-change`, `dotnet-code-query` and `dotnet-review` skills for every
+`index.md` names the `dotnet-change` and `dotnet-review` skills for every
 procedure detail rather than a `${CLAUDE_PLUGIN_ROOT}/...` path — the harness does **not** expand
 that variable inside a rule file, so a path there would land in the consumer as literal, dead text.
 Never add one while copying. That is also why the standards table in it names bare filenames and not
