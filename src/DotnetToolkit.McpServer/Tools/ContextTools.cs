@@ -652,7 +652,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "PUT EVERY TERM YOU ARE LOOKING FOR IN ONE CALL: terms are OR-ed and ranked together, so "
         + "query:\"fee ledger TryBuy TrySell\" answers for all four in one round trip rather than four. "
         + "Each term gets a floor share of limit, but that floor is shallow — any term the result never "
-        + "covered is named under termsWithNoHits, so raise limit (cap 50) or re-ask that term alone. "
+        + "covered is named under termsWithNoHits, so raise limit (cap 200) or re-ask that term alone. "
         + "Never read an absent term as an absent symbol. "
         + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. "
         + "Follow up with get_symbol for the content itself. A hit's line/endLine mark the signature "
@@ -689,7 +689,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "summary parameter for that). Tokens: summary, returns, remarks, value, inheritdoc, params, "
             + "typeparams, exceptions. Same AND/exclude grammar as modifiers. Narrows the ranked query "
             + "hits, so query still needs a real search term. Omit for no doc-section filtering.")] string? xmlDoc = null,
-        [Description("Max results (default 10, cap 50).")] int limit = 10,
+        [Description("Max results (default 10, cap 200).")] int limit = 10,
         [Description("Optional path prefix narrowing results to a folder or file, e.g. \"src/Tools\" "
             + "(repo-root-relative, forward slashes, matched on a full path-segment boundary). Ranking runs "
             + "over the whole index before scoping, so a query with far more hits outside the prefix can "
