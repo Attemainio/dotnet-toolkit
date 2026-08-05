@@ -13,7 +13,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class ServerTools
 {
     [McpServerTool(Name = "ping")]
-    [Description("Health check; returns pong and the server version.")]
+    [Description("Is the server alive — health check; returns pong and the server version.")]
     public static string Ping() => "pong dotnet-toolkit/0.1.0";
 
     [McpServerTool(Name = "set_output_format")]
@@ -30,7 +30,7 @@ public static class ServerTools
     }
 
     [McpServerTool(Name = "workspace_status")]
-    [Description("Status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready. Also returns pluginRoot, the plugin's installation directory - join it with standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent definition.")]
+    [Description("Is the workspace ready, is indexing done — status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready. Also returns pluginRoot, the plugin's installation directory - join it with standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent definition.")]
     public static string WorkspaceStatus(SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace)
     {
         var sb = new StringBuilder();
@@ -106,7 +106,7 @@ public static class ServerTools
     }
 
     [McpServerTool(Name = "reload_workspace")]
-    [Description("Force a re-scan after large external changes (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
+    [Description("Refresh the workspace after large external changes such as a git pull or checkout (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
     public static async Task<string> ReloadWorkspace(
         ProjectIndex index,
         WorkspaceHost workspace,

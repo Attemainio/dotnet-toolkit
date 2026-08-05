@@ -17,7 +17,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class HistoryTools
 {
     [McpServerTool(Name = "get_semantic_diff")]
-    [Description("What changed SEMANTICALLY between two git refs — symbols added, removed, and changed with "
+    [Description("What changed SEMANTICALLY between two git refs (a commit or a branch) — symbols added, removed, and changed with "
         + "which version layers moved and the API impact. Formatting- and comment-only commits report no change. "
         + "Use this instead of reading a textual diff. Each of symbolsAdded/symbolsRemoved/symbolsChanged is "
         + "capped independently at limit entries; a capped list carries its own *Truncated:true flag alongside it, "
@@ -132,7 +132,7 @@ public static class HistoryTools
 
 
     [McpServerTool(Name = "search_log")]
-    [Description("Search the development log for WHY past changes were made — recorded intents, with the symbols "
+    [Description("Search the development log for WHY past changes were made — the history and reasoning behind them, recorded intents, with the symbols "
         + "each change touched. Use before re-proposing a design, to avoid repeating a rejected approach. "
         + "Each entry carries logId, date, intent, and tags (a JSON array, present only when the patch that "
         + "created the entry actually supplied one — most entries carry none, since validate_patch's tags "

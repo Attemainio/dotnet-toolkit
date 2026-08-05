@@ -21,7 +21,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class FlowTools
 {
     [McpServerTool(Name = "get_scope")]
-    [Description("What is callable HERE — members, inherited members, locals, parameters and applicable "
+    [Description("What is callable HERE — what's in scope, autocomplete-style — members, inherited members, locals, parameters and applicable "
         + "extension methods at a file/line/column, filtered to what is actually accessible from that "
         + "position. Grep cannot answer this: extension methods share no text with the call site. "
         + "DIFFERENT from get_symbol's 'members' (a type's static declared list, no position involved) — "
@@ -456,7 +456,7 @@ public static class FlowTools
 
 
     [McpServerTool(Name = "get_type_hierarchy")]
-    [Description("A type's full base-type chain (up to object), transitive interfaces (tagged direct vs "
+    [Description("A type's full base-type chain (up to object) and which types implement or inherit from it — transitive interfaces (tagged direct vs "
         + "inherited), and derived/implementing types — one hop further than get_symbol/get_references give "
         + "today. derived is a flat ranked list, not a nested tree — get_symbol on any result reveals its own "
         + "immediate base if you need one more level — and is omitted entirely when symbol is not a "

@@ -48,7 +48,7 @@ public static class ContextTools
             | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
 
 [McpServerTool(Name = "get_symbol")]
-    [Description("Retrieve one or more C# symbols — a class, interface, method, property or field: its "
+    [Description("Retrieve one or more C# symbols — look up a class, interface, method, property or field and read its "
         + "signature, XML docs, source text, members, attributes, base type, reference counts and exact "
         + "file location. USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when "
         + "it is split across partial-class files (Read gives you one fragment and no signal that the "
@@ -496,7 +496,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
     }
 
 [McpServerTool(Name = "get_references")]
-    [Description("Callers, implementations or overrides of a C# symbol, from the compiler's own model. "
+    [Description("Callers, implementations or overrides of a C# symbol (who calls it), from the compiler's model. "
         + "USE THIS INSTEAD OF GREP — grep gives wrong caller lists: it cannot see interface, virtual or "
         + "delegate dispatch, counts comment and string matches as hits, and silently drops sites when "
         + "output is truncated. Returns every real call site, no false positives, and reports how many "
@@ -516,8 +516,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "fully retrievable, one page at a time. truncated, excludedTextMatches and excludedDocMentions "
         + "are present only when they apply. An item's symbolId is a get_symbol target, not an edit "
         + "lease: updating a call site means fetching it with get_symbol first for the contentVersion "
-        + "and declarationSites validate_patch needs. Full response contract, the three directions, "
-        + "dispatchKind and worked examples: docs/tools/get_references.md.")]
+        + "and declarationSites validate_patch needs. Full contract and examples: "
+        + "docs/tools/get_references.md.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,

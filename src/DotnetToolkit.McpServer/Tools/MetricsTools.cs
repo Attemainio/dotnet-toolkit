@@ -13,7 +13,7 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class MetricsTools
 {
     [McpServerTool(Name = "get_retrieval_metrics")]
-    [Description("Self-observation over this server's own telemetry (spec §17): token totals and "
+    [Description("Self-observation over this server's own telemetry (spec §17) — how many tokens this session has used: token totals and "
         + "validation attempts. Computed from raw "
         + "events only. scope: session|global; groupBy: tool|symbol|level|session|task|none. "
         + "Session ids are not caller-supplied - every call in this server process shares one ambient id "

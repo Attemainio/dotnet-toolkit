@@ -17,6 +17,16 @@ actually needs — writes to disk only when it does, and only when you ask it to
 | `tags` | Optional `string[]` stored alongside the development-log entry. Rarely used; `search_log` has no tag filter today, so a tag is descriptive metadata rather than a retrieval key. |
 | `draftId` | Amend a previous unapplied patch instead of resubmitting it — see "Amending instead of resubmitting" below. |
 
+### Don't dry-run then apply as two calls
+
+If you already intend to make the change, set `applyOnSuccess: true` from the start rather than
+validating once with it `false` and immediately resubmitting the identical `edits` with it `true`. The
+ladder runs byte-for-byte identically either way — `applyOnSuccess` only gates whether a *sufficient,
+successful* result reaches disk — so a dry run followed by an apply re-runs the same compile and
+resends the same payload for zero additional information. Dry-run only when genuinely undecided
+whether to make the change at all and you want the blast radius before committing (the rare case, not
+the default) — `rename_symbol`'s own dry-run-by-default is the shape built for that; this tool's is not.
+
 The response carries `completedLevel`, `requiredLevel`, `isSufficient`, `succeeded`, `applied`. Done
 means all of: `isSufficient: true`, `succeeded: true`, `applied: true` (or a deliberate choice not to
 apply). `succeeded: true` with `isSufficient: false` is a **partial** green — the code compiles only up

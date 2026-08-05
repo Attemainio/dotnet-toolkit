@@ -29,7 +29,7 @@ public sealed record PatchEditInput(string File, int StartLine, int EndLine, str
 public static class PatchTools
 {
     [McpServerTool(Name = "validate_patch")]
-    [Description("Validate (and optionally apply) a code change against an in-memory compilation before it "
+    [Description("Validate (and optionally apply) a code change — the safe way to edit or modify a C# file — against an in-memory compilation before it "
         + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
         + "dependent_compile→targeted_tests→solution_validate) and reports honestly whether that was sufficient "
         + "for the change. baseVersions is required (stale context is rejected -- and a patch that rewrites a "
