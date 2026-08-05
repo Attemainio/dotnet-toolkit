@@ -9,12 +9,16 @@ public sealed partial class SymbolStore
     /// is "source" for a symbol this repo's solution declares, or "external" for a minimal row minted
     /// only because some declared symbol references it (BCL/NuGet/another assembly); external rows carry
     /// no decl/body hash and use <paramref name="DocumentationId"/> (a cref-style id) in place of one.
+    /// <paramref name="Generated"/> marks a symbol every one of whose declarations is source-generator
+    /// output — recorded here because the file locations search_index puts on its rows come from
+    /// ProjectIndex, which prunes obj/ before scanning and so has nothing to say about such a symbol.
     /// </summary>
     public sealed record SymbolRow(
         string SymbolId, string FqName, string Kind, string Project,
         string DeclHash, string? BodyHash, string DisplayString,
         string? RefsHash = null, string? ApiHash = null, bool IsTest = false, string Modifiers = "",
-        string Origin = "source", string? DocumentationId = null, string? Namespace = null);
+        string Origin = "source", string? DocumentationId = null, string? Namespace = null,
+        DeclarationPlacement Placement = DeclarationPlacement.InTree);
 
     /// <summary>Body-derived facts for one symbol, tied to the body hash they were computed from.</summary>
     public sealed record FactsRow(string SymbolId, string FactsJson, string BodyHash);
@@ -23,12 +27,14 @@ public sealed partial class SymbolStore
     public sealed record EdgeRow(string From, string To, string EdgeKind, string? File, int? Line);
 
     /// <summary>The version layers already recorded for a symbol — the gate for incremental updates.</summary>
-    public sealed record ExistingSymbol(string DeclHash, string? BodyHash, string? RefsHash, string? ApiHash, bool IsTest, string Modifiers);
+    public sealed record ExistingSymbol(
+        string DeclHash, string? BodyHash, string? RefsHash, string? ApiHash, bool IsTest, string Modifiers,
+        DeclarationPlacement Placement);
 
     /// <summary>Outcome of an incremental pass, so the caller can report how much work was skipped.</summary>
     public sealed record UpdateStats(int Updated, int Removed, int Unchanged);
 
-    /// <summary>Current per-layer hashes, test flag, and modifier tags for every stored symbol, used to diff against an incoming rebuild.</summary>
+    /// <summary>Current per-layer hashes, test and generated flags, and modifier tags for every stored symbol, used to diff against an incoming rebuild.</summary>
     public IReadOnlyDictionary<string, ExistingSymbol> ExistingSymbols()
     {
         var existing = new Dictionary<string, ExistingSymbol>(StringComparer.Ordinal);
@@ -36,7 +42,8 @@ public sealed partial class SymbolStore
             return existing;
         using var connection = _store.Connect();
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT symbol_id, decl_hash, body_hash, refs_hash, api_hash, is_test, modifiers FROM symbols;";
+        cmd.CommandText =
+            "SELECT symbol_id, decl_hash, body_hash, refs_hash, api_hash, is_test, modifiers, generated FROM symbols;";
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -46,7 +53,8 @@ public sealed partial class SymbolStore
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 !reader.IsDBNull(5) && reader.GetInt32(5) == 1,
-                reader.IsDBNull(6) ? "" : reader.GetString(6).Trim());
+                reader.IsDBNull(6) ? "" : reader.GetString(6).Trim(),
+                reader.IsDBNull(7) ? DeclarationPlacement.InTree : (DeclarationPlacement)reader.GetInt32(7));
         }
         return existing;
     }
@@ -131,6 +139,8 @@ public sealed partial class SymbolStore
     /// kind and every modifier token, for exactly this reason.
     ///
     /// Comparing the value itself is what makes the pass self-correcting rather than merely cheap.
+    /// Generated is compared for the same reason and a third cause: it is derived from the declaration's
+    /// PATH, which can change without a single token of the declaration changing.
     ///
     /// An external row has no decl/body hash and no attribute to re-derive, so once written it is never
     /// considered moved — this index tracks only that the symbol is referenced, never how it changed.
@@ -142,7 +152,8 @@ public sealed partial class SymbolStore
         || prior.RefsHash != next.RefsHash
         || prior.ApiHash != next.ApiHash
         || prior.IsTest != next.IsTest
-        || prior.Modifiers != next.Modifiers);
+        || prior.Modifiers != next.Modifiers
+        || prior.Placement != next.Placement);
 
     private static void DeleteSymbol(SqliteConnection connection, SqliteTransaction tx, string id)
     {
@@ -193,8 +204,8 @@ public sealed partial class SymbolStore
         cmd.CommandText = """
             INSERT OR REPLACE INTO symbols
                 (symbol_id, fq_name, kind, project, decl_hash, body_hash,
-                 refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id, namespace)
-            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId, $ns);
+                 refs_hash, api_hash, display_string, embedding, is_test, modifiers, origin, documentation_id, namespace, generated)
+            VALUES ($id, $fq, $kind, $proj, $decl, $body, $refs, $api, $disp, NULL, $isTest, $modifiers, $origin, $docId, $ns, $generated);
             """;
 
         foreach (var s in symbols)
@@ -215,6 +226,7 @@ public sealed partial class SymbolStore
             cmd.Parameters.AddWithValue("$origin", s.Origin);
             cmd.Parameters.AddWithValue("$docId", (object?)s.DocumentationId ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ns", (object?)s.Namespace ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$generated", (int)s.Placement);
             cmd.ExecuteNonQuery();
         }
 

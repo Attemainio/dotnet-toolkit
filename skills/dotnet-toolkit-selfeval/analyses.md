@@ -34,10 +34,14 @@ because the documentation recommending it is wrong.
 | The full base chain **and** every implementer | `get_type_hierarchy` — this is what it is for | repeated `get_symbol(include: "baseType")` hops |
 | How does X reach Y? | `get_call_slice` | repeated `get_references` hops |
 
-The batch row is the one where "cheap" means **fewer calls, not fewer tokens**, and the table should not
-be read as claiming otherwise. Measured at n=5 the batch cost ~8% *more* tokens than five separate
-fetches — `shared` hoisting recovers most of the wrapper, but not the per-entry `results[i]` nesting
-until roughly n=8–10. Four fewer round-trips is still the right trade; asserting a token win is not.
+The batch row wins on calls always, and on tokens conditionally — measure it, don't assume either way.
+What decides it is whether `shared` can hoist: a **homogeneous** batch (same `kind`, `origin`,
+`modifiers`, one `include`) hoists those fields out of every entry and has measured *cheaper* than the
+separate fetches from about n=5 — 842 tokens against 872 on five types, twice, on two consecutive runs.
+A **mixed-kind** batch hoists little, and the per-entry `results[i]` nesting then costs more than it
+saves until roughly n=8–10. So state the condition when reporting this row rather than a flat figure,
+and never let a stale figure stand: this note itself claimed the opposite for two runs before it was
+re-measured.
 
 Report each row as `cheap (c calls, t tokens) → expensive (c, t)`. A row where the "expensive" route is
 actually cheaper, or where the cheap route did not answer, is worth more than every row that confirms

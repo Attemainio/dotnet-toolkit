@@ -111,7 +111,12 @@ public static class RenameTools
             if (resolution.Symbol is null)
             {
                 return resolution.Candidates.Count == 0
-                    ? Fail("symbol_not_found", $"No source symbol matched '{symbol}'.")
+                    ? Reject("symbol_not_found", Formats.Render(new
+                    {
+                        error = "symbol_not_found",
+                        message = $"No source symbol matched '{symbol}'.",
+                        didYouMean = ContextTools.NearMisses(symbolStore, spec),
+                    }))
                     : Reject("ambiguous_symbol", ContextTools.AmbiguousSymbol(resolution.Candidates,
                         "Several symbols match; re-call with one of these exact names (append a "
                         + "parameter list to pick an overload)."));

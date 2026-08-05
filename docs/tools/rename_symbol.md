@@ -97,7 +97,7 @@ over, or prose that would read as wrong afterwards.
 
 | `error` | Means |
 |---|---|
-| `symbol_not_found` / `ambiguous_symbol` | Nothing matched, or several did. The ambiguous payload is byte-for-byte the one `get_symbol` returns (same renderer): up to ten candidates with their `symbolId`s, plus `totalCandidates` and, when the cap bit, `truncated: true` — re-call with one exactly, or narrow the name if the intended one was cut. |
+| `symbol_not_found` / `ambiguous_symbol` | Nothing matched, or several did. `symbol_not_found` carries `didYouMean` — the same ranked-then-edit-distance candidate list `get_symbol` returns, described in `get_symbol.md`. The ambiguous payload is byte-for-byte the one `get_symbol` returns (same renderer): up to ten candidates with their `symbolId`s, plus `totalCandidates` and, when the cap bit, `truncated: true` — re-call with one exactly, or narrow the name if the intended one was cut. |
 | `invalid_name` | Not a valid identifier, or a bare keyword. |
 | `unchanged_name` | The symbol already has that name. |
 | `external_symbol` | Declared outside this solution's source (a BCL/NuGet symbol) — not renameable here. |

@@ -389,7 +389,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 return (external, null);
             if (await ResolveEntryPointAsync(solution, symbol) is { } entryPoint)
                 return (entryPoint, null);
-            return (null, Formats.ToJson(new { error = "symbol_not_found", symbol }));
+            return (null, Formats.ToJson(new { error = "symbol_not_found", symbol, didYouMean = NearMisses(symbolStore, symbol) }));
         }
 
         // Every candidate of one ambiguous name shares a prefix by construction -- that shared prefix is
@@ -815,6 +815,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 symbolId = r.Hit.SymbolId,
                 name = SymbolResolver.CompactName(r.Hit.FqName),
                 kind = r.Hit.Kind,
+                // Why this row has no file/line, when it has none. generated is the same field, spelled
+                // the same way, that get_symbol sets on the same symbol; outsideRoot is the other reason
+                // the syntax index never saw the declaration - a Compile item from beyond the repo root.
+                generated = r.Hit.Placement is DeclarationPlacement.Generated ? true : (bool?)null,
+                outsideRoot = r.Hit.Placement is DeclarationPlacement.OutsideRoot ? true : (bool?)null,
                 file = r.Site?.File,
                 line = r.Site?.Line,
                 endLine = r.Site?.EndLine,
@@ -838,7 +843,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line, r.Site?.EndLine,
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-                    SymbolShape.For(ShapeOf(r.Site)));
+                    SymbolShape.For(ShapeOf(r.Site)),
+                    r.Hit.Placement);
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -1079,12 +1085,41 @@ private static async Task<object> BuildContent(
         }).ToArray();
     }
 
+    /// <summary>
+    /// An attribute's constructor and named arguments as one compact string, or null when it carries none
+    /// the author actually wrote at the use site.
+    /// </summary>
+    /// <param name="attribute">The attribute application to render.</param>
+    /// <returns>The joined argument list, or null when nothing was written between the brackets.</returns>
+    /// <remarks>
+    /// Arguments the COMPILER supplied are dropped rather than reported: a caller-info parameter is filled
+    /// in from the use site's own location even though nothing is written there, so xUnit v3's [Fact] and
+    /// [Theory] - which declare [CallerFilePath]/[CallerLineNumber] optional parameters - rendered their
+    /// own source location as their arguments. On a test project that is the most common attribute there
+    /// is, and it put an absolute machine path into a response whose every other path is repo-relative.
+    /// </remarks>
     private static string? FormatAttributeArguments(AttributeData attribute)
     {
-        var parts = new List<string>(attribute.ConstructorArguments.Select(FormatTypedConstant));
+        var parameters = attribute.AttributeConstructor?.Parameters ?? [];
+        var parts = new List<string>();
+        for (var i = 0; i < attribute.ConstructorArguments.Length; i++)
+        {
+            if (i < parameters.Length && IsCallerSupplied(parameters[i]))
+                continue;
+            parts.Add(FormatTypedConstant(attribute.ConstructorArguments[i]));
+        }
+
         parts.AddRange(attribute.NamedArguments.Select(kv => $"{kv.Key} = {FormatTypedConstant(kv.Value)}"));
         return parts.Count == 0 ? null : string.Join(", ", parts);
     }
+
+    /// <summary>Whether a parameter's argument is supplied by the compiler from the use site rather than written there.</summary>
+    /// <param name="parameter">The attribute constructor parameter the argument was bound to.</param>
+    /// <returns>True for a caller-info parameter, whose value is a location or an expression the author never typed.</returns>
+    private static bool IsCallerSupplied(IParameterSymbol parameter) =>
+        parameter.GetAttributes().Any(a => a.AttributeClass?.Name is
+            "CallerFilePathAttribute" or "CallerLineNumberAttribute"
+            or "CallerMemberNameAttribute" or "CallerArgumentExpressionAttribute");
 
     private static string FormatTypedConstant(TypedConstant constant)
     {
@@ -2088,13 +2123,28 @@ private static (int Start, int End) DeclarationBoundsIncludingDocComment(SyntaxN
         return (start, node.Span.End);
     }
 
+    /// <summary>Whether a member belongs in a type's member listing.</summary>
+    /// <param name="member">The member the containing type declares.</param>
+    /// <returns>True for a member a reader could go on to open in source.</returns>
+    /// <remarks>
+    /// PRIVATE members are listed, because search_index's M count includes them: M is read off the syntax
+    /// outline, which counts every member a type declares, and filtering the listing by accessibility made
+    /// the route the shape column advertises - M9, therefore fetch the member list - return two rows, with
+    /// nothing in the response naming the seven it dropped or why. A listing that under-delivers against
+    /// its own advertised count is worse than a longer one.
+    /// The method kinds mirror <see cref="Indexing.OutlineBuilder"/>'s: accessors, destructors and
+    /// conversion operators contribute no outline entry, so listing them would reintroduce the same
+    /// disagreement from the opposite side. Two divergences survive by construction and are documented in
+    /// docs/tools/get_symbol.md: M is counted per DECLARATION, so a partial type's row counts one file's
+    /// share while this listing merges every part, and a nested type is counted by N yet still listed here.
+    /// </remarks>
     private static bool IsListable(ISymbol member)
     {
         if (member.IsImplicitlyDeclared)
             return false;
-        if (member is IMethodSymbol { MethodKind: not (MethodKind.Ordinary or MethodKind.Constructor) })
-            return false;
-        return member.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.Internal;
+        return member is not IMethodSymbol method
+            || method.MethodKind is MethodKind.Ordinary or MethodKind.Constructor
+                or MethodKind.StaticConstructor or MethodKind.UserDefinedOperator;
     }
 
 private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
@@ -2127,8 +2177,10 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
     /// A miss is almost always a NEAR miss - a wrong namespace, a dropped containing type, a plural slip.
     /// Echoing the unresolved name back told the caller only what it had just sent, so the next move was
     /// always a search_index round trip for a list the resolver was already positioned to produce.
+    /// The ranked search answers a wrong QUALIFICATION; it cannot answer a misspelling, which matches
+    /// neither an FTS token nor a substring, so an empty result falls through to an edit-distance scan.
     /// </remarks>
-    private static object? NearMisses(SymbolStore symbolStore, string symbol)
+    internal static object? NearMisses(SymbolStore symbolStore, string symbol)
     {
         const int cap = 5;
 
@@ -2141,6 +2193,9 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
             return null;
 
         var hits = symbolStore.Search(segment, null, null, cap);
+        if (hits.Count == 0)
+            hits = symbolStore.NearNames(segment, cap);
+
         return hits.Count == 0
             ? null
             : hits.Select(h => new

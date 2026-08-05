@@ -230,6 +230,81 @@ public sealed class SymbolSearchTests : IDisposable
         Assert.Single(implementors);
         Assert.Contains("sym_impl", implementors);
     }
+
+    /// <summary>
+    /// FTS matches whole tokens and LIKE matches literal substrings, so a misspelling of a name with no
+    /// camel-case boundary to fall back on reaches neither. The edit-distance scan is what answers it.
+    /// </summary>
+    [Fact]
+    public void NearNamesReachesAMisspellingNeitherSearchPathCan()
+    {
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Normalizer")], []);
+
+        Assert.Empty(_symbols.Search("Nrmalizer", null, null, 5));
+
+        var near = _symbols.NearNames("Nrmalizer", 5);
+
+        Assert.Equal("Demo.Normalizer", Assert.Single(near).FqName);
+    }
+
+    /// <summary>
+    /// A name that is a typo of nothing gets no candidates at all: past a few edits a "correction" is a
+    /// different word, and confident nonsense is worse for the caller than a bare miss.
+    /// </summary>
+    [Fact]
+    public void NearNamesOffersNothingForAnUnrelatedName()
+    {
+        _symbols.ReplaceAll([Row("sym_a", "Demo.Normalizer")], []);
+
+        Assert.Empty(_symbols.NearNames("ThisExistsNowhereInTheSolution", 5));
+    }
+
+    /// <summary>
+    /// A symbol the syntax index has no location for reaches search_index with no file and no lines. The
+    /// placement is the only thing telling that apart from an indexing failure, so it has to survive the
+    /// write and come back on the hit — for both reasons a location can be missing.
+    /// </summary>
+    [Fact]
+    public void PlacementSurvivesTheRoundTripToASearchHit()
+    {
+        _symbols.ReplaceAll(
+            [
+                Row("sym_g", "Demo.GeneratedEntryPoint") with { Placement = DeclarationPlacement.Generated },
+                Row("sym_o", "Demo.PackageSuppliedProgram") with { Placement = DeclarationPlacement.OutsideRoot },
+                Row("sym_h", "Demo.Handwritten"),
+            ],
+            []);
+
+        var hits = _symbols.Search("Demo", null, null, 10);
+
+        Assert.Equal(
+            DeclarationPlacement.Generated,
+            hits.Single(h => h.FqName == "Demo.GeneratedEntryPoint").Placement);
+        Assert.Equal(
+            DeclarationPlacement.OutsideRoot,
+            hits.Single(h => h.FqName == "Demo.PackageSuppliedProgram").Placement);
+        Assert.Equal(
+            DeclarationPlacement.InTree,
+            hits.Single(h => h.FqName == "Demo.Handwritten").Placement);
+    }
+
+    /// <summary>
+    /// Placement is derived from the declaration's PATH, which can move without a token of the
+    /// declaration changing — so the incremental pass has to compare it directly or the stale value is
+    /// never revisited.
+    /// </summary>
+    [Fact]
+    public void ChangedPlacementIsCorrectedEvenThoughNoHashMoved()
+    {
+        _symbols.ReplaceAll([Row("sym_g", "Demo.Thing") with { Placement = DeclarationPlacement.Generated }], []);
+
+        var stats = _symbols.ApplyIncremental([Row("sym_g", "Demo.Thing")], [], []);
+
+        Assert.Equal(1, stats.Updated);
+        Assert.Equal(
+            DeclarationPlacement.InTree,
+            _symbols.Search("Demo.Thing", null, null, 5).Single().Placement);
+    }
 }
 
 /// <summary>

@@ -206,7 +206,14 @@ public sealed partial class SymbolStore
     }
 
     /// <summary>One ranked result row from a full-text or LIKE search over the symbol index.</summary>
-    public sealed record SearchHit(string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank, string? Namespace = null);
+    /// <remarks>
+    /// <c>Generated</c> is what lets search_index say why a hit has no file location: the row exists
+    /// because the compilation declares it, while ProjectIndex — which supplies the locations — prunes the
+    /// obj/ tree a generator writes to. Without it that row reads as an indexing failure.
+    /// </remarks>
+    public sealed record SearchHit(
+        string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank,
+        string? Namespace = null, DeclarationPlacement Placement = DeclarationPlacement.InTree);
 
     /// <summary>
     /// Resolves a <c>sym_…</c> identifier back to its fully-qualified name. symbolId is a one-way hash,
@@ -318,6 +325,108 @@ public sealed partial class SymbolStore
         }
     }
 
+    /// <summary>Source symbols whose own unqualified name is within a small edit distance of <paramref name="name"/>.</summary>
+    /// <param name="name">The unqualified name that resolved to nothing.</param>
+    /// <param name="limit">Maximum candidates to return.</param>
+    /// <returns>The closest candidates, nearest first; empty when nothing is close enough to be a likely typo.</returns>
+    /// <remarks>
+    /// <see cref="Search"/> matches whole FTS tokens or a literal substring, and a MISSPELLING reaches
+    /// neither: "RegistryNormalzr" shares no token with "RegistryNormalizer" and is not a substring of it,
+    /// so the near-miss suggestion this was meant to feed never fired on the one input that needs it. This
+    /// is the fallback for that case alone. It scans the source rows once, which is affordable precisely
+    /// because nothing reaches it until a symbol has already failed to resolve.
+    /// </remarks>
+    public IReadOnlyList<SearchHit> NearNames(string name, int limit)
+    {
+        // Beyond three edits a "correction" is a different word rather than a typo, and a caller is better
+        // served by a bare miss than by confident nonsense.
+        const int maxDistance = 3;
+        const int minLength = 3;
+
+        if (!_store.Available || name.Length < minLength)
+            return [];
+
+        var tolerance = Math.Clamp(name.Length / 4, 1, maxDistance);
+
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        // rank is a constant here: these rows are ordered by edit distance below, not by the exact/prefix
+        // ladder the two real search paths share this projection with.
+        cmd.CommandText = """
+            SELECT symbol_id, display_string, kind, fq_name, decl_hash, 3 AS rank, namespace, generated
+            FROM symbols
+            WHERE origin = 'source' AND length(fq_name) >= $minLen;
+            """;
+        cmd.Parameters.AddWithValue("$minLen", Math.Max(0, name.Length - tolerance));
+
+        var scored = new List<(int Distance, SearchHit Hit)>();
+        foreach (var hit in ReadHits(cmd))
+        {
+            var candidate = UnqualifiedName(hit.FqName);
+            if (Math.Abs(candidate.Length - name.Length) > tolerance)
+                continue;
+            var distance = EditDistance(candidate, name, tolerance);
+            if (distance <= tolerance)
+                scored.Add((distance, hit));
+        }
+
+        return [.. scored
+            .OrderBy(s => s.Distance)
+            .ThenBy(s => s.Hit.FqName.Length)
+            .ThenBy(s => s.Hit.FqName, StringComparer.Ordinal)
+            .Take(limit)
+            .Select(s => s.Hit)];
+    }
+
+    /// <summary>The last dotted segment of a stored name, with any parameter list dropped first.</summary>
+    /// <param name="fqName">A stored fully-qualified name, which for a method carries its parameter list.</param>
+    /// <returns>The bare declared name.</returns>
+    /// <remarks>
+    /// The parameter list has to go first: the dots inside "Ns.Type.Method(System.String)" are later than
+    /// the one separating the name, so splitting on the last dot alone would yield "String)".
+    /// </remarks>
+    private static string UnqualifiedName(string fqName)
+    {
+        var bare = fqName.IndexOf('(', StringComparison.Ordinal) is var open && open >= 0 ? fqName[..open] : fqName;
+        return bare[(bare.LastIndexOf('.') + 1)..];
+    }
+
+    /// <summary>Levenshtein edit distance between two names, compared case-insensitively.</summary>
+    /// <param name="candidate">The stored name being scored.</param>
+    /// <param name="target">The name the caller asked for.</param>
+    /// <param name="tolerance">The distance beyond which the exact value stops mattering.</param>
+    /// <returns>The distance, or any value above <paramref name="tolerance"/> once the row cannot qualify.</returns>
+    /// <remarks>
+    /// Two rolling rows rather than a full matrix, and the row is abandoned as soon as every cell in it
+    /// exceeds the tolerance — the common case for a name that is simply unrelated, which is nearly every
+    /// row in the store.
+    /// </remarks>
+    private static int EditDistance(string candidate, string target, int tolerance)
+    {
+        var previous = new int[target.Length + 1];
+        var current = new int[target.Length + 1];
+        for (var j = 0; j <= target.Length; j++)
+            previous[j] = j;
+
+        for (var i = 1; i <= candidate.Length; i++)
+        {
+            current[0] = i;
+            var best = current[0];
+            for (var j = 1; j <= target.Length; j++)
+            {
+                var swap = char.ToLowerInvariant(candidate[i - 1]) == char.ToLowerInvariant(target[j - 1]) ? 0 : 1;
+                current[j] = Math.Min(Math.Min(current[j - 1] + 1, previous[j] + 1), previous[j - 1] + swap);
+                best = Math.Min(best, current[j]);
+            }
+
+            if (best > tolerance)
+                return tolerance + 1;
+            (previous, current) = (current, previous);
+        }
+
+        return previous[target.Length];
+    }
+
     private IReadOnlyList<SearchHit> SearchFts(
         string query, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds, int limit,
         IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
@@ -342,7 +451,8 @@ public sealed partial class SymbolStore
                      WHEN s.fq_name LIKE $prefix THEN 1
                      ELSE 2
                    END AS rank,
-                   s.namespace
+                   s.namespace,
+                   s.generated
             FROM symbols_fts f
             JOIN symbols s ON s.symbol_id = f.symbol_id
             WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}{originFilter}
@@ -381,7 +491,8 @@ public sealed partial class SymbolStore
                      WHEN fq_name LIKE $contains THEN 2
                      ELSE 3
                    END AS rank,
-                   namespace
+                   namespace,
+                   generated
             FROM symbols
             WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}{originFilter}
             ORDER BY rank, length(fq_name), fq_name
@@ -509,7 +620,8 @@ public sealed partial class SymbolStore
             hits.Add(new SearchHit(
                 symbolId, reader.GetString(1), reader.GetString(2),
                 reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6)));
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? DeclarationPlacement.InTree : (DeclarationPlacement)reader.GetInt32(7)));
         }
         return hits;
     }

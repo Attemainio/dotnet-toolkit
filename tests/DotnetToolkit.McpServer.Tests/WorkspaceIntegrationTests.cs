@@ -63,7 +63,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         _store = new KnowledgeStore(Locator, NullLogger<KnowledgeStore>.Instance);
         Symbols = new SymbolStore(_store);
         FeatureLog = new FeatureLogStore(_store);
-        Builder = new SymbolIndexBuilder(Workspace, Symbols, NullLogger<SymbolIndexBuilder>.Instance);
+        Builder = new SymbolIndexBuilder(Workspace, Symbols, Locator, NullLogger<SymbolIndexBuilder>.Instance);
         await Builder.RebuildAsync();
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
@@ -385,6 +385,62 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal("Type", content.GetProperty("kind").GetString());
         // modifiers is unconditional, like the skeleton — present here even though it wasn't named.
         Assert.True(content.TryGetProperty("modifiers", out _));
+    }
+
+    /// <summary>
+    /// A hit's M count is read off the syntax outline, which counts every member a type declares, so a
+    /// listing filtered by accessibility under-delivered against the very count that advertised it.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Members_ListsPrivateOnesToo()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Pipeline", include: "members")).GetProperty("content");
+
+        var names = content.GetProperty("members").EnumerateArray()
+            .Select(m => m.GetProperty("displayString").GetString() ?? "").ToList();
+
+        Assert.Equal(4, names.Count);
+        Assert.Contains(names, n => n.Contains("Start", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("Middle", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("Deep", StringComparison.Ordinal));
+        Assert.Contains(names, n => n.Contains("_widget", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A caller-info parameter is filled in by the compiler from the use site, so rendering it as the
+    /// attribute's arguments reported a location nobody wrote — an absolute machine path, on the shape
+    /// xUnit v3's [Fact] has and therefore on the most common attribute in a test project.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Attributes_DropCompilerSuppliedCallerInfo()
+    {
+        var bare = Root(await GetSymbol("Sample.Lib.AttributeArgumentSample.Bare", include: "attributes"))
+            .GetProperty("content").GetProperty("attributes")[0];
+
+        Assert.Equal("Traced", bare.GetProperty("name").GetString());
+        Assert.True(IsAbsentOrNull(bare, "arguments"));
+
+        var written = Root(await GetSymbol("Sample.Lib.AttributeArgumentSample.Legacy", include: "attributes"))
+            .GetProperty("content").GetProperty("attributes")[0];
+
+        Assert.Equal("call Bare instead", written.GetProperty("arguments").GetString());
+    }
+
+    /// <summary>
+    /// didYouMean reached only get_references' resolver, so the same miss through get_symbol — the far more
+    /// common one — came back with nothing to act on.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_UnresolvedName_OffersNearMissCandidates()
+    {
+        var root = Root(await GetSymbol("Nowhere.Widget"));
+
+        Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
+
+        var names = root.GetProperty("didYouMean").EnumerateArray()
+            .Select(c => c.GetProperty("name").GetString() ?? "").ToList();
+
+        Assert.Contains(names, n => n.EndsWith("Widget", StringComparison.Ordinal));
     }
 
     /// <summary>

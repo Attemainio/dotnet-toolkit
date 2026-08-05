@@ -25,6 +25,7 @@ internal static class Schema
         new(12, "symbol_origin_column", SymbolOriginColumn),
         new(13, "symbol_namespace_column", SymbolNamespaceColumn),
         new(14, "drop_attribution", DropAttribution),
+        new(15, "generated_flag_on_symbol", GeneratedFlagOnSymbol),
     ];
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
@@ -62,6 +63,26 @@ internal static class Schema
     private const string SymbolNamespaceColumn = """
         ALTER TABLE symbols ADD COLUMN namespace TEXT;
         DELETE FROM symbols WHERE origin = 'external';
+        """;
+
+    // search_index answers from this table, while the file locations on its rows come from ProjectIndex,
+    // which prunes obj/ before it scans. A source-generator-declared symbol therefore reached a caller as
+    // a row with an empty file, line and endLine and no reason given — indistinguishable from an indexing
+    // failure, on the row a caller reads first. get_symbol had already learned to say generated: true; the
+    // flag is stored here so search_index can say the same thing rather than infer it from an absence.
+    // Recorded at index-build time from the declaration's own path, the same predicate get_symbol applies.
+    //
+    // The derived symbol index is dropped so the next build repopulates it with the flag set: a generated
+    // file's syntax does not change from one build to the next, so an incremental pass would never
+    // reconsider those rows on content alone. Everything dropped here is rebuildable by construction; the
+    // development log and telemetry are untouched.
+    private const string GeneratedFlagOnSymbol = """
+        ALTER TABLE symbols ADD COLUMN generated INTEGER NOT NULL DEFAULT 0;
+
+        DELETE FROM mechanical_facts;
+        DELETE FROM reference_edges;
+        DELETE FROM symbols_fts;
+        DELETE FROM symbols;
         """;
 
     private const string RenameChainOnFeatureLogSymbols = """

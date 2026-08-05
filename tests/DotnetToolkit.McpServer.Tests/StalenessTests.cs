@@ -50,7 +50,7 @@ public sealed class StalenessTests : IDisposable
         _store = new KnowledgeStore(_locator, NullLogger<KnowledgeStore>.Instance);
         _symbols = new SymbolStore(_store);
         _featureLog = new FeatureLogStore(_store);
-        _builder = new SymbolIndexBuilder(_workspace, _symbols, NullLogger<SymbolIndexBuilder>.Instance);
+        _builder = new SymbolIndexBuilder(_workspace, _symbols, _locator, NullLogger<SymbolIndexBuilder>.Instance);
         _telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
     }
 

@@ -32,7 +32,13 @@ timeout. Tool calls await readiness themselves rather than blocking startup.
 
 - **Syntax index** (`Indexing/ProjectIndex.cs`, `StartInitialization()`) — every `.cs` file parsed with
   Roslyn, no MSBuild needed. Lets `search_index` and `get_symbol` answer almost immediately, marked
-  `limitedBy: "index_only"`.
+  `limitedBy: "index_only"`. It **prunes `bin`/`obj`/`dist`/`.git`/`node_modules` before it scans**, so
+  it has no location for a symbol only a source generator declares — while the semantic tier, which
+  supplies the symbol rows, does. That asymmetry is why a symbol row carries a `generated` flag
+  (`Schema.cs` migration 15, written by `SymbolIndexBuilder` from the declaration's own path): without
+  it, `search_index` renders such a hit with an empty file and lines and no way to tell that apart from
+  an indexing failure. Like every additive column here, the migration clears the derived symbol index so
+  the next build repopulates it — the first start after upgrading re-indexes.
 - **MSBuild workspace** (`Workspace/WorkspaceHost.cs`, `StartLoading()`) — the full semantic model.
   Powers `get_references` and `validate_patch`, and the live path of `get_symbol`.
 

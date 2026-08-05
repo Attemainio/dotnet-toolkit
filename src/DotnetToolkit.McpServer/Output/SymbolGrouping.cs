@@ -1,3 +1,5 @@
+using DotnetToolkit.McpServer.Store;
+
 namespace DotnetToolkit.McpServer.Output;
 
 /// <summary>
@@ -12,10 +14,13 @@ public static class SymbolGrouping
     /// <remarks>
     /// <paramref name="Shape"/> is <see cref="SymbolShape"/>'s terse retrieval hint, null on every symbol
     /// small enough that the default get_symbol fetch is already the right next call.
+    /// <paramref name="Generated"/> says the declaration is source-generator output, which is the reason
+    /// its file and lines are unresolved rather than an indexing failure.
     /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
-        int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null);
+        int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null,
+        DeclarationPlacement Placement = DeclarationPlacement.InTree);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
@@ -84,6 +89,12 @@ public static class SymbolGrouping
         if (includeKind)
             d["kind"] = r.Kind;
         d["name"] = r.LeafName;
+        // Emitted only when it applies, and only ever alongside an unresolved file/line: it is the row's
+        // own explanation for those blanks, not a fact worth a column on every other row.
+        if (r.Placement is DeclarationPlacement.Generated)
+            d["generated"] = true;
+        else if (r.Placement is DeclarationPlacement.OutsideRoot)
+            d["outsideRoot"] = true;
         if (includeLines)
         {
             d["line"] = r.Line;

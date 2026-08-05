@@ -204,10 +204,12 @@ public static class FlowTools
         var toId = await ResolveToIdAsync(solution, symbolStore, to);
         if (fromId is null || toId is null)
         {
+            var unresolved = fromId is null ? from : to;
             return Fail("symbol_not_found", new
             {
                 error = "symbol_not_found",
-                message = fromId is null ? $"cannot resolve '{from}'" : $"cannot resolve '{to}'",
+                message = $"cannot resolve '{unresolved}'",
+                didYouMean = ContextTools.NearMisses(symbolStore, unresolved),
             });
         }
 
@@ -339,7 +341,14 @@ public static class FlowTools
 
         var rootId = await ResolveToIdAsync(solution, symbolStore, symbol);
         if (rootId is null)
-            return Fail("symbol_not_found", new { error = "symbol_not_found", message = $"cannot resolve '{symbol}'" });
+        {
+            return Fail("symbol_not_found", new
+            {
+                error = "symbol_not_found",
+                message = $"cannot resolve '{symbol}'",
+                didYouMean = ContextTools.NearMisses(symbolStore, symbol),
+            });
+        }
 
         var callers = direction.Trim().ToLowerInvariant() != "callees";
         maxDepth = Math.Clamp(maxDepth, 1, 8);
@@ -478,7 +487,12 @@ public static class FlowTools
         if (resolution.Symbol is null)
         {
             return resolution.Candidates.Count == 0
-                ? Fail("symbol_not_found", new { error = "symbol_not_found", symbol })
+                ? Fail("symbol_not_found", new
+                {
+                    error = "symbol_not_found",
+                    symbol,
+                    didYouMean = ContextTools.NearMisses(symbolStore, handle),
+                })
                 : Fail("ambiguous_symbol", new
                 {
                     error = "ambiguous_symbol",

@@ -20,15 +20,18 @@ public sealed class SymbolIndexBuilder
     private readonly WorkspaceHost _workspace;
     private readonly SymbolStore _symbols;
     private readonly ILogger<SymbolIndexBuilder> _log;
+    private readonly SolutionLocator _locator;
     private int _running;
 
     private volatile bool _ready;
     public bool Ready => _ready;
 
-    public SymbolIndexBuilder(WorkspaceHost workspace, SymbolStore symbols, ILogger<SymbolIndexBuilder> log)
+    public SymbolIndexBuilder(
+        WorkspaceHost workspace, SymbolStore symbols, SolutionLocator locator, ILogger<SymbolIndexBuilder> log)
     {
         _workspace = workspace;
         _symbols = symbols;
+        _locator = locator;
         _log = log;
     }
 
@@ -71,9 +74,16 @@ public sealed class SymbolIndexBuilder
                     var model = compilation.GetSemanticModel(tree);
                     var root = await tree.GetRootAsync();
                     var file = document.FilePath ?? tree.FilePath;
+                    // This is the only pass that ever sees the path, so the reason a symbol will have no
+                    // indexed location has to be captured here or the row reaches a caller with no file,
+                    // no lines and nothing saying why. Two reasons, and they are not the same: a generator
+                    // writes under obj/, which ProjectIndex prunes, while a package can contribute a
+                    // Compile item from outside the repo root altogether (the test SDK's synthesized entry
+                    // point is one), which ProjectIndex never had in scope to begin with.
+                    var placement = PlacementOf(file);
 
                     foreach (var node in root.DescendantNodes().Where(IsDeclaration))
-                        IndexDeclaration(node, model, project.Name, symbols, edges, facts);
+                        IndexDeclaration(node, model, project.Name, placement, symbols, edges, facts);
                     IndexTopLevelStatements(root, model, edges, symbols);
                 }
             }
@@ -101,7 +111,7 @@ public sealed class SymbolIndexBuilder
         or PropertyDeclarationSyntax or EventDeclarationSyntax or BaseFieldDeclarationSyntax;
 
     private void IndexDeclaration(
-        SyntaxNode node, SemanticModel model, string project,
+        SyntaxNode node, SemanticModel model, string project, DeclarationPlacement placement,
         Dictionary<string, SymbolStore.SymbolRow> symbols,
         HashSet<SymbolStore.EdgeRow> edges,
         List<SymbolStore.FactsRow> facts)
@@ -134,7 +144,8 @@ public sealed class SymbolIndexBuilder
                     RefsHash: SemanticFingerprint.ComputeRefs(ReferencedSymbolIds(node, model)),
                     ApiHash: SemanticFingerprint.ComputeApi(symbol as INamedTypeSymbol ?? symbol.ContainingType, DeclHashOf),
                     IsTest: TestAttributes.IsTestMethod(symbol),
-                    Modifiers: string.Join(' ', DotnetToolkit.McpServer.Fingerprint.ModifierText.Tags(symbol)));
+                    Modifiers: string.Join(' ', DotnetToolkit.McpServer.Fingerprint.ModifierText.Tags(symbol)),
+                    Placement: placement);
             }
         }
 
@@ -170,6 +181,28 @@ public sealed class SymbolIndexBuilder
                 RecordExternalIfNeeded(canonical, ifaceId, symbols);
             }
         }
+    }
+
+    /// <summary>Where a document's declarations sit relative to the tree the syntax index scans.</summary>
+    /// <param name="file">The document's own path, absolute, or empty when it has none.</param>
+    /// <returns>The placement a symbol declared in this document carries.</returns>
+    /// <remarks>
+    /// A path that escapes the root reads as <c>../..</c> once made relative, which is the cheapest
+    /// reliable test — <see cref="SolutionLocator.IsGeneratedOrBuildPath"/> would not catch it, since a
+    /// NuGet package's own directories are named nothing like a build directory.
+    /// </remarks>
+    private DeclarationPlacement PlacementOf(string? file)
+    {
+        if (string.IsNullOrEmpty(file))
+            return DeclarationPlacement.InTree;
+
+        var relative = _locator.RelPath(file);
+        if (relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+            return DeclarationPlacement.OutsideRoot;
+
+        return SolutionLocator.IsGeneratedOrBuildPath(relative)
+            ? DeclarationPlacement.Generated
+            : DeclarationPlacement.InTree;
     }
 
     /// <summary>Distinct source symbols referenced from a declaration — the input to the refs layer.</summary>
