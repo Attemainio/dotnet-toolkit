@@ -53,6 +53,9 @@ Anything an analyzer can check mechanically, the analyzers do: `validate_patch` 
 referenced analyzers over the changed documents at the severities `.editorconfig` configures, blocking
 at `error` and reporting at `warning`. That is a floor under these standards, not a replacement — the
 judgment calls above (which abstraction, which name, what a boundary owns) have no rule to enforce them.
+Leave `runAnalyzers` at its default; pass `false` only when a call genuinely needs nothing past
+compile/semantic correctness (e.g. re-validating an amend where the analyzer verdict is already known
+unchanged) — skipping it silently narrows this floor.
 
 ## The loop
 

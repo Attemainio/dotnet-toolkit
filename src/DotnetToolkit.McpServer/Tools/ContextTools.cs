@@ -927,7 +927,10 @@ private static async Task<object> BuildContent(
     {
         // source already prints the declaration's own signature line as text, so anything that would
         // just restate what that line already says gets suppressed rather than duplicated: displayString,
-        // modifiers (accessibility included), xmlDoc, attributes, baseType, interfaces.
+        // modifiers (accessibility included), xmlDoc, attributes, baseType, interfaces. members and
+        // bodyOutline are suppressed for the same reason even though neither restates the signature line:
+        // both exist as a structural summary IN PLACE OF reading the body, so once source is also present
+        // they duplicate what it already shows.
         var hasSource = components.Has(SymbolComponents.Source);
 
         // ...except when source was narrowed to specific lines, which usually cut the signature line out
@@ -946,7 +949,7 @@ private static async Task<object> BuildContent(
         // location nor a shape leaves that second hop with nothing to go on. file is emitted only when it
         // differs from the type's own primary declaration file, so only a partial pays for the column.
         var primaryFile = sym.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
-        var memberRows = components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
+        var memberRows = !hasSource && components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
             ? type.GetMembers().Where(IsListable).Select(m => (Symbol: m, Site: MemberSiteOf(m))).ToArray()
             : null;
         var members = memberRows?.Select(row => (object)new
@@ -986,7 +989,7 @@ private static async Task<object> BuildContent(
         var declarationSource = hasSource ? SourceOf(sym, components.SourceQuery) : null;
         var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
 
-        var outline = components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
+        var outline = !hasSource && components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
 
         // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
         // unpopulated field is pure overhead until it carries data.
