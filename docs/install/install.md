@@ -23,8 +23,9 @@ repo with no protocol at all, and the tools stay available but unused.
 
 **The coding standards are not copied.** They live at `${CLAUDE_PLUGIN_ROOT}/standards/*.md` and are
 read from there on demand — by the main agent through `dotnet-change`'s pre-edit step, and by the
-review agent through the absolute `Standards root:` that `dotnet-review` resolves and injects into
-each spawn. Consequences worth stating when presenting the plan:
+review agent through the `pluginRoot` it resolves itself from its own `workspace_status` call, since
+`${CLAUDE_PLUGIN_ROOT}` does not expand inside an agent definition either. Consequences worth stating
+when presenting the plan:
 
 - A consuming repo is **always on the plugin's current standards**; they cannot go stale, and there
   is no 13-file refresh to run or conflict to resolve on a plugin update.

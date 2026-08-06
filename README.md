@@ -261,6 +261,8 @@ You talk to Claude normally; the skills route the work. What changes is undernea
 | "Why is this written this way?" | Guess from `git blame` | **`search_log`** — the intent recorded when it was written |
 | "Where did all my context go?" | Guess, or scroll back | **`get_retrieval_metrics`** — token cost per call, attributable per caller |
 | "Give me plain JSON, not TOON" | — | **`set_output_format`** — `toon` (default), `compact`, or `json` for the session |
+| "Is the server even running?" | Guess, or restart | **`ping`** — liveness check |
+| "Is the index/workspace ready?" | Guess, or restart | **`workspace_status`**, then **`reload_workspace`** after a large git operation |
 | "Where would this feature land?" | Open files until a pattern emerges | **`dotnet-explore`** — symbols, use sites and blast radius, read-only |
 | "Review this subsystem" | Review inline, in a context full of other work | **`dotnet-code-review`** — fresh context, shared standards |
 

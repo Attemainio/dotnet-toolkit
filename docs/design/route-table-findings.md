@@ -181,9 +181,15 @@ test` passed 419/419 — one description edit initially pushed `get_references` 
 under it). **But a currently-running MCP server process does not hot-reload a republished `dist/`**
 — it already loaded the old assembly at process start, so this session's own `ToolSearch` will keep
 returning pre-fix results until the MCP connection is reloaded (a fresh session, or an `/mcp`
-reconnect). The fix is real and on disk; **re-probing all 11 tools after a reconnect is the
-outstanding step to confirm it actually flips the results**, not something this document can claim
-from a successful compile alone.
+reconnect).
+
+**Confirmed fixed, 2026-08-06, from a fresh session (`dotnet-toolkit-consistency` audit run).**
+Re-probed `"who calls this method"` (→ `get_references`, now 3rd of 5, previously absent),
+`"edit a C# file safely"` (→ `validate_patch`, now 1st, previously absent), `"is the server alive"`
+(→ `ping`, now present, previously absent), and `"is the workspace ready, is indexing done"` (→
+`workspace_status`, 1st). All four pass in a fresh session against the republished `dist/`. The
+outstanding step this section called for is closed: the fix is real, on disk, and live once a
+session reconnects.
 
 ## 4. `search_index.md` and `get_symbol.md`: compacted
 

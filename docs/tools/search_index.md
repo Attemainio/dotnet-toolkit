@@ -26,7 +26,7 @@ deep, so a term the result never covered is named back explicitly:
 {"termsWithNoHits":["fitness","ledger"], "items":[ ... ]}
 ```
 
-**Never read an absent term as an absent symbol.** Raise `limit` (cap 50) or re-ask the starved
+**Never read an absent term as an absent symbol.** Raise `limit` (cap 200) or re-ask the starved
 term alone. Emitted for any multi-term query, including one that returned nothing at all — that's
 the response with no other evidence, so it's the one that most needs the terms named. A
 single-term query is skipped; its empty `items` already says the same thing.
@@ -110,7 +110,7 @@ Next call, by shape:
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId` |
 | `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only` |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind |
-| `limit` | — | default 10, cap 50 |
+| `limit` | — | default 10, cap 200 |
 
 ## Reference
 

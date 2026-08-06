@@ -35,6 +35,7 @@ Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 | Wondering where the tokens went | `get_retrieval_metrics` |
 | Wondering whether the index/workspace is warm | `workspace_status`, then `reload_workspace` if stale |
 | Wondering whether the server is answering at all | `ping` |
+| Wondering how to get plain JSON instead of TOON | `set_output_format` — `compact`/`json` for the session |
 
 ### Loading a tool: take the name from this table
 

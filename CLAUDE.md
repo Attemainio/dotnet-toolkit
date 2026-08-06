@@ -80,15 +80,29 @@ which is why they live outside `.claude/rules/` and carry none.
 - **`.claude/rules/` holds exactly one file**, and the standards live in `standards/` with no
   frontmatter. A second unfrontmattered rule, or a `paths:` key reappearing on a standard, is a
   silent always-loaded regression paid by every session *and* every subagent.
+- **Any new code that shells out to a child process with redirected stdout+stderr must drain both
+  streams concurrently** (`Task.WhenAll`, never one fully then the other) — an unread stream's OS
+  pipe buffer fills and the child hangs forever. Shelling out to `dotnet` specifically needs two more
+  environment variables on top of that, `MSBUILDDISABLENODEREUSE=1` and
+  `DOTNET_CLI_USE_MSBUILD_SERVER=0`, because `dotnet restore`/`build` spawn persistent MSBuild worker
+  nodes that inherit the redirected pipes and outlive the direct child. `WorkspaceHost.RestoreAsync`
+  shipped this bug once (commit `71fe3fa`) and a second call site hit the MSBuild-node variant of it
+  in the same session.
+- **`.gitattributes` forces LF on `*.sh`/`*.cs`/`*.csproj`.** Windows-side tooling once CRLF'd
+  `.cs` files, breaking raw string literals in two tests — if a new file type needs the same
+  protection, add it there rather than fixing line endings reactively.
 
 ## Instruction consistency
 
-The implemented tool surface (`Tools/*.cs`) is the ground truth; every doc, skill, rule, and hook
-message describing it is downstream.
+The implemented tool surface (`Tools/*.cs`) is the ground truth for **facts** — names, signatures,
+return shapes — and every doc, skill, rule, and hook message describing it is downstream. Official
+Claude documentation is the ground truth for **design** — how a tool gets found, what is always
+loaded, what a rule or skill may contain — and there the code is what moves.
 
 - After changing a tool name, signature, or response contract — or a hook, script, skill, or documented
   workflow — **invoke `dotnet-toolkit-consistency`**. It owns the authoritative list of files that
-  describe the surface. Don't silently patch one file and move on; two copies always diverge.
+  describe the surface, the checklist against official Claude guidance, and the drift sweep. Don't
+  silently patch one file and move on; two copies always diverge.
 - Update every affected file in the same task as the change.
 - Update **this file** only when the change affects an always-applicable workflow, invariant, or route.
   Detailed mechanics, transient findings, and per-tool behavior belong in the shipped file that owns
@@ -98,18 +112,12 @@ message describing it is downstream.
 
 ## Context budget
 
-**Split by responsibility, never by byte count.** A single-purpose file keeps its whole procedure
-inline however long that runs; splitting to hit a number produces scatter, which is worse.
+**This file and `.claude/rules/index.md` are the only always-loaded files**, and the only two under a
+size budget. Keep them declarations of *when* and *where*, not procedure.
 
-Size is a genuine cost in exactly one place: **this file and `.claude/rules/index.md` are
-always-loaded**. Both are paid by every session regardless of task, `index.md` again by every
-consuming repo, and **both are inherited by every subagent with no opt-out** — a seven-way parallel
-review pays them eight times. Keep them declarations of *when* and *where*, not procedure: ~5 KB here,
-~6 KB for the rule, as targets to argue with rather than walls. Skills, `standards/`, and `docs/` are
-read on demand and carry no such limit.
-
-`dotnet-toolkit-consistency` Step 7b owns the full policy and enforces it — including what counts as
-scatter, and why an overage is fixed by moving guidance behind a pointer rather than deleting it.
+The policy — the targets, what counts as scatter, why an overage is fixed by moving guidance behind a
+pointer rather than deleting it, and the harness facts behind all of it — is owned and enforced by
+`dotnet-toolkit-consistency` (`harness-compliance.md` §D–§F). Don't re-derive it here.
 
 # Compact instructions
 

@@ -120,6 +120,9 @@ the blast radius before committing — the rare case, not the default.
   the development-log entry, so several patches sharing one `taskId` read back as one piece of work.
   Worth passing when several agents edit against the same server, or when you want one task's patches
   grouped in `get_retrieval_metrics(groupBy: "task")`.
+- **`tags`** — optional `string[]` stamped onto the development-log entry alongside `intent`, for
+  grouping related patches under a label `search_log` can later match on. Rarely worth setting; skip it
+  unless the change is part of a labeled effort worth finding again as a group.
 
 ## Reading the verdict — the only definition of "done"
 
