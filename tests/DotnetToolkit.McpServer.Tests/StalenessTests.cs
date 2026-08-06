@@ -89,7 +89,7 @@ public sealed class StalenessTests : IDisposable
     [Fact]
     public async Task ValidatePatch_ApplyWithoutIntent_Rejected_C8()
     {
-        var edits = new[] { new PatchEditInput("Foo.cs", 4, 6, "public class Foo { }") };
+        var edits = new[] { new PatchEditInput(File: "Foo.cs", Lines: "4-6", NewText: "public class Foo { }") };
         var root = Root(await PatchTools.ValidatePatch(
             _workspace, _locator, _symbols, _featureLog, _builder,
             new TargetedTests(_locator, NullLogger<TargetedTests>.Instance), _telemetry,

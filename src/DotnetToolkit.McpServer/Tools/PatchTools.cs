@@ -16,8 +16,26 @@ using ModelContextProtocol.Server;
 
 namespace DotnetToolkit.McpServer.Tools;
 
-/// <summary>One line-span edit in a validate_patch request (spec §13.3).</summary>
-public sealed record PatchEditInput(string File, int StartLine, int EndLine, string NewText);
+    /// <summary>
+    /// One edit in a validate_patch request (spec §13.4): a line-range replacement (<see cref="Lines"/> +
+    /// <see cref="NewText"/>) or a symbol-scoped find/replace (<see cref="SymbolId"/> + <see cref="Find"/> +
+    /// <see cref="Replace"/>) — exactly one mode per edit, never both, never neither.
+    /// </summary>
+    /// <param name="File">Repo-relative path. Required for line-range mode; omitted for find/replace mode, whose file is resolved from <see cref="SymbolId"/>.</param>
+    /// <param name="SymbolId">A symbolId from a prior response. Required for find/replace mode. Optional for line-range mode, where -- on a fresh (non-amend) patch -- it is validated: <see cref="Lines"/> must fall inside this symbol's own declaration span.</param>
+    /// <param name="Lines">Line-range mode: a 1-based, inclusive range as "N-M" (or a bare "N" for one line), addressing the file as the workspace holds it -- or, with draftId, the draft's proposed text.</param>
+    /// <param name="NewText">Line-range mode: the replacement text for <see cref="Lines"/>, applied verbatim.</param>
+    /// <param name="Find">Find/replace mode: literal text to locate inside <see cref="SymbolId"/>'s own declaration span. Errors if it occurs zero times, or more than once without <see cref="ReplaceAll"/>.</param>
+    /// <param name="Replace">Find/replace mode: the text substituted for every match of <see cref="Find"/>.</param>
+    /// <param name="ReplaceAll">Find/replace mode: replace every match instead of requiring exactly one. Default false.</param>
+    public sealed record PatchEditInput(
+        string? File = null,
+        string? SymbolId = null,
+        string? Lines = null,
+        string? NewText = null,
+        string? Find = null,
+        string? Replace = null,
+        bool? ReplaceAll = null);
 
 /// <summary>
 /// The v2 write path (spec §13). Applies edits to a forked in-memory solution, runs the validation
@@ -47,7 +65,7 @@ public static class PatchTools
         TelemetryRecorder telemetry,
         PatchDraftStore drafts,
         [Description("Map of symbolId -> held contentVersion the patch was built against. Required, except with draftId, whose draft carries its own -- entries sent alongside a draftId are MERGED into it, which is how unheld_symbol is resolved.")] Dictionary<string, string>? baseVersions = null,
-        [Description("The edits to apply. Line spans address the file as the workspace holds it -- or, with draftId, the draft's proposed text. May be empty ONLY with draftId, which re-runs validation on the draft unchanged.")] PatchEditInput[]? edits = null,
+        [Description("The edits to apply, each EITHER a line-range edit {file, lines, newText[, symbolId]} OR a symbol-scoped find/replace {symbolId, find, replace[, replaceAll]} -- never both shapes in one edit. Line spans (\"N-M\", 1-based inclusive) address the file as the workspace holds it -- or, with draftId, the draft's proposed text. find/replace resolves against the LIVE workspace only; it is rejected alongside a draftId. May be empty ONLY with draftId, which re-runs validation on the draft unchanged.")] PatchEditInput[]? edits = null,
         [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
         [Description("Whether to run Roslyn analyzers (CA/IDE rules) once the compile rungs are clean (default true). Set false when only the compile/semantic result matters -- checks.analyzers then reports ran:false with a skipReason instead of a verdict.")] bool runAnalyzers = true,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
@@ -69,7 +87,7 @@ public static class PatchTools
         // further down is written only once validation actually ran, so without this every reject --
         // stale_base most of all -- is invisible to get_retrieval_metrics, which is the instrument every
         // measurement of this server depends on.
-        var requestedTarget = edits is { Length: > 0 } ? edits[0].File : draftId ?? "";
+        var requestedTarget = edits is { Length: > 0 } ? edits[0].File ?? edits[0].SymbolId ?? "" : draftId ?? "";
         string Reject(string errorKind, string json) =>
             ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "validate_patch",
                 requestedTarget, json, errorKind: errorKind);
@@ -139,8 +157,12 @@ public static class PatchTools
                 return Fail("workspace_loading",
                     "The semantic workspace is not ready; retry shortly.");
 
-            var patchEdits = (edits ?? []).Select(e => new PatchEdit(e.File, e.StartLine, e.EndLine, e.NewText)).ToList();
-            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits, draft, cancellationToken);
+            var (patchEdits, editsErrorKind, editsErrorJson) = await ResolveEditsAsync(
+                solution, locator, symbolStore, edits ?? [], draft is not null, cancellationToken);
+            if (editsErrorJson is not null)
+                return Reject(editsErrorKind!, editsErrorJson);
+
+            var sandbox = await PatchSandbox.ApplyAsync(solution, locator, patchEdits!, draft, cancellationToken);
             if (sandbox.Error is not null)
             {
                 // A draft that no longer matches the workspace can never be amended again; drop it now so a
@@ -203,7 +225,7 @@ public static class PatchTools
             // rationale ("a concurrent edit to the body would have been overwritten silently") applies to
             // it identically, and a second agent rewriting comments is precisely the likely case. Keyed on
             // whether the patch touches body TEXT, which is answerable from the edit spans alone.
-            var textTouched = await BodyTextTouchedIdsAsync(solution, locator, patchEdits, cancellationToken);
+            var textTouched = await BodyTextTouchedIdsAsync(solution, locator, patchEdits!, cancellationToken);
             var alreadyUnleased = unleasedBody.Select(u => u.SymbolId).ToHashSet(StringComparer.Ordinal);
             unleasedBody.AddRange(textTouched
                 .Where(id => !alreadyUnleased.Contains(id)
@@ -584,4 +606,147 @@ public static class PatchTools
 
     private static string Error(string kind, string message) =>
         Formats.Render(new { error = kind, message });
+
+    private static bool TryParseLines(string lines, out int startLine, out int endLine)
+    {
+        startLine = endLine = 0;
+        var dash = lines.IndexOf('-');
+        if (dash < 0)
+        {
+            if (!int.TryParse(lines, out startLine) || startLine < 1)
+                return false;
+            endLine = startLine;
+            return true;
+        }
+        if (!int.TryParse(lines[..dash], out startLine) || !int.TryParse(lines[(dash + 1)..], out endLine))
+            return false;
+        return startLine >= 1 && endLine >= startLine;
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+        return count;
+    }
+
+    private static async Task<(ISymbol? Symbol, string? ErrorJson)> ResolveEditSymbolAsync(
+        Solution solution, SymbolStore symbolStore, string symbolId, CancellationToken cancellationToken)
+    {
+        var fqName = symbolStore.FqNameFor(symbolId);
+        if (fqName is null)
+            return (null, Error("symbol_not_found",
+                $"No symbol known by id {symbolId}. Refetch it with get_symbol or search_index."));
+
+        var resolution = await SymbolResolver.ResolveAsync(solution, fqName, cancellationToken);
+        if (resolution.Symbol is null)
+            return (null, Error("symbol_not_found",
+                $"{symbolId} (\"{fqName}\") no longer resolves uniquely in the live workspace -- it may have moved or been removed. Refetch it with get_symbol."));
+
+        return (resolution.Symbol, null);
+    }
+
+    /// <summary>
+    /// Resolves every input edit to a concrete line-range <see cref="PatchEdit"/>, dispatching on which
+    /// mode each carries (spec §13.4). A line-range edit's optional symbolId is cross-checked against
+    /// that symbol's own live declaration span; a find/replace edit is resolved against the symbol's
+    /// current text into an equivalent line-range edit over its whole declaration span.
+    /// </summary>
+    /// <remarks>
+    /// Both modes reduce to the same <see cref="PatchEdit"/> shape before reaching
+    /// <see cref="PatchSandbox.ApplyAsync"/>, so nothing downstream needs to know which one produced it.
+    /// find/replace and the symbolId cross-check both address the LIVE workspace, never a draft's
+    /// proposed text -- an amend keeps them out of scope rather than checking against stale coordinates.
+    /// </remarks>
+    private static async Task<(List<PatchEdit>? Edits, string? ErrorKind, string? ErrorJson)> ResolveEditsAsync(
+        Solution solution, SolutionLocator locator, SymbolStore symbolStore,
+        IReadOnlyList<PatchEditInput> edits, bool amending, CancellationToken cancellationToken)
+    {
+        var resolved = new List<PatchEdit>(edits.Count);
+        foreach (var e in edits)
+        {
+            var isFindReplace = e.Find is not null || e.Replace is not null;
+            var isLineRange = e.Lines is not null || e.NewText is not null || e.File is not null;
+            if (isFindReplace == isLineRange)
+                return (null, "invalid_edit", Error("invalid_edit",
+                    "Each edit is either line-range (file, lines, newText) or find/replace (symbolId, find, replace) -- not both, and not neither."));
+
+            if (isFindReplace)
+            {
+                if (e.SymbolId is null || string.IsNullOrEmpty(e.Find) || e.Replace is null)
+                    return (null, "invalid_edit", Error("invalid_edit",
+                        "A find/replace edit requires symbolId, a non-empty find, and replace."));
+                if (amending)
+                    return (null, "find_replace_requires_fresh_patch", Error("find_replace_requires_fresh_patch",
+                        "find/replace edits resolve against the live workspace's text, not a draft's proposed text -- resend a fresh patch instead of amending."));
+
+                var (symbol, symbolError) = await ResolveEditSymbolAsync(solution, symbolStore, e.SymbolId, cancellationToken);
+                if (symbol is null)
+                    return (null, "symbol_not_found", symbolError);
+
+                var sites = ContextTools.DeclarationSpans(symbol, locator);
+                if (sites.Count != 1)
+                    return (null, "ambiguous_declaration_sites", Error("ambiguous_declaration_sites",
+                        $"find/replace targets exactly one declaration site; {e.SymbolId} has {sites.Count} (a partial type split across files). Use a line-range edit against the specific file instead."));
+
+                var site = sites[0];
+                var documentId = solution.GetDocumentIdsWithFilePath(locator.AbsPath(site.File)).FirstOrDefault();
+                if (documentId is null || solution.GetDocument(documentId) is not { } document)
+                    return (null, "symbol_not_found", Error("symbol_not_found",
+                        $"{e.SymbolId}'s file is not part of the loaded solution."));
+
+                var text = await document.GetTextAsync(cancellationToken);
+                if (site.StartLine < 1 || site.EndLine > text.Lines.Count)
+                    return (null, "symbol_not_found", Error("symbol_not_found",
+                        $"{e.SymbolId}'s declaration span no longer fits its file; refetch it with get_symbol."));
+
+                var span = TextSpan.FromBounds(text.Lines[site.StartLine - 1].Start, text.Lines[site.EndLine - 1].End);
+                var body = text.ToString(span);
+                var occurrences = CountOccurrences(body, e.Find);
+                if (occurrences == 0)
+                    return (null, "find_not_found", Error("find_not_found",
+                        $"\"{e.Find}\" does not occur inside {e.SymbolId}'s own declaration span ({site.File}:{site.StartLine}-{site.EndLine})."));
+                if (occurrences > 1 && e.ReplaceAll != true)
+                    return (null, "ambiguous_find_match", Error("ambiguous_find_match",
+                        $"\"{e.Find}\" occurs {occurrences} times inside {e.SymbolId}'s span -- narrow the text or pass replaceAll: true to replace every occurrence."));
+
+                resolved.Add(new PatchEdit(site.File, site.StartLine, site.EndLine,
+                    body.Replace(e.Find, e.Replace, StringComparison.Ordinal)));
+            }
+            else
+            {
+                if (e.File is null || e.Lines is null || e.NewText is null)
+                    return (null, "invalid_edit", Error("invalid_edit",
+                        "A line-range edit requires file, lines and newText."));
+                if (!TryParseLines(e.Lines, out var startLine, out var endLine))
+                    return (null, "invalid_edit", Error("invalid_edit",
+                        $"lines must be \"N\" or \"N-M\" (1-based, inclusive): \"{e.Lines}\""));
+
+                if (e.SymbolId is not null && !amending)
+                {
+                    var (symbol, symbolError) = await ResolveEditSymbolAsync(solution, symbolStore, e.SymbolId, cancellationToken);
+                    if (symbol is null)
+                        return (null, "symbol_not_found", symbolError);
+
+                    var sites = ContextTools.DeclarationSpans(symbol, locator);
+                    var withinAny = sites.Any(s => PathComparison.Comparer.Equals(locator.AbsPath(s.File), locator.AbsPath(e.File))
+                        && startLine >= s.StartLine && endLine <= s.EndLine);
+                    if (!withinAny)
+                        return (null, "edit_outside_symbol", Error("edit_outside_symbol",
+                            $"lines {startLine}-{endLine} of {e.File} do not fall inside {e.SymbolId}'s own declaration span "
+                            + $"({string.Join("; ", sites.Select(s => $"{s.File}:{s.StartLine}-{s.EndLine}"))}). "
+                            + "Refetch the symbol and rebuild the edit from its reported span."));
+                }
+
+                resolved.Add(new PatchEdit(e.File, startLine, endLine, e.NewText));
+            }
+        }
+
+        return (resolved, null, null);
+    }
 }

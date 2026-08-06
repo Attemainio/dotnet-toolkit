@@ -62,13 +62,23 @@ unchanged) — skipping it silently narrows this floor.
 1. **Hold current content.** Fetch what you are about to change with `get_symbol` (`include: "all"`)
    and keep its `contentVersion`.
 
-   **Two refinements once you know the symbol.** Coming back into a long member you have already read,
-   `include: "source@120-160"` is a complete pre-edit fetch — a sliced `source` narrows
-   `contentVersion` to `decl|body` exactly as a whole fetch does, so it leases the body without
-   re-sending the member. And whatever you fetch, **do not anchor a patch on a stripped one**:
-   `-comments`, `-attributes` and `source:code` on a *type* drop lines from the response but not from
-   the file, and `newText` replaces its span verbatim — so the lines you never saw are deleted. Strip
-   on the read pass, fetch unstripped on the write pass.
+   **Never hand-count a line number from a wider fetch.** If the edit only touches a few lines inside
+   a symbol you already read (or read wide to explore), do not scroll the wide response and count rows
+   to find their absolute file line — that arithmetic is exactly what produces a patch against the
+   wrong span, silently, with no error (`get_symbol.md` explains why `Compact`'s run-header numbering
+   makes this worse, but the risk exists in `Exact` too the moment a target line is more than a glance
+   from a number you can already see). Instead, **re-fetch that exact target with a narrow `@` slice**
+   — `include: "source:full-exact@120-121"` — and take `startLine`/`endLine` straight from what comes
+   back. A sliced `source` narrows `contentVersion` to `decl|body` exactly as a whole fetch does, so it
+   leases the body without re-sending the member, and forcing `-exact` guarantees a number on every
+   line so there is nothing left to count. Only when the edit's real boundary is ambiguous (does it
+   include a leading blank line? a trailing brace?) is the narrow slice worth widening by a line or two
+   — never by re-deriving the number from the original wide fetch.
+
+   **Whatever you fetch, do not anchor a patch on a stripped one**: `-comments`, `-attributes` and
+   `source:code` on a *type* drop lines from the response but not from the file, and `newText` replaces
+   its span verbatim — so the lines you never saw are deleted. Strip on the read pass, fetch unstripped
+   on the write pass.
 2. **Know the blast radius.** If you are changing a signature, accessibility, base type or interface,
    call `get_references` first — dependent-compile failures across implementations are otherwise
    guaranteed.
@@ -111,12 +121,29 @@ the blast radius before committing — the rare case, not the default.
   the whole document back, so a file that moved on disk underneath the workspace is refused outright
   rather than reverting everyone else's changes while reporting success. Expect that after a
   `git checkout`, a `git pull`, a rebase, or any `.cs` edit made with `Edit`.
-- **`edits`** — an array of `{file, startLine, endLine, newText}`. Know the full set of edits before
-  calling and send that whole set in one call; never discover edit 2 only after submitting edit 1 when
-  both were already known. **Draw each hunk around only what actually changed** — `newText` replaces its
-  span verbatim, so one edit spanning lines 20–65 to change 20–25 and 60–65 resends 34 unchanged lines
-  for nothing. Split at real unchanged-content boundaries, not into micro-hunks where changes genuinely
-  cluster. Spans come from `declarationSites`, never from `search_index`'s narrower `line`/`endLine`.
+- **`edits`** — an array where each entry is *either* a line-range edit `{file, lines, newText[,
+  symbolId]}` *or* a symbol-scoped find/replace `{symbolId, find, replace[, replaceAll]}` — never both
+  shapes on one entry. Know the full set of edits before calling and send that whole set in one call;
+  never discover edit 2 only after submitting edit 1 when both were already known.
+
+  **Line-range mode.** `lines` is `"N-M"` (or a bare `"N"`), 1-based inclusive, from `declarationSites`
+  — never from `search_index`'s narrower `line`/`endLine`, and never hand-counted (see step 1 above).
+  **Draw each hunk around only what actually changed** — `newText` replaces its span verbatim, so one
+  edit spanning lines 20–65 to change 20–25 and 60–65 resends 34 unchanged lines for nothing. Split at
+  real unchanged-content boundaries, not into micro-hunks where changes genuinely cluster. Pass
+  `symbolId` alongside `lines` on a fresh (non-amend) patch and the server cross-checks that the range
+  actually falls inside that symbol's own declaration span — a free catch for exactly the
+  wrong-span-from-hand-counting mistake this section warns about; it does nothing on an amend, since a
+  draft's coordinates address its own proposed text, not the live symbol's span.
+
+  **Find/replace mode.** `{symbolId, find, replace}` locates literal `find` text inside that symbol's
+  *own* declaration span and replaces it — no line numbers at all. Errors if `find` occurs zero times
+  (`find_not_found`) or more than once without `replaceAll: true` (`ambiguous_find_match`); set
+  `replaceAll` to fix the same typo everywhere inside one symbol in a single edit (a class body's every
+  method, say). Resolves against the **live workspace only** — rejected (`find_replace_requires_fresh_patch`)
+  alongside a `draftId`, so amend a find/replace failure by resending a fresh patch, not by amending the
+  draft. Prefer this mode whenever the change is "replace this exact text" rather than "rewrite this
+  span" — it has no line-number arithmetic to get wrong in the first place.
 - **`intent`** — REQUIRED to apply. One sentence of *why*, in user terms ("Add cancellation support to
   training"), not *what* — the diff already says that. Reuse the task's intent across its patches.
 - **`taskId`** — optional, and the one argument that outlives the call: an applied patch stamps it onto

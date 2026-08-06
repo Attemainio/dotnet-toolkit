@@ -10,13 +10,44 @@ actually needs — writes to disk only when it does, and only when you ask it to
 | Arg | Meaning |
 |---|---|
 | `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. A **body**-changing edit additionally needs a version that carries the `body` layer, which only an include serving `source`/`bodyOutline`/`mechanicalFacts` hands out; the declaration-only token from a default fetch is `error: "unleased_body"`. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
-| `edits` | `[{file, startLine, endLine, newText}]` — the line span comes straight from `get_symbol`'s `declarationSites`. With `draftId`, the spans address the **draft's** proposed text instead, and the array may be empty. |
+| `edits` | Each entry is **either** a line-range edit `{file, lines, newText[, symbolId]}` **or** a symbol-scoped find/replace `{symbolId, find, replace[, replaceAll]}` — never both shapes on one entry. `lines` is `"N-M"` (or a bare `"N"`), 1-based inclusive, straight from `get_symbol`'s `declarationSites`. With `draftId`, line-range spans address the **draft's** proposed text instead, and the array may be empty. See "Two edit shapes" below. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
 | `runAnalyzers` | Whether to run the analyzer pass once the compile rungs are clean (default `true`). Set `false` when only compile/semantic correctness matters — `checks.analyzers` then reports `{"ran": false, "skipReason": "the caller disabled the analyzer pass"}` instead of a verdict, and `notAssessed` states the consequence. Saves the pass's own cost (typically hundreds of ms over the analyzer set); does not change which compile levels run. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
 | `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — applying with one is what writes to the development log (this tool and `rename_symbol` are its only writers). |
 | `tags` | Optional `string[]` stored alongside the development-log entry. Rarely used; `search_log` has no tag filter today, so a tag is descriptive metadata rather than a retrieval key. |
 | `draftId` | Amend a previous unapplied patch instead of resubmitting it — see "Amending instead of resubmitting" below. |
+
+### Two edit shapes
+
+**Line-range** (`{file, lines, newText[, symbolId]}`) replaces `lines` verbatim, same as before —
+just `lines: "N-M"` instead of separate `startLine`/`endLine` integers, reusing the same range grammar
+`get_symbol`'s `@` selector already uses. Add `symbolId` on a **fresh (non-amend)** patch and the
+server cross-checks that `lines` actually falls inside that symbol's own live declaration span before
+touching anything else — `error: "edit_outside_symbol"` if it doesn't, naming the symbol's real spans.
+This exists to catch a hand-counted or misattributed line number *before* it silently overwrites the
+wrong text: build the edit from a span `get_symbol` reported (never derive one by counting through a
+wider fetch — see `get_symbol.md`'s `Compact`/`Exact` note and `dotnet-change/SKILL.md` step 1), and
+this check confirms the number actually landed where intended. It is not run on an amend, since a
+draft's line numbers address its own proposed text, not the live symbol's span.
+
+**Find/replace** (`{symbolId, find, replace[, replaceAll]}`) has no line numbers at all: it locates
+`find` as literal text inside `symbolId`'s own declaration span and replaces it, resolving to an
+ordinary line-range edit internally before reaching the same validation ladder. `symbolId` must have
+exactly one declaration site (a partial type split across files is `error: "ambiguous_declaration_sites"`
+— use a line-range edit against the specific file instead). Zero matches is `error: "find_not_found"`;
+more than one match without `replaceAll: true` is `error: "ambiguous_find_match"`, rather than guessing
+which occurrence was meant — pass `replaceAll: true` to fix the same text everywhere inside one symbol
+in a single edit (every occurrence in a class body, say). **Resolves against the live workspace only**:
+paired with a `draftId` it is `error: "find_replace_requires_fresh_patch"` — amend a find/replace
+failure by resending a fresh patch, not by amending the draft. Prefer this mode whenever the change is
+"replace this exact text" rather than "rewrite this span": there is no line-number arithmetic to get
+wrong in the first place.
+
+```
+validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2bac28c29969"},
+  edits: [{symbolId: "sym_7a9d22ff3b68f4ee", find: "\"pong\"", replace: "\"pong!\""}])
+```
 
 ### Don't dry-run then apply as two calls
 
@@ -127,11 +158,14 @@ only the 8 most recent are kept.
 | `unleased_body` | The patch rewrites a **body** against a `contentVersion` that carries no `body` layer, so staleness was only ever verified for the declaration and a concurrent edit to that body would have been overwritten silently. `get_symbol` narrows its token to the layers it served, so the default fetch leases `decl` (+`refs`) only. Same fix shape as `unheld_symbol`, and it likewise keeps a draft: refetch with an include that serves the body (`all`, `source`, `bodyOutline` or `mechanicalFacts`), then resend the `draftId` with that version and an empty `edits` array. The versions the error reports already carry the layer. **Keyed on the body TEXT the edit touches, not on whether a semantic change was detected** — see below. |
 | `draft_stale` | A file moved in the workspace since the draft forked from it, so its line numbers no longer mean anything. The draft is dropped; rebuild from a fresh `get_symbol`. |
 
-A draft is **not** issued for `stale_base`, `invalid_edit`, or `stale_workspace` — nor when the patch
-applied, since there is then nothing left to correct. The distinction is whether the **text** is still
-trustworthy:
+A draft is **not** issued for `stale_base`, `invalid_edit`, `stale_workspace`, or the edit-shape errors
+`edit_outside_symbol` / `find_not_found` / `ambiguous_find_match` / `ambiguous_declaration_sites` /
+`find_replace_requires_fresh_patch` — nor when the patch applied, since there is then nothing left to
+correct. The distinction is whether the **text** is still trustworthy:
 
-- `invalid_edit` / `stale_workspace` — the fork was never built, so there is no proposed text to keep.
+- `invalid_edit` / `stale_workspace` / the edit-shape errors above — the fork was never built (these
+  are all rejected while resolving `edits` into concrete line-range edits, before any sandbox exists),
+  so there is no proposed text to keep. Revise the edit and resubmit fresh, not via `draftId`.
 - `stale_base` — a version you sent **disagrees** with the current one. Your text was built on content
   that has since moved, so it must be rebuilt; making the retry cheap would only tempt you to re-apply
   reasoning that no longer holds.
@@ -158,7 +192,7 @@ Real call and response — an intentionally broken addition, `applyOnSuccess: fa
 
 ```
 validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2bac28c29969"},
-  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 16, endLine: 16,
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", lines: "16-16",
            newText: "    public static string Ping() => ThisTypeDoesNotExist.Value;"}])
 ```
 
@@ -205,7 +239,7 @@ against what:
 
 ```
 validate_patch(draftId: "draft_01KYHQZHXXKMF2XQE0AHS2KWNJ",
-  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", startLine: 16, endLine: 16,
+  edits: [{file: "src/DotnetToolkit.McpServer/Tools/ServerTools.cs", lines: "16-16",
            newText: "    public static string Ping() => \"pong\";"}])
 ```
 
@@ -235,5 +269,9 @@ See `skills/dotnet-change/SKILL.md` for the full write loop.
 - **`unheld_symbol`** → merge that one entry into `baseVersions` via the same `draftId`.
 - **`unleased_body`** → refetch that symbol with a body-serving include (`all`/`source`/`bodyOutline`/`mechanicalFacts`) and merge the wider version in via the same `draftId`.
 - **`stale_workspace`** → `reload_workspace`, re-fetch `get_symbol` (spans move), then resubmit.
+- **`edit_outside_symbol`** → the reported `lines` don't match the reported symbol; refetch the symbol and rebuild `lines` from its `declarationSites`, not by hand-counting.
+- **`find_not_found` / `ambiguous_find_match`** → refetch the symbol's `source` and adjust `find` to a substring that occurs exactly once (or pass `replaceAll: true`).
+- **`ambiguous_declaration_sites`** → the symbol is a partial type; switch to a line-range edit against the specific file's declaration site instead of find/replace.
+- **`find_replace_requires_fresh_patch`** → resend a fresh patch (no `draftId`) instead of amending; find/replace never addresses draft coordinates.
 - **The change is only a rename** → `rename_symbol` — `rename_symbol.md`. Don't author the call-site edits.
 - **Need the callers before changing a signature** → `get_references` — `get_references.md`

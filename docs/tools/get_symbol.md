@@ -43,8 +43,8 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`lineNumbers`/`compact` work under either. No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
-| `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-lineNumbers`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
+| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`exact`/`compact` work under either (`lineNumbers` is a deprecated alias for `compact`). No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
+| `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
 | `source@lines` | Not a separate component — `@` plus line ranges appended to `source` (after any modifiers): `"source@46-76"`, `"source:code@46-76;79-83"` (`;` separates ranges, **not** `,`, which already separates component names), `"source@-50"`, `"source@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. |
@@ -80,15 +80,16 @@ wider than what `source:code` returned.
 (`[{line, text}]`) and the `@start-end` span form (`[{lines, text}]`) and keeps whichever is
 literally fewer characters. The gutter costs a few characters *per line*; a span header costs a few
 characters *per contiguous run* — so for an unmodified declaration of any real size, Compact wins
-almost every time. `-lineNumbers` forces Compact even on the rare declaration where the gutter would
-be shorter; `-compact` forces the numbered gutter even when the spans would be shorter. The two
-contradict each other — `-lineNumbers-compact` together is an `invalid_component`.
+almost every time. `-exact` forces the numbered gutter even on the rare declaration where the spans
+would be shorter; `-compact` forces the spans even when the gutter would be shorter (`-lineNumbers`
+is a deprecated alias for `-compact`). The two force-modifiers contradict each other —
+`-exact-compact` together is an `invalid_component`.
 
-Force `-compact` for anything you are about to build a `validate_patch` span from. Compact's line
+Force `-exact` for anything you are about to build a `validate_patch` span from. Compact's line
 number is the *start* of each run, not one per line — a line further into a run has to be counted
 forward from that header, and a miscount produces a patch against the wrong span, not an error.
 `Automatic` may silently return either shape, so don't rely on it for a fetch you intend to edit
-from — check `sourceLineFormat` (or force `-compact`) instead of inferring the shape yourself.
+from — check `sourceLineFormat` (or force `-exact`) instead of inferring the shape yourself.
 
 ## What `contentVersion` a patch needs
 

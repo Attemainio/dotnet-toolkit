@@ -1229,36 +1229,48 @@ private static object? ContainingType(ISymbol sym)
         displayString = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
     };
 
-    /// <summary>Flat file/startLine/endLine sites for a symbol's declarations, one per partial part.</summary>
-    /// <param name="sym">The symbol whose declaration spans are wanted.</param>
-    /// <param name="locator">Renders each site's path repo-relative.</param>
-    /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
-    /// <remarks>
-    /// Internal rather than private because <c>validate_patch</c> returns the same shape for the symbols a
-    /// patch changed. Both paths must produce byte-identical spans -- a caller is meant to feed either one
-    /// straight back into an edit -- so they share this method rather than each computing bounds.
-    /// </remarks>
-    internal static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
-        sym.DeclaringSyntaxReferences
-            // Exclude source-generator output (obj/**): it is regenerated on every build and not an
-            // editable declaration site, so surfacing it alongside the hand-written partial only offers
-            // a validate_patch caller a span that will be overwritten out from under it.
-            .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
-            .Select(r =>
-        {
-            var node = NormalizeDeclNode(r.GetSyntax());
-            var (start, end) = DeclarationBoundsIncludingDocComment(node);
-            var span = r.SyntaxTree.GetLineSpan(TextSpan.FromBounds(start, end));
-            // Flat file/startLine/endLine — these feed straight into a validate_patch edit. Start
-            // includes a leading /// doc comment when present, so an edit targeting this span can
-            // rewrite the comment along with the declaration, not just the declaration alone.
-            return (object)new
+        /// <summary>Flat file/startLine/endLine spans for a symbol's declarations, one per partial part.</summary>
+        /// <param name="sym">The symbol whose declaration spans are wanted.</param>
+        /// <param name="locator">Renders each span's path repo-relative.</param>
+        /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
+        /// <remarks>
+        /// The typed core <see cref="DeclarationSites"/> and <c>validate_patch</c>'s edit-span validation
+        /// both need the same bounds; this is the shared computation both sit on top of.
+        /// </remarks>
+        internal static IReadOnlyList<(string File, int StartLine, int EndLine)> DeclarationSpans(ISymbol sym, SolutionLocator locator) =>
+            sym.DeclaringSyntaxReferences
+                // Exclude source-generator output (obj/**): it is regenerated on every build and not an
+                // editable declaration site, so surfacing it alongside the hand-written partial only offers
+                // a validate_patch caller a span that will be overwritten out from under it.
+                .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
+                .Select(r =>
             {
-                file = locator.RelPath(span.Path),
-                startLine = span.StartLinePosition.Line + 1,
-                endLine = span.EndLinePosition.Line + 1,
-            };
-        }).ToArray();
+                var node = NormalizeDeclNode(r.GetSyntax());
+                var (start, end) = DeclarationBoundsIncludingDocComment(node);
+                var span = r.SyntaxTree.GetLineSpan(TextSpan.FromBounds(start, end));
+                return (
+                    File: locator.RelPath(span.Path),
+                    StartLine: span.StartLinePosition.Line + 1,
+                    EndLine: span.EndLinePosition.Line + 1);
+            }).ToArray();
+
+        /// <summary>Flat file/startLine/endLine sites for a symbol's declarations, one per partial part.</summary>
+        /// <param name="sym">The symbol whose declaration spans are wanted.</param>
+        /// <param name="locator">Renders each site's path repo-relative.</param>
+        /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
+        /// <remarks>
+        /// Internal rather than private because <c>validate_patch</c> returns the same shape for the symbols a
+        /// patch changed. Both paths must produce byte-identical spans -- a caller is meant to feed either one
+        /// straight back into an edit -- so they share <see cref="DeclarationSpans"/> rather than each
+        /// computing bounds.
+        /// </remarks>
+        internal static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
+            DeclarationSpans(sym, locator)
+                // Flat file/startLine/endLine — these feed straight into a validate_patch edit. Start
+                // includes a leading /// doc comment when present, so an edit targeting this span can
+                // rewrite the comment along with the declaration, not just the declaration alone.
+                .Select(s => (object)new { file = s.File, startLine = s.StartLine, endLine = s.EndLine })
+                .ToArray();
 
     /// <summary>
     /// Whether every one of <paramref name="sym"/>'s declarations is source-generator output, and so

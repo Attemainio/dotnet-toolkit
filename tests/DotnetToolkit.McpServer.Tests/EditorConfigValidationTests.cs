@@ -32,7 +32,7 @@ public sealed class EditorConfigValidationTests(SampleSolutionFixture f)
     private async Task<JsonElement> Patch(string symbol, string file, int startLine, int endLine, string newText)
     {
         var sym = Root(await GetSymbol(symbol));
-        var edits = new[] { new PatchEditInput(file, startLine, endLine, newText) };
+        var edits = new[] { new PatchEditInput(File: file, Lines: $"{startLine}-{endLine}", NewText: newText) };
         return Root(await PatchTools.ValidatePatch(
             f.Workspace, f.Locator, f.Symbols, f.FeatureLog, f.Builder, f.TargetedTests, f.Telemetry,
             new PatchDraftStore(TimeProvider.System),

@@ -6,8 +6,8 @@ namespace DotnetToolkit.McpServer.Contracts;
 /// <c>"source:code-comments"</c>). There is no additive <c>+tag</c> form — a caller starts from a mode's
 /// own default (everything, for <see cref="SourceMode.Full"/>; no doc-comment tags but attributes and
 /// <c>//</c> comments still on, for <see cref="SourceMode.Code"/>) and only ever strips further.
-/// <c>-lineNumbers</c> and <c>-compact</c> subtract from the rendering rather than the source text —
-/// see <see cref="LineFormat"/>.
+    /// <c>-exact</c> and <c>-compact</c> (or the deprecated <c>-lineNumbers</c> alias) subtract from the
+    /// rendering rather than the source text — see <see cref="LineFormat"/>.
 /// </summary>
 public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedTags, bool ExcludeAttributes, bool ExcludeComments)
 {
@@ -34,7 +34,7 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
     };
 
     /// <summary>Every recognized modifier name, doc tags first — echoed in error detail text.</summary>
-    public static readonly IReadOnlyList<string> ModifierNames = [.. DocTagLocalNames.Keys, "attributes", "comments", "lineNumbers", "compact"];
+        public static readonly IReadOnlyList<string> ModifierNames = [.. DocTagLocalNames.Keys, "attributes", "comments", "lineNumbers", "compact", "exact"];
 
     /// <summary>
     /// The absolute file line ranges the caller narrowed <c>source</c> to via an <c>@</c> selector
@@ -65,31 +65,32 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
         Compact,
     }
 
-    /// <summary>
-    /// Which <see cref="SourceLineFormat"/> to render <c>source</c> in — <c>-lineNumbers</c> forces
-    /// <see cref="SourceLineFormat.Compact"/>, <c>-compact</c> forces <see cref="SourceLineFormat.Exact"/>,
-    /// and neither modifier leaves the default <see cref="SourceLineFormat.Automatic"/>.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="SourceLineFormat.Compact"/> is aimed at reading rather than editing: without the
-    /// gutter, a line has to be counted forward from its span header, so a caller about to edit should
-    /// force <see cref="SourceLineFormat.Exact"/> rather than trust <see cref="SourceLineFormat.Automatic"/>,
-    /// which may render the same response as <see cref="SourceLineFormat.Compact"/> when that is shorter.
-    /// </remarks>
+        /// <summary>
+        /// Which <see cref="SourceLineFormat"/> to render <c>source</c> in — <c>-exact</c> forces
+        /// <see cref="SourceLineFormat.Exact"/>, <c>-compact</c> forces <see cref="SourceLineFormat.Compact"/>,
+        /// <c>-lineNumbers</c> is a deprecated alias for <c>-compact</c>, and no modifier leaves the
+        /// default <see cref="SourceLineFormat.Automatic"/>.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SourceLineFormat.Compact"/> is aimed at reading rather than editing: without the
+        /// gutter, a line has to be counted forward from its span header, so a caller about to edit should
+        /// force <see cref="SourceLineFormat.Exact"/> rather than trust <see cref="SourceLineFormat.Automatic"/>,
+        /// which may render the same response as <see cref="SourceLineFormat.Compact"/> when that is shorter.
+        /// </remarks>
     public SourceLineFormat LineFormat { get; init; } = SourceLineFormat.Automatic;
 
-    /// <summary>
-    /// Parses the text after <c>source:</c> (e.g. <c>"full-remarks-attributes"</c>, <c>"code@46-76"</c>)
-    /// into a query, or null on anything unrecognized: an unknown mode, an unknown modifier name, a
-    /// doc-tag modifier under <see cref="SourceMode.Code"/> — always redundant there since code already
-    /// excludes every tag by default, so it is rejected rather than silently accepted as a no-op —
-    /// <c>-lineNumbers</c> and <c>-compact</c> together, which contradict each other — or a malformed
-    /// line range.
-    /// </summary>
-    /// <remarks>
-    /// A suffix opening with <c>@</c> is the mode-less form a bare <c>"source@46-76"</c> produces, and
-    /// means <see cref="SourceMode.Full"/> with that selection.
-    /// </remarks>
+        /// <summary>
+        /// Parses the text after <c>source:</c> (e.g. <c>"full-remarks-attributes"</c>, <c>"code@46-76"</c>)
+        /// into a query, or null on anything unrecognized: an unknown mode, an unknown modifier name, a
+        /// doc-tag modifier under <see cref="SourceMode.Code"/> — always redundant there since code already
+        /// excludes every tag by default, so it is rejected rather than silently accepted as a no-op —
+        /// <c>-exact</c> and <c>-compact</c> (or its deprecated <c>-lineNumbers</c> alias) together, which
+        /// contradict each other — or a malformed line range.
+        /// </summary>
+        /// <remarks>
+        /// A suffix opening with <c>@</c> is the mode-less form a bare <c>"source@46-76"</c> produces, and
+        /// means <see cref="SourceMode.Full"/> with that selection.
+        /// </remarks>
     public static SourceQuery? Parse(string suffix)
     {
         var at = suffix.IndexOf('@');
@@ -144,18 +145,20 @@ public sealed record SourceQuery(SourceMode Mode, IReadOnlySet<string> ExcludedT
                 excludeComments = true;
                 continue;
             }
-            // Unlike the doc-tag modifiers below, these two are rendering choices rather than doc
-            // sections, so they are legal under both modes, and are mutually exclusive with each other.
-            if (string.Equals(token, "lineNumbers", StringComparison.OrdinalIgnoreCase))
-            {
-                forceCompact = true;
-                continue;
-            }
-            if (string.Equals(token, "compact", StringComparison.OrdinalIgnoreCase))
-            {
-                forceExact = true;
-                continue;
-            }
+                // Unlike the doc-tag modifiers below, these are rendering choices rather than doc
+                // sections, so they are legal under both modes. -lineNumbers is a deprecated alias for
+                // -compact (both force Compact); -exact and -compact are mutually exclusive.
+                if (string.Equals(token, "lineNumbers", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(token, "compact", StringComparison.OrdinalIgnoreCase))
+                {
+                    forceCompact = true;
+                    continue;
+                }
+                if (string.Equals(token, "exact", StringComparison.OrdinalIgnoreCase))
+                {
+                    forceExact = true;
+                    continue;
+                }
 
             var match = DocTagLocalNames.Keys.FirstOrDefault(k => string.Equals(k, token, StringComparison.OrdinalIgnoreCase));
             if (match is null || mode == SourceMode.Code)
