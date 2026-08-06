@@ -708,7 +708,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_DisjointLineRanges_ReportRunsNotTheEnvelope()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10;12-13"))
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-compact@9-10;12-13"))
             .GetProperty("content");
 
         Assert.Equal(new[] { 9, 10, 12, 13 }, SourceLineNumbers(content));
@@ -876,7 +876,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_DeclarationSpanIncludesTheLeadingDocComment()
     {
-        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-compact"));
         var content = root.GetProperty("content");
         var site = content.GetProperty("declarationSites")[0];
 
@@ -901,8 +901,8 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceCode_ExcludesLeadingDocComment()
     {
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source"));
-        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code"));
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-compact"));
+        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code-compact"));
 
         var fullFirstLine = full.GetProperty("content").GetProperty("source")[0];
         var codeSource = code.GetProperty("content").GetProperty("source");
@@ -926,7 +926,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_Source_FirstLineKeepsItsIndentation()
     {
-        foreach (var include in new[] { "source", "source:code" })
+        foreach (var include in new[] { "source:full-compact", "source:code-compact" })
         {
             var lines = Root(await GetSymbol("Sample.Lib.Widget.Spin", include))
                 .GetProperty("content").GetProperty("source");
@@ -943,8 +943,8 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceCode_ExcludesMemberLevelDocCommentsToo()
     {
-        var full = Root(await GetSymbol("Sample.Lib.Widget", "source"));
-        var code = Root(await GetSymbol("Sample.Lib.Widget", "source:code"));
+        var full = Root(await GetSymbol("Sample.Lib.Widget", "source:full-compact"));
+        var code = Root(await GetSymbol("Sample.Lib.Widget", "source:code-compact"));
 
         var fullSource = full.GetProperty("content").GetProperty("source");
         var codeSource = code.GetProperty("content").GetProperty("source");
@@ -980,7 +980,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceFullMinusAttributes_DropsWholeLineButKeepsInlineAttribute()
     {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes"));
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-compact"));
         var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
         Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
@@ -1007,7 +1007,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceFullMinusComments_DropsStandaloneButKeepsTrailingComment()
     {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-comments"));
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-comments-compact"));
         var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
         Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
@@ -1022,7 +1022,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceFullMinusAttributesMinusComments_InlineContentSurvivesBoth()
     {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-comments"));
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-comments-compact"));
         var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
         Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
@@ -1067,7 +1067,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceLineRange_ReturnsOnlyThoseLines()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-compact@9-10")).GetProperty("content");
 
         Assert.Equal(new[] { 9, 10 }, SourceLineNumbers(content));
         Assert.Equal("9-10/5-13", content.GetProperty("sourceLines").GetString());
@@ -1096,7 +1096,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_LineRange_ComposesWithModifierExclusions()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code@5-13")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code-compact@5-13")).GetProperty("content");
 
         // Line 5 is the type's doc comment, which source:code already removed.
         Assert.DoesNotContain(5, SourceLineNumbers(content));
@@ -1117,6 +1117,39 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal("6-13", span.GetProperty("lines").GetString());
         Assert.False(span.TryGetProperty("line", out _));
         Assert.Contains(span.GetProperty("text").EnumerateArray(), t => t.GetString()!.Contains("WithOwnLineAttribute"));
+    }
+
+    /// <summary>
+    /// The default (Automatic) format renders as compact @start-end spans when that comes out shorter
+    /// than the numbered gutter, which is normal for an unmodified declaration of any real size.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_DefaultFormat_IsAutomaticAndPicksCompactWhenShorter()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source")).GetProperty("content");
+        var span = Assert.Single(content.GetProperty("source").EnumerateArray());
+
+        Assert.True(span.TryGetProperty("lines", out _));
+        Assert.False(span.TryGetProperty("line", out _));
+    }
+
+    /// <summary>-compact forces the numbered gutter even when Automatic would have picked the compact spans.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceMinusCompact_ForcesTheNumberedGutterEvenWhenCompactIsShorter()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-compact")).GetProperty("content");
+
+        Assert.All(content.GetProperty("source").EnumerateArray(), l => Assert.True(l.TryGetProperty("line", out _)));
+    }
+
+    /// <summary>-lineNumbers and -compact contradict each other, so together they are rejected.</summary>
+    [Fact]
+    public async Task GetSymbol_SourceMinusLineNumbersMinusCompact_IsInvalidComponent()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", include: "source:full-lineNumbers-compact"));
+
+        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
+        Assert.Contains("source:full-lineNumbers-compact", root.GetProperty("detail").GetString());
     }
 
     /// <summary>
@@ -1148,7 +1181,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_OpenEndedLineRange_ClampsToTheDeclaration()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@10-")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-compact@10-")).GetProperty("content");
 
         Assert.Equal(new[] { 10, 11, 12, 13 }, SourceLineNumbers(content));
         Assert.Equal("10-13/5-13", content.GetProperty("sourceLines").GetString());

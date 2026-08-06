@@ -43,7 +43,7 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration as `[{line, text}]`, one entry per physical line — `line` an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped `line: text` block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`lineNumbers` work under either. No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
+| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`lineNumbers`/`compact` work under either. No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
 | `source@lines` | Not a separate component — `@` plus line ranges appended to `source` (after any modifiers): `"source@46-76"`, `"source:code@46-76;79-83"` (`;` separates ranges, **not** `,`, which already separates component names), `"source@-50"`, `"source@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. |
@@ -75,13 +75,19 @@ wider than what `source:code` returned.
 **Rule: strip on the way in, fetch whole on the way out.** Read with `source:code` or
 `source:code-comments`; patch from `source`/`source:full` with the gutter left on.
 
-`-lineNumbers` drops the per-line gutter. The saving is real but small — **about 6% on a typical
-member, not the ~18% once claimed** before it was measured against the gutter render rather than
-the raw file; it's a fixed per-line cost, so it's larger on short lines and smaller on long ones.
-Changes shape to `[{lines, text}]`, one entry per contiguous run with an `@start-end` header,
-rather than `[{line, text}]` — for a reading pass over unfamiliar code, not for a fetch you're
-about to patch from (a line then has to be counted forward from its run header; a miscount
-produces a patch against the wrong span, not an error).
+`source`'s line format is **`Automatic` by default**: the server renders both the numbered gutter
+(`[{line, text}]`) and the `@start-end` span form (`[{lines, text}]`) and keeps whichever is
+literally fewer characters. The gutter costs a few characters *per line*; a span header costs a few
+characters *per contiguous run* — so for an unmodified declaration of any real size, Compact wins
+almost every time. `-lineNumbers` forces Compact even on the rare declaration where the gutter would
+be shorter; `-compact` forces the numbered gutter even when the spans would be shorter. The two
+contradict each other — `-lineNumbers-compact` together is an `invalid_component`.
+
+Force `-compact` for anything you are about to build a `validate_patch` span from. Compact's line
+number is the *start* of each run, not one per line — a line further into a run has to be counted
+forward from that header, and a miscount produces a patch against the wrong span, not an error.
+`Automatic` may silently return either shape, so don't rely on it for a fetch you intend to edit
+from.
 
 ## What `contentVersion` a patch needs
 

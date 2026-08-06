@@ -1280,8 +1280,11 @@ private static object? ContainingType(ISymbol sym)
             .ToArray();
 
     /// <summary>
-    /// Renders a symbol's source either as the default per-line <c>{line, text}</c> list or, when
-    /// <c>-lineNumbers</c> was requested, as one <c>{lines, text}</c> entry per contiguous run.
+    /// Renders a symbol's source as either the per-line <c>{line, text}</c> list
+    /// (<c>SourceLineFormat.Exact</c>) or one <c>{lines, text}</c> entry per contiguous run
+    /// (<c>SourceLineFormat.Compact</c>). <c>SourceLineFormat.Automatic</c> (the default) renders both and
+    /// keeps whichever comes out shorter, measured on the actual rendered text rather than guessed from
+    /// line count.
     /// </summary>
     /// <returns>Null only when there was no source to render, so an absent component stays absent.</returns>
     /// <remarks>
@@ -1293,9 +1296,19 @@ private static object? ContainingType(ISymbol sym)
     {
         if (lines is null)
             return null;
-        if (!query.ExcludeLineNumbers)
+        if (query.LineFormat == SourceQuery.SourceLineFormat.Exact)
             return lines;
 
+        var spans = ToSpans(lines);
+        if (query.LineFormat == SourceQuery.SourceLineFormat.Compact)
+            return spans;
+
+        return CompactRenderedLength(spans) < ExactRenderedLength(lines) ? spans : (object)lines;
+    }
+
+    /// <summary>Groups per-line source into one <see cref="SourceSpan"/> per contiguous run of lines.</summary>
+    private static List<SourceSpan> ToSpans(IReadOnlyList<SourceLine> lines)
+    {
         var spans = new List<SourceSpan>();
         var runStart = 0;
         for (var i = 0; i < lines.Count; i++)
@@ -1311,6 +1324,43 @@ private static object? ContainingType(ISymbol sym)
         }
 
         return spans;
+    }
+
+    /// <summary>
+    /// The exact character count the numbered <c>"{line}: {text}"</c> rendering of <paramref name="lines"/>
+    /// comes out to, newline-joined — mirrors <see cref="Formats"/>'s own line-array renderer so
+    /// <see cref="RenderSource"/> can compare it against <see cref="CompactRenderedLength"/> without
+    /// building the response twice.
+    /// </summary>
+    private static int ExactRenderedLength(IReadOnlyList<SourceLine> lines)
+    {
+        if (lines.Count == 0)
+            return 0;
+
+        var length = 0;
+        foreach (var line in lines)
+            length += line.Line.ToString().Length + 2 + line.Text.Length + 1;
+        return length - 1;
+    }
+
+    /// <summary>
+    /// The exact character count the <c>@start-end</c> span rendering of <paramref name="spans"/> comes
+    /// out to, newline-joined — mirrors <see cref="Formats"/>'s own span-array renderer for the same
+    /// reason as <see cref="ExactRenderedLength"/>.
+    /// </summary>
+    private static int CompactRenderedLength(IReadOnlyList<SourceSpan> spans)
+    {
+        if (spans.Count == 0)
+            return 0;
+
+        var length = 0;
+        foreach (var span in spans)
+        {
+            length += 1 + span.Lines.Length + 1;
+            foreach (var text in span.Text)
+                length += text.Length + 1;
+        }
+        return length - 1;
     }
 
     private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SourceQuery? query = null)
