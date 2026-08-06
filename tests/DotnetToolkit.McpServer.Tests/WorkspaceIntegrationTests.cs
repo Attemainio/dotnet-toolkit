@@ -1131,6 +1131,21 @@ public sealed class WorkspaceIntegrationTests
 
         Assert.True(span.TryGetProperty("lines", out _));
         Assert.False(span.TryGetProperty("line", out _));
+        Assert.Equal("compact", content.GetProperty("sourceLineFormat").GetString());
+    }
+
+    /// <summary>
+    /// sourceLineFormat is only reported when Automatic had to choose — an explicit -compact/-lineNumbers
+    /// already told the caller what it would get, so restating it would be pure duplication.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceLineFormat_AbsentWhenExplicitlyForced()
+    {
+        var compact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-lineNumbers")).GetProperty("content");
+        var exact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-compact")).GetProperty("content");
+
+        Assert.False(compact.TryGetProperty("sourceLineFormat", out _));
+        Assert.False(exact.TryGetProperty("sourceLineFormat", out _));
     }
 
     /// <summary>-compact forces the numbered gutter even when Automatic would have picked the compact spans.</summary>

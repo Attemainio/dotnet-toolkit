@@ -988,6 +988,7 @@ private static async Task<object> BuildContent(
         // what the reported span is measured against, so both come from one render rather than two.
         var declarationSource = hasSource ? SourceOf(sym, components.SourceQuery) : null;
         var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
+        var renderedSource = RenderSource(source, components.SourceQuery, out var resolvedLineFormat);
 
         var outline = !hasSource && components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
 
@@ -1009,7 +1010,15 @@ private static async Task<object> BuildContent(
             generated = IsGeneratedOnly(sym, locator) ? true : (bool?)null,
             containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
-            source = RenderSource(source, components.SourceQuery),
+            source = renderedSource,
+            // Only when Automatic actually had to choose — an explicit -lineNumbers/-compact already told
+            // the caller what it would get, so restating it here would be pure duplication.
+            sourceLineFormat = resolvedLineFormat switch
+            {
+                SourceQuery.SourceLineFormat.Exact => "exact",
+                SourceQuery.SourceLineFormat.Compact => "compact",
+                _ => null,
+            },
             // Emitted only for a slice, because only a slice can mislead: contentVersion is fingerprinted
             // over the whole symbol, so a caller leasing off a fragment would otherwise hold a token for
             // content it never saw. "kept/whole", or "none/whole" when the ranges missed the declaration
@@ -1286,14 +1295,23 @@ private static object? ContainingType(ISymbol sym)
     /// keeps whichever comes out shorter, measured on the actual rendered text rather than guessed from
     /// line count.
     /// </summary>
+    /// <param name="lines">The declaration's lines, already stripped per the query's modifiers.</param>
+    /// <param name="query">The resolved source query naming the requested <see cref="SourceQuery.LineFormat"/>.</param>
+    /// <param name="resolvedFormat">
+    /// Which format <see cref="SourceQuery.SourceLineFormat.Automatic"/> actually picked, so a caller can
+    /// report it without re-deriving it from the response shape. Null whenever the caller forced
+    /// <see cref="SourceQuery.SourceLineFormat.Exact"/>/<see cref="SourceQuery.SourceLineFormat.Compact"/>
+    /// explicitly — it already knows what it asked for.
+    /// </param>
     /// <returns>Null only when there was no source to render, so an absent component stays absent.</returns>
     /// <remarks>
     /// Grouping into runs is what keeps the numberless form honest: <c>-modifier</c> exclusions and an
     /// <c>@</c> selection both drop lines, and bare text carrying no span headers would read as
     /// contiguous code across a gap that is really there.
     /// </remarks>
-    private static object? RenderSource(IReadOnlyList<SourceLine>? lines, SourceQuery query)
+    private static object? RenderSource(IReadOnlyList<SourceLine>? lines, SourceQuery query, out SourceQuery.SourceLineFormat? resolvedFormat)
     {
+        resolvedFormat = null;
         if (lines is null)
             return null;
         if (query.LineFormat == SourceQuery.SourceLineFormat.Exact)
@@ -1303,7 +1321,9 @@ private static object? ContainingType(ISymbol sym)
         if (query.LineFormat == SourceQuery.SourceLineFormat.Compact)
             return spans;
 
-        return CompactRenderedLength(spans) < ExactRenderedLength(lines) ? spans : (object)lines;
+        var useCompact = CompactRenderedLength(spans) < ExactRenderedLength(lines);
+        resolvedFormat = useCompact ? SourceQuery.SourceLineFormat.Compact : SourceQuery.SourceLineFormat.Exact;
+        return useCompact ? spans : (object)lines;
     }
 
     /// <summary>Groups per-line source into one <see cref="SourceSpan"/> per contiguous run of lines.</summary>
@@ -2031,6 +2051,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
 
         var version = "decl:index";
         object? source = null;
+        string? sourceLineFormat = null;
         try
         {
             var text = File.ReadAllText(locator.AbsPath(hit.File));
@@ -2044,7 +2065,15 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 var (decl, body) = SyntaxFingerprint.Compute(normalized);
                 version = ContentVersion.Of(decl, body).ToString();
                 if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
-                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery), parts.SourceQuery);
+                {
+                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery), parts.SourceQuery, out var resolvedLineFormat);
+                    sourceLineFormat = resolvedLineFormat switch
+                    {
+                        SourceQuery.SourceLineFormat.Exact => "exact",
+                        SourceQuery.SourceLineFormat.Compact => "compact",
+                        _ => null,
+                    };
+                }
             }
         }
         catch
@@ -2058,6 +2087,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
             displayString = hit.FqName,
             declarationSites = new object[] { new { file = hit.File, span = new { startLine = hit.Line, endLine = hit.Line } } },
             source,
+            sourceLineFormat,
             xmlDoc = hit.Doc,
             referenceCounts = (object?)null,
         };
