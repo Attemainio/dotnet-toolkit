@@ -13,13 +13,16 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class ServerTools
 {
     [McpServerTool(Name = "ping")]
-    [Description("Is the server alive — health check; returns pong and the server version.")]
+    [Description("Is the server alive — health check for this MCP server; returns pong and the server version. Use it "
+        + "when calls are failing, hanging or timing out and you need to know whether the server is responding "
+        + "at all before diagnosing anything else.")]
     public static string Ping() => "pong dotnet-toolkit/0.1.0";
 
     [McpServerTool(Name = "set_output_format")]
-    [Description("Change how tool responses are encoded for the rest of this session: json (pretty-printed), "
-        + "compact (minified JSON), or toon (Token-Oriented Object Notation, the default — same data, far "
-        + "fewer tokens). Persists until changed again or the server restarts.")]
+    [Description("Change how tool responses are encoded for the rest of this session — switch the output format to "
+        + "plain JSON instead of the default TOON, or back. json (pretty-printed), compact (minified JSON), or "
+        + "toon (Token-Oriented Object Notation, the default — same data and the same field names, far fewer "
+        + "tokens). Persists until changed again or the server restarts.")]
     public static string SetOutputFormat([Description("json | compact | toon")] string format)
     {
         var normalized = format.Trim().ToLowerInvariant();
@@ -30,7 +33,14 @@ public static class ServerTools
     }
 
     [McpServerTool(Name = "workspace_status")]
-    [Description("Is the workspace ready, is indexing done — status of the code index and the MSBuild workspace: target root, solution, load progress, and any load diagnostics. Call this when a semantic tool reports the workspace is not ready. Also returns pluginRoot, the plugin's installation directory - join it with standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent definition.")]
+    [Description("Is the workspace ready, is indexing done, is the solution loaded — status of the code index and the "
+        + "MSBuild workspace: target root, solution, load progress, which projects loaded or failed, and any "
+        + "load diagnostics. Call it FIRST in a session, whenever a semantic tool reports the workspace is not "
+        + "ready or returns limitedBy index_only/stale/degraded, and before trusting a zero-hit result as a "
+        + "real absence. Also returns pluginRoot, the plugin's installation directory - join it with "
+        + "standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which "
+        + "nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent "
+        + "definition.")]
     public static string WorkspaceStatus(SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace)
     {
         var sb = new StringBuilder();
@@ -106,12 +116,16 @@ public static class ServerTools
     }
 
     [McpServerTool(Name = "reload_workspace")]
-    [Description("Refresh the workspace after large external changes such as a git pull or checkout (e.g. git checkout/pull). scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution and rebuilds the SQLite symbol index, 'all' does both.")]
+    [Description("Refresh, reload and re-index the workspace after external changes — after a git pull, checkout, "
+        + "branch switch, merge or rebase, or after a .cs file was added, deleted, moved or renamed. Call it "
+        + "when results look stale, when a newly created file is not found, or when a response reports "
+        + "limitedBy: stale. scope: 'index' re-scans the file index, 'workspace' re-opens the MSBuild solution "
+        + "and rebuilds the SQLite symbol index, 'all' does both — and adding or removing a file needs both.")]
     public static async Task<string> ReloadWorkspace(
         ProjectIndex index,
         WorkspaceHost workspace,
         SymbolIndexBuilder indexBuilder,
-        [Description("index | workspace | all")] string scope = "all")
+        [Description("index (re-scan the file index only) | workspace (re-open the MSBuild solution and rebuild the symbol index) | all (both - what a git pull, or an added or deleted .cs file, needs).")] string scope = "all")
     {
         var s = scope.Trim().ToLowerInvariant();
         var actions = new List<string>();

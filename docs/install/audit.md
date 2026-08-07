@@ -59,17 +59,18 @@ Two path rules:
 
 Specific drift to look for, in the order it usually appears:
 
-1. **A standards file added to `standards/` but not to the index's table.** That table is the
+1. **A standards file added to `standards/` but not to `standards/index.md`'s table.** That table is the
    enumerator for both readers; a file absent from it is never loaded by anyone. Init copies no
    standards at all now, so there is no copy list to keep in step — but the old failure returns the
    moment anyone re-adds one. The historical shape of the bug was init's list being a copy of
    it, and copies diverge. Check both directions.
-2. **A tool added but not in `index.md`'s tool table.** That rule embeds its own table for
-   consumers. The table is *"instead of X, use
-   Y"* — so it carries every tool that replaces something a session would otherwise reach for, and
-   legitimately omits the meta tools that replace nothing: `get_retrieval_metrics`,
-   `set_output_format`, `ping`. Any **other** tool shipped in Step 0 but absent from
-   the rule is a finding.
+2. **A tool added but named in neither `dotnet-read` nor `dotnet-write`.** Those two skills carry the
+   tool tables now; the copied `.claude/rules/index.md` names no tool at all, so a tool missing from
+   both skills is unreachable for a consumer. Between them they must cover **all 18** — retrieval and
+   the four server/meta tools in `dotnet-read`, the two writers in `dotnet-write`, with
+   `workspace_status` and `reload_workspace` legitimately in both. The skills are served from the
+   plugin and never copied, so unlike the old always-loaded table this one cannot go stale in a
+   consumer's tree — but it can still fall behind `Tools/*.cs`.
 3. **A tool added but not in init's permission allowlist.** The allowlist covers the read-only tools
    only. `validate_patch` and `rename_symbol` are deliberately excluded — a write to the user's
    source should keep prompting — so their absence is correct, and their *presence* is the finding.
@@ -92,12 +93,12 @@ Walk the scenarios and name, for each, the file the consumer would actually reac
 
 | Scenario | Must be reachable via |
 | --- | --- |
-| Find a symbol and its callers | `index.md`'s tool table → the tool's own MCP schema → `docs/tools/<tool>.md` when the schema isn't enough |
-| Change a method | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/validate_patch.md` |
-| Rename a symbol | `index.md`'s write-path section → `dotnet-change` skill → `docs/tools/rename_symbol.md` |
+| Find a symbol and its callers | `index.md` routes to the `dotnet-read` skill → its tool table → the tool's own MCP schema → `docs/tools/<tool>.md` when the schema isn't enough |
+| Change a method | `index.md` routes to the `dotnet-write` skill → its loop and cheap-route table → `docs/tools/validate_patch.md` |
+| Rename a symbol | `index.md` routes to the `dotnet-write` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill (resolves and injects `Standards root:`) → `dotnet-code-review` agent → `${CLAUDE_PLUGIN_ROOT}/standards/*.md` |
-| Map an unfamiliar change onto the code before editing | `index.md`'s exploring section → the `dotnet-explore` agent |
-| Know which standards to read before editing | the standards table inside the copied `index.md` — the same table the plugin itself uses, not a consumer-only variant |
+| Map an unfamiliar change onto the code before editing | `index.md` routes to the `dotnet-explore` **skill**, which briefs and launches the `dotnet-explore` agent |
+| Know which standards to read before editing | `dotnet-write` step 2 → `<pluginRoot>/standards/index.md` — served by the plugin, never copied, so it is the same table the plugin itself uses and cannot go stale in a consumer |
 | Call a tool without a permission prompt on every use | the allowlist init merges into `.claude/settings.json` |
 
 A scenario completable only by reading this repo's `CLAUDE.md` is a finding, and the fix is to move

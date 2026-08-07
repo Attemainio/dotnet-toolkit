@@ -27,7 +27,7 @@ server cross-checks that `lines` actually falls inside that symbol's own live de
 touching anything else — `error: "edit_outside_symbol"` if it doesn't, naming the symbol's real spans.
 This exists to catch a hand-counted or misattributed line number *before* it silently overwrites the
 wrong text: build the edit from a span `get_symbol` reported (never derive one by counting through a
-wider fetch — see `get_symbol.md`'s `Compact`/`Exact` note and `dotnet-change/SKILL.md` step 1), and
+wider fetch — see `get_symbol.md`'s `Compact`/`Exact` note and `dotnet-write/SKILL.md` step 1), and
 this check confirms the number actually landed where intended. It is not run on an amend, since a
 draft's line numbers address its own proposed text, not the live symbol's span.
 
@@ -261,7 +261,7 @@ retransmitted. `applied` is `false` only because this run passed `applyOnSuccess
 `applyOnSuccess: true` and an `intent` to commit it. A fresh `draftId` comes back because the result
 still was not applied.
 
-See `skills/dotnet-change/SKILL.md` for the full write loop.
+See `skills/dotnet-write/SKILL.md` for the full write loop.
 
 ## Next steps
 

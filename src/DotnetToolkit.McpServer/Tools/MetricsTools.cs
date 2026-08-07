@@ -13,18 +13,19 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class MetricsTools
 {
     [McpServerTool(Name = "get_retrieval_metrics")]
-    [Description("Self-observation over this server's own telemetry (spec §17) — how many tokens this session has used: token totals and "
-        + "validation attempts. Computed from raw "
-        + "events only. scope: session|global; groupBy: tool|symbol|level|session|task|none. "
-        + "Session ids are not caller-supplied - every call in this server process shares one ambient id "
-        + "automatically, and that id is stable for the process's whole lifetime, so scope: \"session\" only "
-        + "matters when merging sessions from OTHER (past) server processes. Use groupBy:\"session\" with "
-        + "since/until first to discover which session ids exist in a date range - there is no other directory "
-        + "of past sessions - then pass those ids to sessionIds to merge their totals together. "
-        + "TASK ids, unlike session ids, ARE caller-supplied: pass taskId on a tool call, then read just that "
-        + "caller's calls back with taskIds or groupBy:\"task\". That is the only way to tell concurrent "
-        + "callers apart, since they all share the one ambient session id. To measure a single call's exact "
-        + "token cost, snapshot with groupBy:\"tool\" before and after it and subtract that tool's row.")]
+    [Description("How many tokens has this session used — token usage, cost, call counts and validation attempts from "
+        + "this server's own telemetry (spec §17). Answers \"what did that call cost\", \"which tool is spending "
+        + "the most tokens\", \"how expensive was this task\", \"how much of the budget have I burned\". Computed "
+        + "from raw events only. scope: session|global; groupBy: tool|symbol|level|session|task|none. Session "
+        + "ids are not caller-supplied - every call in this server process shares one ambient id automatically,"
+        + " and that id is stable for the process's whole lifetime, so scope: \"session\" only matters when "
+        + "merging sessions from OTHER (past) server processes. Use groupBy:\"session\" with since/until first to"
+        + " discover which session ids exist in a date range - there is no other directory of past sessions - "
+        + "then pass those ids to sessionIds to merge their totals together. TASK ids, unlike session ids, ARE "
+        + "caller-supplied: pass taskId on a tool call, then read just that caller's calls back with taskIds or"
+        + " groupBy:\"task\". That is the only way to tell concurrent callers apart, since they all share the one"
+        + " ambient session id. To measure a single call's exact token cost, snapshot with groupBy:\"tool\" "
+        + "before and after it and subtract that tool's row.")]
     public static string GetRetrievalMetrics(
         MetricsReader metrics,
         [Description("session | global (default global).")] string scope = "global",

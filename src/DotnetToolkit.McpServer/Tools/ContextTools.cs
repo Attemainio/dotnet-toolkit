@@ -47,29 +47,27 @@ public static class ContextTools
         miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes
             | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
 
-[McpServerTool(Name = "get_symbol")]
-    [Description("Retrieve one or more C# symbols — look up a class, interface, method, property or field and read its "
-        + "signature, XML docs, source text, members, attributes, base type, reference counts and exact "
-        + "file location. USE THIS INSTEAD OF READING A .cs FILE — it returns the whole symbol even when "
-        + "it is split across partial-class files (Read gives you one fragment and no signal that the "
-        + "rest exists), and costs a fraction of the tokens of the file. "
+    [McpServerTool(Name = "get_symbol")]
+    [Description("Read the actual code of a C# type or member you can already name — go to definition, peek at the "
+        + "implementation, show me the body of this method, what does this class look like. Returns source "
+        + "text, signature, XML docs, members, attributes, base type, reference counts and exact file location."
+        + " USE THIS INSTEAD OF OPENING A .cs FILE (Read, cat, sed): it returns the whole symbol even when "
+        + "split across partial-class files — Read gives one fragment and no signal the rest exists — for a "
+        + "fraction of the file's tokens. Don't know the name yet? search_index finds it; this one reads it. "
         + "Every response carries declarationSites (file + startLine/endLine, INCLUDING a leading /// doc "
-        + "comment when present) and a contentVersion token — these are exactly what validate_patch needs "
-        + "as baseVersions and edit spans. search_index's line/endLine EXCLUDE the doc comment, so never "
-        + "anchor an edit on a span read off search_index without confirming it here. "
-        + "A patch that rewrites a BODY needs a contentVersion from an include that actually served one, "
-        + "so fetch with \"all\" (or source/bodyOutline/mechanicalFacts) when about to edit — the default "
-        + "include leases the declaration only. "
-        + "NEVER build an edit span from a fetch whose -modifiers dropped lines inside it (source:code on "
-        + "a type, -comments, -attributes): the patch replaces the span verbatim, so unseen lines are "
-        + "deleted. Strip when reading; edit from full source. "
-        + "include: \"standard\" (default) | \"all\" | a component list that REPLACES the default — see the "
-        + "include parameter. Common calls: include:\"members\" for a type's surface, \"source:code\" to "
-        + "READ source without doc comments, \"source:code@120-160\" for one region of a long member (a "
-        + "slice still leases the body layer), \"bodyOutline\" to map one before slicing it. Use symbols "
-        + "instead of symbol to fetch several at once. "
-        + "Full component semantics, the @ and -modifier grammar, the response contract and worked "
-        + "examples: docs/tools/get_symbol.md.")]
+        + "comment when present) and a contentVersion token — exactly what validate_patch needs as baseVersions"
+        + " and edit spans. search_index's line/endLine EXCLUDE the doc comment, so never anchor an edit on a "
+        + "span read off search_index without confirming it here. A patch that rewrites a BODY needs a "
+        + "contentVersion from an include that actually served one, so fetch with \"all\" (or "
+        + "source/bodyOutline/mechanicalFacts) when about to edit — the default include leases the declaration "
+        + "only. NEVER build an edit span from a fetch whose -modifiers dropped lines inside it (source:code on"
+        + " a type, -comments, -attributes): the patch replaces the span verbatim, so unseen lines are deleted."
+        + " Strip when reading; edit from full source. include: \"standard\" (default) | \"all\" | a component list"
+        + " that REPLACES the default — see the include parameter. Common calls: include:\"members\" for a type's"
+        + " surface, \"source:code\" for code without doc comments, \"source:code@120-160\" for one region of a "
+        + "long member (a slice still leases the body layer), \"bodyOutline\" to map one before slicing it. Use "
+        + "symbols to fetch several at once. Component semantics, the @ and -modifier grammar, worked examples:"
+        + " docs/tools/get_symbol.md.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -78,7 +76,7 @@ public static class ContextTools
         FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
-        [Description("Fully-qualified name (append a parameter list to pick an overload), a unique suffix, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
+        [Description("The class, interface, struct, record, enum, method, property, field or event to look up: its fully-qualified name (append a parameter list to pick an overload), a unique suffix of it, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
             + "names that replaces the default set exactly: source (optionally source:code, either mode "
             + "with -tag/-attributes/-comments/-lineNumbers subtracted, and/or an @ line selection returning only those "
@@ -495,35 +493,32 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         return null;
     }
 
-[McpServerTool(Name = "get_references")]
-    [Description("Callers, implementations or overrides of a C# symbol (who calls it), from the compiler's model. "
-        + "USE THIS INSTEAD OF GREP — grep gives wrong caller lists: it cannot see interface, virtual or "
-        + "delegate dispatch, counts comment and string matches as hits, and silently drops sites when "
-        + "output is truncated. Returns every real call site, no false positives, and reports how many "
-        + "text-only matches it excluded as excludedTextMatches (callers direction only). "
-        + "A named type (class, record, interface, delegate) has no call sites of its own, so callers on "
-        + "one reports the members that REFERENCE it — the field, parameter, return type or construction "
-        + "site. Each item carries symbolId, displayString (a compact name/arity form — pass "
-        + "fields:\"signature\" for the full "
-        + "parameter list instead), and sites, a list of {file, line, snippet} with ONE ROW PER "
-        + "{file, line}. XML-doc <see cref=\"...\"/> mentions bind to the symbol but are not code, so "
-        + "they are excluded like any other comment match and reported as excludedDocMentions; pass "
-        + "fields:\"crefs\" to get them back. isTest is present only when true; content (the inline body) "
-        + "only with includeBodies:true. targetSymbolId confirms which overload this answered for, and is "
-        + "omitted when the caller already passed a sym_... id. totalItems is always the FULL count "
-        + "rather than the page's, so when it exceeds what came back, truncated is set and nextOffset "
-        + "names the offset that reaches the rest — a symbol with hundreds of referencing members is "
-        + "fully retrievable, one page at a time. truncated, excludedTextMatches and excludedDocMentions "
-        + "are present only when they apply. An item's symbolId is a get_symbol target, not an edit "
-        + "lease: updating a call site means fetching it with get_symbol first for the contentVersion "
-        + "and declarationSites validate_patch needs. Full contract and examples: "
-        + "docs/tools/get_references.md.")]
+    [McpServerTool(Name = "get_references")]
+    [Description("Find all references, callers and usages of a C# symbol — who calls this method, what uses this "
+        + "class, where is it used, is it used anywhere at all — as callers, implementations or overrides, "
+        + "resolved from the compiler's model. USE THIS INSTEAD OF GREP: grep gives wrong caller lists — it "
+        + "cannot see interface, virtual or delegate dispatch, counts comment and string matches as hits, and "
+        + "silently drops sites when output is truncated. Returns every real call site, no false positives, and"
+        + " reports how many text-only matches it excluded as excludedTextMatches (callers direction only). A "
+        + "named type (class, record, interface, delegate) has no call sites of its own, so callers on one "
+        + "reports the members that REFERENCE it — the field, parameter, return type or construction site. Each"
+        + " item carries symbolId, displayString (a compact name/arity form — pass fields:\"signature\" for the "
+        + "full parameter list instead), and sites, a list of {file, line, snippet} with ONE ROW PER {file, "
+        + "line}. XML-doc <see cref=\"...\"/> mentions bind to the symbol but are not code, so they are excluded "
+        + "like any other comment match and reported as excludedDocMentions; pass fields:\"crefs\" to get them "
+        + "back. isTest is present only when true; content (the inline body) only with includeBodies:true. "
+        + "targetSymbolId confirms which overload this answered for, and is omitted when the caller already "
+        + "passed a sym_... id. totalItems is always the FULL count rather than the page's, so when it exceeds "
+        + "what came back, truncated is set and nextOffset names the offset that reaches the rest. An item's "
+        + "symbolId is a get_symbol target, not an edit lease: updating a call site means fetching it with "
+        + "get_symbol first for the contentVersion and declarationSites validate_patch needs. Full contract and"
+        + " examples: docs/tools/get_references.md.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
         SymbolStore symbolStore,
         TelemetryRecorder telemetry,
-        [Description("Fully-qualified name, unique suffix, or a sym_... id from a previous response.")] string symbol,
+        [Description("The method, property, class, interface, field or event whose callers, references and usages you want: its fully-qualified name, a unique suffix of it, or a sym_... id from a previous response.")] string symbol,
         [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
         [Description("Max items to return (default 50, cap 200). Lower it when a few worked examples are enough - a high-fan-in symbol's full page is the most expensive response this server produces.")] int limit = 50,
         [Description("Items to skip before limit (default 0). Pass the previous response's nextOffset to reach the references past the page you already have.")] int offset = 0,
@@ -644,27 +639,24 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
     }
 
 
-[McpServerTool(Name = "search_index")]
-    [Description("Find C# symbols by name when you don't know the exact name — search, find, locate, "
-        + "where is, which class/interface/method/property/field/record/enum. USE THIS INSTEAD OF "
-        + "GREP/GLOB over .cs files: it returns ranked symbols with ids and locations, not raw text "
-        + "lines, so there is nothing to hand-filter and no truncation to silently lose hits. "
-        + "PUT EVERY TERM YOU ARE LOOKING FOR IN ONE CALL: terms are OR-ed and ranked together, so "
-        + "query:\"fee ledger TryBuy TrySell\" answers for all four in one round trip rather than four. "
-        + "Each term gets a floor share of limit, but that floor is shallow — any term the result never "
-        + "covered is named under termsWithNoHits, so raise limit (cap 200) or re-ask that term alone. "
-        + "Never read an absent term as an absent symbol. "
-        + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. "
-        + "Follow up with get_symbol for the content itself. A hit's line/endLine mark the signature "
-        + "line only, EXCLUDING any leading /// doc comment — anchor a validate_patch edit on "
-        + "get_symbol's declarationSites span, not this one. "
-        + "Each hit's shape column says what fetching it costs, with its legend stated once per "
-        + "response: a big L with a big O wants get_symbol include:\"bodyOutline\" then a "
-        + "source:code@from-to range rather than a whole fetch, and an edit target wants include:\"all\" "
-        + "whatever its shape. "
-        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. "
-        + "Full grammar, the shape legend, worked examples and response shape: "
-        + "docs/tools/search_index.md.")]
+    [McpServerTool(Name = "search_index")]
+    [Description("Find C# symbols BY NAME when you don't know the exact name — search, locate, where is, which "
+        + "class/interface/struct/record/enum/method/property/field is called something like this. USE THIS "
+        + "INSTEAD OF GREP/GLOB over .cs files: it returns ranked symbols with ids and locations, not raw text "
+        + "lines, so there is nothing to hand-filter and no truncation to silently lose hits. PUT EVERY TERM "
+        + "YOU ARE LOOKING FOR IN ONE CALL: terms are OR-ed and ranked together, so query:\"fee ledger TryBuy "
+        + "TrySell\" answers for all four in one round trip rather than four. Each term gets a floor share of "
+        + "limit, but that floor is shallow — any term the result never covered is named under termsWithNoHits,"
+        + " so raise limit (cap 200) or re-ask that term alone. Never read an absent term as an absent symbol. "
+        + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. This locates a name; get_symbol then "
+        + "reads what is in it. A hit's line/endLine mark the signature line only, EXCLUDING any leading /// "
+        + "doc comment — anchor a validate_patch edit on get_symbol's declarationSites span, not this one. "
+        + "Already know which file? Ask get_symbol for that type with include:\"members\" rather than narrowing "
+        + "this search down to it. Each hit's shape column says what fetching it costs, with its legend stated "
+        + "once per response: a big L with a big O wants get_symbol include:\"bodyOutline\" then a narrow "
+        + "line-range fetch rather than a whole one, and an edit target wants include:\"all\" whatever its shape."
+        + " Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
+        + "the shape legend, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,

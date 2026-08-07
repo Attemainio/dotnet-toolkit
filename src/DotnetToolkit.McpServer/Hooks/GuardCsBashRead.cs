@@ -130,26 +130,22 @@ internal static class GuardCsBashRead
     /// <returns>The message fed back to the agent.</returns>
     private static string FileMessage(string name, string argument, string project, HookContext context) =>
         $"""
-        Blocked Bash command '{name}' reading {argument}: it is compiled by {project}, so
-        search_index/get_symbol answer this more cheaply and completely than raw shell text tools - no
+        Blocked Bash command '{name}' reading {argument}: it is compiled by {project}, so this repo's
+        dotnet-toolkit MCP tools answer it more cheaply and completely than raw shell text tools - no
         truncation risk, and no irrelevant methods pulled in alongside the one you want.
 
         This is the same rule Read is blocked under - running the same read through Bash instead of the
         Read tool is not a sanctioned way around it.
 
-        Do this instead:
-          - Don't know the exact symbol name: search_index(query: "term1 term2 ...") - one call, many terms.
-          - Know the type/member name: get_symbol(symbol: "...").
-          - Only need part of a long member (what sed -n '120,160p' would have done):
-            get_symbol(symbol: "...", include: "source:code@120-160").
-          - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
-            declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
-            equivalent yet - say so and ask the user to allow the Bash command explicitly.
+        Do this instead: invoke the dotnet-read skill.
 
-        For arguments and worked examples, read the one file for the tool you are about to call:
-          {context.Doc("search_index")}
-          {context.Doc("get_symbol")}
-        The always-loaded .claude/rules/index.md routes any other question to its tool and names its file.
+        It names the right tool for the question you were about to answer, the call shape that costs least,
+        and how to read the response. None of that is repeated in this message on purpose: a copy here would
+        drift from the skill. If you cannot invoke a skill at all, start from {context.Doc("search_index")}.
+
+        One case genuinely has no MCP equivalent: a search for arbitrary text - a string literal, or an API
+        name this repo does not itself declare - rather than for a declared symbol. Say so and ask the user to
+        allow the Bash command explicitly.
 
         If this genuinely needs raw shell access (the workspace failed to load, or the file's exact
         formatting/byte layout is itself what you need to see), say so and ask the user to allow it explicitly
@@ -165,24 +161,23 @@ internal static class GuardCsBashRead
     private static string TreeMessage(string name, string target, string project, HookContext context) =>
         $"""
         Blocked Bash command '{name}' searching {target}: it reads every .cs file under it, including files
-        compiled by {project}. search_index answers a symbol search over the whole solution in one call, with
-        no truncation risk and without dumping the matched files' source into the transcript.
+        compiled by {project}. This repo's dotnet-toolkit MCP tools answer a symbol search over the whole
+        solution in one call, with no truncation risk and without dumping the matched files' source into the
+        transcript.
 
         This is the same rule Read and a single-file grep are blocked under. Searching the tree rather than
         naming a file reads MORE, not less, so it is not a sanctioned way around it.
 
-        Do this instead:
-          - Looking for a declared symbol (a type, method, property, field): search_index(query: "term1 term2
-            ...") - one call, many terms, OR-ed and ranked.
-          - Narrowing to a folder: search_index(query: "...", pathPrefix: "{target}").
-          - Already know the name: get_symbol(symbol: "...").
-          - Looking for arbitrary text (a string literal, an API name not declared in this repo) rather than a
-            declared symbol: search_index only indexes declared symbols, so a genuine text search has no MCP
-            equivalent yet - say so and ask the user to allow the Bash command explicitly.
+        Do this instead: invoke the dotnet-read skill.
 
-        For arguments and worked examples:
-          {context.Doc("search_index")}
-        The always-loaded .claude/rules/index.md routes any other question to its tool and names its file.
+        It names the right tool for the question you were about to answer - including how to scope a search to
+        one folder instead of walking it - and the call shape that costs least. None of that is repeated in
+        this message on purpose: a copy here would drift from the skill. If you cannot invoke a skill at all,
+        start from {context.Doc("search_index")}.
+
+        One case genuinely has no MCP equivalent: a search for arbitrary text - a string literal, or an API
+        name this repo does not itself declare - rather than for a declared symbol. Say so and ask the user to
+        allow the Bash command explicitly.
 
         If this genuinely needs raw shell access, say so and ask the user to allow it explicitly rather than
         retrying the same command.

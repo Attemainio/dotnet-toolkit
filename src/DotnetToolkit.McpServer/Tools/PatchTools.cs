@@ -47,14 +47,19 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class PatchTools
 {
     [McpServerTool(Name = "validate_patch")]
-    [Description("Validate (and optionally apply) a code change — the safe way to edit or modify a C# file — against an in-memory compilation before it "
-        + "touches disk. Runs the cheapest sufficient level of the ladder (parse→semantic_bind→project_compile→"
-        + "dependent_compile→targeted_tests→solution_validate) and reports honestly whether that was sufficient "
-        + "for the change. baseVersions is required (stale context is rejected -- and a patch that rewrites a "
-        + "BODY must hold a version carrying the body layer, which only a get_symbol that served the source, "
-        + "bodyOutline or mechanicalFacts hands out); intent is required to apply. "
-        + "Any result that was NOT applied returns a draft: pass its draftId back with only the lines you are "
-        + "correcting, instead of resubmitting the whole patch.")]
+    [Description("Edit, modify, patch, refactor or fix C# code safely — validate (and optionally apply) a change "
+        + "against an in-memory compilation before anything touches disk. THIS IS THE WRITE PATH FOR .cs FILES:"
+        + " use it instead of Edit/Write, instead of a search-and-replace, and instead of editing then running "
+        + "dotnet build. Also how you fix a compile error or an analyzer warning. Runs the cheapest sufficient "
+        + "level of the ladder "
+        + "(parse→semantic_bind→project_compile→dependent_compile→targeted_tests→solution_validate) and reports"
+        + " honestly whether that was sufficient for the change. baseVersions is required (stale context is "
+        + "rejected -- and a patch that rewrites a BODY must hold a version carrying the body layer, which only"
+        + " a get_symbol that served the source, bodyOutline or mechanicalFacts hands out); intent is required "
+        + "to apply, and is the only record of WHY. Any result that was NOT applied returns a draft: pass its "
+        + "draftId back with only the lines you are correcting, instead of resubmitting the whole patch. A "
+        + "change that is purely a rename goes to rename_symbol instead. Error codes, draft lifetimes and the "
+        + "full response contract: docs/tools/validate_patch.md.")]
     public static async Task<string> ValidatePatch(
         WorkspaceHost workspace,
         SolutionLocator locator,

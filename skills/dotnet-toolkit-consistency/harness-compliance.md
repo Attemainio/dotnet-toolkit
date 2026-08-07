@@ -22,11 +22,13 @@ For each pair below, confirm the second file **points** rather than restates:
 
 | Fact | Sole owner | Must only point |
 | --- | --- | --- |
-| Which standards apply when | `.claude/rules/index.md` standards table | `skills/dotnet-change/SKILL.md`; `agents/dotnet-code-review.md`'s load rule |
-| The write-time checklist | the `hint-write-checklist` hook | `skills/dotnet-change/SKILL.md` |
-| `validate_patch` error codes, draft lifetime, severity table | `docs/tools/validate_patch.md` | `skills/dotnet-change/SKILL.md` |
-| The intent→tool router | `.claude/rules/index.md` | `skills/dotnet-toolkit-init/SKILL.md` (copies the rule verbatim; never embeds its own) |
-| Per-tool mechanics, arguments, examples | `docs/tools/<tool>.md` | `.claude/rules/index.md`; tool `[Description]`s |
+| Which standards apply when | `standards/index.md` | `skills/dotnet-write/SKILL.md`; `skills/dotnet-review/SKILL.md`; `agents/dotnet-code-review.md`'s load rule |
+| The write-time checklist | the `hint-write-checklist` hook | `skills/dotnet-write/SKILL.md` |
+| `validate_patch` error codes, draft lifetime, severity table | `docs/tools/validate_patch.md` | `skills/dotnet-write/SKILL.md` |
+| The intent→**skill** router | `.claude/rules/index.md` | `skills/dotnet-toolkit-init/SKILL.md` (copies the rule verbatim; never embeds its own); `CLAUDE.md`; `README.md` |
+| The intent→**tool** router, and the **cross-tool** cheap-route (anti-pattern) table | `skills/dotnet-read/SKILL.md` for reads, `skills/dotnet-write/SKILL.md` for writes | `.claude/rules/index.md` (names skills, never tools). A `docs/tools/<tool>.md` **Next steps** footer is a *different* fact — what to call next with the response in hand — and stays; a general "instead of X do Y" catalogue reappearing in one is the duplicate |
+| Per-tool mechanics, arguments, examples | `docs/tools/<tool>.md` | `skills/dotnet-read/SKILL.md`; `skills/dotnet-write/SKILL.md`; tool `[Description]`s |
+| Guard denial messages' remedy | the skill each guard names (`dotnet-read`/`dotnet-write`) | `Hooks/GuardCs*.cs` (name the skill; never restate its tool usage) |
 | Agent instructions | `agents/<name>.md` | `docs/design/agents.md` (human-facing; neither agent reads it) |
 | Hook behaviour | `src/DotnetToolkit.McpServer/Hooks/*` | `docs/design/hooks.md`, `hooks/hooks.json` |
 | Always-loaded size policy | **this file, §D** | `CLAUDE.md` |
@@ -142,9 +144,11 @@ for f in CLAUDE.md .claude/rules/index.md; do
 done
 ```
 
-**Baseline measured 2026-08-06:** `CLAUDE.md` 127 lines / 8,293 B — inside the official line limit,
-over the repo byte target. `.claude/rules/index.md` 161 lines / 10,590 B — inside the line limit,
-**~110% over** the byte target. Both are live findings; re-measure before reporting them.
+**Baseline measured 2026-08-07**, after `index.md` was reduced to a pure skill router and its tool
+table, `limitedBy` section and standards table moved into `skills/dotnet-read`, `skills/dotnet-write`
+and `standards/index.md`: `.claude/rules/index.md` fell from 161 lines / 10,590 B to roughly a third
+of that, inside the byte target. `CLAUDE.md` was 127 lines / 8,293 B — inside the official line
+limit, over the repo byte target. Re-measure before reporting either.
 
 Three rules for acting on an overage:
 
@@ -179,33 +183,38 @@ produces scatter, which is strictly worse than the length it fixed.
 **Admission test: does Claude need this *before* it can ask the right question?** If the answer can
 be fetched once the need is recognised, it belongs downstream and `index.md` carries only the pointer.
 
+**`index.md` is a pure skill router.** It names **no MCP tool at all**. A tool name appearing in it
+is the finding, not a detail to correct.
+
 **Admitted** — each because nothing in context would otherwise reveal it:
 
-- The **intent→tool router**: one row per tool mapping the wrong path to the right tool. Tool
-  descriptions are deferred (§C/§F), so without this the model cannot form the query that would find
-  the tool.
-- The **`select:`-by-exact-name discipline**, for the same reason — the router is only usable if the
-  fetch is reliable.
-- **When to launch which agent**, as a mandate. Not what the agent does: that is in its always-loaded
-  description already (§F).
-- **When to invoke which skill**, as a trigger only, for the same reason.
-- **The write mandate** — `validate_patch` as the only write path, `dotnet-change` before the first
-  `.cs` change. A caller who doesn't know this reaches for `Edit` and never learns otherwise until a
-  hook denies it.
-- **`limitedBy` semantics and the response conventions** — how to read *every* tool's answer, so it
-  is stated once here rather than 18 times.
-- **The standards trigger table**, which doubles as the reviewer's load rule.
-- **The `pluginRoot` join**, which is the only route from an always-loaded rule to a plugin file.
+- **The intent→skill mandate**: read C# → `dotnet-read`; write C# → `dotnet-write`; survey an unknown
+  symbol set → `dotnet-explore`; review → `dotnet-review`. Triggers only, never a summary of what
+  each skill carries — that is in its always-loaded description already (§F).
+- **That the MCP tools, not Grep/Read/Edit, are the C# path at all**, with the one-line reason (text
+  search is wrong on C#, not merely slower). Without this a caller never recognises there is a skill
+  to invoke.
+- **That agents are launched by skills, never directly** — otherwise a caller spawns
+  `dotnet-explore` or `dotnet-code-review` raw and skips the readiness check and the brief.
+- **The non-C# escape hatch** — shell, git, and Markdown/JSON/csproj editing are unaffected — so the
+  rule is not read as blocking ordinary work.
 
-**Excluded** — all fetchable at the moment of need:
+**Excluded** — all fetchable the moment the need is recognised, because the *skill descriptions that
+route to them are themselves always loaded* (§F):
 
+- **The intent→tool router and the `select:`-by-exact-name discipline** → `dotnet-read` /
+  `dotnet-write`. This moved out deliberately: it was ~100 always-loaded lines paid by every session
+  and every subagent, including the ones that never touch C#.
+- **The cheap-route / anti-pattern table** → the same two skills. It used to sit only inside
+  individual `docs/tools/<tool>.md` files, which are not loaded unless something already went
+  looking — so the anti-pattern was committed before the note preventing it was ever read.
+- **`limitedBy` semantics and the response conventions** → `dotnet-read` (`dotnet-write` points at it).
+- **The standards trigger table** → `standards/index.md`, shared by `dotnet-write` and
+  `dotnet-code-review`.
+- **The `pluginRoot` join** → step 0 of `dotnet-read` and `dotnet-write`.
 - Per-tool arguments, defaults, response fields, examples → `docs/tools/<tool>.md`.
 - Standards *bodies* → `standards/`.
-- The write *procedure* and write *decisions* → `skills/dotnet-change/SKILL.md`.
-- Any restatement of what a skill or agent carries → its own description is already loaded.
-- Manual filenames as a third table column → derived (`<tool>.md`, the four server/meta tools sharing
-  `server.md`), stated once in the resolution section. A tabulated column duplicates a derivable fact
-  and can name a file that no longer exists.
+- The write *procedure* and write *decisions* → `skills/dotnet-write/SKILL.md`.
 - Size policy → **this file, §D**.
 
 ---
@@ -219,7 +228,7 @@ The loading model is the reason `index.md` exists in its current shape. Making i
 | --- | --- | --- |
 | Agent `description` frontmatter, every agent | Agent body / prompt | Agent **selection is description-driven**. The router needs only the *mandate* — delegate the sweep, never review C# inline — never a summary of what the agent does. A summary here is pure duplication paid every session. |
 | Skill `description` frontmatter, every skill | `SKILL.md` body and its reference files | Same: **triggers only**. Re-explaining what a skill carries is duplication charged to every session and every subagent. |
-| MCP tool **names** | Tool **descriptions** and full schemas | Tool **usage cannot be description-driven**. This is the asymmetry: agents and skills advertise themselves, tools do not. So the router must carry the complete intent→tool mapping *and* the `select:`-by-name rule. Everything else in `index.md` is justified by exception; this is justified by mechanism. |
+| MCP tool **names** | Tool **descriptions** and full schemas | Tool **usage cannot be description-driven**. This is the asymmetry: agents and skills advertise themselves, tools do not. So the intent→tool mapping *and* the `select:`-by-name rule have to be written down somewhere — but **not** always-loaded. A skill's description *is* always loaded, so `dotnet-read`/`dotnet-write` can be selected the same way an agent is, and the tool router rides in on their bodies. That is what lets `index.md` name no tools while the mapping still reaches every caller who needs it. |
 | `CLAUDE.md` and `.claude/rules/index.md`, in full | `standards/`, `docs/`, skill reference files | The only two files under §D's budget. |
 | — | Hook messages, shown at deny time | Never in context, but read at the exact moment a caller is blocked. A stale guard message teaches the wrong fix at the worst possible moment, which is why they rank Tier 1 in `drift.md`. |
 

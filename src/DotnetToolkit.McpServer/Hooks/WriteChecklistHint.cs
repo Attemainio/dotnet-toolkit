@@ -9,7 +9,7 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// <remarks>
 /// The other guards are retrospective: they fire only once <c>Edit</c>/<c>Write</c>/<c>Bash</c> has
 /// already been reached for. A caller that goes straight to <c>validate_patch</c> without invoking
-/// the <c>dotnet-change</c> skill trips none of them, so the checklist that skill carries never
+/// the <c>dotnet-write</c> skill trips none of them, so the checklist that skill carries never
 /// arrives. Firing here puts it in front of the caller at the moment it applies, which is also why
 /// the skill does not need to be pre-loaded to get it.
 /// <para>
@@ -35,7 +35,7 @@ internal static class WriteChecklistHint
         + "  - A body edit needs a contentVersion from a get_symbol that actually served the body "
         + "(include: \"all\"); the default include leases the declaration only.\n"
         + "  - intent is required to apply, and is the only record of WHY - the diff already says what.\n"
-        + "Full procedure and every failure mode: the dotnet-change skill.";
+        + "Full procedure, the standards step, and every failure mode: invoke the dotnet-write skill.";
 
     /// <summary>Emits the checklist once per session, and allows silently every other time.</summary>
     /// <param name="payload">The parsed hook stdin payload.</param>

@@ -6,7 +6,8 @@
 How `DotnetToolkit.McpServer` is put together, and the packaging that turns it into a Claude Code
 plugin. **Read this when a change touches server internals** — startup order, the two knowledge tiers,
 a subsystem you haven't worked in, or how the plugin is delivered. Ordinary tool *usage* needs none of
-it: `.claude/rules/index.md` routes that, and `docs/tools/<tool>.md` has the per-tool manual.
+it: `.claude/rules/index.md` routes to the skill that owns it (`dotnet-read`/`dotnet-write`), and
+`docs/tools/<tool>.md` has the per-tool manual.
 
 This file is human- and maintainer-facing and is read on demand, so it is deliberately fuller than
 `CLAUDE.md`, which carries only the always-applicable rules and points here.
@@ -219,7 +220,7 @@ subagent inheriting it. Non-deterministic and invisible.
 
 So the standards live in **`standards/` at the plugin root, outside any rules directory, with no
 frontmatter at all**. They are read only by explicit path: the main agent at write time through
-`dotnet-change`'s pre-edit step, and the review agent through the absolute `Standards root:` that
+`dotnet-write`'s pre-edit step, and the review agent through the absolute `Standards root:` that
 `dotnet-review` resolves and injects into each spawn prompt. That injection exists because
 `${CLAUDE_PLUGIN_ROOT}` expansion is not guaranteed inside an agent definition, while a skill can
 expand it reliably.

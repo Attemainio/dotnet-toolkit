@@ -12,7 +12,7 @@ absolute — these steps stage first, write second.
 
 | File(s) | Content |
 | --- | --- |
-| `.claude/rules/index.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/index.md`: the tool table, the `dotnet-explore` delegation rule, the write path, the standards table, and when to invoke each skill. **Always-loaded** — no `paths:` frontmatter, and it must be the only file in `.claude/rules/` without any |
+| `.claude/rules/index.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/index.md`: a pure router — which skill to invoke for reading, writing, exploring or reviewing C#, plus the rule that agents are launched by skills. It names **no MCP tool**; the tool tables live in the skills, which the plugin serves and never copies. **Always-loaded** — no `paths:` frontmatter, and it must be the only file in `.claude/rules/` without any |
 | `.claude/settings.json` | the **read-only** MCP tools merged additively into `permissions.allow` (Step 3) |
 | `.claude/dotnet-toolkit/install.json` | the manifest: plugin version, timestamp, and a hash per copied file |
 
@@ -22,7 +22,7 @@ diverge the way a second authored copy did. **`index.md` is not optional**: decl
 repo with no protocol at all, and the tools stay available but unused.
 
 **The coding standards are not copied.** They live at `${CLAUDE_PLUGIN_ROOT}/standards/*.md` and are
-read from there on demand — by the main agent through `dotnet-change`'s pre-edit step, and by the
+read from there on demand — by the main agent through `dotnet-write`'s pre-edit step, and by the
 review agent through the `pluginRoot` it resolves itself from its own `workspace_status` call, since
 `${CLAUDE_PLUGIN_ROOT}` does not expand inside an agent definition either. Consequences worth stating
 when presenting the plan:
@@ -97,10 +97,10 @@ always-loaded. Do not add one, and do not edit the text on the way through: a re
 different wording edits its copy afterwards, or overrides a standard via
 the plugin's `standards/` directory.
 
-`index.md` names the `dotnet-change` and `dotnet-review` skills for every
+`index.md` names the `dotnet-read`, `dotnet-write`, `dotnet-explore` and `dotnet-review` skills for every
 procedure detail rather than a `${CLAUDE_PLUGIN_ROOT}/...` path — the harness does **not** expand
 that variable inside a rule file, so a path there would land in the consumer as literal, dead text.
-Never add one while copying. That is also why the standards table in it names bare filenames and not
+Never add one while copying. That is also why the skills it names are bare skill names and not
 their directory: the skills resolve the location.
 
 If Step 2 found a scoped-but-resolvable overlap with another plugin, append one sentence to the

@@ -1,6 +1,6 @@
 # .NET architecture
 
-Canonical architecture standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before
+Canonical architecture standard. Loaded on demand per `standards/index.md`'s table; read it before
 adding a project reference, a new abstraction, or a change that crosses a project/namespace boundary.
 `dotnet-code-review` validates against it as part of the `[correctness]` aspect — it is not a separate
 review aspect, the same way `naming.md`/`styling.md` fold in.

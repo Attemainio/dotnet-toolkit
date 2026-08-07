@@ -1,7 +1,7 @@
 # .NET testing
 
 Canonical testing standard: how tests are structured, written, and run. Loaded on demand per
-`.claude/rules/index.md`'s standards table; read it before writing or modifying tests. `dotnet-code-review`
+`standards/index.md`'s table; read it before writing or modifying tests. `dotnet-code-review`
 validates against it (aspect `[testing]`).
 
 ## Project layout & running

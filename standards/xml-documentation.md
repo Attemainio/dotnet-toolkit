@@ -1,8 +1,8 @@
 # XML documentation
 
-Canonical XML-doc standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before writing or
+Canonical XML-doc standard. Loaded on demand per `standards/index.md`'s table; read it before writing or
 editing doc comments — every symbol touched through `validate_patch` that lacks a `<summary>` gains one
-in the same edit (see the `dotnet-change` skill). `dotnet-code-review` validates against it (aspect
+in the same edit (see the `dotnet-write` skill). `dotnet-code-review` validates against it (aspect
 `[docs]`).
 
 ## Read before writing or judging

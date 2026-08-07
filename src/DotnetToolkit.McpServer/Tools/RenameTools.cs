@@ -31,18 +31,19 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class RenameTools
 {
     [McpServerTool(Name = "rename_symbol")]
-    [Description("Rename a C# symbol and every reference to it across the whole solution, from the "
-        + "compiler's own model — USE THIS INSTEAD OF a search-and-replace or a pile of validate_patch "
-        + "calls, which miss interface/virtual/delegate dispatch and silently rewrite unrelated text that "
-        + "happens to share the name. Resolves the symbol, applies Roslyn's rename to an in-memory fork, "
-        + "runs the same validation ladder validate_patch runs (so a rename that collides with an existing "
-        + "name is reported as a compile failure and NOTHING reaches disk), and on apply writes the same "
-        + "development-log entry a patch would. baseVersion is a SINGLE version string here, not "
-        + "validate_patch's symbolId->version map, because only one symbol is named and the rest is "
-        + "derived; get it from a get_symbol on that symbol. It is required, so a rename built on stale "
-        + "context is rejected; intent is required to apply. Does not rename the containing FILE — when "
-        + "that is wanted the response says so under fileRenameHint, and the move is a git mv plus "
-        + "reload_workspace.")]
+    [Description("Rename a C# symbol and every reference to it across the whole solution — rename a class, interface, "
+        + "method, property, field or parameter everywhere it is used, from the compiler's own model. USE THIS "
+        + "INSTEAD OF a search-and-replace or a pile of validate_patch calls, which miss "
+        + "interface/virtual/delegate dispatch and silently rewrite unrelated text that happens to share the "
+        + "name. Resolves the symbol, applies Roslyn's rename to an in-memory fork, runs the same validation "
+        + "ladder validate_patch runs (so a rename that collides with an existing name is reported as a compile"
+        + " failure and NOTHING reaches disk), and on apply writes the same development-log entry a patch "
+        + "would. baseVersion is a SINGLE version string here, not validate_patch's symbolId->version map, "
+        + "because only one symbol is named and the rest is derived; get it from a get_symbol on that symbol. "
+        + "It is required, so a rename built on stale context is rejected; intent is required to apply. Unlike "
+        + "validate_patch, a dry run (applyOnSuccess:false) is worth it on a widely-referenced symbol, because "
+        + "the blast radius is what you cannot predict. Does not rename the containing FILE — when that is "
+        + "wanted the response says so under fileRenameHint, and the move is a git mv plus reload_workspace.")]
     public static async Task<string> RenameSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,

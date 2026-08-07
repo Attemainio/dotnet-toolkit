@@ -78,10 +78,18 @@ get audited against this, not against their own prior text.
    - Whether it works as a **search target** — that criterion, its thresholds and the live probe are
      `harness-compliance.md` §B and §C, already run in Step 1. Don't re-derive them here.
 
-**4. Skills vs. tool set.** For `skills/dotnet-change/SKILL.md` and `skills/dotnet-review/SKILL.md`,
-confirm every tool they describe still exists (Step 0) with the arguments they claim, and that every
-tool relevant to that skill's subject actually appears in it — a tool added to `Tools/*.cs` that fits
-an existing skill's scope but isn't mentioned there is a finding, not just a missing doc row.
+**4. Skills vs. tool set.** For `skills/dotnet-read/SKILL.md`, `skills/dotnet-write/SKILL.md`,
+`skills/dotnet-explore/SKILL.md` and `skills/dotnet-review/SKILL.md`, confirm every tool they describe
+still exists (Step 0) with the arguments they claim, and that every tool relevant to that skill's
+subject actually appears in it — a tool added to `Tools/*.cs` that fits an existing skill's scope but
+isn't mentioned there is a finding, not just a missing doc row.
+
+**`dotnet-read` and `dotnet-write` together must name all 18 tools**, because `.claude/rules/index.md`
+no longer names any. A tool that appears in neither is unreachable: nothing always-loaded points at
+it, and free-text `ToolSearch` does not reliably find it (§C). Split by side — retrieval and the four
+server/meta tools in `dotnet-read`, `validate_patch` and `rename_symbol` in `dotnet-write` — with
+`workspace_status` and `reload_workspace` legitimately in both, since each skill's step 0 depends on
+them.
 
 **5. Every instruction/guideline file that tells a caller to use the MCP tools.** Check each still
 lists every tool from Step 0, with nothing stale (a tool it describes that no longer exists) and
@@ -92,9 +100,12 @@ nothing missing (a tool that exists but appears nowhere in it):
 | `docs/tools/<tool>.md` (one per tool, plus `server.md`) | when to reach for it, arguments, one real example call/response, and a **Next steps** footer naming what to call with what it just returned. Every tool from Step 0 has a file, and no file names a tool that no longer exists — **the filename is the reachability contract** now that `index.md` derives it (`<tool>.md`, the four server/meta tools sharing `server.md`) rather than tabulating it, so a manual named anything else is unreachable no matter how good it is. Each tool's `[Description]` should also name its own file. These carry the per-tool mechanics that must **not** move into the always-loaded router |
 | `CLAUDE.md`'s "Non-negotiable workflow" and "Where to read what" | that they still route to `.claude/rules/index.md` and the maintainer-facing files rather than carrying a copy of any table. A per-tool table, architecture rundown, skill catalog, or size policy reappearing here is drift — each was moved out deliberately (`harness-compliance.md` §A) |
 | `docs/design/architecture.md`'s `Tools/` table | every `Tools/*.cs` file and the tool names it groups — a new file (Step 0) needs a new row. Also its Id-namespace table, subsystem list, and "Changing the tool surface" consequences (positional test callers, `Contracts/Contract.cs` bump) |
-| `.claude/rules/index.md` | **the only always-loaded rule** — here *and* copied verbatim into consuming repos by init, so drift ships and is paid by every session and every subagent. **What it may and may not contain is `harness-compliance.md` §E**, and §D owns its size. Check here only that its *content* is current: the router covers every tool from Step 0; the manual filename stays derived, not tabulated (a reintroduced third column is drift); the write path matches `validate_patch`'s current arguments; the standards table lists exactly the files present in `standards/` and its always-loaded core matches `agents/dotnet-code-review.md`'s exactly; the `pluginRoot` resolution section matches what `workspace_status` actually returns and names **exactly one** location per file — a per-repo override tier reappearing is the drift to flag |
-| `skills/dotnet-change/SKILL.md` | (a) its pre-edit standards step **defers to `index.md`'s standards table rather than re-listing the files**; (b) it resolves standards as `<pluginRoot>/standards/<name>.md` via `workspace_status`, with no override tier; (c) **it owns the write-*decisions*** — when to dry-run, when to amend versus rebuild, the definition of done, raising `.editorconfig` severity with the user rather than unasked — which were moved out of the always-loaded layer and must not drift back. Its three known duplication risks (standards list, write-time checklist, `validate_patch` error codes) are `harness-compliance.md` §A |
-| `skills/dotnet-review/SKILL.md` | it does **not** claim to inject a `Standards root:` into the spawn — the agent resolves its own `pluginRoot` from its own `workspace_status` call (§below), so the skill's job is only to state each instance's scope/mode/focus, never a path |
+| `.claude/rules/index.md` | **the only always-loaded rule** — here *and* copied verbatim into consuming repos by init, so drift ships and is paid by every session and every subagent. **What it may and may not contain is `harness-compliance.md` §E**, and §D owns its size. It is a **pure skill router**: check that it names **no MCP tool at all** (one appearing is the finding), that its four rows still match the skills that exist, and that the "agents are launched by skills" mandate survives. A tool table, a standards table, a `limitedBy` section or a `pluginRoot` join reappearing here is drift — each was moved out deliberately |
+| `standards/index.md` | the **shared** standards routing table. It lists exactly the files present in `standards/`; its stated `dotnet-code-review` core matches `agents/dotnet-code-review.md`'s six exactly; every "When" cell states an **observable property of the code** rather than a topic; and the `pluginRoot` join matches what `workspace_status` actually returns, naming **exactly one** location per file — a per-repo override tier reappearing is the drift to flag |
+| `skills/dotnet-read/SKILL.md` | (a) it names every retrieval tool from Step 0, each with a **Manual:** pointer whose filename is derived (`<tool>.md`, the four server/meta tools sharing `server.md`); (b) its per-tool "Answers to" lists stay questions, never argument grammar — that is the manual's job; (c) it owns the **cheap-route table** and the `limitedBy`/TOON response conventions, which must not drift back into the always-loaded rule; (d) its step 0 mandates `workspace_status` before any read, and the `${CLAUDE_PLUGIN_ROOT}`-is-not-expanded warning is intact |
+| `skills/dotnet-write/SKILL.md` | (a) its pre-edit standards step **defers to `standards/index.md` rather than re-listing the files**; (b) it resolves standards as `<pluginRoot>/standards/<name>.md` via `workspace_status`, with no override tier; (c) **it owns the write-*decisions*** — when to dry-run, when to amend versus rebuild, the definition of done, raising `.editorconfig` severity with the user rather than unasked — which were moved out of the always-loaded layer and must not drift back; (d) its step 0 mandates `workspace_status` before an edit and `reload_workspace(scope: "all")` after a `.cs` file is added or deleted. Its three known duplication risks (standards list, write-time checklist, `validate_patch` error codes) are `harness-compliance.md` §A |
+| `skills/dotnet-explore/SKILL.md` | it is the **only** sanctioned launcher of the `dotnet-explore` agent. It must check workspace readiness before spawning, must state that the agent relays no `contentVersion`, and must not restate the agent's own router — `agents/dotnet-explore.md` is self-contained and authoritative |
+| `skills/dotnet-review/SKILL.md` | it does **not** claim to inject a `Standards root:` into the spawn — the agent resolves its own `pluginRoot` from its own `workspace_status` call (§below), so the skill's job is only to state each instance's scope/mode/focus, never a path. It must also check workspace readiness **before** spawning: launching parallel instances against a degraded workspace is a parallel waste, and it points at `standards/index.md` rather than restating the table |
 | every file in `standards/` | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers still resolve; **none offers a per-repo override path** — that tier was removed, and a reintroduced sentence would promise a mechanism nothing implements. The no-frontmatter invariant is `harness-compliance.md` §G |
 | `skills/dotnet-toolkit-init/SKILL.md` | that it still **copies `.claude/rules/index.md` verbatim** rather than embedding its own tool table or standards list. Also the "what is deliberately *not* written" table and the uninstall list: every asset the plugin ships is in exactly one of write / not-written / uninstall, and the write and uninstall lists name the same files |
 | `docs/install/audit.md` | the install-procedure audit this skill runs in Step 5b (maintainer-facing; the consumer never reads it). Its four-mechanism inventory must cover every top-level directory the plugin actually ships (`skills/`, `agents/`, `hooks/`, `docs/`, `docs/tools/`, `.claude/rules/`, `scripts/`, `.mcp.json`), and its reachability scenarios must resolve to files that exist |
@@ -128,7 +139,7 @@ Then two sweeps, both cheap:
   maintaining the plugin* (correct — it belongs only here), or *about using the tools*? Anything in
   the second category must also exist in a shipped file, with `CLAUDE.md` carrying a pointer rather
   than a second copy. The write-path discipline is the canonical example — the `validate_patch`
-  argument in "Non-negotiable workflow" is the same argument the init template and `dotnet-change`
+  argument in "Non-negotiable workflow" is the same argument the init template and `dotnet-write`
   must both make, because a consumer never sees `CLAUDE.md`.
 - **The maintainer's memory directory** (`~/.claude/projects/<repo-slug>/memory/`, indexed by its
   `MEMORY.md`). Read the index, then each entry, and sort every one into: **(a)** operational for
@@ -177,10 +188,12 @@ drift-sensitivity ranking. It is how a shipped-but-undocumented tool gets found 
 per-file check ever will, because the files that should mention it are internally consistent.
 
 **8. The skills' own instructions.** Once Steps 1–7 have surfaced concrete drift, the fix usually
-touches a skill body, not just a table row — e.g. a new tool needs a new row in `.claude/rules/index.md`'s
-router *and* its own `docs/tools/<tool>.md`. Routing lives in the router and nowhere else; a skill
-earns a line only when the change alters a *procedure* it owns. Update the skill body, not only its
-tool list, so a caller reading the skill gets the same guidance a caller reading the code would.
+touches a skill body, not just a table row — e.g. a new tool needs a section in `dotnet-read` or
+`dotnet-write` (whichever side it belongs to), a row in that skill's cheap-route table if it displaces
+an existing route, *and* its own `docs/tools/<tool>.md`. **It needs nothing in
+`.claude/rules/index.md`**, which names no tools: a new row there is only warranted by a new *skill*.
+Update the skill body, not only its tool list, so a caller reading the skill gets the same guidance a
+caller reading the code would.
 
 **9. `CLAUDE.md` and `README.md` last.** The two files a fresh session or a new user reads first, so
 they should reflect the *already-corrected* state of everything above rather than being patched
@@ -202,7 +215,7 @@ distinct form so it is never mistaken for something this skill already fixed:
 
 > **CODE FINDING** — `src/…/Tools/X.cs:NN` · guideline: `harness-compliance.md §B` ·
 > current: *<measurement or text>* · required: *<threshold>* · proposed replacement: *<exact text>* ·
-> apply via: `dotnet-change` → `validate_patch`.
+> apply via: `dotnet-write` → `validate_patch`.
 
 Group findings by file, in Step 5's table order, then hooks, then `CLAUDE.md`/`README.md` last, with
 `CODE FINDING`s collected together at the end. State the baseline Step 7 used. If a section is in
@@ -215,7 +228,7 @@ sync, say so in one line — don't manufacture findings to justify the run.
 - **`CODE FINDING`s: report only, never apply.** This skill does not edit `.cs`, even when the fix is
   a one-line attribute change with no behavior impact — an audit that can change the tool contract
   can no longer be run freely. Hand it off with the exact replacement text; the user or a follow-up
-  `dotnet-change` task applies it.
+  `dotnet-write` task applies it.
 - **Never silently skip a step** because "nothing looks wrong there" — state it was checked and came
   back clean. A skipped step and a clean step read identically in a report, and only one of them is
   true.

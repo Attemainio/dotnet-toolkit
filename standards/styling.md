@@ -1,7 +1,7 @@
 # C# styling
 
 Canonical styling standard, targeting modern C# (net8.0+) with nullable reference types enabled. Loaded
-on demand per `.claude/rules/index.md`'s standards table; read it before writing C#, and `dotnet-code-review`
+on demand per `standards/index.md`'s table; read it before writing C#, and `dotnet-code-review`
 validates against it (aspect `[correctness]`).
 
 ## File organization

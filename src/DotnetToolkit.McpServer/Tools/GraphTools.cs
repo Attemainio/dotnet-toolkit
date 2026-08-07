@@ -19,9 +19,11 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class GraphTools
 {
     [McpServerTool(Name = "get_project_graph")]
-    [Description("The solution's project reference graph: which .csproj references which, and the reverse "
-        + "(referencedBy). Computed live from the loaded solution on every call, no caching. Pass project to "
-        + "scope the result to one project's direct references and dependents instead of the whole graph.")]
+    [Description("The solution's project reference graph — which project depends on which, which .csproj references "
+        + "which, and the reverse (referencedBy). Answers \"what does this project depend on\", \"who consumes "
+        + "this project\", \"show me the dependency graph\", and replaces opening every .csproj by hand. Computed "
+        + "live from the loaded solution on every call, no caching. Pass project to scope the result to one "
+        + "project's direct references and dependents instead of the whole graph.")]
     public static async Task<string> GetProjectGraph(
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
@@ -79,11 +81,12 @@ public static class GraphTools
     }
 
     [McpServerTool(Name = "detect_circular_dependencies")]
-    [Description("Cycles in the solution's project reference graph — a real dependency loop, not just deep "
-        + "nesting. scope:\"project\" (default, and for now the only supported value) reports one "
-        + "representative cycle per strongly-connected component found. scope:\"type\" is NOT yet "
-        + "implemented — it would need collapsing member-level call edges up to their containing type, which "
-        + "this server does not do today — and returns error:\"unsupported_scope\" rather than a partial "
+    [Description("Circular dependencies in the solution's project reference graph — a real reference cycle or "
+        + "dependency loop between projects, not just deep nesting. Answers \"is there a circular reference\", "
+        + "\"do these projects depend on each other\". scope:\"project\" (default, and for now the only supported "
+        + "value) reports one representative cycle per strongly-connected component found. scope:\"type\" is NOT "
+        + "yet implemented — it would need collapsing member-level call edges up to their containing type, "
+        + "which this server does not do today — and returns error:\"unsupported_scope\" rather than a partial "
         + "answer.")]
     public static async Task<string> DetectCircularDependencies(
         WorkspaceHost workspace,

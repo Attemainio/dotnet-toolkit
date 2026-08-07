@@ -1,6 +1,6 @@
 # .NET resource management
 
-Canonical resource-management standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it
+Canonical resource-management standard. Loaded on demand per `standards/index.md`'s table; read it
 before implementing `IDisposable`/`IAsyncDisposable`, working with a stream/handle/pooled buffer, or
 deciding who owns disposing a dependency. `dotnet-code-review` validates against it as part of the
 `[correctness]` aspect.

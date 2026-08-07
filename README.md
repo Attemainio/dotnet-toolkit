@@ -417,9 +417,9 @@ it before posting if your repo is private.
 
 | | |
 |---|---|
-| [`docs/tools/`](docs/tools/) | One page per tool: arguments, a real call and response, and what to call next. The router that picks between them lives in `.claude/rules/index.md` |
-| [`.claude/rules/index.md`](.claude/rules/index.md) | The one always-loaded rule — the tool table, the standards table, and when to invoke each skill. This is what `dotnet-toolkit-init` installs |
-| [`standards/`](standards/) | The 13 coding standards the reviewer and the writer both read |
+| [`docs/tools/`](docs/tools/) | One page per tool: arguments, a real call and response, and what to call next. The router that picks between them lives in the `dotnet-read` and `dotnet-write` skills |
+| [`.claude/rules/index.md`](.claude/rules/index.md) | The one always-loaded rule — a pure router: which skill to invoke for reading, writing, exploring or reviewing C#, and nothing else. This is what `dotnet-toolkit-init` installs |
+| [`standards/`](standards/) | The 13 coding standards the reviewer and the writer both read, plus `standards/index.md`, the shared table saying which apply when |
 | [`docs/design/`](docs/design/) | Maintainer notes: server architecture, agent design, hook rationale. Nothing reads these at runtime |
 | [`CLAUDE.md`](CLAUDE.md) | The operating contract for working on the plugin itself |
 
@@ -427,7 +427,9 @@ it before posting if your repo is private.
 
 | Skill | For |
 |---|---|
-| `dotnet-change` | Editing C# — the `validate_patch` write protocol and the pre-edit standards step |
+| `dotnet-read` | Reading and navigating C# — which retrieval tool answers which question, the cheap-route table, and how to read a response |
+| `dotnet-write` | Editing C# — the `validate_patch` write protocol and the pre-edit standards step |
+| `dotnet-explore` | Surveying an unfamiliar area first — briefs and launches the `dotnet-explore` agent |
 | `dotnet-review` | Any review request — partitions scope across parallel `dotnet-code-review` instances |
 | `dotnet-toolkit-init` | Install / verify / uninstall in a consuming repo |
 | `dotnet-toolkit-consistency` | Audit whether the docs still match `Tools/*.cs` |

@@ -15,12 +15,22 @@ back to shell.
 
 ## Non-negotiable workflow
 
-The tool protocol — MCP tools over Grep/`Read` for C#, delegating an unknown symbol sweep to the
-`dotnet-explore` agent, `validate_patch` as the only write path, which standards apply when, and
-which skill to invoke — lives in **`.claude/rules/index.md`**. It is always-loaded alongside this
-file, and is the same rule `dotnet-toolkit-init` copies into consuming repos. It is deliberately not
-repeated here: a rule that lives only in `CLAUDE.md` never reaches a consumer, and two copies always
-diverge.
+**`.claude/rules/index.md` is a router and nothing else**: it names no tools, and maps an intent
+(read C#, write C#, explore, review) to the skill that owns it. It is always-loaded alongside this
+file, and is the same rule `dotnet-toolkit-init` copies into consuming repos.
+
+The protocol itself lives one level down, loaded only when the work needs it:
+
+| Owns | File |
+|---|---|
+| Every retrieval tool, what each answers, the cheap-route table, `limitedBy`, TOON | `skills/dotnet-read/SKILL.md` |
+| `validate_patch`/`rename_symbol`, the fetch-to-patch loop, the standards step, failures | `skills/dotnet-write/SKILL.md` |
+| Briefing and launching the `dotnet-explore` agent | `skills/dotnet-explore/SKILL.md` |
+| Partitioning and launching `dotnet-code-review` | `skills/dotnet-review/SKILL.md` |
+| Which coding standard applies when — shared by the writer and the reviewer | `standards/index.md` |
+
+None of it is repeated in `CLAUDE.md`: a rule that lives only here never reaches a consumer, and two
+copies always diverge.
 
 What this repo adds on top, because it is the plugin's own source tree:
 
@@ -57,7 +67,8 @@ the maintainer's routes — files a consuming repo does not have.
 |---|---|
 | Changing server internals, startup order, a subsystem, or packaging | `docs/design/architecture.md` |
 | Changing the always-loaded rule, or what init ships | `.claude/rules/index.md`; `skills/dotnet-toolkit-init/SKILL.md` copies it |
-| Changing a coding standard | `standards/<name>.md`, plus its row in `.claude/rules/index.md`'s table |
+| Changing which tool answers what, or a route finding | `skills/dotnet-read/SKILL.md` (reads) or `skills/dotnet-write/SKILL.md` (writes) — **not** the always-loaded rule |
+| Changing a coding standard | `standards/<name>.md`, plus its row in `standards/index.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/design/agents.md` |
 | Why a hook is built the way it is | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`; nothing routes to this file) |
 | Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-toolkit-init`) |

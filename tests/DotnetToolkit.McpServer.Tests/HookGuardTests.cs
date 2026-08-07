@@ -123,7 +123,7 @@ public sealed class GuardCsEditTests : IClassFixture<HookRepoFixture>
         var outcome = GuardCsEdit.Evaluate(payload, _repo.Context());
 
         Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("validate_patch", outcome.Stderr);
+        Assert.Contains("dotnet-write", outcome.Stderr);
     }
 
     [Fact]
@@ -179,7 +179,7 @@ public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
 
         Assert.Equal(2, outcome.ExitCode);
         Assert.Contains("src/App/App.csproj", outcome.Stderr);
-        Assert.Contains("search_index", outcome.Stderr);
+        Assert.Contains("dotnet-read", outcome.Stderr);
     }
 
     [Fact]

@@ -97,10 +97,10 @@ that rest on the code itself rather than on a standard are still yours to report
 `security.md`
 
 **Read the rest only when the code you retrieved in step 2 triggers them.** The trigger conditions are
-the "When" column of the standards table in `.claude/rules/index.md` — that table is the
-single source of truth for which file covers what, and it is not restated here. It is always-loaded,
-so you already hold it; match its rows against what is actually in your scope, and load the files
-that match. In short: `concurrency.md`
+the "When" column of the standards table at `<pluginRoot>/standards/index.md` — that table is the
+single source of truth for which file covers what, and it is not restated here. **Read it first**, as
+the seventh always-read file, then match its rows against what is actually in your scope and load the
+files that match. In short: `concurrency.md`
 when anything awaits, locks, spawns work, or shares state; `performance.md` for hot paths;
 `testing.md` when the scope contains or should contain tests; `api-design.md` for a public/internal
 surface change; `error-handling.md`, `resource-management.md`, and `architecture.md` per their rows.

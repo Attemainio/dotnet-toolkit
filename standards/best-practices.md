@@ -1,6 +1,6 @@
 # C# best practices
 
-Canonical idiomatic-C# standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before
+Canonical idiomatic-C# standard. Loaded on demand per `standards/index.md`'s table; read it before
 writing C#. `dotnet-code-review` validates all of it under `[correctness]`, with the
 duplication/abstraction section under `[cleanup]`. Async/threading correctness lives in `concurrency.md`, not
 here.

@@ -128,7 +128,7 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
 `name` is directly usable as `get_symbol`'s `symbol` argument — parameter types are shortened but
 matching is whitespace-blind, so the shortened form still resolves.
 
-**If a symbol you're about to edit has no summary**, see the `dotnet-change` skill — a missing
+**If a symbol you're about to edit has no summary**, see the `dotnet-write` skill — a missing
 summary on code you touch is something `validate_patch` should fix in the same edit, not just note.
 
 ## Next steps

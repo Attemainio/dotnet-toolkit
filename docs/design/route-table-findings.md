@@ -1,5 +1,23 @@
 # Route-table findings: tool selection, ToolSearch, and the eval corpus
 
+> **Historical record — read the dates.** This file captures what was measured on 2026-08-05/06 and
+> is deliberately not rewritten as the design moves. Two things have since changed, and the file's
+> own file/section names still refer to the old layout:
+>
+> - **The routing table left the always-loaded rule on 2026-08-07.** `.claude/rules/index.md` is now
+>   a pure skill router naming no tools; the intent→tool tables and §2's anti-pattern catalogue live
+>   in `skills/dotnet-read/SKILL.md` and `skills/dotnet-write/SKILL.md`, which are loaded on demand.
+>   §2's "Fixed in doc" statuses stayed true — the notes are still in the manuals — but the *primary*
+>   home of every route finding is now a skill, precisely because a manual is only read once someone
+>   already went looking. `skills/dotnet-change` was renamed `skills/dotnet-write` in the same change.
+> - **§3's description fix was superseded by a full rewrite on 2026-08-07.** All 18 method-level
+>   `[Description]` attributes and the primary parameter descriptions were rewritten to carry
+>   natural-phrasing synonyms throughout, not just the one clause per tool §3 records. §3's *diagnosis*
+>   — the mechanism is lexical (regex/BM25), so rare shared terms are what matter — is why.
+>
+> §1's core conclusion is unchanged and load-bearing: pick the tool from a table, then
+> `ToolSearch("select:<exact name>")`. Only the table's location moved.
+
 Written 2026-08-05 in response to a direct audit request: how does tool selection actually work in
 this plugin, does Claude's own `ToolSearch` find the right MCP tool from its description, and what
 does the eval corpus (`.claude/dotnet-toolkit/eval/*.md` in this repo and in PandaAI, a consumer
@@ -134,6 +152,128 @@ confirm this isn't a quirk of this plugin's descriptions — it's how the mechan
   descriptions... Add common keywords to tool descriptions to improve discoverability."*
 - The explicit optimization tip: **"Use keywords in descriptions that match how users describe
   tasks."**
+
+### Re-measured 2026-08-07, after the full description rewrite
+
+Same protocol, same 10 baseline queries re-run from a freshly reconnected MCP session (the 11th,
+`workspace_status`, was not re-run standalone — it surfaced unprompted at 3rd and 4th on two other
+queries, which is suggestive, not a measurement).
+
+| Query | Expected | Before | After |
+|---|---|---|---|
+| `"who calls this method"` | `get_references` | absent | **1st** |
+| `"why was this code written this way, development history"` | `search_log` | absent | **1st** |
+| `"what classes implement this interface, inheritance chain"` | `get_type_hierarchy` | absent | **1st** |
+| `"how many tokens has this session used"` | `get_retrieval_metrics` | absent | **1st** |
+| `"what changed in this commit or branch"` | `get_semantic_diff` | absent | **2nd** |
+| `"refresh after pulling new code from git"` | `reload_workspace` | absent | **3rd** |
+| `"edit a C# file safely"` | `validate_patch` | absent | **5th** |
+| `"what can I call at this point in the code"` | `get_scope` | absent | **5th** |
+| `"look up a class and see its source code"` | `get_symbol` | absent | **absent** |
+| `"is the server alive"` | `ping` | absent | **absent** |
+
+**8 of 10.** Three things the re-measurement established that §3 could not:
+
+- **There is no fallback list.** A nonsense query (`"xyzzy plugh frobnicate"`) returns *"No matching
+  deferred tools found"*. So the recurring odd top-5s (`TaskList`, `EndConversation`,
+  `PushNotification`…) are genuine rankings that genuinely outscored the expected tool — not a
+  default the ranker emits when nothing matches. Any diagnosis that assumed "the query scored too
+  low overall" is wrong.
+- **`ping` is reachable; that one query isn't.** `"health check pong version"` → 1st. `"is the server
+  alive"` is four words, three of them stopwords, and its one rare token was not enough. Its
+  description already opens with that exact sentence, so there is nothing left to add — this is a
+  floor on what description text can buy, and the reason the pick-then-`select:` discipline stays.
+- **`get_symbol` was losing a head-to-head with `search_index`, not failing on vocabulary.** On
+  `"look up a class and see its source code"`, `search_index` placed 2nd and `get_symbol` was absent;
+  a second independent phrasing (`"read the definition and source of a C# class"`) also missed. The
+  two descriptions had become near-duplicates — both claiming *C#*, *symbol*, *class/interface/
+  struct/record/enum/method/property/field*, *find/look up*, *.cs files*, *source* — so the ranker
+  picked one and the other fell below the cut. **More synonyms would have made this worse.** Fixed
+  the same day by *differentiating* rather than enriching: `get_symbol` now owns the read verbs
+  (*read the actual code*, *go to definition*, *peek at the implementation*, *show me the body*) and
+  dropped the kind enumeration; `search_index` now says **BY NAME**, keeps the kind list, and no
+  longer claims to return *source code*. Each states the handoff in one clause (*"Don't know the name
+  yet? search_index finds it; this one reads it."* / *"This locates a name; get_symbol then reads what
+  is in it."*). **That fix did not work** — see the next section, which supersedes this diagnosis.
+
+### Re-probed 2026-08-07 after the differentiation fix: the real mechanism is length
+
+The differentiation fix was applied, tested and republished, and a fresh MCP session re-ran both
+`get_symbol` probes plus the 7 baseline queries that had already passed. **The regression check is
+clean — 7 of 7 still resolve — and `get_symbol` still does not.**
+
+| Query | Expected | Result |
+|---|---|---|
+| `"is there a path from one function to another"` | `get_call_slice` | 1st |
+| `"which project depends on which, project references"` | `get_project_graph` | 1st |
+| `"circular reference loop between projects"` | `detect_circular_dependencies` | 1st |
+| `"rename this method everywhere it is used"` | `rename_symbol` | 1st |
+| `"change response format to json"` | `set_output_format` | 1st |
+| `"show me the full call tree for this method"` | `get_call_hierarchy` | 1st |
+| `"is the workspace ready, is indexing done"` | `workspace_status` | 1st |
+| `"find symbols by name in the codebase"` | `search_index` | 2nd, behind `rename_symbol` |
+| `"find all references to a symbol"` | `get_references` | 2nd, behind `rename_symbol` |
+| `"look up a class and see its source code"` | `get_symbol` | absent |
+| `"read the definition and source of a C# class"` | `get_symbol` | absent |
+| `"go to definition of a method"` | `get_symbol` | absent |
+
+The decisive probe is the last one. **"go to definition" is a verbatim phrase in `get_symbol`'s own
+first sentence, and the query still does not retrieve it** — while `"C# symbol source code"` returns
+it 1st. So the tool is indexed and reachable; it loses a ranking contest it should win on its own
+words. Vocabulary was never the variable.
+
+Sorting every description by size makes the pattern visible:
+
+| Bytes | Tool | Probe outcome |
+|---|---|---|
+| 1885 | `get_symbol` | **absent on 3 of 4 phrasings** |
+| 1813 | `get_references` | 2nd, displaced by `rename_symbol` |
+| 1799 | `get_call_hierarchy` | 1st |
+| 1784 | `get_scope` | 5th |
+| 1654 | `search_index` | 2nd, displaced by `rename_symbol` |
+| 1261 | `rename_symbol` | 1st — **and 1st on three queries that are not about renaming** |
+| ≤1237 | the other 12 | 1st on their own query, with `ping`'s one bad phrasing excepted |
+
+**The ranker appears to apply BM25-style document-length normalization, and our longest descriptions
+are being taxed for their length.** The three worst performers are three of the four longest; the
+short ones win outright. `rename_symbol` is the diagnostic case: at 1261 bytes it is dense with
+*symbol*, *reference*, *method*, *class*, *property*, *field* and short enough that the normalizer
+rewards it, so it wins `"find symbols by name"`, `"find all references to a symbol"` and `"go to
+definition of a method"` — three queries belonging to two other tools.
+
+`get_call_hierarchy` is the exception that fixes the model rather than breaking it: at 1799 bytes it
+still places 1st, because *call tree* / *call graph* / *blast radius* are rare terms **no other tool
+claims**. Length is a penalty that rare, uncontested vocabulary can pay off. `get_symbol` has no such
+term — every word it owns (*class*, *method*, *source*, *code*, *definition*, *symbol*, *read*) is
+also claimed by shorter competitors.
+
+**This inverts the prescription in §3.** "Add common keywords to tool descriptions" is the official
+advice and it worked for the 8 tools that were short and unfindable — but for a description already
+near the 1900-byte budget, adding text *lowers* its score on every query. `get_symbol` was the most
+verbose tool before the rewrite and the rewrite made it longer. The remedy is to **cut it to roughly
+`rename_symbol`'s length**, moving the edit-lease mechanics (`declarationSites`, the `contentVersion`
+layer rule, the `-modifier` span warning) into `docs/tools/get_symbol.md` and `dotnet-write`, which
+is where the attribute-vs-markdown split says they belonged anyway: they are not needed to *choose*
+the tool, only to use it correctly on the write path.
+
+**Not fixed.** Recorded rather than acted on, because shortening `get_symbol` means relocating four
+paragraphs of edit-protocol text and re-verifying the write path still teaches them.
+
+Two further corrections to §3 and to the section above:
+
+- **There *is* a fallback list.** Queries that score nothing return an unrelated padding set
+  (`TaskUpdate`, `EndConversation`, `ExitPlanMode`, `PushNotification`, `TaskCreate`…). The earlier
+  conclusion — drawn from `"xyzzy plugh frobnicate"` returning *"No matching deferred tools found"* —
+  was wrong, or that path differs from a real query that merely scores low. **A padded result is
+  indistinguishable from a genuine one without checking whether the returned tools are plausible.**
+- **A tool ranking 2nd is not a pass.** `search_index` and `get_references` both resolve, but only
+  after a tool that would be the wrong call. Under `max_results: 1`, or any policy that takes the top
+  hit, both queries fail.
+
+The standing conclusion is unchanged and now better supported: **tool descriptions cannot be tuned
+into a reliable intent→tool router.** The skill tables in `dotnet-read` and `dotnet-write` name the
+exact tool, and `ToolSearch("select:<name>")` loads it by name without ranking. Free-text `ToolSearch`
+is a fallback, not the path.
 
 ### Fix applied: description text for all 11 failing tools
 

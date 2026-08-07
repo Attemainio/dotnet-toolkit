@@ -57,7 +57,7 @@ Each is the single location for that file. Nothing is copied into a consuming re
 per-repo override tier, so a resolved path is the answer — there is no second place to look.
 
 Added in contract **3.50**. A server that omits the line predates it and needs republishing to
-`dist/`; `.claude/rules/index.md` and `agents/dotnet-code-review.md` both treat its absence as a
+`dist/`; the `dotnet-read`/`dotnet-write` skills and `agents/dotnet-code-review.md` all treat its absence as a
 reason to report standards-derived work as not-assessed rather than to guess a path.
 
 A degraded workspace names the failing project — reference edges from a project MSBuild couldn't

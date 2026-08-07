@@ -11,13 +11,31 @@ testing, XML documentation, cleanup/duplication — over **one stated scope**. I
 context of the project**: it reads code and the shared standards under the plugin's `standards/`
 fresh, like a senior developer seeing the
 codebase for the first time, and reports findings without editing anything. Route review requests to it
-instead of reviewing inline yourself — it reads the actual standards files that you only have a summary
-of.
+instead of reviewing inline yourself — it reads the actual standards files, which you have not loaded.
 
-**It loads standards selectively.** Six files are read every time (`naming`, `styling`,
-`best-practices`, `xml-documentation`, `antipatterns`, `security`); the other seven are read only when
-the retrieved code matches their "When" condition in `.claude/rules/index.md`'s standards table. This
-keeps each instance's
+## Step 0 — check workspace readiness before launching
+
+**Call `workspace_status` yourself, before spawning anything.** Each instance starts cold and cannot
+fix a broken workspace; launching several against one is a parallel waste, not a parallel review.
+
+- **`workspace: degraded`, or projects under `failed:`** — semantic results may be silently **wrong**,
+  not merely thin. A review run against it reports findings it cannot stand behind. Fix the build,
+  `reload_workspace`, then spawn.
+- **Still loading, or index-only** — `get_references`, `get_call_hierarchy`, `get_type_hierarchy` and
+  `get_semantic_diff` return nothing rather than nothing-found, and the classic failure is an instance
+  reporting live code as dead. Wait for it.
+- **After a `git checkout`/`pull`/rebase, or a new or deleted `.cs` file** — `reload_workspace(scope:
+  "all")` first, or every instance's line numbers are wrong.
+- **Take `pluginRoot` from the same response** and state it in each instance's brief, so no instance
+  has to rediscover where the standards live.
+
+State the readiness verdict in the merged report. A review run on a degraded workspace is reported as
+such, never as clean.
+
+**It loads standards selectively.** The routing table is `<pluginRoot>/standards/index.md`, shared with
+`dotnet-write`. Six files are read every time (`naming`, `styling`, `best-practices`,
+`xml-documentation`, `antipatterns`, `security`); the other seven are read only when the retrieved code
+matches their "When" condition in that table. This keeps each instance's
 baseline down — the cost is paid once per parallel instance, so it dominates a multi-instance run — and
 every report ends with a `Standards:` line naming what was loaded and what was not. Treat an
 untriggered aspect as **not assessed**, not clean.
@@ -50,6 +68,8 @@ Anything you state here is context the instance does not have to re-derive — a
 starts cold, re-derivation is the expensive part of a parallel run.
 
 - **Scope** (required): the exact folder(s)/file list this instance owns.
+- **`pluginRoot`** (required): the path from step 0, so the instance can reach
+  `<pluginRoot>/standards/index.md` without a lookup of its own.
 - **`mode`**: `diff` (changed files vs. a stated baseline — say what the baseline is: `main`, last
   commit, uncommitted working tree) or `scope` (the slice as a cohesive unit). If a baseline is
   relevant, state it for every instance identically.
@@ -101,5 +121,5 @@ instance ran:
 instructed never to modify code. Note that this is **instruction, not sandboxing**: `memory: project`
 makes the harness grant it `Write`/`Edit` for its own memory namespace, so its resolved tool list does
 include them (see `docs/design/agents.md`). If the user wants findings actually applied, that's your
-job after reviewing what it reported: apply them through `validate_patch` with an `intent`, which both
-validates the change and records why it was made.
+job after reviewing what it reported — **invoke `dotnet-write`** and apply them through
+`validate_patch` with an `intent`, which both validates the change and records why it was made.

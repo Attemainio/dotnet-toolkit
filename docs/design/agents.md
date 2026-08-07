@@ -28,7 +28,7 @@ everything about its slice; together they cover everything about the target, wit
 twice.
 
 The standards are shared: the main agent reads the same `standards/` files at write time (per the
-table in `.claude/rules/index.md`), so writer and reviewer work from one source of truth. A consuming repo
+table in `standards/index.md`), so writer and reviewer work from one source of truth. A consuming repo
 reads exactly the same files the writer does — the plugin's own, resolved through `workspace_status`'s
 `pluginRoot`. There is no per-repo override tier: one copy of each standard exists, so writer and
 reviewer cannot be judging against different text.
@@ -47,7 +47,7 @@ to hold that down, and changing them without understanding the trade re-inflates
   anything. Trimming those two files is the only lever on it; the agent file cannot decline them, and
   an instruction telling an agent not to read them saves a round trip, not a byte.
 - **Tiered standards loading.** Six core files always; the other seven only when the standards
-  table's "When" column (in `.claude/rules/index.md`) matches the retrieved code (~19k → ~7.8k). The
+  table's "When" column (in `standards/index.md`) matches the retrieved code (~19k → ~7.8k). The
   cost is that an aspect can go unexamined, so the agent must end every report with a `Standards:`
   line naming what it loaded and skipped, and an untriggered aspect is reported **not-assessed**,
   never clean.
@@ -82,7 +82,7 @@ Don't reason about this agent as if it were sandboxed.
 
 ## Adding an aspect (dotnet-code-review)
 
-A new aspect is a new `standards/*.md` file, a row in `.claude/rules/index.md`'s table (with a "When"
+A new aspect is a new `standards/*.md` file, a row in `standards/index.md`'s table (with a "When"
 condition stated as an observable property of the code, so the reviewer's trigger matching can use it),
 and one entry in the agent file's per-aspect evidence disciplines — never a new agent file. Decide
 explicitly whether it joins the always-loaded core or the triggered set; the core should only grow for
@@ -99,7 +99,7 @@ It exists because the main agent's fan-out phase is the cheapest work in a chang
 context-expensive to keep: a dozen `search_index`/`get_references`/`get_symbol` responses stay in the
 main window for the rest of the session, when all that survives their usefulness is a handful of
 `symbolId`s and file paths. Delegating the fan-out to Haiku pays for the wide search in a context that
-is then discarded, and returns only the residue. `dotnet-change`'s step 2 ("know the blast radius")
+is then discarded, and returns only the residue. `dotnet-write`'s step 2 ("know the blast radius")
 points at it for exactly that reason.
 
 ## Read-only *is* a capability boundary here — unlike the reviewer
@@ -154,7 +154,7 @@ and it is what drives a session toward the auto-compaction cliff that truncates 
 honest deflators on the 12×: a main agent that already knows the codebase would have spent maybe 5–7k
 rather than 11.5k on the same question (so ~5–6× like-for-like), and delegation costs ~1.1k plus an
 ~80–100s round trip on the caller's side. For anything answerable in two calls, delegating is worse —
-which is what `dotnet-change`'s pointer says.
+which is what `dotnet-write`'s pointer says.
 
 Reproducing any of this needs the agent's `taskId`. The agent file requires it — one `explore_<slug>` id
 minted per run, passed on every call except `workspace_status` (which takes no arguments and records no

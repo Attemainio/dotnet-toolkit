@@ -15,7 +15,7 @@ internal static class GuardCsEdit
 {
     /// <summary>Decides whether an edit tool call may proceed.</summary>
     /// <param name="payload">The parsed hook payload.</param>
-    /// <param name="context">The repo and docs paths to cite in a denial.</param>
+    /// <param name="context">The repo paths the membership check is scoped to.</param>
     /// <returns>A denial for a C# file that already exists; otherwise <see cref="HookOutcome.Allow"/>.</returns>
     public static HookOutcome Evaluate(HookPayload payload, HookContext context)
     {
@@ -48,37 +48,22 @@ internal static class GuardCsEdit
             return HookOutcome.Allow;
         }
 
-        // $$ raw string: {{expr}} interpolates, a single brace is literal. The message quotes
-        // validate_patch's own argument shapes, which are full of braces.
-        return HookOutcome.Deny($$"""
-            Blocked {{payload.ToolName}} on {{file}}: C# edits go through validate_patch, not {{payload.ToolName}}.
+        return HookOutcome.Deny($"""
+            Blocked {payload.ToolName} on {file}: C# edits go through validate_patch, not {payload.ToolName}.
 
             validate_patch is the write path for .cs files, not a faster dotnet build. It is also the ONLY thing
-            that appends to the development log — an edit made with {{payload.ToolName}} is a change whose reasoning is gone
-            the moment this conversation ends, and search_log can never recover it.
+            that appends to the development log - an edit made with {payload.ToolName} is a change whose reasoning
+            is gone the moment this conversation ends, and search_log can never recover it.
 
-            Do this instead:
-              1. get_symbol on the target symbol; keep its contentVersion and the declarationSites line span.
-                 Use include: "all" when the edit rewrites a body — the default fetch's contentVersion carries no
-                 body layer, and a body edit built on it is rejected with unleased_body.
-              2. validate_patch with baseVersions {symbolId: contentVersion}, line-span edits, applyOnSuccess
-                 true, and an intent in user terms. Nothing is written unless the result is sufficient, so
-                 there is no reason to dry-run with applyOnSuccess false first.
-              3. If it fails, the response carries diagnostics.rootCauses[].locations (where the error landed
-                 in the text you proposed) and a draft {draftId}. Send that draftId back with ONLY the lines
-                 you are correcting — baseVersions is inherited and the spans address the draft. Do not
-                 resubmit the whole patch.
+            Do this instead: invoke the dotnet-write skill.
+
+            It carries the fetch-to-patch loop, the standards step that runs before the first edit of a session,
+            the judgment call in each argument, and every failure mode with its recovery - including the pure-rename
+            path, which derives its call-site edits from the compiler's own graph instead of a hand-authored patch
+            set. None of that is repeated in this message on purpose: a copy here would drift from the skill.
 
             A change that feels too large or too interleaved to decompose is still not a reason to fall back to
-            {{payload.ToolName}} — split it into more validate_patch calls, one per touched symbol, sharing one intent.
-
-            If the change is a pure RENAME, do not hand-author the call-site edits at all: rename_symbol takes the
-            symbol, the new name and its contentVersion, derives every reference edit from the compiler's own graph
-            (including interface, virtual and delegate dispatch, which a hand-written patch set misses), and runs
-            the same ladder and the same log entry. See {{context.Doc("rename_symbol")}}
-
-            Full arguments, the sufficiency triple, and every failure mode (unheld_symbol, stale_workspace,
-            stale_index_only_id): {{context.Doc("validate_patch")}}
+            {payload.ToolName}; the skill covers that case too.
 
             If this genuinely is not a validate_patch case (the workspace failed to load, or you are reverting a
             partial write), say so and ask the user to allow it explicitly rather than retrying the same call.

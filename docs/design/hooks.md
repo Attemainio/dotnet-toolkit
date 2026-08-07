@@ -114,7 +114,7 @@ name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `B
 are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode returns `.cs` source with
 nothing intercepting it. This is a real hole in read enforcement, not a case the membership check
 allows: `search_index` is still the right tool for finding a declared symbol, and the always-loaded
-`.claude/rules/index.md` covers it (in this repo and in every repo init copied it into), but
+the `dotnet-read`/`dotnet-write` skills cover it (in this repo and in every repo init wired up), but
 no hook enforces that here. It matters most for
 `dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright. `dotnet-explore` closes the
 hole the other way — it is granted neither, and its own instructions forbid `Read` on a `.cs` file at
@@ -152,10 +152,10 @@ guard: it never denies.
 
 Every other hook is **retrospective** — it fires once `Edit`/`Write`/`Bash` has already been reached
 for, which is exactly the wrong tool. A caller who does the right thing and goes straight to
-`validate_patch`, but without invoking `dotnet-change`, trips none of them, so a checklist carried in
+`validate_patch`, but without invoking `dotnet-write`, trips none of them, so a checklist carried in
 that skill's body would never arrive. This hook closes that gap by putting it in front of the caller at
 the moment it applies, which is also why it does not have to be pre-loaded: the delivery is pull-free.
-**The hook is the checklist's only owner** — `skills/dotnet-change/SKILL.md` points here and deliberately
+**The hook is the checklist's only owner** — `skills/dotnet-write/SKILL.md` points here and deliberately
 keeps no copy, since a copy would drift and would still miss the caller this exists for.
 
 **Once per session, not once per call.** A checklist repeated on every patch of a long editing task is
@@ -166,7 +166,7 @@ one checklist between them. The marker lives in temp rather than the repo delibe
 repo should not accumulate per-session files.
 
 **No session id means silence.** Without one there is no way to tell a first call from a fiftieth, and
-emitting anyway would spam every patch in the session. The always-loaded rule and the `dotnet-change`
+emitting anyway would spam every patch in the session. The always-loaded rule and the `dotnet-write`
 skill remain the primary carriers; this hook is a backstop, so failing quiet is correct. Every IO
 failure — an existing marker, an unwritable temp directory — takes the same path.
 

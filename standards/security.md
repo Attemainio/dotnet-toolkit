@@ -1,6 +1,6 @@
 # .NET security
 
-Canonical security standard. Loaded on demand per `.claude/rules/index.md`'s standards table; read it before writing
+Canonical security standard. Loaded on demand per `standards/index.md`'s table; read it before writing
 any C# that touches configuration, SQL, endpoints, auth, logging, or cryptography. `dotnet-code-review`
 validates against it (aspect `[security]`).
 

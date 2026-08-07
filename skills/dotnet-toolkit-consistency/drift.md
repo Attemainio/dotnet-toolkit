@@ -89,14 +89,21 @@ Wrong text here is acted on immediately, by every session, with no opportunity t
   moment a caller is denied. A stale one teaches the wrong fix at the worst moment.
 - `Tools/*.cs` `[Description]` attributes — the searchable index (`harness-compliance.md` §C). A
   drifted description makes a tool unfindable, which reads as the tool not existing.
-- `docs/tools/<tool>.md` **filenames** — the reachability contract, since `index.md` derives the path
-  rather than tabulating it. A manual named anything else is unreachable no matter how good it is.
+- `docs/tools/<tool>.md` **filenames** — the reachability contract, since `dotnet-read`/`dotnet-write`
+  derive the path rather than tabulating it. A manual named anything else is unreachable no matter how
+  good it is.
+- Skill and agent `description:` frontmatter — always resident and the entire basis for selection. A
+  description that stops matching how a user phrases the task silently strands the whole skill body
+  behind it, which is exactly the failure `.claude/rules/index.md` now depends on not happening.
 
 ### Tier 2 — read on demand, on a path that matters
 
 Wrong text here is acted on by whoever took that path, which is usually someone about to write code.
 
-- `skills/dotnet-change/SKILL.md` — read before every first `.cs` edit.
+- `skills/dotnet-read/SKILL.md` — read before every first `.cs` read, and it is now the only
+  always-reachable statement of which tool answers what.
+- `skills/dotnet-write/SKILL.md` — read before every first `.cs` edit.
+- `standards/index.md` — the shared load rule for both the writer and the reviewer.
 - `agents/*.md` `tools:` frontmatter — a stale grant silently removes a capability the body still
   instructs the agent to use.
 - `standards/` cross-references and the MCP tools they name.
