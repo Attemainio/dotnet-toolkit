@@ -26,12 +26,20 @@ public sealed class CallHierarchy
 
     public CallHierarchy(SymbolStore symbols) => _symbols = symbols;
 
+    /// <summary>One node of the walked tree: a symbol, and whatever branch was expanded below it.</summary>
+    /// <param name="SymbolId">The symbol this node stands for.</param>
+    /// <param name="Children">The expanded children — empty when the symbol has no neighbours, null when this node was not expanded at all.</param>
+    /// <param name="Recursive">True when the walk stopped here because this symbol is already on the path from the root.</param>
+    /// <param name="Truncated">True when the per-node cap left some of this node's neighbours unexpanded.</param>
+    /// <param name="OmittedChildren">How many neighbours that cap left out, or null when it left none.</param>
+    /// <param name="Repeated">True when this symbol's subtree was already rendered elsewhere in the tree, so this node points back by <see cref="SymbolId"/> rather than expanding the same branch a second time.</param>
     public sealed record Node(
         string SymbolId,
         IReadOnlyList<Node>? Children,
         bool Recursive,
         bool Truncated,
-        int? OmittedChildren);
+        int? OmittedChildren,
+        bool Repeated = false);
 
     /// <summary>
     /// The walk's outcome: the tree itself, plus the blast-radius counters describing the whole graph
@@ -70,6 +78,7 @@ public sealed class CallHierarchy
         var depthSets = new List<HashSet<string>>();
         var reached = new HashSet<string>(StringComparer.Ordinal);
         var expanded = new HashSet<string>(StringComparer.Ordinal);
+        var rendered = new HashSet<string>(StringComparer.Ordinal);
         var depthCapped = false;
         var omittedTotal = 0;
 
@@ -104,7 +113,20 @@ public sealed class CallHierarchy
                 depthCapped = true;
         }
 
+        // A symbol reached through two branches (a diamond) has ONE subtree, not two, and rendering it
+        // twice charged the caller twice for a shape that had not changed between the branches. The first
+        // encounter renders it; every later one keeps its own node and points back by symbolId under
+        // repeated:true. Expand still runs either way, so blastRadius is untouched -- it counts what the
+        // walk REACHED, which is a property of the walk and not of what survived rendering.
         Node Walk(string id, HashSet<string> pathAncestors, int depth)
+        {
+            var node = Expand(id, pathAncestors, depth);
+            return node.Children is { Count: > 0 } && !rendered.Add(id)
+                ? node with { Children = null, Repeated = true }
+                : node;
+        }
+
+        Node Expand(string id, HashSet<string> pathAncestors, int depth)
         {
             Track(id, depth);
             expanded.Add(id);

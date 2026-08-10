@@ -444,6 +444,62 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// The ranked lookup behind didYouMean tokenizes camel case, so a name that is a typo of nothing came
+    /// back ranked against every symbol merely sharing one token with it.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_NameResemblingNothing_OffersNoCandidates()
+    {
+        var root = Root(await GetSymbol("Nowhere.NoSuchSymbolAtAllXyz"));
+
+        Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
+        Assert.False(root.TryGetProperty("didYouMean", out _));
+    }
+
+    /// <summary>
+    /// source:code strips the leading doc comment by design, so suppressing xmlDoc alongside it removed the
+    /// documentation from the response instead of deduplicating it. An unsliced source:full still suppresses.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_XmlDoc_SuppressedOnlyWhenSourceActuallyCarriesTheDocComment()
+    {
+        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code-exact,xmlDoc")).GetProperty("content");
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact,xmlDoc")).GetProperty("content");
+
+        Assert.DoesNotContain(
+            code.GetProperty("source").EnumerateArray(),
+            line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
+        Assert.False(string.IsNullOrWhiteSpace(code.GetProperty("xmlDoc").GetProperty("summary").GetString()));
+
+        Assert.False(full.TryGetProperty("xmlDoc", out _));
+    }
+
+    /// <summary>
+    /// A slice is judged on the lines it actually kept, not on being a slice: one covering the whole doc
+    /// comment suppresses xmlDoc as a restatement, one landing past it still serves the structured form.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_XmlDoc_SuppressedWhenTheSliceItselfCarriesTheWholeDocComment()
+    {
+        var whole = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact")).GetProperty("content");
+        var docLines = whole.GetProperty("source").EnumerateArray()
+            .Where(l => l.GetProperty("text").GetString()!.TrimStart().StartsWith("///"))
+            .Select(l => l.GetProperty("line").GetInt32())
+            .ToList();
+        Assert.NotEmpty(docLines);
+
+        var covering = Root(await GetSymbol(
+            "Sample.Lib.Widget.Spin",
+            $"source:full-exact@{docLines[0]}-{docLines[^1]},xmlDoc")).GetProperty("content");
+        Assert.False(covering.TryGetProperty("xmlDoc", out _));
+
+        var past = Root(await GetSymbol(
+            "Sample.Lib.Widget.Spin",
+            $"source:full-exact@{docLines[^1] + 1},xmlDoc")).GetProperty("content");
+        Assert.False(string.IsNullOrWhiteSpace(past.GetProperty("xmlDoc").GetProperty("summary").GetString()));
+    }
+
+    /// <summary>
     /// Being told a type has M members is only useful if the member list then says which one to open and
     /// where it is. A row that carried only a name and a version left that second hop with nothing to go
     /// on, so every row now states its own line and its own shape.
@@ -2229,6 +2285,25 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// A node the edge cache reached but the symbol table cannot name used to render its own symbolId as its
+    /// displayString -- one string under two keys, naming nothing. The default row is exactly what the
+    /// projection's failed RowsFor lookup hands it, and the store is real, so both misses are genuine.
+    /// </summary>
+    /// <remarks>
+    /// Asserted against the helper rather than a rendered tree because every symbol the fixture solution
+    /// reaches is one the index can name -- external BCL members included -- so no call reaches this branch.
+    /// </remarks>
+    [Fact]
+    public void CallTreeDisplay_ForAnIdTheIndexCannotName_IsNullRatherThanTheIdItself()
+    {
+        Assert.Null(FlowTools.DisplayOf(_f.Symbols, "sym_notarealsymbolid", default, wantSignature: false));
+        Assert.Null(FlowTools.DisplayOf(_f.Symbols, "sym_notarealsymbolid", default, wantSignature: true));
+
+        var named = FlowTools.DisplayOf(_f.Symbols, "sym_notarealsymbolid", ("Sample.Lib.Widget.Spin", "Method", null), wantSignature: false);
+        Assert.Equal("Widget.Spin", named);
+    }
+
+    /// <summary>
     /// An empty multi-term result is the response carrying no other evidence, so it is the one that most
     /// needs the missed terms named - the gate that skipped it made silence mean two different things.
     /// </summary>
@@ -2508,6 +2583,60 @@ public sealed class WorkspaceIntegrationTests
         }, edits, applyOnSuccess: false, intent: "replace every occurrence"));
 
         Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
+    }
+
+    /// <summary>
+    /// Each find/replace edit resolves to a rewrite of the symbol's WHOLE declaration span, so two of them
+    /// naming one symbol handed the sandbox two rewrites of identical line spans and corrupted the file.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_TwoFindReplacesOnOneSymbol_FoldIntoOneRewrite()
+    {
+        var type = Root(await GetSymbol("Sample.Lib.Widget", "all"));
+        var typeId = type.GetProperty("symbolId").GetString()!;
+        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var spinId = spin.GetProperty("symbolId").GetString()!;
+
+        var edits = new[]
+        {
+            new PatchEditInput(SymbolId: typeId, Find: "public", Replace: "internal", ReplaceAll: true),
+            new PatchEditInput(SymbolId: typeId, Find: "internal", Replace: "public", ReplaceAll: true),
+        };
+        var root = Root(await ContextToolsValidate(new Dictionary<string, string>
+        {
+            [typeId] = type.GetProperty("contentVersion").GetString()!,
+            [spinId] = spin.GetProperty("contentVersion").GetString()!,
+        }, edits, applyOnSuccess: false, intent: "two corrections to one symbol"));
+
+        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
+        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+    }
+
+    /// <summary>
+    /// Overlapping spans cannot both be honoured -- the second addresses line numbers the first has already
+    /// moved -- so they are refused rather than spliced together and reported as a success.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_OverlappingLineRangeEdits_AreRefused()
+    {
+        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var spinId = spin.GetProperty("symbolId").GetString()!;
+        var site = spin.GetProperty("content").GetProperty("declarationSites")[0];
+        var file = site.GetProperty("file").GetString()!;
+        var span = $"{site.GetProperty("startLine").GetInt32()}-{site.GetProperty("endLine").GetInt32()}";
+
+        var edits = new[]
+        {
+            new PatchEditInput(File: file, Lines: span, NewText: "        // replaced"),
+            new PatchEditInput(File: file, Lines: span, NewText: "        // replaced again"),
+        };
+        var root = Root(await ContextToolsValidate(new Dictionary<string, string>
+        {
+            [spinId] = spin.GetProperty("contentVersion").GetString()!,
+        }, edits, applyOnSuccess: false, intent: "overlapping spans"));
+
+        Assert.Equal("invalid_edit", root.GetProperty("error").GetString());
+        Assert.Contains("overlapping", root.GetRawText(), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>find/replace resolves against the live workspace only -- amending a draft with one is rejected rather than resolved against stale coordinates.</summary>

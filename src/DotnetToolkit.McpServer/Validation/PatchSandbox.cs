@@ -159,6 +159,7 @@ public static class PatchSandbox
         error = null;
         var current = text;
         var lineEnding = DominantLineEnding(text);
+        var nextStart = int.MaxValue;
         foreach (var edit in descendingEdits)
         {
             if (edit.StartLine < 1 || edit.EndLine < edit.StartLine || edit.EndLine > current.Lines.Count)
@@ -166,6 +167,19 @@ public static class PatchSandbox
                 error = $"edit span out of range for {edit.File}: lines {edit.StartLine}-{edit.EndLine}";
                 return null;
             }
+
+            // Sorted by StartLine descending, so a well-formed patch has every edit ending strictly before
+            // the one already applied begins. Two spans that OVERLAP cannot both be honoured -- the second
+            // addresses line numbers the first has just moved -- and applying them anyway spliced a stale
+            // copy of the overlap over the fresh one and reported success.
+            if (edit.EndLine >= nextStart)
+            {
+                error = $"overlapping edits in {edit.File}: lines {edit.StartLine}-{edit.EndLine} overlap the edit "
+                    + $"starting at line {nextStart}. Send one edit per span -- two changes inside one span belong "
+                    + "in a single edit's newText.";
+                return null;
+            }
+            nextStart = edit.StartLine;
             var start = current.Lines[edit.StartLine - 1].Start;
             var end = current.Lines[edit.EndLine - 1].End;
             current = current.WithChanges(

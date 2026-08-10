@@ -226,7 +226,7 @@ public static class FlowTools
             : [.. result.ForwardFrontier, .. result.BackwardFrontier];
         var rows = symbolStore.RowsFor(rendered);
 
-        string Display(string id)
+        string? Display(string id)
         {
             rows.TryGetValue(id, out var row);
             return DisplayOf(symbolStore, id, row, wantSignature);
@@ -238,8 +238,10 @@ public static class FlowTools
             {
                 found = false,
                 nodesExplored = result.NodesExplored,
-                forwardFrontier = result.ForwardFrontier.Select(Display),
-                backwardFrontier = result.BackwardFrontier.Select(Display),
+                // Bare id strings, with no symbolId field beside them to carry the identity — so unlike a
+                // path node, a frontier entry that dropped its unresolved name would vanish entirely.
+                forwardFrontier = result.ForwardFrontier.Select(id => Display(id) ?? id),
+                backwardFrontier = result.BackwardFrontier.Select(id => Display(id) ?? id),
             });
             return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_call_slice",
                 requested, miss, resolution: "not_found");
@@ -266,26 +268,35 @@ public static class FlowTools
     /// parameter-list signature on request.
     /// </summary>
     /// <param name="symbolStore">The store to fall back to when the row carries no name.</param>
-    /// <param name="symbolId">The node's symbol id, and the last-resort display.</param>
+    /// <param name="symbolId">The node's symbol id, to look up a name the row did not carry.</param>
     /// <param name="row">That node's stored row.</param>
     /// <param name="wantSignature">True to render the full signature instead of the compact name.</param>
-    /// <returns>The string to put in a node's <c>displayString</c>.</returns>
+    /// <returns>The string to put in a node's <c>displayString</c>, or null when nothing names this symbol.</returns>
     /// <remarks>
     /// Shared by get_call_hierarchy and get_call_slice so the two cannot drift apart. The full signature
     /// with parameter types and default values made an 18-node tree 23x the size of its own
     /// blastRadius-only summary for no reader benefit, and spent a third of a 4-node slice's tokens on
     /// ~330 characters of signature per node.
+    /// <para>
+    /// Null rather than the symbol id when the edge cache references an id the symbols table has no row
+    /// for — an external member, or one a reindex removed. A node whose name IS its own id states the
+    /// same string twice and names nothing, and every node already carries that id under symbolId. The
+    /// exception is get_call_slice's frontier lists, which are bare id strings with no symbolId beside
+    /// them, so they re-apply the fallback themselves. Internal rather than private so a test can assert
+    /// that null directly: every symbol in the fixture solution is one the index can name, external
+    /// members included, so no end-to-end call reaches this branch.
+    /// </para>
     /// </remarks>
-    private static string DisplayOf(
+    internal static string? DisplayOf(
         SymbolStore symbolStore,
         string symbolId,
         (string? FqName, string? Kind, string? DisplayString) row,
         bool wantSignature) =>
         wantSignature
-            ? row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId
+            ? row.DisplayString ?? symbolStore.DisplayFor(symbolId)
             : row.FqName is { } fq
                 ? SymbolResolver.MemberWithContainingType(SymbolResolver.NameWithoutParameters(fq))
-                : row.DisplayString ?? symbolStore.DisplayFor(symbolId) ?? symbolId;
+                : row.DisplayString ?? symbolStore.DisplayFor(symbolId);
 
     [McpServerTool(Name = "get_call_hierarchy")]
     [Description("An open-ended multi-level call tree or call graph from one symbol — 'who eventually calls this, up "
@@ -302,10 +313,12 @@ public static class FlowTools
         + "capped node's own callers are never visited though, so a lower maxChildrenPerNode still yields a "
         + "smaller total at maxDepth>1 — the cap limits discovery, not just rendering. Every node always "
         + "carries symbolId (the join key back to get_symbol) and displayString — the containing type and "
-        + "member name with the parameter list dropped (overloads still disambiguate via symbolId); add kind, "
-        + "file, line, or the full signature (signature) via fields. A symbol reached through two branches (a "
-        + "diamond) appears twice in the tree but counts once in blastRadius; true recursion stops as a leaf "
-        + "marked recursive:true rather than looping. Caps, worked examples and the full response shape: "
+        + "member name with the parameter list dropped (overloads disambiguate via symbolId), omitted when "
+        + "nothing in the index names that id; add kind, "
+        + "file, line, or the full signature (signature) via fields. A symbol reached two ways (a diamond) is "
+        + "expanded once: later copies carry repeated:true and no children, but it counts once in blastRadius. "
+        + "True recursion stops as a leaf marked recursive:true. Caps, worked examples and the full response "
+        + "shape: "
         + "docs/tools/get_call_hierarchy.md.")]
     public static async Task<string> GetCallHierarchy(
         WorkspaceHost workspace,
@@ -391,7 +404,7 @@ public static class FlowTools
         var rows = symbolStore.RowsFor(CollectIds(result.Root));
 
         // Rendering lives in DisplayOf, shared with get_call_slice so the two node shapes cannot drift.
-        string DisplayFor(string symbolId, (string? FqName, string? Kind, string? DisplayString) row) =>
+        string? DisplayFor(string symbolId, (string? FqName, string? Kind, string? DisplayString) row) =>
             DisplayOf(symbolStore, symbolId, row, wantSignature);
 
         IReadOnlyDictionary<string, ProjectIndex.Site> sites = new Dictionary<string, ProjectIndex.Site>();
@@ -418,6 +431,7 @@ public static class FlowTools
                 file = wantFile ? site?.File : null,
                 line = wantLine ? (int?)site?.Line : null,
                 recursive = node.Recursive ? true : (bool?)null,
+                repeated = node.Repeated ? true : (bool?)null,
                 truncated = node.Truncated ? true : (bool?)null,
                 omittedChildren = node.OmittedChildren,
                 children = node.Children?.Select(Project).ToList(),

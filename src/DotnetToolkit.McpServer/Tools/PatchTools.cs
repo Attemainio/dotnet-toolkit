@@ -673,6 +673,14 @@ public static class PatchTools
         IReadOnlyList<PatchEditInput> edits, bool amending, CancellationToken cancellationToken)
     {
         var resolved = new List<PatchEdit>(edits.Count);
+        // Several find/replace edits can name the same symbol, and each one resolves to a rewrite of that
+        // symbol's WHOLE declaration span. Emitting one PatchEdit per edit therefore handed the sandbox two
+        // rewrites of identical line spans; it applies both in turn, so the second landed on text the first
+        // had already moved and spliced a stale copy of the body over the new one -- a corrupted file, and
+        // an unheld_symbol naming every symbol in it rather than a diagnostic about the edits. They fold
+        // into one edit instead, each find applied to what the previous one left, which is what a caller
+        // sending two corrections to one method meant in the first place.
+        var findReplaceSpans = new Dictionary<(string File, int StartLine, int EndLine), int>();
         foreach (var e in edits)
         {
             var isFindReplace = e.Find is not null || e.Replace is not null;
@@ -710,18 +718,32 @@ public static class PatchTools
                     return (null, "symbol_not_found", Error("symbol_not_found",
                         $"{e.SymbolId}'s declaration span no longer fits its file; refetch it with get_symbol."));
 
-                var span = TextSpan.FromBounds(text.Lines[site.StartLine - 1].Start, text.Lines[site.EndLine - 1].End);
-                var body = text.ToString(span);
+                var key = (site.File, site.StartLine, site.EndLine);
+                var folding = findReplaceSpans.TryGetValue(key, out var slot);
+                var body = folding
+                    ? resolved[slot].NewText
+                    : text.ToString(TextSpan.FromBounds(
+                        text.Lines[site.StartLine - 1].Start, text.Lines[site.EndLine - 1].End));
+
                 var occurrences = CountOccurrences(body, e.Find);
                 if (occurrences == 0)
                     return (null, "find_not_found", Error("find_not_found",
-                        $"\"{e.Find}\" does not occur inside {e.SymbolId}'s own declaration span ({site.File}:{site.StartLine}-{site.EndLine})."));
+                        $"\"{e.Find}\" does not occur inside {e.SymbolId}'s own declaration span ({site.File}:{site.StartLine}-{site.EndLine})."
+                        + (folding ? " An earlier find/replace edit in this same patch may already have rewritten it." : "")));
                 if (occurrences > 1 && e.ReplaceAll != true)
                     return (null, "ambiguous_find_match", Error("ambiguous_find_match",
                         $"\"{e.Find}\" occurs {occurrences} times inside {e.SymbolId}'s span -- narrow the text or pass replaceAll: true to replace every occurrence."));
 
-                resolved.Add(new PatchEdit(site.File, site.StartLine, site.EndLine,
-                    body.Replace(e.Find, e.Replace, StringComparison.Ordinal)));
+                var rewritten = body.Replace(e.Find, e.Replace, StringComparison.Ordinal);
+                if (folding)
+                {
+                    resolved[slot] = resolved[slot] with { NewText = rewritten };
+                }
+                else
+                {
+                    findReplaceSpans[key] = resolved.Count;
+                    resolved.Add(new PatchEdit(site.File, site.StartLine, site.EndLine, rewritten));
+                }
             }
             else
             {

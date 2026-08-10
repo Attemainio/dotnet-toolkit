@@ -44,6 +44,18 @@ failure by resending a fresh patch, not by amending the draft. Prefer this mode 
 "replace this exact text" rather than "rewrite this span": there is no line-number arithmetic to get
 wrong in the first place.
 
+**Several find/replace edits may name the same `symbolId`**, and they are applied in the order you
+send them, each against what the previous one left. That ordering is worth knowing: a second edit
+whose `find` the first has already rewritten is `find_not_found`, not a silent no-op. Internally the
+whole group folds into one rewrite of that symbol's span — each edit resolves to a rewrite of the
+*whole* declaration span, so emitting one per edit would hand the sandbox two rewrites of identical
+line spans, and the second would land on text the first had already moved.
+
+**Edit spans may not overlap.** Two spans covering any of the same lines cannot both be honoured, so
+the patch is refused with `error: "invalid_edit"` naming both spans, rather than splicing them
+together and reporting success. Adjacent spans are fine. Two changes *inside* one span belong in a
+single edit's `newText` — or in two find/replace edits, which fold as above.
+
 ```
 validate_patch(baseVersions: {"sym_7a9d22ff3b68f4ee": "decl:7c76e9eba9da|body:2bac28c29969"},
   edits: [{symbolId: "sym_7a9d22ff3b68f4ee", find: "\"pong\"", replace: "\"pong!\""}])

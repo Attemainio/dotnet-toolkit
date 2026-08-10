@@ -400,13 +400,27 @@ this pass.
   Visible as an unexplained symptom as far back as 2026-07-28, correctly root-caused a week later.
 - **`search_index`'s documented cap said 50, code enforced 200** — fixed same session, `11acfb3`.
 
+### Ruled not-a-bug once, then reopened on re-reading
+
+Both of these were closed in `b1884a7` as "documented behavior". Re-checked on 2026-08-10, both
+turned out to be documented *descriptions of a defect* rather than justifications for it — the doc
+matching the code is not the same as the code being right:
+
+- `get_symbol` dropping `xmlDoc` once `source` is also requested — the suppression rule is sound only
+  where `source` actually carries the doc comment. It fired for `source:code`, whose entire purpose is
+  to strip that comment, and for an `@` line slice, which usually cuts it out. So the one call that
+  should answer "the code without its doc comment, plus the summary as structured text" answered
+  neither. `xmlDoc` is now suppressed only under an unsliced `source:full`; the `xmlDoc` row in
+  `get_symbol.md` had never carried the suppression note the other suppressed components all carry.
+- `get_call_hierarchy` rendering an identical subtree twice on a diamond convergence — keeping the
+  second *node* is right (the second route in is real), but re-expanding its whole child list is not:
+  the subtree is identical by construction, and a well-connected graph converges constantly. Later
+  copies now carry `repeated: true` with no children and point back by `symbolId`. `blastRadius` is
+  computed from the walk rather than the rendering, so every counter is unchanged — pinned by
+  `CallHierarchyTests`.
+
 ### Explicitly ruled not-a-bug / working as documented
 
-- `get_symbol(include:"all")` dropping `xmlDoc` once `source` is also requested — documented
-  suppression behavior (see §4's component-suppression rule), ruled correct in `b1884a7`.
-- `get_call_hierarchy` rendering an identical subtree twice on a diamond convergence — documented
-  behavior (a symbol reached by two branches appears twice in the tree, once in `blastRadius`),
-  ruled correct in `b1884a7`.
 - `get_semantic_diff`/`search_log` "unusable" in PandaAI's layout — reclassified same-day as caller
   error: the baseline run never passed the documented `repo` argument for a solution root holding
   two independent git repos.

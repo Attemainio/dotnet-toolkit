@@ -214,15 +214,21 @@ you haven't. The write-specific rules are in the loop below.
   boundaries rather than into micro-hunks where changes genuinely cluster. Pass `symbolId` alongside
   `lines` on a fresh (non-amend) patch and the server cross-checks that the range actually falls
   inside that symbol's own declaration span — a free catch for exactly the wrong-span mistake above;
-  it does nothing on an amend, since a draft's coordinates address its own proposed text.
+  it does nothing on an amend, since a draft's coordinates address its own proposed text. **Hunks may
+  not overlap** — two spans sharing any line are refused as `invalid_edit`, since the second would
+  address line numbers the first has already moved. Adjacent is fine; two changes inside one span go
+  in one hunk's `newText`.
 
   **Find/replace mode.** `{symbolId, find, replace}` locates literal `find` text inside that symbol's
   *own* declaration span and replaces it — no line numbers at all. Errors if `find` occurs zero times
   (`find_not_found`) or more than once without `replaceAll: true` (`ambiguous_find_match`); set
   `replaceAll` to fix the same typo everywhere inside one symbol in a single edit. Resolves against
   the **live workspace only** — rejected (`find_replace_requires_fresh_patch`) alongside a `draftId`,
-  so amend a find/replace failure by resending a fresh patch, not by amending the draft. Prefer this
-  mode whenever the change is "replace this exact text" rather than "rewrite this span".
+  so amend a find/replace failure by resending a fresh patch, not by amending the draft. Several
+  find/replace edits may name the **same** `symbolId`; they apply in the order sent, each against what
+  the previous one left, so a `find` an earlier edit already rewrote is `find_not_found` rather than a
+  silent no-op. Prefer this mode whenever the change is "replace this exact text" rather than
+  "rewrite this span".
 - **`intent`** — REQUIRED to apply. One sentence of *why*, in user terms ("Add cancellation support to
   training"), not *what* — the diff already says that. Reuse the task's intent across its patches.
 - **`runAnalyzers`** — leave at its default. Pass `false` only when a call genuinely needs nothing past

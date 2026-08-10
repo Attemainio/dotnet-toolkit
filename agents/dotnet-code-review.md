@@ -139,9 +139,11 @@ Covering all aspects at once does not lower any aspect's evidence bar.
   `get_references` (`direction: "callers"`) zero-hit result — never a `Grep` count, never
   `referenceCounts` alone — plus the framework-invocation check under Boundaries. Never flag an
   `[Obsolete]` member with a future removal date.
-- `[docs]` — survey with `get_symbol` (`include: "xmlDoc,source"`), not raw file reads:
+- `[docs]` — survey with `get_symbol` (`include: "xmlDoc,source:code"`), not raw file reads:
   `xmlDoc.summary` absent is the missing-doc signal (a member with `<returns>` but no `<summary>` still
-  has non-null `xmlDoc` — that's a distinct finding). In scope mode, enumerate the public surface with
+  has non-null `xmlDoc` — that's a distinct finding). **`source:code`, not plain `source`**: a full
+  `source` already prints the `///` block as text, so `xmlDoc` is suppressed beside it and would read
+  as absent on every symbol, turning the missing-doc signal into a constant. In scope mode, enumerate the public surface with
   `search_index` (`kinds: "class,interface,method,property"`) over the scope, then batch through
   `get_symbol`'s `symbols` array. A present summary is not a pass — read the implementation before
   judging it; a wrong `<summary>` is 🔴.

@@ -5,10 +5,10 @@
 An open-ended multi-level call tree from one symbol — Visual Studio's *View Call Hierarchy*,
 which `get_call_slice` structurally cannot answer (it needs a known `to`). `direction:
 "callers"` (default) walks upward toward entry points; `"callees"` walks downward into what
-the symbol invokes. Every node carries `symbolId` + `displayString` (the containing type and member
+the symbol invokes. Every node carries `symbolId`, plus `displayString` (the containing type and member
 name, parameter list dropped — the same compact form `get_references` rows use, and overloads still
-disambiguate via `symbolId`); add `kind`/`file`/`line`/`signature` (the full parameter-list form) via
-`fields`.
+disambiguate via `symbolId`) whenever the index can name it; add `kind`/`file`/`line`/`signature` (the
+full parameter-list form) via `fields`.
 
 Call it to answer "if I change this, how much does it ripple" — `includeTree: false` returns
 only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
@@ -37,10 +37,11 @@ get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDe
 chain (a real 3-level pull from this same root reaches `PatchTools.ValidatePatch`, the actual MCP tool
 entry point, at depth 3).
 
-A symbol reached through two different branches (a diamond) legitimately appears twice in the
-tree — that isn't deduped, since collapsing it would hide a real second route in — but counts
-once in `blastRadius`. True recursion (a symbol reappearing on its own root-to-node path) stops
-as a leaf marked `recursive: true` rather than looping. `maxDepth` defaults to 3 and clamps to
+A symbol reached through two different branches (a diamond) appears twice in the tree — the
+second route in is real and is not hidden — but is **expanded** only once, and counts once in
+`blastRadius`. The later occurrence carries `repeated: true` with no `children` of its own;
+follow its `symbolId` to the branch that did expand. True recursion (a symbol reappearing on its
+own root-to-node path) stops as a leaf marked `recursive: true` rather than looping. `maxDepth` defaults to 3 and clamps to
 8; a well-connected graph grows fast, so start shallow and increase only if the answer needs
 it, or lean on `blastRadius.depthCapped` to see whether a branch was still expanding when the
 cap hit.
@@ -59,7 +60,7 @@ upward toward entry points; `"callees"` walks downward into what the symbol invo
 | `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
 | `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. The children it left out are still **counted** in `blastRadius`, so the cap never hides a node at the depth it was found; but their own callers go unvisited, so at `maxDepth` above 1 a tighter cap does reduce the total. |
 | `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." That shape is also the only one carrying a separate `root` block: with a tree, its head node **is** the root, and emitting both repeated every root field. |
-| `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default type-and-member name) to every node beyond the always-present `symbolId`/`displayString`. |
+| `fields` | Comma list adding `kind`, `file`, `line`, or `signature` (the full parameter-list `displayString` instead of the default type-and-member name) to every node beyond `symbolId` and, where the index can name the symbol, `displayString`. |
 
 Real call and response (trimmed to 4 of 7 children):
 
@@ -110,16 +111,27 @@ causes apart when it is `true`.
 
 A caller resolved through the edge cache but absent from the `symbols` table — a synthesized entry
 point like C#'s top-level-statements `Main`, which `get_references` renders as
-`<top-level-statements-entry-point>` via live Roslyn but the cache never stored a row for — falls back
-to its bare `symbolId` as `displayString` rather than failing the whole call. Rare in practice (this
-repo hits it once, at `DevlogMigration.Run`'s own caller), but worth recognizing if a leaf's
-`displayString` looks like a `sym_...` id instead of a real signature.
+`<top-level-statements-entry-point>` via live Roslyn but the cache never stored a row for — has no
+name to render, so that node **omits `displayString`** rather than failing the whole call. It used to
+fall back to the bare `symbolId`, which stated one string under two keys and named nothing. Read a
+node carrying `symbolId` and no `displayString` as exactly that case; `get_symbol` on the id is how to
+find out what it is. Rare in practice — this repo hits it once, at `DevlogMigration.Run`'s own caller.
 
-A symbol reached through two different branches (a diamond) legitimately appears twice in the tree —
-not deduped, since collapsing it would hide a real second route in — but counts once in `blastRadius`.
-True recursion (a symbol reappearing on its own root-to-node path) stops as a leaf marked
-`recursive:true` rather than looping. Internally capped at a few thousand total nodes as a safety net
-against pathological fan-out, independent of `maxChildrenPerNode`.
+`get_call_slice`'s `forwardFrontier`/`backwardFrontier` are the one exception, and deliberately so:
+they are bare strings with no `symbolId` field beside them, so an entry that dropped its unresolved
+name would lose the node entirely. Those keep rendering the id.
+
+A symbol reached through two different branches (a diamond) appears twice in the tree — the second
+route in is real, so the node is not dropped — but its subtree is **expanded once**. The first
+encounter renders it; every later one carries `repeated: true` and no `children`, and points back by
+`symbolId` to the copy that did expand. Read `repeated: true` as "already stated above", never as a
+leaf: a well-connected graph converges constantly, and re-printing the same child list verbatim under
+each branch was the single largest avoidable cost in a deep tree. `blastRadius` is unaffected — it
+counts what the walk *reached*, which is a property of the walk rather than of what survived
+rendering, so the numbers are identical either way. True recursion (a symbol reappearing on its own
+root-to-node path) stops as a leaf marked `recursive:true` rather than looping. Internally capped at a
+few thousand total nodes as a safety net against pathological fan-out, independent of
+`maxChildrenPerNode`.
 
 ### A named type as the root
 

@@ -76,6 +76,12 @@ same shape `get_call_hierarchy` uses, and `symbolId` still disambiguates overloa
 nearest reachable frontier from each end, so you know where the chain actually breaks. The frontiers
 render in whichever form `fields` selected, same as the path.
 
+A `path` node whose symbol the index cannot name — one resolved through the edge cache but absent from
+the `symbols` table — **omits `displayString`** rather than repeating its own `symbolId` under a second
+key; `get_call_hierarchy.md` covers when that happens. The frontier lists are the exception: they are
+bare strings with no `symbolId` beside them, so an unnameable entry still renders its id, because
+dropping the name there would drop the node.
+
 ## Next steps
 
 - **`found: false`, and you need the open-ended picture** → `get_call_hierarchy` — `get_call_hierarchy.md`

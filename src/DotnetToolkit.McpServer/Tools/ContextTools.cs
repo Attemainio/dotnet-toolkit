@@ -919,7 +919,7 @@ private static async Task<object> BuildContent(
     {
         // source already prints the declaration's own signature line as text, so anything that would
         // just restate what that line already says gets suppressed rather than duplicated: displayString,
-        // modifiers (accessibility included), xmlDoc, attributes, baseType, interfaces. members and
+        // modifiers (accessibility included), attributes, baseType, interfaces. members and
         // bodyOutline are suppressed for the same reason even though neither restates the signature line:
         // both exist as a structural summary IN PLACE OF reading the body, so once source is also present
         // they duplicate what it already shows.
@@ -982,6 +982,19 @@ private static async Task<object> BuildContent(
         var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
         var renderedSource = RenderSource(source, components.SourceQuery, out var resolvedLineFormat);
 
+        // xmlDoc cannot key off hasSource alone, because source does not always carry the doc comment it
+        // would otherwise be duplicating: source:code exists precisely to strip it, and a line selection
+        // usually cuts it out. Suppressing it in those two cases deleted the documentation from the
+        // response rather than deduplicating it, which left "read the code without its doc comment, and
+        // give me the summary as structured text" unaskable in a single call. A slice is asked which lines
+        // it actually kept rather than assumed to have cut the comment away, since @-selecting the opening
+        // of a declaration serves the comment in full — and restating it as xmlDoc there is precisely the
+        // duplication this rule exists to prevent.
+        var servesDocComment = hasSource
+            && components.SourceQuery.Mode == SourceMode.Full
+            && (!components.HasSlicedSource
+                || (declarationSource is not null && KeepsWholeDocComment(declarationSource, source)));
+
         var outline = !hasSource && components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
 
         // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
@@ -1018,7 +1031,7 @@ private static async Task<object> BuildContent(
             sourceLines = components.HasSlicedSource && declarationSource is { Count: > 0 }
                 ? $"{LineSpan(source)}/{declarationSource[0].Line}-{declarationSource[^1].Line}"
                 : null,
-            xmlDoc = !hasSource && components.Has(SymbolComponents.XmlDoc)
+            xmlDoc = !servesDocComment && components.Has(SymbolComponents.XmlDoc)
                 ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
             // Body-derived facts, served only while the body hash they were computed from still holds. Not
@@ -1506,6 +1519,30 @@ private static object? ContainingType(ISymbol sym)
         query.Lines.Count == 0
             ? lines
             : lines.Where(l => query.Lines.Any(r => r.Contains(l.Line))).ToArray();
+
+    /// <summary>Whether a source selection kept every line of the declaration's leading doc comment.</summary>
+    /// <remarks>
+    /// Decides whether <c>xmlDoc</c> is suppressed as a restatement of source the caller can already read.
+    /// The doc comment is the run of <c>///</c> lines a declaration opens with, so "kept whole" is a set
+    /// test over the absolute line numbers <see cref="SelectLines"/> filtered on. Keeping only part of it
+    /// does not count: half a summary read as prose is not the summary, and the structured form is what
+    /// the caller asked for.
+    /// </remarks>
+    /// <param name="whole">The declaration's rendered lines, before the query's ranges narrowed them.</param>
+    /// <param name="kept">The lines that survived that narrowing.</param>
+    /// <returns>True when the declaration opens with a doc comment and every line of it survived.</returns>
+    private static bool KeepsWholeDocComment(IReadOnlyList<SourceLine> whole, IReadOnlyList<SourceLine>? kept)
+    {
+        var docLines = whole
+            .TakeWhile(l => l.Text.TrimStart().StartsWith("///", StringComparison.Ordinal))
+            .Select(l => l.Line)
+            .ToList();
+        if (docLines.Count == 0)
+            return false;
+
+        var surviving = kept?.Select(l => l.Line).ToHashSet() ?? [];
+        return docLines.TrueForAll(surviving.Contains);
+    }
 
     /// <summary>
     /// Renders a line list's extent as <c>"first-last"</c> when it is contiguous, as every contiguous run
@@ -2257,8 +2294,11 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
     /// A miss is almost always a NEAR miss - a wrong namespace, a dropped containing type, a plural slip.
     /// Echoing the unresolved name back told the caller only what it had just sent, so the next move was
     /// always a search_index round trip for a list the resolver was already positioned to produce.
-    /// The ranked search answers a wrong QUALIFICATION; it cannot answer a misspelling, which matches
-    /// neither an FTS token nor a substring, so an empty result falls through to an edit-distance scan.
+    /// The ranked search answers a wrong QUALIFICATION, so a hit counts only while its own unqualified
+    /// name still CONTAINS what the caller typed - the FTS tokenizer splits camel case, so without that
+    /// filter a name that is a typo of nothing came back ranked against every name sharing one token
+    /// with it. A misspelling matches neither an FTS token nor a substring, so an empty result falls
+    /// through to an edit-distance scan, and a name resembling nothing at all yields no candidates.
     /// </remarks>
     internal static object? NearMisses(SymbolStore symbolStore, string symbol)
     {
@@ -2272,7 +2312,13 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
         if (segment.Length < 3 || segment.StartsWith("sym", StringComparison.Ordinal))
             return null;
 
-        var hits = symbolStore.Search(segment, null, null, cap);
+        // A ranked hit is a candidate only while its own unqualified name still contains what the caller
+        // typed. Without that filter the FTS tokenizer's camel-case split answered a name that is a typo
+        // of nothing with confident nonsense -- "NoSuchSymbolAtAllXyz" came back offering
+        // SymbolComponents.All and SyntaxFingerprint.AllTokens, neither within any edit distance of the
+        // input -- and, by never returning empty, kept the edit-distance scan below unreachable.
+        IReadOnlyList<SymbolStore.SearchHit> hits =
+            [.. symbolStore.Search(segment, null, null, cap).Where(h => Resembles(h.FqName, segment))];
         if (hits.Count == 0)
             hits = symbolStore.NearNames(segment, cap);
 
@@ -2284,6 +2330,12 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
                 name = SymbolResolver.CompactName(h.FqName),
                 kind = h.Kind,
             }).ToList();
+
+        static bool Resembles(string fqName, string typed)
+        {
+            var bare = SymbolResolver.NameWithoutParameters(fqName);
+            return bare[(bare.LastIndexOf('.') + 1)..].Contains(typed, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>
