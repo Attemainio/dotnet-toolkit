@@ -300,7 +300,7 @@ public static class PatchTools
                 ? null
                 : await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken);
 
-            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo);
+            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo, workspace.IsDegraded);
             var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -383,9 +383,9 @@ public static class PatchTools
         SolutionLocator locator,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
         ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation,
-        object? draft)
+        object? draft, bool degraded)
     {
-        var (reason, nextAction) = Verdict(ladder, required, isSufficient);
+        var (reason, nextAction) = Verdict(ladder, required, isSufficient, degraded);
         return new
         {
             detectedChanges = detected.Select(c => new
@@ -431,10 +431,17 @@ public static class PatchTools
             // an absent diagnostics block alone cannot distinguish "found nothing" from "looked at nothing".
             checks = CheckReport.Build(ladder, locator),
             draft,
+            // Every retrieval tool reports this; the write path did not -- which is where it matters most.
+            // A patch validated against projects that failed to load may be silently WRONG rather than
+            // merely thin, and without this the caller reads the workspace's own errors as their patch's.
+            limitedBy = degraded ? "degraded" : null,
         };
     }
 
-    private static (string Reason, string NextAction) Verdict(ValidationLadder.LadderResult ladder, ValidationLevel required, bool isSufficient)
+    /// <summary>The reason and next action a non-sufficient run reports.</summary>
+    /// <remarks>Internal rather than private so the degraded wording can be asserted directly: forcing a
+    /// real half-loaded workspace would mean shipping a fixture project that fails MSBuild on purpose.</remarks>
+    internal static (string Reason, string NextAction) Verdict(ValidationLadder.LadderResult ladder, ValidationLevel required, bool isSufficient, bool degraded)
     {
         var analyzers = ladder.Analyzers;
         if (isSufficient)
@@ -455,8 +462,14 @@ public static class PatchTools
             return analyzers is { Ran: true, Errors.Count: > 0 }
                 ? ("Analyzer diagnostics at effective severity error blocked the change.",
                     "Fix the reported analyzer errors, or lower their severity in .editorconfig if the rule is wrong for this repo.")
-                : ($"Validation failed at {ladder.Completed.Wire()}.",
-                    "Fetch the suggested symbols, revise the patch, and resubmit.");
+                : degraded
+                    // Projects that failed to load produce diagnostics the patch did not cause, so the
+                    // default advice sends the caller to rewrite correct code. Name the workspace first.
+                    ? ($"Validation failed at {ladder.Completed.Wire()}, against a DEGRADED workspace.",
+                        "Call workspace_status first: projects that failed to load report errors this patch "
+                            + "did not introduce. Fix the load failure and reload_workspace before revising.")
+                    : ($"Validation failed at {ladder.Completed.Wire()}.",
+                        "Fetch the suggested symbols, revise the patch, and resubmit.");
         }
         return ($"Healthy through {ladder.Completed.Wire()} but the change requires {required.Wire()}.",
             $"Re-call validate_patch with requestedLevel={required.Wire()}.");

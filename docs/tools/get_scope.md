@@ -57,7 +57,7 @@ exist, or when you don't yet know a receiver's type so `get_symbol` has no targe
 | Arg | Meaning |
 |---|---|
 | `file`, `line`, `column` | Required position (column defaults to 1). |
-| `receiver` | Optional variable/expression — narrows to what's callable *on it*, including applicable extension methods. |
+| `receiver` | Optional variable/expression — narrows to what's callable *on it*, including applicable extension methods. It must name something that **has a type** and that **appears inside the member containing `line`**: the lookup is positional, so a shadowed local resolves the way the compiler sees it. A method or type name does not qualify — it names something callable, not something callable *on* — and yields `error: "receiver_not_resolved"` with a `message` saying so. Omit `receiver` to list everything in scope at that line instead. |
 | `filter` | `all` (default) \| `methods` \| `properties` \| `locals` \| `types`. |
 | `nameContains`, `limit` | Narrow a large result. `limit` defaults to 40 (cap 200) and is spent **across origins**, round-robin, so a receiver's own members cannot crowd out the applicable extension methods this tool exists to surface. A capped result carries `totalItems` and `truncated: true`. |
 

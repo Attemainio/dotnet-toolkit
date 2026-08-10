@@ -25,6 +25,11 @@ takes no arguments. Three things depend on it:
 1. **A patch built on a `degraded` or `stale` workspace is built on the wrong content.** If
    `workspace` reports failed projects, fix the build and `reload_workspace` before patching —
    validation results from a degraded workspace may be silently wrong, not merely thin.
+
+   `validate_patch` and `rename_symbol` now say so themselves, under `limitedBy: "degraded"`, and a
+   failure there points at `workspace_status` rather than at your patch. **Believe it over the
+   diagnostics**: a half-loaded compilation reports errors your change never introduced, and "revise
+   the patch" would send you to rewrite code that was already correct.
 2. **`pluginRoot`**, which is how you reach the coding standards below and any tool manual. Join it
    yourself: `<pluginRoot>/standards/index.md`, `<pluginRoot>/docs/tools/validate_patch.md`. **Never
    write `${CLAUDE_PLUGIN_ROOT}` into a path** — it is not expanded inside a rule or an agent

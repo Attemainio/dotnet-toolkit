@@ -100,6 +100,18 @@ Next call, by shape:
 
 ## Filters
 
+**Every filter narrows a search; none of them is one.** `query` carries the terms, and passing it empty
+or whitespace returns `error: "missing_query"` rather than searching on the filters alone. Answering that
+with an empty item list would be worse than the error: it reads as "no such symbols exist", which is the
+silent under-report `termsWithNoHits` exists to prevent, reached through the arguments instead of through
+the index.
+
+Omitting `query` altogether is a different failure and not one this server can improve: the argument is
+**required in the tool schema**, so the MCP host rejects the call before it is dispatched and returns its
+own opaque `An error occurred invoking 'search_index'`. That requirement is deliberate and worth more than
+a better message would be — it is what tells a caller the argument is mandatory in the first place. If you
+see that error, you omitted `query`.
+
 | Arg | Grammar | Notes |
 |---|---|---|
 | `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event` |

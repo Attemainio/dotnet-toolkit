@@ -2440,6 +2440,63 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// A filter-only call searches for nothing, and answering it with an empty item list reads as "no such
+    /// symbols exist" -- the silent under-report termsWithNoHits exists to prevent, reached through the
+    /// arguments rather than the index. Null is unreachable through the MCP host, which refuses an omitted
+    /// required argument itself; it is covered here because this in-process caller bypasses that schema.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_WithoutAQuery_ReturnsAStructuredErrorRatherThanThrowing()
+    {
+        foreach (var absent in new string?[] { null, "", "   " })
+        {
+            var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, absent!));
+
+            Assert.Equal("missing_query", root.GetProperty("error").GetString());
+            Assert.Contains("narrow a search", root.GetProperty("message").GetString());
+        }
+    }
+
+    /// <summary>
+    /// receiver names something that HAS a type; a method name is the common miss. Reporting the bare error
+    /// code left the caller with a correct diagnosis and nothing to do about it.
+    /// </summary>
+    [Fact]
+    public async Task GetScope_ReceiverNamingAMethod_SaysWhatAReceiverIsAndHowToProceed()
+    {
+        var root = Root(await FlowTools.GetScope(
+            _f.Workspace, _f.Locator, _f.Telemetry, "Lib/Widget.cs", 12, receiver: "Spin"));
+
+        Assert.Equal("receiver_not_resolved", root.GetProperty("error").GetString());
+        var message = root.GetProperty("message").GetString()!;
+        Assert.Contains("Spin", message);
+        Assert.Contains("Omit receiver", message);
+    }
+
+    /// <summary>
+    /// A degraded workspace reports errors the change did not cause, so the default advice sends the caller
+    /// to rewrite correct code -- which is exactly how a self-evaluation read a legitimate bind failure as a
+    /// defect in validate_patch.
+    /// </summary>
+    [Fact]
+    public void WriteVerdicts_OnADegradedWorkspace_NameTheWorkspaceRatherThanBlamingTheChange()
+    {
+        var failed = new DotnetToolkit.McpServer.Validation.ValidationLadder.LadderResult(
+            DotnetToolkit.McpServer.Validation.ValidationLevel.SemanticBind, Succeeded: false, [], []);
+        var required = DotnetToolkit.McpServer.Validation.ValidationLevel.ProjectCompile;
+
+        var (_, degradedPatch) = PatchTools.Verdict(failed, required, isSufficient: false, degraded: true);
+        var (_, healthyPatch) = PatchTools.Verdict(failed, required, isSufficient: false, degraded: false);
+        Assert.Contains("workspace_status", degradedPatch);
+        Assert.DoesNotContain("workspace_status", healthyPatch);
+
+        Assert.Contains("workspace_status", RenameTools.NextAction(failed, required, degraded: true));
+        Assert.DoesNotContain("workspace_status", RenameTools.NextAction(failed, required, degraded: false));
+        Assert.Contains("DEGRADED", RenameTools.Reason(failed, required, degraded: true));
+        Assert.DoesNotContain("DEGRADED", RenameTools.Reason(failed, required, degraded: false));
+    }
+
+    /// <summary>
     /// A comment-only rewrite produces no semantic change, so keying the lease on the classifier's output
     /// let it through — while it overwrites body TEXT exactly as a semantic rewrite does, which is the
     /// concurrent-edit case the lease exists to catch, and a second agent editing comments is precisely

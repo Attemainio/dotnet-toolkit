@@ -269,8 +269,8 @@ public static class RenameTools
                     completedLevel = ladder.Completed.Wire(),
                     requiredLevel = required.Wire(),
                     isSufficient,
-                    reason = isSufficient ? null : Reason(ladder, required),
-                    nextAction = isSufficient ? null : NextAction(ladder, required),
+                    reason = isSufficient ? null : Reason(ladder, required, workspace.IsDegraded),
+                    nextAction = isSufficient ? null : NextAction(ladder, required, workspace.IsDegraded),
                 },
                 succeeded = ladder.Succeeded,
                 applied,
@@ -294,6 +294,9 @@ public static class RenameTools
                 // to say what that success covered, and which checks never ran.
                 checks = CheckReport.Build(ladder, locator),
                 fileRenameHint = FileRenameHint(target, oldName, bare, locator),
+                // Same reason validate_patch emits it: a rename derived from a degraded workspace's own
+                // reference graph can miss call sites entirely, which is a wrong answer, not a thin one.
+                limitedBy = workspace.IsDegraded ? "degraded" : null,
             };
 
             var json = Formats.Render(response);
@@ -479,16 +482,23 @@ public static class RenameTools
             + $"Run `git mv <path> <dir>/{newName}.cs` for each, then reload_workspace.";
     }
 
-    private static string Reason(ValidationLadder.LadderResult ladder, ValidationLevel required) =>
+    /// <summary>Why a rename that did not fully validate stopped where it did.</summary>
+    /// <remarks>Internal for the same reason as <see cref="NextAction"/>.</remarks>
+    internal static string Reason(ValidationLadder.LadderResult ladder, ValidationLevel required, bool degraded) =>
         ladder switch
         {
             { Analyzers: { Ran: true, Errors.Count: > 0 } } =>
                 "Analyzer diagnostics at effective severity error blocked the rename.",
+            { Succeeded: false } when degraded =>
+                $"Rename failed validation at {ladder.Completed.Wire()}, against a DEGRADED workspace.",
             { Succeeded: false } => $"Rename failed validation at {ladder.Completed.Wire()}.",
             _ => $"Healthy through {ladder.Completed.Wire()} but the rename requires {required.Wire()}.",
         };
 
-    private static string NextAction(ValidationLadder.LadderResult ladder, ValidationLevel required) =>
+    /// <summary>What to do about a rename that did not fully validate.</summary>
+    /// <remarks>Internal rather than private so the degraded wording can be asserted without a fixture
+    /// project that fails MSBuild on purpose.</remarks>
+    internal static string NextAction(ValidationLadder.LadderResult ladder, ValidationLevel required, bool degraded) =>
         ladder switch
         {
             // A rename cannot introduce an analyzer error by itself; the new name tripping a naming or
@@ -496,6 +506,11 @@ public static class RenameTools
             { Analyzers: { Ran: true, Errors.Count: > 0 } } =>
                 "Fix the reported analyzer errors, or lower their severity in .editorconfig if the rule is "
                   + "wrong for this repo, then retry.",
+            // A degraded workspace reports errors the rename did not cause, and "the new name collides" is
+            // then a confident misdiagnosis that sends the caller looking for a collision that isn't there.
+            { Succeeded: false } when degraded =>
+                "Call workspace_status first: projects that failed to load report errors this rename did not "
+                  + "introduce. Fix the load failure and reload_workspace before picking a different name.",
             { Succeeded: false } =>
                 "The new name collides or breaks a call site. Inspect the suggested symbols, pick a different "
                   + "name or fix the collision with validate_patch first, then retry.",

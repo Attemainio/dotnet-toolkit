@@ -90,7 +90,19 @@ public static class FlowTools
         {
             receiverType = ResolveReceiverType(model, textLine.ToString(), receiver, position);
             if (receiverType is null)
-                return Fail("receiver_not_resolved", new { error = "receiver_not_resolved", receiver });
+                return Fail("receiver_not_resolved", new
+                {
+                    error = "receiver_not_resolved",
+                    receiver,
+                    // The lookup is positional AND typed: the identifier has to appear inside the member
+                    // containing this line and have a type of its own. A method name is the common miss --
+                    // it names something callable, not something callable ON -- and reporting the bare code
+                    // left a caller with the right diagnosis and nothing to do about it.
+                    message = $"'{receiver}' has no type at {file}:{line}. receiver names a variable, "
+                        + "parameter, field or property appearing within the member that contains this line; "
+                        + "results then become what is callable ON its type. A method or type name does not "
+                        + "qualify. Omit receiver to list everything in scope at this line instead.",
+                });
 
             symbols = model.LookupSymbols(position, receiverType, name: null, includeReducedExtensionMethods: true);
         }

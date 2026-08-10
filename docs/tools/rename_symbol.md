@@ -108,6 +108,12 @@ over, or prose that would read as wrong afterwards.
 | `no_changes` | The rename produced no text changes at all. |
 | `workspace_loading` | Semantics not ready. Check `workspace_status`, retry. |
 
+Not an error, but read it the same way: **`limitedBy: "degraded"`** on a successful response means projects
+failed to load, so the reference graph this rename derived its edits from is incomplete — call sites in
+those projects are silently missing, which is a wrong rename rather than a thin one. On a failed one,
+`ladder.nextAction` points at `workspace_status` instead of claiming the new name collides. Either way:
+fix the load failure, `reload_workspace`, and rerun before trusting the result.
+
 ## Next steps
 
 - Before calling: `get_symbol` for the `contentVersion` (a default fetch is enough).

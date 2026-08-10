@@ -712,6 +712,26 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var sessionId = Ids.AmbientSession;
         var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
+
+        // query is required in the tool schema, so an OMITTED one is refused by the MCP host and never
+        // reaches this method -- that rejection is the schema working, and worth more than the nicer message
+        // relaxing it would buy. What does reach here is empty or whitespace, which went to the tokenizer and
+        // came back an ordinary zero-hit result: "no such symbols exist", for a call that searched for
+        // nothing. That is the silent under-report termsWithNoHits exists to prevent, arrived at through the
+        // arguments instead of through the index. The null arm guards the in-process callers that bypass the
+        // schema entirely -- the tests, and any future direct caller.
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Record(telemetry, toolCallId, sessionId, attributedTask, "search_index", "",
+                null, null, null, 0, null, "missing_query", Formats.Render(new
+                {
+                    error = "missing_query",
+                    message = "search_index needs at least one term in query. The filters -- kinds, modifiers, "
+                        + "implements, xmlDoc, pathPrefix, origin -- narrow a search; none of them is a search "
+                        + "on its own. Put every term you are looking for into this one call, space-separated.",
+                }));
+        }
+
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var originFilter = origin is "source" or "external" or "all" ? origin : "source";
         var (includeKindTokens, excludeKindTokens) = ParseKindFilter(kinds);

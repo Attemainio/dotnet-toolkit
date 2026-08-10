@@ -426,6 +426,21 @@ matching the code is not the same as the code being right:
   two independent git repos.
 - A `tokensSavedByLeases` under-credit claim — retracted by its own author within the same file as a
   self-diagnosed cross-`taskId` telemetry query artifact, not a tool bug.
+- **`termsWithNoHits` should be suppressed or made opt-in** (2026-08-09) — rejected, and it is worth
+  being explicit about why, because the report frames the field's correct behavior as the defect. It
+  fired on `query: "Ping TryGetSet"` naming `TryGetSet`, which genuinely does not exist in this repo.
+  That is the field working: `dotnet-read` instructs every caller to read it precisely because a term
+  the ranking never covered is otherwise indistinguishable from a term with no matching symbol.
+  Removing it reinstates the silent under-report it was built to prevent.
+- **`validate_patch` should skip compile validation for an identity edit** (2026-08-09) — rejected as
+  proposed. The observation was real (an identity edit failed at `semantic_bind`) but its own
+  Condition line names the cause: a degraded workspace with a missing `using` directive. Reproduced on
+  a healthy workspace, the same edit passes at `project_compile`. The proposed fix would make a patch
+  report green against a compilation that does not bind, which is the exact case
+  `ValidatePatch_ChangesTextButNoSymbol_StillRequiresACompile` pins and `validate_patch.md` argues for
+  — parse cannot tell a harmless reformat from `using Nope.Missing;`. What was genuinely missing is
+  that neither write tool reported the degradation at all, so the workspace's errors read as the
+  patch's; fixed by adding `limitedBy` and a workspace-first `nextAction` to both.
 
 ### Open / unconfirmed as of the latest eval (flagged as the standout gaps)
 

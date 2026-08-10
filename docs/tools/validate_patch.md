@@ -116,6 +116,19 @@ ran at all — so a clean result has to state its own scope.
 - **`notAssessed`** — the gaps, in plain language. Always non-empty in practice: the analyzer pass only
   looks at files the patch touched, which is stated on every run.
 
+## `limitedBy: "degraded"` — the verdict itself is suspect
+
+Present when projects failed to load. It means the same thing here as on a retrieval tool, but the
+consequence is worse: the compilation this patch was validated against is missing whatever those projects
+contribute, so a **green** run may be green for the wrong reason and a **red** one may be reporting errors
+your change never introduced. `ladder.nextAction` says so too, in place of the usual "revise the patch"
+— which, read without it, sends you to rewrite code that was already correct.
+
+Call `workspace_status`, fix the load failure, `reload_workspace`, and validate again before trusting
+either outcome. `rename_symbol` reports the same field for the same reason, and there the risk is more
+concrete still: the rename derives its edits from the compiler's reference graph, so a degraded graph
+silently misses call sites.
+
 ## `.editorconfig` decides severity, and severity decides blocking
 
 The repo's `.editorconfig` and `TreatWarningsAsErrors` are honored, because `Diagnostic.Severity` from
