@@ -2411,6 +2411,35 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// current[] is the set of baseVersions entries to resend, not a list of changes: two members added to
+    /// one type are two detected changes anchored to that same type, and naming it twice asked the caller
+    /// to send one map entry twice.
+    /// </summary>
+    [Fact]
+    public async Task ValidatePatch_TwoMembersAddedToOneType_NameThatTypeOnce()
+    {
+        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var widgetId = Root(await GetSymbol("Sample.Lib.Widget")).GetProperty("symbolId").GetString()!;
+
+        var edits = new[]
+        {
+            new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText:
+                "    public int Spin(int turns) => turns * 2;\n\n    public int AddedOne() => 1;\n\n    public int AddedTwo() => 2;"),
+        };
+        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+            new PatchDraftStore(TimeProvider.System),
+            new Dictionary<string, string>
+            {
+                [spin.GetProperty("symbolId").GetString()!] = spin.GetProperty("contentVersion").GetString()!,
+            },
+            edits, requestedLevel: null, applyOnSuccess: false, intent: "should never apply", tags: null));
+
+        Assert.Equal("unheld_symbol", root.GetProperty("error").GetString());
+        var current = Assert.Single(root.GetProperty("current").EnumerateArray().ToList());
+        Assert.Equal(widgetId, current.GetProperty("symbolId").GetString());
+    }
+
+    /// <summary>
     /// A comment-only rewrite produces no semantic change, so keying the lease on the classifier's output
     /// let it through — while it overwrites body TEXT exactly as a semantic rewrite does, which is the
     /// concurrent-edit case the lease exists to catch, and a second agent editing comments is precisely

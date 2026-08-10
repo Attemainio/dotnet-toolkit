@@ -187,6 +187,10 @@ correct. The distinction is whether the **text** is still trustworthy:
 That last split is the useful one: a missing map entry is a metadata gap, not a stale patch, and it used
 to cost a full resend to fix.
 
+`current[]` on any of these is the set of `baseVersions` entries to resend — one row per symbol, not one
+per detected change. Two members added to a single type are two changes anchored to that same type, and
+it is named once; copy the rows straight into the amend's `baseVersions`.
+
 **`unleased_body` is keyed on the body text an edit touches, not on the change classifier.** Each edit's
 line span is mapped back to a `TextSpan` in the base document and intersected against each member's body
 span (block, accessor list, or expression body); a symbol found that way while holding a

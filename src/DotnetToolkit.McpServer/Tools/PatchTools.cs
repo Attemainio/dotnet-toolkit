@@ -201,13 +201,18 @@ public static class PatchTools
                 .Where(kv => unchangedVersions.TryGetValue(kv.Key, out var current)
                              && !ContentVersion.Parse(current).AgreesWith(ContentVersion.Parse(kv.Value)))
                 .Select(kv => (SymbolId: kv.Key, CurrentVersion: unchangedVersions[kv.Key]));
-            var stale = disagreeing.Concat(staleUnchanged).ToList();
+            var stale = disagreeing.Concat(staleUnchanged).DistinctBy(c => c.SymbolId).ToList();
             if (stale.Count > 0)
                 return Reject("stale_base", StaleBase(stale));
 
+            // Both lists are sets of baseVersions entries to resend, not lists of changes, so each symbol
+            // is named once however many changes attributed to it. Two members added to one type are two
+            // detected changes anchored to that same type, and naming it twice asked the caller to send one
+            // map entry twice -- in a field whose whole purpose is to be copied verbatim into the amend.
             var unheld = detected
                 .Where(c => !heldVersions.ContainsKey(c.OldSymbolId))
                 .Select(c => (SymbolId: c.OldSymbolId, CurrentVersion: c.OldVersion))
+                .DistinctBy(c => c.SymbolId)
                 .ToList();
             if (unheld.Count > 0)
                 return Reject("unheld_symbol", UnheldSymbol(unheld,
