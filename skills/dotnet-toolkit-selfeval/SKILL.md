@@ -12,6 +12,21 @@ classes split across files, heavy overloading, generics, multi-targeted `.csproj
 source generators, unconventional folder layouts. This skill is the measurement pass that turns "the
 tools feel efficient" into a per-call token number with a cheaper alternative next to it.
 
+## Prerequisite: Load dotnet-read skill
+
+**Before proceeding, ensure `dotnet-read` has been loaded.** This skill contains the validated
+cheap-route table that serves as the ground truth for route comparison, and teaches how to interpret
+`limitedBy` values and workspace readiness. If you haven't read it yet, invoke `dotnet-read`.
+
+This takes <1s and gives you:
+- The cheap-route table of verified cheaper alternatives
+- Workspace readiness rules for `stale`, `degraded`, and `index_only`
+- Best practices for `taskId` isolation and metrics sampling
+- Field naming conventions and response structure
+
+Reading this before the evaluation ensures you're comparing against the correct baseline and can
+recognize when your own route analysis aligns with established guidance.
+
 ## The one rule: specimen vs subject
 
 **The consuming repo is the specimen. dotnet-toolkit is the subject.**
