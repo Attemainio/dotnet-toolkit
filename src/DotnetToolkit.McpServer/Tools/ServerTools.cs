@@ -56,7 +56,7 @@ public static class ServerTools
         // normal while raw Read/Edit passed unchecked, and the edits it made would be missing from the log
         // with nothing anywhere saying why. Absent when the guards are active, so it costs a line only when
         // it is telling you something.
-        var guards = Hooks.GuardSuspension.Current(locator.Root, DateTimeOffset.UtcNow);
+        var guards = Hooks.GuardSuspension.Current(locator.Root, DateTimeOffset.UtcNow, Hooks.GuardSuspension.CurrentSessionId());
         if (guards.Suspended)
         {
             sb.Append("hookGuards: SUSPENDED");

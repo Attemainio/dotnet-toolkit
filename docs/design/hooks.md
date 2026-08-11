@@ -42,7 +42,8 @@ The reason this exists at all is `dotnet-performance`: the claim that these tool
 cannot be *measured* without running `grep`/`Read` in the same repo, and the guards make that route
 unreachable by construction. A benchmark that cannot run the baseline is not a benchmark.
 
-Two properties carry the risk, and both are deliberate inversions of what the rest of this page says:
+Three properties carry the risk; the first two are deliberate inversions of what the rest of this page
+says:
 
 - **State is an expiry, not a flag.** The file under `.claude/dotnet-toolkit/cache/` holds the instant
   the guards resume; any read past it deletes the file, and requests are capped at 4 hours. So there is
@@ -54,11 +55,24 @@ Two properties carry the risk, and both are deliberate inversions of what the re
   which is the opposite of the fail-open rule above. Both are the same principle applied to different
   risks — failing open keeps a broken guard from wedging the user's editing; failing closed keeps a
   broken state file from silently disarming a guard that works.
+- **State is scoped to the calling Claude Code session, when one is visible.** `set_hook_guards` reads
+  `CLAUDE_CODE_SESSION_ID` from its own process environment and writes
+  `guards-suspended-until.<sessionId>` instead of the bare `guards-suspended-until` file; `HookCli`
+  checks that scoped file first (via `HookPayload.SessionId`, the same field `hint-write-checklist`
+  already reads) and falls back to the unscoped file. This exists so two *unrelated* Claude Code
+  sessions pointed at the same repo root — two terminals, two worktrees — cannot silently share or
+  clobber each other's suspension window. It does **not** isolate a subagent from its own parent
+  session: `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` were confirmed by direct
+  observation to hold the identical value for a subagent and the session that spawned it, so scoping
+  lands at the top-level session, not at the individual agent. A caller with no session id in its
+  environment reads and writes the unscoped file exactly as every caller did before this existed, and
+  every scoped check still falls back to that same file, so an older unscoped suspension stays honoured
+  rather than going silently invisible.
 
 `workspace_status` prints a `hookGuards: SUSPENDED` line with the time remaining, and nothing when the
-guards are active. It carries this rather than `set_hook_guards` alone because it is the call every
-skill makes first, so a session inheriting a suspension it did not start finds out before it edits
-rather than after.
+guards are active — checking its own session's scoped state the same way `HookCli` does. It carries
+this rather than `set_hook_guards` alone because it is the call every skill makes first, so a session
+inheriting a suspension it did not start finds out before it edits rather than after.
 
 `DOTNET_TOOLKIT_DISABLE_HOOKS` remains the separate, non-expiring hatch for a harness that owns the
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own

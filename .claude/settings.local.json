@@ -47,7 +47,22 @@
       "Read(//mnt/c/Users/atte9/source/repos/PandaAI/.claude/**)",
       "Bash(bash -n scripts/guard-cs-bash-read.sh)",
       "mcp__plugin_dotnet-toolkit_dotnet__rename_symbol",
-      "Bash(sort -k2)"
+      "Bash(sort -k2)",
+      "Bash(/usr/bin/dotnet exec *)",
+      "Bash(:)",
+      "Bash(bash /tmp/claude-1000/-mnt-c-Users-atte9-source-repos-dotnet-toolkit/65cd1344-f572-4880-8a5a-55299bd1e862/scratchpad/watch.sh)",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet restore)",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet build)",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test --filter \"FullyQualifiedName~OutputFormatTests\")",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test --filter \"FullyQualifiedName~ReadAdviceTests|FullyQualifiedName~ResponseGuardTests|FullyQualifiedName~OutputFormatTests|FullyQualifiedName~ToolDescriptionBudgetTests|FullyQualifiedName~SymbolGroupingTests|FullyQualifiedName~SymbolShapeTests\")",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet publish src/DotnetToolkit.McpServer -c Release -o dist)",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test --filter \"FullyQualifiedName~ReadAdviceTests|FullyQualifiedName~ResponseGuardTests|FullyQualifiedName~OutputFormatTests|FullyQualifiedName~ToolDescriptionBudgetTests|FullyQualifiedName~SymbolGroupingTests|FullyQualifiedName~SymbolShapeTests|FullyQualifiedName~LimitedByTests\")",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test --filter \"FullyQualifiedName~ReadAdviceTests|FullyQualifiedName~ResponseGuardTests|FullyQualifiedName~OutputFormatTests|FullyQualifiedName~ToolDescriptionBudgetTests|FullyQualifiedName~SymbolGroupingTests|FullyQualifiedName~SymbolShapeTests|FullyQualifiedName~LimitedByTests|FullyQualifiedName~CompactFormatterTests\")",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 ~/.dotnet/dotnet test --filter \"FullyQualifiedName~GetSymbol_PartialClass\")",
+      "Bash(MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 timeout 900 ~/.dotnet/dotnet test)",
+      "mcp__plugin_dotnet-toolkit_dotnet__set_hook_guards",
+      "mcp__plugin_dotnet-toolkit_dotnet__workspace_status",
+      "mcp__plugin_dotnet-toolkit_dotnet__search_log"
     ]
   },
   "disabledMcpjsonServers": [

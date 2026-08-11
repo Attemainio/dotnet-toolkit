@@ -23,7 +23,8 @@ public static class GuardTools
         + "a dependent-compile check, and without a development-log entry, so the reasoning is gone when the "
         + "session ends. A suspension expires on its own (default 30 minutes, cap 4 hours) and cannot be made "
         + "indefinite from here, so nothing has to remember to undo it; workspace_status reports the time "
-        + "remaining while one is in force. state: suspend | restore.")]
+        + "remaining while one is in force. Scoped to your own Claude Code session when one is detected in the "
+        + "environment, so a different session pointed at this repo keeps its own guards. state: suspend | restore.")]
     public static string SetHookGuards(
         SolutionLocator locator,
         [Description("suspend | restore")] string state,
@@ -36,11 +37,13 @@ public static class GuardTools
             return $"unknown state: {state} (use suspend|restore)";
         }
 
+        var sessionId = GuardSuspension.CurrentSessionId();
+
         if (normalized == "restore")
         {
             // Resume reports false when the environment variable is what is holding the guards open, because
             // clearing a state file it does not depend on would otherwise read as a restore that happened.
-            return GuardSuspension.Resume(locator.Root)
+            return GuardSuspension.Resume(locator.Root, sessionId)
                 ? "hook guards restored"
                 : $"state file cleared, but the guards stay open: {GuardSuspension.DisableVariable} is set in "
                     + "the server's own environment, and only restarting the server without it closes them";
@@ -50,9 +53,12 @@ public static class GuardTools
             ? TimeSpan.FromMinutes(value)
             : GuardSuspension.DefaultDuration;
         var now = DateTimeOffset.UtcNow;
-        var until = GuardSuspension.Suspend(locator.Root, requested, now);
+        var until = GuardSuspension.Suspend(locator.Root, requested, now, sessionId);
+        var scope = sessionId is null
+            ? "for every session pointed at this repo (no Claude Code session id found in the environment)"
+            : "for this Claude Code session only";
 
-        return $"hook guards suspended for {(until - now).TotalMinutes:F0} min, until {until:u}. "
+        return $"hook guards suspended for {(until - now).TotalMinutes:F0} min, until {until:u}, {scope}. "
             + "Raw .cs reads and edits now pass unchecked, and any edit made through them is absent from the "
             + "development log. Call set_hook_guards(state: \"restore\") as soon as the unguarded work is done.";
     }

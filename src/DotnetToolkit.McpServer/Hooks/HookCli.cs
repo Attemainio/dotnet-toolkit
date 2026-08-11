@@ -80,7 +80,7 @@ internal static class HookCli
         // stay on throughout: they add context rather than withholding a call, so silencing them would
         // cost the caller information without buying back any of the freedom a suspension is asked for.
         if (name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read"
-            && GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow).Suspended)
+            && GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow, payload.SessionId).Suspended)
         {
             return HookOutcome.Allow;
         }

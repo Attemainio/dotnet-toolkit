@@ -136,4 +136,103 @@ public sealed class GuardSuspensionTests : IDisposable
             Environment.SetEnvironmentVariable(GuardSuspension.DisableVariable, previous);
         }
     }
+
+    [Fact]
+    public void CurrentSessionId_ReadsAndTrimsTheEnvironmentVariable()
+    {
+        var previous = Environment.GetEnvironmentVariable(GuardSuspension.SessionVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, "  ses_abc123  ");
+
+            Assert.Equal("ses_abc123", GuardSuspension.CurrentSessionId());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, previous);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CurrentSessionId_UnsetOrBlank_ReturnsNull(string? value)
+    {
+        var previous = Environment.GetEnvironmentVariable(GuardSuspension.SessionVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, value);
+
+            Assert.Null(GuardSuspension.CurrentSessionId());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, previous);
+        }
+    }
+
+    /// <summary>The property session scoping exists for: two sessions on the same repo don't share a suspension.</summary>
+    [Fact]
+    public void Suspend_WithASessionId_IsInvisibleToADifferentSessionId()
+    {
+        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
+
+        Assert.True(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
+        Assert.False(GuardSuspension.Current(_root, Now, sessionId: "session-b").Suspended);
+    }
+
+    [Fact]
+    public void Suspend_WithASessionId_IsInvisibleToACallerWithNoSessionId()
+    {
+        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
+
+        Assert.False(GuardSuspension.Current(_root, Now).Suspended);
+    }
+
+    /// <summary>An unscoped suspension still protects a caller that does carry a session id — the fallback path.</summary>
+    [Fact]
+    public void Suspend_WithNoSessionId_IsStillVisibleToACallerThatHasOne()
+    {
+        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now);
+
+        Assert.True(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
+    }
+
+    [Fact]
+    public void Resume_WithASessionId_ClearsOnlyThatSessionsSuspension()
+    {
+        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now, sessionId: "session-a");
+        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now, sessionId: "session-b");
+
+        GuardSuspension.Resume(_root, sessionId: "session-a");
+
+        Assert.False(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
+        Assert.True(GuardSuspension.Current(_root, Now, sessionId: "session-b").Suspended);
+    }
+
+    [Fact]
+    public void StateFile_WithASessionId_SanitizesItIntoTheFileName()
+    {
+        var file = GuardSuspension.StateFile(_root, sessionId: "../../etc/passwd");
+
+        Assert.DoesNotContain("..", file);
+        Assert.StartsWith(_root, file);
+    }
+
+    /// <summary>
+    /// The exact bug this guards against: a suspension started before session scoping existed (or by
+    /// any caller with no session id) must not survive a restore just because that restore happens to
+    /// carry a session id.
+    /// </summary>
+    [Fact]
+    public void Resume_WithASessionId_AlsoClearsAPreExistingUnscopedSuspension()
+    {
+        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now);
+
+        GuardSuspension.Resume(_root, sessionId: "session-a");
+
+        Assert.False(GuardSuspension.Current(_root, Now).Suspended);
+        Assert.False(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
+    }
 }

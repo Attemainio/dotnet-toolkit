@@ -4,12 +4,22 @@
 > and authoritative; if this page disagrees with `agents/<name>.md`, the agent file is right and this
 > one is stale. Kept for the rationale that is derivable nowhere else.
 
-This plugin ships two subagents, both read-only in intent and both self-contained:
+This plugin ships four subagents, all read-only in intent:
 
 - **`dotnet-code-review`** (`agents/dotnet-code-review.md`) — a **validation layer** that checks code
   against the standards in `standards/`, not a source of standards itself. Runs *after* code exists.
+  Self-contained.
 - **`dotnet-explore`** (`agents/dotnet-explore.md`) — a **navigator** that maps a task onto the
-  codebase's symbols and reference graph. Runs *before* code is written. See the section at the end.
+  codebase's symbols and reference graph. Runs *before* code is written. Self-contained. See the
+  section at the end.
+- **`dotnet-perf-mcp-probe`** and **`dotnet-perf-raw-probe`** (`agents/dotnet-perf-mcp-probe.md`,
+  `agents/dotnet-perf-raw-probe.md`) — a **benchmark instrument pair**, not general-purpose agents:
+  identical except for their tool grant (MCP tools + `Read` restricted to one file vs.
+  `Read`/`Grep`/`Glob`/`Bash` only), and deliberately **not** self-contained — neither carries its own
+  procedure or output format. Both read the same `skills/dotnet-performance/performance_protocol.md`
+  for those; the per-run question list still comes from the invoking prompt, since it changes every
+  run and a static file can't hold it. `dotnet-performance` is their only sanctioned
+  launcher. See the section at the end.
 
 Everything from here to the `dotnet-explore` section is about `dotnet-code-review`.
 
@@ -162,12 +172,18 @@ telemetry), and echoed in the report's **Target** line — so that
 `get_retrieval_metrics(groupBy: "task", taskIds: [...])` gives one exploration's exact cost. Without it
 the ambient session id is shared with the main agent and snapshot-subtraction is the only method.
 
-**Unverified as of this writing, for a reason worth knowing when you tune this agent: the harness
-appears to snapshot an agent definition when the plugin loads, not when a subagent spawns.** Three
-probes run after edits to the file all behaved like the pre-edit version — no `taskId`, no
-`What would need to change` section, and a call count above the budget then in force. So any change here
-needs a session/plugin restart before a probe can test it, and a probe run in the same session as the
-edit measures the old file. Don't read such a run as the instruction being ignored.
+**Confirmed, not just suspected: the harness snapshots the agent registry when the plugin loads, not
+when a subagent spawns.** Three probes run after edits to this file all behaved like the pre-edit
+version — no `taskId`, no `What would need to change` section, and a call count above the budget then
+in force — which was originally logged here as unverified. `dotnet-perf-raw-probe`'s own addition
+settled it more sharply: a **brand-new** agent file, never edited from a prior version, was rejected
+outright as `Agent type 'dotnet-perf-raw-probe' not found` for the entire remainder of the session it
+was created in, and only became callable after the harness restarted. That rules out a weaker theory
+(the harness re-reads a *known* agent's file lazily but caches the *set* of known agents) — the whole
+registry is fixed at load time. So any change here, including adding a new agent outright, needs a
+session/plugin restart before a probe can test it, and a probe run in the same session as the edit
+measures the old file (or finds no file at all). Don't read such a run as the instruction being
+ignored.
 
 Three things the probes changed in the agent file, worth knowing before tuning it again:
 
@@ -187,3 +203,56 @@ Same shape as the reviewer's `Standards:` line, applied to retrieval instead of 
 returned nothing, and any narrowing of a vague request. A map that says where it ends is useful; one
 that looks complete is dangerous — particularly under `stale` (line numbers already wrong) or
 `degraded` (results possibly wrong, not merely thin).
+
+# dotnet-perf-mcp-probe and dotnet-perf-raw-probe
+
+Exist to solve one specific methodology problem in `dotnet-performance`: measuring the MCP tools
+against `grep`/`Read` in a single Claude instance means the same context designed the outcomes,
+answered them through the MCP tools, *and then* played the raw route — already knowing every answer.
+A raw-route guess informed by having just seen the MCP answer is not what a session without this
+plugin actually produces, and no amount of instructing "don't look at the answer" closes that gap
+reliably, because the knowledge is already sitting in context whether or not it's used deliberately.
+
+The fix is two independently-spawned agents, neither with any memory of the parent conversation:
+`dotnet-perf-mcp-probe` has the dotnet-toolkit MCP tools plus `Read` restricted (by instruction) to
+one file, `dotnet-perf-raw-probe` has only `Read`/`Grep`/`Glob`/`Bash` — **tool absence for the actual
+route being measured, not a hook-blocked path either is told to avoid.** `Grep`/`Glob` aren't gated
+by any `PreToolUse` hook in the first place (`docs/design/hooks.md` says so directly), so
+`dotnet-perf-raw-probe` needs no guard suspension for most questions; only the ones that require
+opening a file need the window down, and even then only for the fraction of its run that touches
+`Read`. `dotnet-perf-mcp-probe` needs no guard state at all — its one `Read` target isn't a `.cs`
+file, so nothing about it is gated regardless.
+
+**Deliberately not self-contained, unlike this plugin's other two agents — but split into two
+sources, not one.** Both files carry only their identity and their one hard constraint (which tool
+family is missing, and — for the MCP probe — that `Read` covers exactly one file). The **procedure
+and output format** live in `skills/dotnet-performance/performance_protocol.md`, one file both agents
+`Read` at the start of every run, rather than either agent file inlining a copy or
+`dotnet-performance` re-typing identical instructions into two separate prompts where a future edit
+could update one and miss the other. The **question list** stays in `dotnet-performance`'s invoking
+prompt, sent byte-for-byte identical to both agents except for the one line naming the tool family —
+it's per-run content a static file can't hold. This is the opposite of `dotnet-explore`'s and
+`dotnet-code-review`'s design, and deliberately so: those two exist to do a real job well on their
+own, so inlining their procedure is the right call; these two exist only to be interchangeable except
+for one variable, so the procedure has to live in exactly one place or the two copies would drift and
+the comparison would stop isolating that one variable.
+
+**Why not reuse `dotnet-explore` for the MCP side?** Its own report format (`Target`/`Blast
+radius`/`Affected files`/…) doesn't match what a raw-tool agent would naturally produce, so using it
+means reconciling two different reporting shapes after the fact rather than comparing like for like.
+It also carries `Read` (for `docs/tools/*.md`), a stray variable this comparison doesn't need. Keeping
+`dotnet-explore` unmodified and building a purpose-fit pair instead was cheaper than bending an agent
+whose real job is different from a benchmark instrument's.
+
+**Model and cost.** Haiku for both, matching `dotnet-explore` — these are lookup tasks with little
+judgment required, and running the same probe repeatedly should stay cheap. A first head-to-head (8
+blind questions, `dotnet-explore` standing in for the not-yet-built MCP probe) put the MCP side's
+total agent cost at 37,442 tokens over 11 tool calls against the raw side's 58,034 tokens over 25 —
+the fixed agent-bootstrap cost is real on both sides and should be reported alongside any per-question
+token count, not folded into it silently. Full numbers and correctness findings:
+`.claude/dotnet-toolkit/perf/2026-08-11-dotnet-toolkit.md`, "Run 2" (predates the dedicated MCP probe;
+re-run with the actual pair supersedes those specific numbers, not the methodology).
+
+**Never launch either for a real task.** `dotnet-perf-mcp-probe` has no raw tools and no report
+format of its own, so it produces a worse-informed `dotnet-explore`; `dotnet-perf-raw-probe` has no
+MCP tools at all.
