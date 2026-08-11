@@ -38,6 +38,14 @@ What this repo adds on top, because it is the plugin's own source tree:
 — `dist/` is what actually runs, so a server change is not delivered until it is republished. **`dist/`
 now also carries the hooks**, so a change under `Hooks/` is live only after republishing too.
 
+**`dist/` is committed to git, not ignored** — a consuming machine gets a working plugin from
+`git clone`/`git pull` alone, with no local build step. This makes the republish step above
+load-bearing at commit time, not just at session end: **before any commit or merge to `main`,
+re-publish `dist/` and commit the republished output in the same commit as the `src/`/`Hooks/`
+change that required it.** A source change committed without its matching `dist/` rebuild ships a
+stale binary to every consumer who pulls, not just a locally stale session — treat it as a blocking
+error, the same as a failing test.
+
 ## Commands
 
 ```bash
@@ -85,8 +93,10 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the five hooks. Re-publish after any
-  server change.
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the five hooks, and it is
+  **committed to git** so a consuming machine needs no local build step. Re-publish after any server
+  change, **and commit the republished `dist/` in the same commit** — a stale *committed* `dist/` is
+  worse than a stale local one, since it ships to every consumer who pulls.
 - **Tool signature changes break in-process callers** — the tests call these methods positionally — and
   **any response-shape change needs `Contracts/Contract.cs` bumped.**
 - **Change detection is mtime-polling, not filesystem watchers**, so it works on WSL `/mnt/*` where
