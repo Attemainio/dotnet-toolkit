@@ -1,0 +1,20 @@
+root = true
+
+# The repo-wide analyzer configuration. Deliberately near-empty: `TreatWarningsAsErrors` in
+# Directory.Build.props is the policy, and every rule not named here keeps its default severity and
+# blocks the build when it fires. Add a rule only with the reasoning for silencing it, in the same edit.
+#
+# Not to be confused with tests/DotnetToolkit.McpServer.Tests/fixtures/SampleSolution/.editorconfig,
+# which is test DATA — EditorConfigValidationTests asserts that severities configured there are honored
+# by validate_patch's analyzer pass. It declares `root = true` of its own, so nothing here reaches it.
+
+[tests/**/*.cs]
+# xUnit1051 wants TestContext.Current.CancellationToken threaded through every call that accepts a
+# CancellationToken, so that a cancelled run stops promptly rather than at the next await boundary.
+# Turned off rather than adopted: it fires at 48 call sites here, and the responsiveness it buys is
+# theoretical for this suite — it runs to completion in ~15s and nothing cancels it. The churn is not
+# theoretical, and it would have arrived as part of an unrelated package bump.
+#
+# Reconsider if the suite grows long enough to want `dotnet test --timeout`, or if a hung external
+# process (the fixture shells out to git and dotnet restore) ever needs to be interruptible.
+dotnet_diagnostic.xUnit1051.severity = none

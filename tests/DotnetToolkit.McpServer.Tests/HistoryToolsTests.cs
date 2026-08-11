@@ -32,7 +32,7 @@ public sealed class HistoryToolsGetSemanticDiffTests : IAsyncLifetime
         }
         """;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         // Parsed as plain JSON below; pin regardless of another test's process-wide Formats.Current.
         Formats.Current = OutputFormat.Compact;
@@ -57,10 +57,10 @@ public sealed class HistoryToolsGetSemanticDiffTests : IAsyncLifetime
         _diff = new SemanticDiff(_git);
     }
 
-    public Task DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
-        return Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     private static JsonElement Root(string json) => JsonDocument.Parse(json).RootElement;

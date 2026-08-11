@@ -1,9 +1,12 @@
-# The four self-evaluation analyses
+# The four measured self-evaluation analyses
 
-Read on demand by `skills/dotnet-toolkit-selfeval/SKILL.md`'s Step 3, which names the four analyses and
-routes here for how to run each. Split out so the skill stays under the ~5k-token budget that
-auto-compaction truncates it at — a run needs all four, and a truncated skill would silently lose the
-last ones.
+Read on demand by `skills/dotnet-selfeval/SKILL.md`'s Step 3, which names the analyses and routes
+here for how to run each. Split out so the skill stays under the ~5k-token budget that
+auto-compaction truncates it at — a run needs all of them, and a truncated skill would silently lose
+the last ones.
+
+This file covers **3a–3d, the four that read probe measurements**. Step 3e, the guidance-reasoning
+audit, reads no probes and is written out in the skill itself; nothing here applies to it.
 
 Every analysis below assumes the probe matrix has already run with per-probe `taskId`s (Step 0), so each
 probe's `(calls, tokens)` is recoverable from one `get_retrieval_metrics(groupBy: "task", since: <today>)`
@@ -88,12 +91,26 @@ mid-chain is load-bearing on a cold call. State the *conditional* — suppress w
 ## 3d · Advice: does a field that tells the caller what to do next actually pay?
 
 Most response fields are facts. A few are **advice** — they exist only to change the caller's next call.
-`search_index`'s `shape` column is the current one (`P`/`M`/`N`/`L`/`O`/`D`/`C`/`A`, each emitted at its
-real value whenever non-zero and applicable; semantics in `docs/tools/search_index.md`). Advice is the
-only field class that can be *wrong* rather than merely expensive, so it gets its own test: follow it,
-ignore it, measure both. Since nothing is threshold-gated any more, the question is no longer "did the
-label fire correctly" but "at what value does following it start to pay" — report the crossover, not a
-verdict.
+There are three, and they are not equally settled:
+
+- **`search_index`'s `read` column** (`mem`/`out`/`code`/`all`, absent when the default fetch is
+  already right) — the real advice field, and the one to price first. Its thresholds are admitted
+  guesses: `ReadAdvice.LargeDeclaration` (60 lines) decides when the no-intent path speaks at all,
+  and the `intent` values (`edit`/`logic`/`surface`) override it entirely. Both were set by argument,
+  not by measurement, and this analysis is what should move them.
+- **`get_symbol`'s `guard` block** on an unsliced `source` request past `ResponseGuard.LineThreshold`
+  (500 lines) — advice that also *withholds* the answer, so a wrong fire costs a whole round trip
+  rather than a few tokens. Price the threshold and the cost of the extra hop separately.
+- **`search_index`'s `shape` column** (`P`/`M`/`N`/`L`/`O`/`D`/`C`/`A`, each emitted at its real value
+  whenever non-zero and applicable; semantics in `docs/tools/search_index.md`) — facts a caller is
+  expected to derive advice *from*. Now that `read` states the derivation outright, the open question
+  about `shape` is whether it still earns its per-row cost alongside it, or has become 3b's
+  `unconsulted`.
+
+Advice is the only field class that can be *wrong* rather than merely expensive, so it gets its own
+test: follow it, ignore it, measure both. Nothing is threshold-gated in `shape`, so the question there
+is not "did the label fire correctly" but "at what value does following it start to pay" — report the
+crossover, not a verdict.
 
 Take a `search_index` result with at least 8 hits spanning labelled and unlabelled rows — Family B's
 matrix keeps one for this. For each hit, run **both** routes to the same stated outcome and record
@@ -101,6 +118,12 @@ matrix keeps one for this. For each hit, run **both** routes to the same stated 
 
 | Label | Outcome wanted | Route it advises | Compare against |
 | --- | --- | --- | --- |
+| `read: mem` | what is on this type | `include: "members"` | `include: "source"` |
+| `read: out` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source:code"` whole |
+| `read: code` | what this member does | `include: "source:code"` | `include: "source"` |
+| `read` absent on a hit | anything | the default `include` | whichever labelled route its `shape` would have implied |
+| `intent: "logic"` vs. omitted | behaviour, not docs | whatever `read` then says | the same query with no `intent` |
+| `guard: large_source` | what is in this declaration | the served `members`/`bodyOutline`, then a slice | the repeat call that returns the whole source |
 | `L…` with a large `O…` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source"` |
 | `L…` with a small `O…` | what this member does | `include: "source:code"` whole | `bodyOutline` → `source:code@a-b` |
 | `M…` | what is on this type | `include: "members"` | `include: "source"` |

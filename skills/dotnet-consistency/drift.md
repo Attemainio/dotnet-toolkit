@@ -13,7 +13,7 @@ starting from the change and asking what should have moved with it.
 Everything below is relative to a baseline. Take it, in order of preference, from:
 
 1. A commit range the user stated.
-2. The last commit that touched `skills/dotnet-toolkit-consistency/` — the previous audit.
+2. The last commit that touched `skills/dotnet-consistency/` — the previous audit.
 3. `main~N` for a stated N, or the last release tag.
 
 **Say which baseline you used in the report.** A drift finding without a baseline is unfalsifiable,
@@ -84,7 +84,8 @@ most, and a full run covers everything regardless of tier.
 
 Wrong text here is acted on immediately, by every session, with no opportunity to notice.
 
-- `.claude/rules/index.md` — always loaded here *and* copied into every consuming repo. Drift ships.
+- `.claude/rules/dotnet-index.md` — always loaded here *and* copied into every consuming repo. Drift
+  ships.
 - `hooks/hooks.json` and the messages in `src/DotnetToolkit.McpServer/Hooks/*` — read at the exact
   moment a caller is denied. A stale one teaches the wrong fix at the worst moment.
 - `Tools/*.cs` `[Description]` attributes — the searchable index (`harness-compliance.md` §C). A
@@ -94,7 +95,8 @@ Wrong text here is acted on immediately, by every session, with no opportunity t
   good it is.
 - Skill and agent `description:` frontmatter — always resident and the entire basis for selection. A
   description that stops matching how a user phrases the task silently strands the whole skill body
-  behind it, which is exactly the failure `.claude/rules/index.md` now depends on not happening.
+  behind it, which is exactly the failure `.claude/rules/dotnet-index.md` now depends on not
+  happening.
 
 ### Tier 2 — read on demand, on a path that matters
 
@@ -107,7 +109,7 @@ Wrong text here is acted on by whoever took that path, which is usually someone 
 - `agents/*.md` `tools:` frontmatter — a stale grant silently removes a capability the body still
   instructs the agent to use.
 - `standards/` cross-references and the MCP tools they name.
-- `skills/dotnet-toolkit-init/SKILL.md` and `docs/install/*` — drift here ships a broken install.
+- `skills/dotnet-init/SKILL.md` and `docs/install/*` — drift here ships a broken install.
 
 ### Tier 3 — read once, by a human
 

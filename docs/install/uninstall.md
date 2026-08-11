@@ -1,6 +1,6 @@
 # Removing dotnet-toolkit from a repo
 
-The procedure behind `dotnet-toolkit-init`'s uninstall path. Also read as a **dry run** during verify
+The procedure behind `dotnet-init`'s uninstall path. Also read as a **dry run** during verify
 (`docs/install/verify.md`) — "what would a clean removal touch, and what would it leave?"
 
 Almost nothing needs removing, and that is the design: only what init actually wrote into the repo is
@@ -8,7 +8,10 @@ repo-local. Everything else leaves with the plugin.
 
 ## Delete these
 
-- `.claude/rules/index.md`.
+- `.claude/rules/dotnet-index.md`, **and `.claude/rules/index.md`** — the same rule under the name it
+  carried before the rename. A repo that installed once, refreshed, and never re-ran init can still
+  have the old one; deleting only the new name leaves an always-loaded rule pointing at a plugin that
+  is gone.
 - **Legacy, from an install predating the standards move** — delete these too if present, since
   nothing else will: `.claude/rules/tool-protocol.md`, `.claude/rules/csharp-standards.md`, and any of
   `naming.md`, `styling.md`, `best-practices.md`, `antipatterns.md`, `architecture.md`,

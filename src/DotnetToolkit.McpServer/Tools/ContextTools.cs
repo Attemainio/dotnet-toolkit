@@ -298,6 +298,43 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
         var limitedBy = await LimitedByAsync(workspace, indexBuilder, SourceFilesOf(sym));
 
+        // A whole-declaration source fetch on something enormous is more often a mis-aimed read than a
+        // deliberate one, and the caller cannot know the size until it has already paid for it. Warn once,
+        // serve the cheaper component that answers the same question, and let an identical repeat through
+        // — why consent is re-sending the call rather than a new argument is in ResponseGuard.
+        if (parts.Has(SymbolComponents.Source) && !parts.HasSlicedSource)
+        {
+            var declaredLines = ResponseGuard.DeclaredLineCount(DeclarationSpans(sym, locator));
+            if (declaredLines >= ResponseGuard.LineThreshold
+                && ResponseGuard.ShouldWarn(symbolId, include, DateTimeOffset.UtcNow))
+            {
+                // A type's surface is its members; a member's is its control flow. Either one answers
+                // "what is in here", which is the question a whole-source fetch is usually a blunt way
+                // of asking — so the guard costs a round trip only when it guessed wrong.
+                var instead = sym is INamedTypeSymbol ? SymbolComponents.Members : SymbolComponents.BodyOutline;
+                var guardParts = SymbolComponents.Resolve(instead, out _)!.Value;
+                var guardContent = await BuildContent(sym, guardParts, solution, locator, symbolStore, indexBuilder, featureLog);
+                var guardVersion = FullVersionOf(sym, symbolStore).Narrow(guardParts.RequiredLayers).ToString();
+                var guarded = Formats.ToJson(new
+                {
+                    symbolId,
+                    contentVersion = guardVersion,
+                    limitedBy,
+                    components = guardParts.Resolved,
+                    guard = new
+                    {
+                        reason = "large_source",
+                        declaredLines,
+                        advice = $"source would return about {declaredLines} lines, so {instead} is served instead. "
+                            + "For one region, slice with source:code@start-end off declarationSites. Repeat this "
+                            + "call unchanged to get the source anyway.",
+                    },
+                    content = guardContent,
+                });
+                return new SymbolFetchResult(guarded, symbolId, guardVersion, limitedBy, "large_source");
+            }
+        }
+
         var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
         var served = ServedComponents(parts, content);
         var envelope = new
@@ -652,11 +689,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "reads what is in it. A hit's line/endLine mark the signature line only, EXCLUDING any leading /// "
         + "doc comment — anchor a validate_patch edit on get_symbol's declarationSites span, not this one. "
         + "Already know which file? Ask get_symbol for that type with include:\"members\" rather than narrowing "
-        + "this search down to it. Each hit's shape column says what fetching it costs, with its legend stated "
-        + "once per response: a big L with a big O wants get_symbol include:\"bodyOutline\" then a narrow "
-        + "line-range fetch rather than a whole one, and an edit target wants include:\"all\" whatever its shape."
-        + " Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
-        + "the shape legend, worked examples and response shape: docs/tools/search_index.md.")]
+        + "this search down to it. Each hit carries shape (what fetching it costs) and read (which include "
+        + "to pass next, absent when the default fetch is already right), both legends stated once per "
+        + "response. intent (edit|logic|surface) aims read at what you are about to do. "
+        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
+        + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
         SymbolStore symbolStore,
@@ -707,6 +744,12 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "implements target from this repo's source — not a general library browser, only what this "
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
             + "\"source\".")] string? origin = null,
+        [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
+            + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
+            + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
+            + "(the API shape, so a type recommends its member list and everything else the default fetch). "
+            + "Omit to derive the recommendation from each hit's own shape instead. An unrecognized value is "
+            + "treated as omitted.")] string? intent = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -760,6 +803,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
         var summaryMode = summary is "has" or "full" ? summary : null;
+        var intentMode = intent is "edit" or "logic" or "surface" ? intent : null;
 
         var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
@@ -806,14 +850,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 CommentLines: site.CommentLines,
                 AttributeCount: site.AttributeCount);
 
-        // Only the flat envelope needs this precomputed: the grouped one derives the same answer from the
-        // rows it is handed. Either way the legend is emitted only when some hit actually carries a shape.
+        // Only the flat envelope needs these precomputed: the grouped one derives the same answers from the
+        // rows it is handed. Either way a legend is emitted only when some hit actually carries that column.
         var anyShape = limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
+        var anyRead = limited.Any(r => ReadAdvice.For(intentMode, ShapeOf(r.Site)) is not null);
 
         object BuildFlatEnvelope() => new
         {
             limitedBy = searchLimitedBy,
             shape = anyShape ? SymbolShape.Legend : null,
+            read = anyRead ? ReadAdvice.Legend : null,
             termsWithNoHits = termsWithNoHits.Count == 0 ? null : termsWithNoHits,
             items = limited.Select(r => new
             {
@@ -829,6 +875,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 line = r.Site?.Line,
                 endLine = r.Site?.EndLine,
                 shape = SymbolShape.For(ShapeOf(r.Site)),
+                read = ReadAdvice.For(intentMode, ShapeOf(r.Site)),
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                 summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
             }),
@@ -849,7 +896,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
                     SymbolShape.For(ShapeOf(r.Site)),
-                    r.Hit.Placement);
+                    r.Hit.Placement,
+                    ReadAdvice.For(intentMode, ShapeOf(r.Site)));
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -998,7 +1046,7 @@ private static async Task<object> BuildContent(
 
         // The whole declaration first, then the caller's line selection over it: the unsliced list is
         // what the reported span is measured against, so both come from one render rather than two.
-        var declarationSource = hasSource ? SourceOf(sym, components.SourceQuery) : null;
+        var declarationSource = hasSource ? SourceOf(sym, locator, components.SourceQuery) : null;
         var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
         var renderedSource = RenderSource(source, components.SourceQuery, out var resolvedLineFormat);
 
@@ -1048,7 +1096,11 @@ private static async Task<object> BuildContent(
             // over the whole symbol, so a caller leasing off a fragment would otherwise hold a token for
             // content it never saw. "kept/whole", or "none/whole" when the ranges missed the declaration
             // entirely — which also states the range that would have worked.
+            // Suppressed for a partial declared across several files: the "whole" denominator is one
+            // file's span and there is no single one. declarationSites already carries every part's
+            // span, and each run's @file:start-end header says which file its kept lines came from.
             sourceLines = components.HasSlicedSource && declarationSource is { Count: > 0 }
+                    && declarationSource[0].File is null
                 ? $"{LineSpan(source)}/{declarationSource[0].Line}-{declarationSource[^1].Line}"
                 : null,
             xmlDoc = !servesDocComment && components.Has(SymbolComponents.XmlDoc)
@@ -1314,10 +1366,20 @@ private static object? ContainingType(ISymbol sym)
     /// text, so a multi-line declaration renders as a real per-line table (TOON/JSON alike) instead of
     /// one string carrying literal \n/\" escapes, and each line's number is directly usable as a
     /// validate_patch startLine/endLine without a separate get_symbol round trip.</summary>
-    private sealed record SourceLine(int Line, string Text);
+    /// <param name="Line">The 1-based absolute line number in the file the line came from.</param>
+    /// <param name="Text">The line's text, unescaped.</param>
+    /// <param name="File">
+    /// Which file the line is in, set only for a partial declared across more than one — where a bare
+    /// line number stops identifying a place, because every part has its own line 100. Null for the
+    /// overwhelming majority, which is what keeps a single-file declaration rendering byte-identically
+    /// to before any part past the first was served at all.
+    /// </param>
+    private sealed record SourceLine(int Line, string Text, string? File = null);
 
     /// <summary>One contiguous run of a symbol's <c>source</c> under <c>-lineNumbers</c>: the run's
-    /// absolute <c>start-end</c> file line span, plus its lines as bare text.</summary>
+    /// absolute <c>start-end</c> file line span, plus its lines as bare text. A run belonging to a
+    /// multi-file partial is prefixed with its file (<c>path/To.cs:12-40</c>), since the span alone
+    /// would name a place in each part rather than one.</summary>
     private sealed record SourceSpan(string Lines, IReadOnlyList<string> Text);
 
     private static IReadOnlyList<SourceLine> SplitLines(string text, int startLine) =>
@@ -1338,7 +1400,8 @@ private static object? ContainingType(ISymbol sym)
     /// Which format <see cref="SourceQuery.SourceLineFormat.Automatic"/> actually picked, so a caller can
     /// report it without re-deriving it from the response shape. Null whenever the caller forced
     /// <see cref="SourceQuery.SourceLineFormat.Exact"/>/<see cref="SourceQuery.SourceLineFormat.Compact"/>
-    /// explicitly — it already knows what it asked for.
+    /// explicitly — it already knows what it asked for — except on a multi-file partial, where Compact is
+    /// imposed over an explicit Exact and saying so is the only way the caller learns its request lost.
     /// </param>
     /// <returns>Null only when there was no source to render, so an absent component stays absent.</returns>
     /// <remarks>
@@ -1351,6 +1414,18 @@ private static object? ContainingType(ISymbol sym)
         resolvedFormat = null;
         if (lines is null)
             return null;
+
+        // A per-line gutter carries a number and nothing else, so it cannot say which of a partial's
+        // files a line belongs to. A multi-file declaration therefore renders as spans whatever was
+        // asked for — the @file:start-end header is the only form that stays unambiguous, and an -exact
+        // gutter here would interleave two files' line numbers with no way to tell them apart. Reported
+        // through resolvedFormat rather than silently, since it overrides an explicit choice.
+        if (lines.Any(l => l.File is not null))
+        {
+            resolvedFormat = SourceQuery.SourceLineFormat.Compact;
+            return ToSpans(lines);
+        }
+
         if (query.LineFormat == SourceQuery.SourceLineFormat.Exact)
             return lines;
 
@@ -1364,19 +1439,27 @@ private static object? ContainingType(ISymbol sym)
     }
 
     /// <summary>Groups per-line source into one <see cref="SourceSpan"/> per contiguous run of lines.</summary>
+    /// <remarks>
+    /// A run is contiguous only <i>within one file</i>: consecutive numbers either side of a partial's
+    /// part boundary are two different places, and merging them would invent a span that exists in
+    /// neither file.
+    /// </remarks>
     private static List<SourceSpan> ToSpans(IReadOnlyList<SourceLine> lines)
     {
         var spans = new List<SourceSpan>();
         var runStart = 0;
         for (var i = 0; i < lines.Count; i++)
         {
-            if (i + 1 < lines.Count && lines[i + 1].Line == lines[i].Line + 1)
+            if (i + 1 < lines.Count
+                && lines[i + 1].Line == lines[i].Line + 1
+                && string.Equals(lines[i + 1].File, lines[i].File, StringComparison.Ordinal))
                 continue;
 
             var text = new string[i - runStart + 1];
             for (var j = 0; j < text.Length; j++)
                 text[j] = lines[runStart + j].Text;
-            spans.Add(new SourceSpan($"{lines[runStart].Line}-{lines[i].Line}", text));
+            var span = $"{lines[runStart].Line}-{lines[i].Line}";
+            spans.Add(new SourceSpan(lines[runStart].File is { } file ? $"{file}:{span}" : span, text));
             runStart = i + 1;
         }
 
@@ -1384,19 +1467,26 @@ private static object? ContainingType(ISymbol sym)
     }
 
     /// <summary>
-    /// The exact character count the numbered <c>"{line}: {text}"</c> rendering of <paramref name="lines"/>
+    /// The exact character count the numbered <c>"{line}│ {text}"</c> rendering of <paramref name="lines"/>
     /// comes out to, newline-joined — mirrors <see cref="Formats"/>'s own line-array renderer so
     /// <see cref="RenderSource"/> can compare it against <see cref="CompactRenderedLength"/> without
     /// building the response twice.
     /// </summary>
+    /// <remarks>
+    /// Every row is charged the widest number's width rather than its own, because the renderer
+    /// right-aligns them. Charging each row its own digits would under-count any block spanning a
+    /// digit boundary — lines 998-1002 pad three of their rows — and Automatic would then keep the
+    /// numbered gutter on declarations where the spans are genuinely shorter.
+    /// </remarks>
     private static int ExactRenderedLength(IReadOnlyList<SourceLine> lines)
     {
         if (lines.Count == 0)
             return 0;
 
+        var width = lines.Max(l => l.Line).ToString().Length;
         var length = 0;
         foreach (var line in lines)
-            length += line.Line.ToString().Length + 2 + line.Text.Length + 1;
+            length += width + Formats.SourceGutter.Length + line.Text.Length + 1;
         return length - 1;
     }
 
@@ -1420,13 +1510,42 @@ private static object? ContainingType(ISymbol sym)
         return length - 1;
     }
 
-    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SourceQuery? query = null)
+    /// <summary>
+    /// Every part of a symbol's declaration, rendered per <paramref name="query"/> — one entry per line,
+    /// in the order <see cref="DeclarationSpans"/> reports the parts.
+    /// </summary>
+    /// <param name="sym">The symbol whose source is wanted.</param>
+    /// <param name="locator">Resolves each part's path, and excludes source-generator output.</param>
+    /// <param name="query">The resolved source query, or null for <see cref="SourceQuery.Full"/>.</param>
+    /// <returns>The lines, or null when the symbol declares no editable source at all.</returns>
+    /// <remarks>
+    /// This served <c>DeclaringSyntaxReferences.FirstOrDefault()</c> alone until contract 3.63, so a
+    /// partial split across files returned one part while <c>declarationSites</c> listed every one. The
+    /// response contradicted itself, and get_symbol's headline claim — the whole symbol, where <c>Read</c>
+    /// gives one fragment — was false for precisely the case that claim is about. Parts stamp each line
+    /// with its file, which is what lets <see cref="ToSpans"/> keep them apart; a single-part symbol
+    /// stamps nothing, so the common case is untouched.
+    /// </remarks>
+    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SolutionLocator locator, SourceQuery? query = null)
     {
-        var reference = sym.DeclaringSyntaxReferences.FirstOrDefault();
-        if (reference is null)
+        var parts = sym.DeclaringSyntaxReferences
+            .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
+            .ToArray();
+        if (parts.Length == 0)
             return null;
-        var node = NormalizeDeclNode(reference.GetSyntax());
-        return SourceLinesOf(node, query ?? SourceQuery.Full);
+
+        var resolved = query ?? SourceQuery.Full;
+        if (parts.Length == 1)
+            return SourceLinesOf(NormalizeDeclNode(parts[0].GetSyntax()), resolved);
+
+        var lines = new List<SourceLine>();
+        foreach (var part in parts)
+        {
+            var file = locator.RelPath(part.SyntaxTree.FilePath);
+            foreach (var line in SourceLinesOf(NormalizeDeclNode(part.GetSyntax()), resolved))
+                lines.Add(line with { File = file });
+        }
+        return lines;
     }
 
     /// <summary>
@@ -1849,7 +1968,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 CompactDisplay(caller.CallingSymbol),
                 sites,
                 dispatch,
-                includeBodies ? SourceOf(caller.CallingSymbol) : null,
+                includeBodies ? SourceOf(caller.CallingSymbol, locator) : null,
                 TestAttributes.IsTestMethod(caller.CallingSymbol)));
         }
         return items;
@@ -1887,7 +2006,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 CompactDisplay(pair.Key),
                 [.. pair.Value.DistinctBy(s => (s.File, s.Line))],
                 dispatch,
-                includeBodies ? SourceOf(pair.Key) : null,
+                includeBodies ? SourceOf(pair.Key, locator) : null,
                 TestAttributes.IsTestMethod(pair.Key)))
             .ToList();
     }
@@ -1919,7 +2038,7 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
         }).ToList();
         return new RefItem(SymbolKey.IdOf(s), VersionOf(s).ToString(),
             s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), CompactDisplay(s), sites, dispatch,
-            includeBodies ? SourceOf(s) : null);
+            includeBodies ? SourceOf(s, locator) : null);
     }
 
     // The default get_references/get_call_hierarchy displayString: name + arity (e.g.

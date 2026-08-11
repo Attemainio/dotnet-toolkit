@@ -139,6 +139,13 @@ you haven't. The write-specific rules are in the loop below.
 1. **Hold current content.** Fetch what you are about to change with `get_symbol` (`include: "all"`)
    and keep its `contentVersion`.
 
+   **On a 500+ line declaration that fetch is guarded**, and comes back with `members`/`bodyOutline`
+   and a `guard: large_source` block instead of the source. That is not an obstacle to route around
+   — it is this same step's narrow-slice rule, enforced: take `declarationSites` from what came back
+   and re-fetch the exact target with `include: "source:full-exact@N-M"`, which leases the body just
+   as a whole fetch does. Repeat the call verbatim only when you genuinely need the whole declaration
+   in front of you; that repeat is served in full.
+
    **Never hand-count a line number from a wider fetch.** If the edit touches a few lines inside a
    symbol you already read (or read wide to explore), do not scroll the wide response and count rows
    to find their absolute file line — that arithmetic is exactly what produces a patch against the

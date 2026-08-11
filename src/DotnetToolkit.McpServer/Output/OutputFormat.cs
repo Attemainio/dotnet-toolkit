@@ -25,6 +25,20 @@ public static class Formats
     private static readonly JsonSerializerOptions IndentedJsonOptions = new(JsonOptions) { WriteIndented = true };
 
     /// <summary>
+    /// Separates a source line's number from the code it labels, in the raw block
+    /// <see cref="TryRenderSourceLineArray"/> splices into TOON output.
+    /// </summary>
+    /// <remarks>
+    /// A box-drawing bar rather than the <c>": "</c> this used through contract 3.61: a colon is
+    /// ordinary C# punctuation, so finding where the gutter ended meant ruling out every colon the
+    /// code itself carries, and <c>│</c> is the one character that never appears in the source it is
+    /// delimiting. Internal rather than private because <c>ContextTools.ExactRenderedLength</c> has
+    /// to charge its exact width — a gutter whose two definitions disagree makes Automatic pick
+    /// between a real rendering and an imagined one.
+    /// </remarks>
+    internal const string SourceGutter = "│ ";
+
+    /// <summary>
     /// The active output format for the rest of this server process. Seeded once at startup from
     /// <c>ToolkitConfig.DefaultFormat</c> (<c>Program.cs</c>); the <c>set_output_format</c> tool
     /// (<see cref="Tools.ServerTools"/>) is the only other writer, so a session can change it without a
@@ -216,22 +230,35 @@ public static class Formats
     /// {line: number, text: string} pair — the shape <see cref="ContextTools.SourceLine"/>
     /// serializes to — never misfiring on an unrelated array that merely has a numeric and a string
     /// field under different names.</summary>
+    /// <remarks>
+    /// Numbers are right-aligned to the widest one in the block, so the code starts at the same
+    /// column on every row. Ragged numbering makes the number/code boundary something the reader
+    /// re-locates on every line, and re-locating it is where a line number gets read as part of the
+    /// source it labels.
+    /// </remarks>
     private static bool TryRenderSourceLineArray(JsonNode? node, out string raw)
     {
         raw = "";
         if (node is not JsonArray arr || arr.Count == 0)
             return false;
-        var sb = new StringBuilder();
+
+        // Every element is validated before any is rendered: the width they all pad to is the widest
+        // number in the block, which is not known until the last element has been read.
+        var rows = new List<(int Line, string Text)>(arr.Count);
         foreach (var item in arr)
         {
             if (item is not JsonObject o || o.Count != 2
                 || o["line"] is not JsonValue lineVal || !lineVal.TryGetValue<int>(out var line)
                 || o["text"] is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
                 return false;
-            sb.Append(line).Append(": ").Append((string)textVal!).Append('\n');
+            rows.Add((line, (string)textVal!));
         }
-        if (sb.Length > 0)
-            sb.Length--;
+
+        var width = rows.Max(r => r.Line).ToString().Length;
+        var sb = new StringBuilder();
+        foreach (var (line, text) in rows)
+            sb.Append(line.ToString().PadLeft(width)).Append(SourceGutter).Append(text).Append('\n');
+        sb.Length--;
         raw = sb.ToString();
         return true;
     }

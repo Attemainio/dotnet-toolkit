@@ -14,25 +14,28 @@ public static class SymbolGrouping
     /// <remarks>
     /// <paramref name="Shape"/> is <see cref="SymbolShape"/>'s terse retrieval hint, null on every symbol
     /// small enough that the default get_symbol fetch is already the right next call.
+    /// <paramref name="Read"/> is <see cref="ReadAdvice"/>'s answer to what that shape implies — the
+    /// include to pass next — and is null under the same condition, for the same reason.
     /// <paramref name="Generated"/> says the declaration is source-generator output, which is the reason
     /// its file and lines are unresolved rather than an indexing failure.
     /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
         int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null,
-        DeclarationPlacement Placement = DeclarationPlacement.InTree);
+        DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
     /// (default) vs. file-first nesting; the other axis always nests one level inside it.
     /// </summary>
     /// <remarks>
-    /// The shape legend is emitted once at the top, and only when some row actually carries a shape —
-    /// a result of ordinary small symbols renders exactly as it did before the column existed.
+    /// Each legend is emitted once at the top, and only when some row actually carries that column — a
+    /// result of ordinary small symbols renders exactly as it did before either column existed.
     /// </remarks>
     public static Dictionary<string, object?> Build(IReadOnlyList<Row> rows, bool primaryIsNamespace)
     {
         var shapeLegend = rows.Any(r => r.Shape is not null) ? SymbolShape.Legend : null;
+        var readLegend = rows.Any(r => r.Read is not null) ? ReadAdvice.Legend : null;
         var primaryGroups = GroupInOrder(rows, primaryIsNamespace ? r => r.Namespace : r => r.File);
         if (primaryGroups.Count == 1)
         {
@@ -43,6 +46,8 @@ public static class SymbolGrouping
                 var flat = new Dictionary<string, object?>();
                 if (shapeLegend is not null)
                     flat["shape"] = shapeLegend;
+                if (readLegend is not null)
+                    flat["read"] = readLegend;
                 flat[primaryIsNamespace ? "namespace" : "file"] = primaryGroups[0].Key;
                 flat[primaryIsNamespace ? "file" : "namespace"] = onlySecondary[0].Key;
                 AddLeaf(flat, onlySecondary[0].Rows);
@@ -53,6 +58,8 @@ public static class SymbolGrouping
         var top = new Dictionary<string, object?>();
         if (shapeLegend is not null)
             top["shape"] = shapeLegend;
+        if (readLegend is not null)
+            top["read"] = readLegend;
         top["groupedBy"] = primaryIsNamespace ? "namespace" : "file";
         top[primaryIsNamespace ? "namespaces" : "files"] = primaryGroups.Select(g =>
         {
@@ -102,6 +109,8 @@ public static class SymbolGrouping
         }
         if (r.Shape is not null)
             d["shape"] = r.Shape;
+        if (r.Read is not null)
+            d["read"] = r.Read;
         if (r.HasSummary is not null)
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)

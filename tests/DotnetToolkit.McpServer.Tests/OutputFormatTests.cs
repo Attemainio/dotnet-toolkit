@@ -94,4 +94,45 @@ public sealed class OutputFormatTests : IDisposable
         Assert.Equal("unknown format: yaml (use json|compact|toon)", confirmation);
         Assert.Equal(OutputFormat.Compact, Formats.Current);
     }
+
+    /// <summary>
+    /// The numbered gutter right-aligns to the widest line number in the block, so the code column is
+    /// identical on every row and the boundary between number and source never has to be re-found.
+    /// Spliced in raw, which is why the block carries none of TOON's own quoting.
+    /// </summary>
+    [Fact]
+    public void ToonSourceBlock_RightAlignsLineNumbersToTheWidestOne()
+    {
+        Formats.Current = OutputFormat.Toon;
+
+        var rendered = Formats.Render(new
+        {
+            source = new[]
+            {
+                new { line = 9, text = "public int Bar()" },
+                new { line = 10, text = "    => 1;" },
+            },
+        });
+
+        Assert.Contains("\n   9│ public int Bar()\n", rendered);
+        Assert.Contains("\n  10│     => 1;", rendered);
+    }
+
+    /// <summary>Alignment is measured per block, so numbers of equal width cost no padding at all.</summary>
+    [Fact]
+    public void ToonSourceBlock_PadsNothingWhenEveryNumberIsTheSameWidth()
+    {
+        Formats.Current = OutputFormat.Toon;
+
+        var rendered = Formats.Render(new
+        {
+            source = new[]
+            {
+                new { line = 8, text = "{" },
+                new { line = 9, text = "}" },
+            },
+        });
+
+        Assert.Contains("\n  8│ {\n  9│ }", rendered);
+    }
 }

@@ -33,7 +33,8 @@ single-term query is skipped; its empty `items` already says the same thing.
 
 ### Hit shape
 
-Every hit: `symbolId, name, kind, file, line, endLine`. `file`/`line` are resolved live at
+Every hit: `symbolId, name, kind, file, line, endLine`, plus `shape` and — when the default fetch
+is not the right next call — `read`. `file`/`line` are resolved live at
 response time (swept for staleness), not read from a cache. An overload set is separated by
 **parameter count**, then by **parameter type**, so each member reports its own location — a hit
 that stays ambiguous (types that reduce to different text, e.g. `Int32` vs `int`) omits `file`/
@@ -84,19 +85,84 @@ nested type is counted by `N` yet still listed as a member there too. `C` on a t
 **transitive total** across its members (double-counts each member's own `C` by design — it
 answers "what would fetching the whole type cost"). `D` never overlaps `C`.
 
-Next call, by shape:
+### The `read` column — which `include` to pass next
 
-| Shape | Next call |
+`shape` states the facts and leaves the inference to you. `read` is that inference already made: one
+token per hit naming the `get_symbol` include to call with, legend stated once per response, the
+same way `shape`'s is.
+
+| Value | Next call |
 |---|---|
-| small `L`, no `M`/`O` | `get_symbol(symbol: id)` — default fetch is right |
-| big `L` + big `O` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` |
-| big `L` + small `O` | one linear block — `source:code` whole, or `@from-to` if the region is known |
-| `M…` | `get_symbol(include: "members")` — navigate by member list, not a full-type read |
-| `N…` | nested types are separate symbols — `get_scope` or a `pathPrefix` search reaches them |
-| big `D` | default fetch already carries it; `source:code` skips it |
-| big `C` | `source:code-comments` when inspecting behavior, not rationale |
-| `A…` | `get_symbol(include: "attributes")` — the cheap `[Authorize]`/`[Obsolete]` check |
-| about to **edit** | `include: "all"` regardless of shape — a body patch needs the body-carrying `contentVersion` |
+| `mem` | `get_symbol(include: "members")` — navigate by member list, not a full-type read |
+| `out` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the region |
+| `code` | `get_symbol(include: "source:code")` — one linear block, docs stripped |
+| `all` | `get_symbol(include: "all")` — the body-carrying `contentVersion` a patch needs |
+| *absent* | the default fetch is already the right call |
+
+**Absent is an assertion here, not a blank.** It is the second deliberate exception to "absent
+carries no information" (`shape`'s letters are the first), and it is what keeps the column
+affordable: a result of nothing but small symbols renders exactly as it did before `read` existed —
+no column, no legend.
+
+The column is cheap rather than free, though. Once *any* hit carries advice, the tabular form gains
+the column for every row, and the silent ones render an empty cell:
+
+```
+items[3]{symbolId,name,line,endLine,shape,read}:
+  sym_5b5c…,ContextTools,25,2480,M83 N4 L2456 D434,mem
+  sym_8aca…,ReadAdvice.Legend,33,35,L3 D6,""
+```
+
+So the real cost is one legend plus one cell per hit on a mixed result, and nothing at all on a
+result where the default fetch is right throughout.
+
+`read` is deliberately redundant with `shape` — it carries no fact `shape` does not already carry.
+It exists because a derivation nobody performs is not information: `L2342 M87` reliably reads as a
+description rather than as "fetch the member list", and the whole 2342-line type gets fetched anyway.
+
+### `intent` — aiming the recommendation
+
+Without it, `read` is derived from each hit's own size and structure, and stays silent below ~60
+lines. Passing what you are about to do overrides that, because your intent is a fact the shape
+cannot contain:
+
+| `intent` | Effect |
+|---|---|
+| `edit` | every hit reads `all` — a body patch needs the body-carrying lease whatever the symbol looks like |
+| `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body |
+| `surface` | the API shape: `mem` on a type, silent on everything else (the default fetch already leads with the signature) |
+
+An unrecognized value is treated as omitted. `N…` and `A…` have no `read` route of their own —
+nested types are separate symbols reached by `get_scope` or a `pathPrefix` search, and
+`include: "attributes"` remains the cheap `[Authorize]`/`[Obsolete]` check to ask for directly.
+
+The thresholds behind the no-intent path are the one guessed part of this. Analysis 3d in
+`dotnet-selfeval` exists to price advice like this — follow the column, ignore it, compare — and is
+what should move them.
+
+## `query` is name text, not structure
+
+`query` terms match against **identifier text** — type, member and file names — never against what a
+symbol structurally *is*. `query: "class"` or `query: "partial class"` searches for something literally
+named `class`; it does not mean "list every class" or "list every partial type", and returns nothing
+whenever this codebase happens to have no symbol named that. A structural question has its own filter,
+and passing it costs nothing extra alongside a real term in `query`:
+
+- "is a class/interface/struct/record/…" → `kinds`
+- "is partial/static/public/abstract/async/…" → `modifiers`
+- "is nested" → not a filter — read it off a hit's `shape` (the `N` count), or fetch the containing
+  type's `members` with `get_symbol`
+
+Never substitute a structural word for the term you don't have yet — that produces exactly the
+`search_index(query: "partial class", kinds: "class", modifiers: "partial")` call that returns
+`termsWithNoHits: ["partial","class"]` and nothing else: both words describe *shape*, and neither is
+text any real symbol carries. `kinds`/`modifiers` still narrow rather than replace `query` (see below).
+
+**Don't know this codebase's vocabulary yet?** `query` only finds identifiers that already exist here —
+a real class/method/field name, or a substring of one. Before the first `search_index` call in an
+unfamiliar repo, `Read` its `README.md` for domain nouns and component names; if there is no
+`README.md`, `Read` `CLAUDE.md` instead — both are plain Markdown, outside this skill's `.cs` scope.
+Query with the nouns that document names, not the structural shape you're hoping to filter on.
 
 ## Filters
 

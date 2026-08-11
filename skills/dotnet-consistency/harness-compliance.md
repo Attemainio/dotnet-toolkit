@@ -25,8 +25,8 @@ For each pair below, confirm the second file **points** rather than restates:
 | Which standards apply when | `standards/index.md` | `skills/dotnet-write/SKILL.md`; `skills/dotnet-review/SKILL.md`; `agents/dotnet-code-review.md`'s load rule |
 | The write-time checklist | the `hint-write-checklist` hook | `skills/dotnet-write/SKILL.md` |
 | `validate_patch` error codes, draft lifetime, severity table | `docs/tools/validate_patch.md` | `skills/dotnet-write/SKILL.md` |
-| The intent→**skill** router | `.claude/rules/index.md` | `skills/dotnet-toolkit-init/SKILL.md` (copies the rule verbatim; never embeds its own); `CLAUDE.md`; `README.md` |
-| The intent→**tool** router, and the **cross-tool** cheap-route (anti-pattern) table | `skills/dotnet-read/SKILL.md` for reads, `skills/dotnet-write/SKILL.md` for writes | `.claude/rules/index.md` (names skills, never tools). A `docs/tools/<tool>.md` **Next steps** footer is a *different* fact — what to call next with the response in hand — and stays; a general "instead of X do Y" catalogue reappearing in one is the duplicate |
+| The intent→**skill** router | `.claude/rules/dotnet-index.md` | `skills/dotnet-init/SKILL.md` (copies the rule verbatim; never embeds its own); `CLAUDE.md`; `README.md` |
+| The intent→**tool** router, and the **cross-tool** cheap-route (anti-pattern) table | `skills/dotnet-read/SKILL.md` for reads, `skills/dotnet-write/SKILL.md` for writes | `.claude/rules/dotnet-index.md` (names skills, never tools). A `docs/tools/<tool>.md` **Next steps** footer is a *different* fact — what to call next with the response in hand — and stays; a general "instead of X do Y" catalogue reappearing in one is the duplicate |
 | Per-tool mechanics, arguments, examples | `docs/tools/<tool>.md` | `skills/dotnet-read/SKILL.md`; `skills/dotnet-write/SKILL.md`; tool `[Description]`s |
 | Guard denial messages' remedy | the skill each guard names (`dotnet-read`/`dotnet-write`) | `Hooks/GuardCs*.cs` (name the skill; never restate its tool usage) |
 | Agent instructions | `agents/<name>.md` | `docs/design/agents.md` (human-facing; neither agent reads it) |
@@ -107,13 +107,13 @@ descriptions. Check each tool:
 existing. For a sample of tools, run a *natural-language intent* phrase through `ToolSearch` — the
 phrasing a caller would use, not the tool's name — and record whether the right tool appears.
 
-The reason `.claude/rules/index.md` mandates loading by exact `select:` name: **"who calls this
-method" used to never surface `get_references` at all — confirmed fixed 2026-08-06** (description
-edits in `8b8f506`, re-probed fresh in this session: `get_references` now ranks 3rd of 5). Re-run the
-probe anyway on every audit — a description edit can regress it — and if it fails again that is a
-`CODE FINDING` against `get_references`'s description. The router in `index.md` stays load-bearing
-regardless of this result: it is strictly cheaper than a search round trip, which is why §E keeps it
-even with the description fix in place.
+The reason `.claude/rules/dotnet-index.md` mandates loading by exact `select:` name: **"who calls
+this method" used to never surface `get_references` at all — confirmed fixed 2026-08-06**
+(description edits in `8b8f506`, re-probed fresh in this session: `get_references` now ranks 3rd of
+5). Re-run the probe anyway on every audit — a description edit can regress it — and if it fails
+again that is a `CODE FINDING` against `get_references`'s description. The router in
+`dotnet-index.md` stays load-bearing regardless of this result: it is strictly cheaper than a search
+round trip, which is why §E keeps it even with the description fix in place.
 
 **Prior measurement: `docs/design/route-table-findings.md`** (2026-08-05) — how the two selection
 mechanisms interact, the measured `ToolSearch` probes, and what the eval corpus says is fixed versus
@@ -132,23 +132,23 @@ Exactly two files are always loaded:
 | File | Official | Repo target | Why it is paid more than once |
 | --- | --- | --- | --- |
 | `CLAUDE.md` | under 200 lines | ~5 KB | every session; **inherited by every subagent, no opt-out** |
-| `.claude/rules/index.md` | under 200 lines | ~6 KB | the same, **plus** every session in every consuming repo `dotnet-toolkit-init` has touched |
+| `.claude/rules/dotnet-index.md` | under 200 lines | ~6 KB | the same, **plus** every session in every consuming repo `dotnet-init` has touched |
 
 A seven-way parallel review pays both files eight times. That multiplier, not the raw size, is the
 argument.
 
 ```bash
-for f in CLAUDE.md .claude/rules/index.md; do
+for f in CLAUDE.md .claude/rules/dotnet-index.md; do
     printf "%-30s %4d lines  %6d B  ~%.1fk tok\n" \
         "$f" $(wc -l < "$f") $(wc -c < "$f") $(echo "$(wc -c < "$f")/3800" | bc -l)
 done
 ```
 
-**Baseline measured 2026-08-07**, after `index.md` was reduced to a pure skill router and its tool
-table, `limitedBy` section and standards table moved into `skills/dotnet-read`, `skills/dotnet-write`
-and `standards/index.md`: `.claude/rules/index.md` fell from 161 lines / 10,590 B to roughly a third
-of that, inside the byte target. `CLAUDE.md` was 127 lines / 8,293 B — inside the official line
-limit, over the repo byte target. Re-measure before reporting either.
+**Baseline measured 2026-08-07**, after `dotnet-index.md` was reduced to a pure skill router and its
+tool table, `limitedBy` section and standards table moved into `skills/dotnet-read`,
+`skills/dotnet-write` and `standards/index.md`: `.claude/rules/dotnet-index.md` fell from 161 lines
+/ 10,590 B to roughly a third of that, inside the byte target. `CLAUDE.md` was 127 lines / 8,293 B —
+inside the official line limit, over the repo byte target. Re-measure before reporting either.
 
 Three rules for acting on an overage:
 
@@ -169,7 +169,7 @@ single-purpose skill should carry its whole procedure inline.
 - A `docs/` file that exists only because some skill got long: one job across two files, so both must
   be updated and the pointer can go stale. **Fix: fold it back.**
 - A skill with **several** named responsibilities carried inline, where a reader on one path pays for
-  the other two. **Fix: one file per responsibility**, as `dotnet-toolkit-init` does — and as this
+  the other two. **Fix: one file per responsibility**, as `dotnet-init` does — and as this
   skill now does with `claude-docs.md` / `harness-compliance.md` / `drift.md`.
 - A `docs/` file nothing reads — the terminal form of the first case. `drift.md` catches these.
 
@@ -178,13 +178,14 @@ produces scatter, which is strictly worse than the length it fixed.
 
 ---
 
-## §E — What `.claude/rules/index.md` may contain
+## §E — What `.claude/rules/dotnet-index.md` may contain
 
 **Admission test: does Claude need this *before* it can ask the right question?** If the answer can
-be fetched once the need is recognised, it belongs downstream and `index.md` carries only the pointer.
+be fetched once the need is recognised, it belongs downstream and `dotnet-index.md` carries only the
+pointer.
 
-**`index.md` is a pure skill router.** It names **no MCP tool at all**. A tool name appearing in it
-is the finding, not a detail to correct.
+**`dotnet-index.md` is a pure skill router.** It names **no MCP tool at all**. A tool name appearing
+in it is the finding, not a detail to correct.
 
 **Admitted** — each because nothing in context would otherwise reveal it:
 
@@ -221,15 +222,15 @@ route to them are themselves always loaded* (§F):
 
 ## §F — What is always in context, and what that forces into the router
 
-The loading model is the reason `index.md` exists in its current shape. Making it explicit here means
-§E's admission test has a mechanism behind it rather than taste.
+The loading model is the reason `dotnet-index.md` exists in its current shape. Making it explicit
+here means §E's admission test has a mechanism behind it rather than taste.
 
 | Always in context | Only after a fetch | What that forces |
 | --- | --- | --- |
 | Agent `description` frontmatter, every agent | Agent body / prompt | Agent **selection is description-driven**. The router needs only the *mandate* — delegate the sweep, never review C# inline — never a summary of what the agent does. A summary here is pure duplication paid every session. |
 | Skill `description` frontmatter, every skill | `SKILL.md` body and its reference files | Same: **triggers only**. Re-explaining what a skill carries is duplication charged to every session and every subagent. |
-| MCP tool **names** | Tool **descriptions** and full schemas | Tool **usage cannot be description-driven**. This is the asymmetry: agents and skills advertise themselves, tools do not. So the intent→tool mapping *and* the `select:`-by-name rule have to be written down somewhere — but **not** always-loaded. A skill's description *is* always loaded, so `dotnet-read`/`dotnet-write` can be selected the same way an agent is, and the tool router rides in on their bodies. That is what lets `index.md` name no tools while the mapping still reaches every caller who needs it. |
-| `CLAUDE.md` and `.claude/rules/index.md`, in full | `standards/`, `docs/`, skill reference files | The only two files under §D's budget. |
+| MCP tool **names** | Tool **descriptions** and full schemas | Tool **usage cannot be description-driven**. This is the asymmetry: agents and skills advertise themselves, tools do not. So the intent→tool mapping *and* the `select:`-by-name rule have to be written down somewhere — but **not** always-loaded. A skill's description *is* always loaded, so `dotnet-read`/`dotnet-write` can be selected the same way an agent is, and the tool router rides in on their bodies. That is what lets `dotnet-index.md` name no tools while the mapping still reaches every caller who needs it. |
+| `CLAUDE.md` and `.claude/rules/dotnet-index.md`, in full | `standards/`, `docs/`, skill reference files | The only two files under §D's budget. |
 | — | Hook messages, shown at deny time | Never in context, but read at the exact moment a caller is blocked. A stale guard message teaches the wrong fix at the worst possible moment, which is why they rank Tier 1 in `drift.md`. |
 
 Two checks fall out of the table:
@@ -247,9 +248,9 @@ Structural checks against `claude-docs.md`. Cheap, and each has a silent failure
 
 - **Frontmatter completeness.** Every `SKILL.md` has `name` + `description`; every `agents/*.md` has
   `name` + `description`. A missing `description` means the file is never selected, with no error.
-- **`.claude/rules/` holds exactly one file with no frontmatter, and it is `index.md`.** A second
-  unfrontmattered rule is an always-loaded file nobody costed, charged to every session and every
-  subagent.
+- **`.claude/rules/` holds exactly one file with no frontmatter, and it is `dotnet-index.md`.** A
+  second unfrontmattered rule is an always-loaded file nobody costed, charged to every session and
+  every subagent.
 
   ```bash
   awk 'FNR==1 && !/^---/ {print "unfrontmattered rule: " FILENAME}' .claude/rules/*.md

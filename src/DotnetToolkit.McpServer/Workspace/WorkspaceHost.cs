@@ -258,10 +258,18 @@ public sealed class WorkspaceHost : IDisposable
     /// </summary>
     private async Task RestoreAsync(string entry)
     {
-        var dotnet = Environment.ProcessPath is { } p
-            && string.Equals(Path.GetFileNameWithoutExtension(p), "dotnet", StringComparison.OrdinalIgnoreCase)
-            ? p
-            : "dotnet";
+        // The restore has to run on the SAME SDK the workspace is registered against. On a machine with
+        // several installs they differ: MSBuildRegistration deliberately prefers a user-local SDK that
+        // `dotnet` on PATH does not resolve to, and a restore by the other install writes an assets cache
+        // the registered MSBuild cannot open -- the load then degrades or hangs rather than failing. That
+        // is why the registered host wins over both fallbacks here. ProcessPath is only the muxer when
+        // this process was launched as `dotnet <dll>`; under an apphost (xUnit v3's test runner, for one)
+        // it is the app itself, so it cannot carry this on its own.
+        var dotnet = MSBuildRegistration.HostPath
+            ?? (Environment.ProcessPath is { } p
+                && string.Equals(Path.GetFileNameWithoutExtension(p), "dotnet", StringComparison.OrdinalIgnoreCase)
+                ? p
+                : "dotnet");
         try
         {
             var psi = new ProcessStartInfo(dotnet, ["restore", entry])

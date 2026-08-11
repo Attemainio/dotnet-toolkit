@@ -49,6 +49,10 @@ namespaces[2]:
 termsWithNoHits[1]: tier
 ```
 
+Every hit says where it is and what fetching it would cost. A hit big enough that the default fetch
+is the *wrong* next call also carries a `read` column naming the include to pass instead — and
+`intent: "edit" | "logic" | "surface"` aims that recommendation at what you are about to do.
+
 ---
 
 ## Example 2 — "How does the tier rounding work?"
@@ -345,7 +349,7 @@ Installing makes the tools *available*. It does not make a fresh session *prefer
 cannot auto-load coding standards, so this step is not optional if you want either.
 
 ```
-/dotnet-toolkit-init
+/dotnet-init
 ```
 
 It shows you the exact plan and writes only after you approve, backing up anything it touches. It adds
@@ -355,7 +359,7 @@ files themselves to your `.claude/rules/`, and **never modifies your CLAUDE.md**
 Then confirm the wiring took:
 
 ```
-/dotnet-toolkit-init
+/dotnet-init
 ```
 
 Re-running it is also the verify-and-refresh path: it checks the installed state, tells you whether
@@ -371,7 +375,7 @@ your copies have fallen behind the plugin, and refreshes only what the plugin ch
   `/plugin marketplace remove dotnet-toolkit-local`, then `/plugin reload-plugins`.
 
 The MCP server and the guard hooks travel *with* the plugin — they stop the moment it unloads. If you ran
-`/dotnet-toolkit-init`, the files it wrote into your `.claude/` are yours to keep or delete; re-running
+`/dotnet-init`, the files it wrote into your `.claude/` are yours to keep or delete; re-running
 it lists exactly what a clean removal touches, as a dry run.
 
 ### If something looks wrong
@@ -393,7 +397,7 @@ exist, and excluding generated code from the index. See
 **This step is what makes the plugin better, and it only works if you do it.**
 
 ```
-/dotnet-toolkit-selfeval
+/dotnet-selfeval
 ```
 
 It runs a fixed probe over every tool against *your* repo and measures each call's exact token cost. It
@@ -418,7 +422,7 @@ it before posting if your repo is private.
 | | |
 |---|---|
 | [`docs/tools/`](docs/tools/) | One page per tool: arguments, a real call and response, and what to call next. The router that picks between them lives in the `dotnet-read` and `dotnet-write` skills |
-| [`.claude/rules/index.md`](.claude/rules/index.md) | The one always-loaded rule — a pure router: which skill to invoke for reading, writing, exploring or reviewing C#, and nothing else. This is what `dotnet-toolkit-init` installs |
+| [`.claude/rules/dotnet-index.md`](.claude/rules/dotnet-index.md) | The one always-loaded rule — a pure router: which skill to invoke for reading, writing, exploring or reviewing C#, and nothing else. This is what `dotnet-init` installs |
 | [`standards/`](standards/) | The 13 coding standards the reviewer and the writer both read, plus `standards/index.md`, the shared table saying which apply when |
 | [`docs/design/`](docs/design/) | Maintainer notes: server architecture, agent design, hook rationale. Nothing reads these at runtime |
 | [`CLAUDE.md`](CLAUDE.md) | The operating contract for working on the plugin itself |
@@ -431,9 +435,9 @@ it before posting if your repo is private.
 | `dotnet-write` | Editing C# — the `validate_patch` write protocol and the pre-edit standards step |
 | `dotnet-explore` | Surveying an unfamiliar area first — briefs and launches the `dotnet-explore` agent |
 | `dotnet-review` | Any review request — partitions scope across parallel `dotnet-code-review` instances |
-| `dotnet-toolkit-init` | Install / verify / uninstall in a consuming repo |
-| `dotnet-toolkit-consistency` | Audit whether the docs still match `Tools/*.cs` |
-| `dotnet-toolkit-selfeval` | Measure the tools' token efficiency against the current repo |
+| `dotnet-init` | Install / verify / uninstall in a consuming repo |
+| `dotnet-consistency` | Audit whether the docs still match `Tools/*.cs` |
+| `dotnet-selfeval` | Measure the tools' token efficiency against the current repo |
 
 ## Development
 

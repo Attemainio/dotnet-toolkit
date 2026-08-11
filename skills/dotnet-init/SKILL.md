@@ -1,6 +1,6 @@
 ---
-name: dotnet-toolkit-init
-description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit in a project — "set up dotnet-toolkit here", "/dotnet-toolkit-init", "make Claude use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Copies the plugin's single always-loaded rule into .claude/rules/index.md — a pure router naming no tools, mandating the dotnet-read, dotnet-write, dotnet-explore and dotnet-review skills over Grep/Read/Edit for C#, each of which carries its own tool set — merges the read-only MCP tools into .claude/settings.json's permission allowlist so they don't prompt on every call, records what it installed in .claude/dotnet-toolkit/install.json, and on a re-run verifies that state and refreshes what the plugin has changed since. Checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
+name: dotnet-init
+description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit in a project — "set up dotnet-toolkit here", "/dotnet-init", "make Claude use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Copies the plugin's single always-loaded rule into .claude/rules/dotnet-index.md — a pure router naming no tools, mandating the dotnet-read, dotnet-write, dotnet-explore and dotnet-review skills over Grep/Read/Edit for C#, each of which carries its own tool set — merges the read-only MCP tools into .claude/settings.json's permission allowlist so they don't prompt on every call, records what it installed in .claude/dotnet-toolkit/install.json, and on a re-run verifies that state and refreshes what the plugin has changed since. Checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
 ---
 
 # Wiring dotnet-toolkit into a project
@@ -25,13 +25,14 @@ blocked by the guards, so `paths: ["**/*.cs"]` would almost never load. Worse, i
 such a rule fires unpredictably rather than on demand. (Earlier versions of this skill shipped
 standards as path-scoped rules for exactly this reason, and it was wrong both ways.)
 
-So: **one file is copied**, `index.md`, carrying no `paths:` and therefore always-loaded — which is
-why it is kept short. It costs tokens in every session, and is **inherited by every subagent with no
-opt-out**, so a parallel review pays it once per instance. **The coding standards are not copied at
-all**: they live at `${CLAUDE_PLUGIN_ROOT}/standards/` and are read by explicit path, so a consuming
-repo is always on the current versions and has nothing to refresh. Rules load *alongside* CLAUDE.md
-at the same priority — never tell the user they "override" anything. Actual enforcement is the
-plugin's `PreToolUse` hooks, which travel with the plugin and need no per-repo setup.
+So: **one file is copied**, `dotnet-index.md`, carrying no `paths:` and therefore always-loaded —
+which is why it is kept short. It costs tokens in every session, and is **inherited by every
+subagent with no opt-out**, so a parallel review pays it once per instance. **The coding standards
+are not copied at all**: they live at `${CLAUDE_PLUGIN_ROOT}/standards/` and are read by explicit
+path, so a consuming repo is always on the current versions and has nothing to refresh. Rules load
+*alongside* CLAUDE.md at the same priority — never tell the user they "override" anything. Actual
+enforcement is the plugin's `PreToolUse` hooks, which travel with the plugin and need no per-repo
+setup.
 
 **Do not skip the approval step under any circumstances**, even if the user's request sounded like a
 green light to "just do it." These files change how every future session in that repo behaves; show the
@@ -52,7 +53,7 @@ A re-run is always verify-first: check what is installed and whether it is curre
 anything. Never re-install blind over an existing installation.
 
 The maintainer-side counterpart — auditing whether this skill's procedure still matches what the
-plugin ships — is `dotnet-toolkit-consistency`, via `docs/install/audit.md`. Not this skill's job.
+plugin ships — is `dotnet-consistency`, via `docs/install/audit.md`. Not this skill's job.
 
 ## The two rules that hold on every path
 
@@ -78,10 +79,16 @@ install time. On any re-run, compare its `pluginVersion` against the installed p
 | same | same | untouched and current | nothing |
 | same | differs | the plugin changed it | refresh it; no need to ask per file |
 | differs | — | **the repo edited it** — that is their convention now | show the diff and ask before replacing |
+| same, but the manifest key names a path the plugin no longer ships | — | the plugin **renamed or removed** it | write the new path, then delete the old one — it is our copy, not theirs |
 
 Without the hashes a refresh can only ask about every difference, which is how a repo's own edits get
 silently reverted. This is why the manifest exists rather than a version stamp inside each file: the
 copies are byte-identical to the plugin's originals, and that is what makes the comparison meaningful.
+
+That last row is not hypothetical: `.claude/rules/index.md` became `.claude/rules/dotnet-index.md`,
+so every repo installed before the rename has a manifest key pointing at a file the plugin no longer
+writes. Treating it as "untouched and current" is what leaves two always-loaded rules in the repo —
+the failure this row exists to prevent. `docs/install/install.md` carries the removal procedure.
 
 ## Where the target repo is
 

@@ -71,8 +71,23 @@ Answers to:
 gets only a shallow floor share of `limit`, so **always read `termsWithNoHits`** — a term the result
 never covered is named there, and an absent term is never evidence of an absent symbol.
 
+**`query` matches identifier text, not structure.** `query: "class"`, `"partial class"` or `"nested"`
+searches for a symbol literally named that — it is never how you ask "list every class" or "list every
+partial/nested type", and returns nothing when this repo has no symbol named `class`. "Is a class" is
+the `kinds` filter; "is partial/static/public/…" is `modifiers`; "is nested" has no filter at all — read
+it off `shape`'s `N` count. If you don't yet know a real identifier or domain noun to search for, `Read`
+this project's `README.md` (or `CLAUDE.md` if there is no `README.md`) before the first `search_index`
+call — both are plain Markdown, not `.cs`, so this skill's tools don't apply to them.
+
 A hit's `line`/`endLine` mark the **signature line only** and exclude a leading `///` doc comment.
 They are a navigation aid, never an edit span.
+
+**Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
+costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
+include to pass instead: `mem`, `out`, `code` or `all`, legend stated once per response. Absent means
+the default fetch is already right, which is why the column costs nothing on an ordinary result.
+Pass **`intent: "edit" | "logic" | "surface"`** to aim it at what you are about to do; your intent is
+a fact the hit's shape cannot contain, and stating it beats re-deriving it per row.
 
 Manual: `<pluginRoot>/docs/tools/search_index.md`
 
@@ -98,6 +113,12 @@ of the file's tokens, plus `declarationSites` (file + `startLine`/`endLine`, *in
 `include` picks the components and replaces the default set: `members` for a type's surface,
 `source:code` to read source without doc comments, `source:code@120-160` for one region of a long
 member, `bodyOutline` to map a member before slicing it, `all` when about to edit.
+
+**An unsliced `source` on a 500+ line declaration is warned about once** rather than served: the
+response carries `members`/`bodyOutline` and a `guard` block naming the size and the cheaper route.
+**Repeating the call verbatim gets the source** — that is the whole override, and taking it is a
+correct decision when you genuinely want the whole thing. Do not work around it by fetching the
+symbol in pieces you did not want; either follow the advice or repeat the call.
 
 Manual: `<pluginRoot>/docs/tools/get_symbol.md`
 
@@ -263,6 +284,7 @@ committed before the note that prevents it was ever read.
 |---|---|
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
+| `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
 | Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |
 | `get_call_hierarchy` for a plain one-hop caller list on a low-fan-in symbol | `get_references` — below ~a dozen callers it wins, because the `{file, line, snippet}` sites come free |
 | `get_references` for an open-ended multi-level tree on a high-fan-in symbol | `get_call_hierarchy(maxDepth: 1)` — at 105 callers it measured ~1/8 the tokens |
@@ -298,6 +320,20 @@ large git operation, call `reload_workspace`.
 
 Responses are **TOON** by default — the same field names as the JSON documented in each tool manual,
 more compact. `set_output_format(format: "compact"|"json")` switches for the session.
+
+**Switch formats the moment TOON is costing you accuracy.** TOON is the default because it is the
+cheapest encoding of the identical data, not because reading it is a requirement — every field name
+is the one the manual documents either way. A response you parse tentatively is the expensive
+outcome, because the next call is built on a field you guessed at:
+
+| Symptom | Call | Why this and not a retry |
+|---|---|---|
+| The response's structure is not unambiguous to you — nesting, array headers, or where one row ends | `set_output_format(format: "compact")` | Compact JSON is explicit about structure and still drops whitespace, so it costs far less than full `json`. One call, holds for the session |
+| Compact JSON is still hard to follow | `set_output_format(format: "json")` | Full indentation. The most expensive format, and worth it against guessing |
+| The shape is clear but a field's meaning is not | `Read` the tool's manual at `<pluginRoot>/docs/tools/<tool>.md` | A format switch cannot answer a semantics question — the same field comes back under the same name |
+
+Re-issuing an identical call in the same format returns identical bytes. If a response disappointed
+you, change the question, the arguments, or the format — never repeat it unchanged.
 
 **Absent is not zero.** An absent field carries no information: an absent `tests` means "not
 computed", not "no tests". A `null` is dropped rather than written as `"field":null`, so check for the

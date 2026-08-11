@@ -178,7 +178,7 @@ All fourteen resolved on `last-verified`.
 - `~/.claude/settings.json` (user) → `.claude/settings.json` (project) → `.claude/settings.local.json`
   (local); managed policy outranks all. Arrays merge and de-duplicate across scopes.
 - `permissions` and `hooks` reload live; `model` and `outputStyle` are read once at startup.
-- Relevant to us because `dotnet-toolkit-init` merges the read-only MCP tools into the project
+- Relevant to us because `dotnet-init` merges the read-only MCP tools into the project
   allowlist — merge semantics mean it must not clobber, only add.
 
 ### Prompt caching

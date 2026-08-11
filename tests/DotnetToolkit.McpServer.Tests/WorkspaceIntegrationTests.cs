@@ -34,10 +34,14 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     private KnowledgeStore _store = null!;
     private string _workDir = "";
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
-        if (!Microsoft.Build.Locator.MSBuildLocator.IsRegistered)
-            Microsoft.Build.Locator.MSBuildLocator.RegisterDefaults();
+        // The product's own registration, not MSBuildLocator.RegisterDefaults(): Register() pools the
+        // user-local SDK into the candidates, and RegisterDefaults() cannot see one at all when the runner
+        // was launched from a system-wide host. Using it here loaded the fixture's projects on a different
+        // SDK than the server uses, which is not the configuration under test. Register() no-ops when
+        // something is already registered, so the IsRegistered guard moved inside it.
+        MSBuildRegistration.Register();
 
         // Pinned so every JsonDocument.Parse assertion in this class reads plain JSON regardless of
         // Formats.Current's process-wide default (toon) — this fixture is constructed directly, not
@@ -58,7 +62,8 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         Workspace.StartLoading();
 
         var solution = await Workspace.GetSolutionAsync(TimeSpan.FromMinutes(3));
-        Assert.NotNull(solution);
+        Assert.True(solution is not null,
+                $"workspace did not load ({Workspace.State}): {string.Join("; ", Workspace.LoadDiagnostics)}");
 
         _store = new KnowledgeStore(Locator, NullLogger<KnowledgeStore>.Instance);
         Symbols = new SymbolStore(_store);
@@ -71,12 +76,12 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         CallSlice = new CallSlice(Symbols);
     }
 
-    public Task DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         Workspace.Dispose();
         SqliteConnection.ClearAllPools();
         try { Directory.Delete(_workDir, recursive: true); } catch { /* best-effort cleanup */ }
-        return Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     private static void CopyDirectory(string source, string dest)
@@ -924,6 +929,46 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal(2, sites.GetArrayLength());
     }
 
+    /// <summary>
+    /// Listing both parts under declarationSites is not the same as serving both under source, and until
+    /// contract 3.63 it was not: the response named two files and returned one part's text. Every part
+    /// must come back, each run tagged with the file it is in — a bare line number cannot identify a
+    /// place once both parts have their own line 5.
+    /// </summary>
+    /// <remarks>
+    /// The test above passed throughout that bug, which is why this one asserts on the source array
+    /// rather than on the site count: the two fields disagreeing was the defect, so only a check that
+    /// reads them together can see it.
+    /// </remarks>
+    [Fact]
+    public async Task GetSymbol_PartialClass_SourceCarriesEveryPartTaggedByFile()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", "source:full")).GetProperty("content");
+        var runs = content.GetProperty("source").EnumerateArray().ToList();
+
+        var spans = runs.Select(r => r.GetProperty("lines").GetString()!).ToList();
+        Assert.Contains(spans, s => s.Contains("Gadget.cs:", StringComparison.Ordinal));
+        Assert.Contains(spans, s => s.Contains("Gadget.Extra.cs:", StringComparison.Ordinal));
+
+        var text = string.Join("\n", runs.SelectMany(r =>
+            r.GetProperty("text").EnumerateArray().Select(t => t.GetString())));
+        Assert.Contains("Left()", text, StringComparison.Ordinal);
+        Assert.Contains("Right()", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Compact is imposed on a multi-file partial even against an explicit -exact, since the per-line
+    /// gutter has nowhere to put the file. sourceLineFormat is what tells the caller its request lost.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_PartialClass_ForcesSpansOverAnExplicitExact()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", "source:full-exact")).GetProperty("content");
+
+        Assert.Equal("compact", content.GetProperty("sourceLineFormat").GetString());
+        Assert.All(content.GetProperty("source").EnumerateArray(), r => Assert.True(r.TryGetProperty("lines", out _)));
+    }
+
         /// <summary>
         /// Widget.Spin has a /// doc comment on the line directly above its signature. declarationSites and
         /// source must both start AT the comment, not at the signature — otherwise a validate_patch edit
@@ -1241,10 +1286,15 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>Disjoint ranges are separated by ';', since ',' already separates include's components.</summary>
+    /// <remarks>
+    /// Forces -exact because the assertion reads per-line numbers, and this test is about the ';' grammar
+    /// rather than about which rendering Automatic picks -- on a selection this small the compact spans
+    /// are genuinely shorter, so leaving it to Automatic would couple the grammar to that arbitration.
+    /// </remarks>
     [Fact]
     public async Task GetSymbol_SeveralLineRanges_AreSemicolonSeparated()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@6;9-10")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-exact@6;9-10")).GetProperty("content");
 
         Assert.Equal(new[] { 6, 9, 10 }, SourceLineNumbers(content));
     }

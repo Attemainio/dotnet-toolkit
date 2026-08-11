@@ -3,11 +3,15 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
+    <!-- xUnit v3 test projects are self-executing: the runner is compiled into the assembly rather than
+         loaded by an external host, so this has to be an executable even though nothing launches it
+         directly. dotnet test still drives it through VSTest via xunit.runner.visualstudio. -->
+    <OutputType>Exe</OutputType>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 

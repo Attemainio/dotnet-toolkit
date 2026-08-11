@@ -26,7 +26,7 @@ public sealed class SemanticDiffTests : IAsyncLifetime
         }
         """;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         _root = Path.Combine(Path.GetTempPath(), "dt-git-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_root);
@@ -43,10 +43,10 @@ public sealed class SemanticDiffTests : IAsyncLifetime
         _diff = new SemanticDiff(_git);
     }
 
-    public Task DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
-        return Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     private async Task Commit(string content, string message)

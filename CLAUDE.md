@@ -15,9 +15,9 @@ back to shell.
 
 ## Non-negotiable workflow
 
-**`.claude/rules/index.md` is a router and nothing else**: it names no tools, and maps an intent
-(read C#, write C#, explore, review) to the skill that owns it. It is always-loaded alongside this
-file, and is the same rule `dotnet-toolkit-init` copies into consuming repos.
+**`.claude/rules/dotnet-index.md` is a router and nothing else**: it names no tools, and maps an
+intent (read C#, write C#, explore, review) to the skill that owns it. It is always-loaded alongside
+this file, and is the same rule `dotnet-init` copies into consuming repos.
 
 The protocol itself lives one level down, loaded only when the work needs it:
 
@@ -60,20 +60,20 @@ degrades the server's workspace — symptoms and repair in `docs/design/architec
 
 ## Where to read what
 
-Everything a *consumer* needs is routed from `.claude/rules/index.md`, not from here. These rows are
-the maintainer's routes — files a consuming repo does not have.
+Everything a *consumer* needs is routed from `.claude/rules/dotnet-index.md`, not from here. These
+rows are the maintainer's routes — files a consuming repo does not have.
 
 | When | Read |
 |---|---|
 | Changing server internals, startup order, a subsystem, or packaging | `docs/design/architecture.md` |
-| Changing the always-loaded rule, or what init ships | `.claude/rules/index.md`; `skills/dotnet-toolkit-init/SKILL.md` copies it |
+| Changing the always-loaded rule, or what init ships | `.claude/rules/dotnet-index.md`; `skills/dotnet-init/SKILL.md` copies it |
 | Changing which tool answers what, or a route finding | `skills/dotnet-read/SKILL.md` (reads) or `skills/dotnet-write/SKILL.md` (writes) — **not** the always-loaded rule |
 | Changing a coding standard | `standards/<name>.md`, plus its row in `standards/index.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/design/agents.md` |
 | Why a hook is built the way it is | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`; nothing routes to this file) |
-| Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-toolkit-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-toolkit-init`) |
+| Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-init`) |
 
-**`.claude/rules/index.md` is the only always-loaded rule**, because it is the only file in
+**`.claude/rules/dotnet-index.md` is the only always-loaded rule**, because it is the only file in
 `.claude/rules/` with no frontmatter. The standards under `standards/` are read by explicit path
 only — `paths:` frontmatter would not reliably load them here (see `docs/design/architecture.md`),
 which is why they live outside `.claude/rules/` and carry none.
@@ -111,7 +111,7 @@ Claude documentation is the ground truth for **design** — how a tool gets foun
 loaded, what a rule or skill may contain — and there the code is what moves.
 
 - After changing a tool name, signature, or response contract — or a hook, script, skill, or documented
-  workflow — **invoke `dotnet-toolkit-consistency`**. It owns the authoritative list of files that
+  workflow — **invoke `dotnet-consistency`**. It owns the authoritative list of files that
   describe the surface, the checklist against official Claude guidance, and the drift sweep. Don't
   silently patch one file and move on; two copies always diverge.
 - Update every affected file in the same task as the change.
@@ -123,12 +123,12 @@ loaded, what a rule or skill may contain — and there the code is what moves.
 
 ## Context budget
 
-**This file and `.claude/rules/index.md` are the only always-loaded files**, and the only two under a
-size budget. Keep them declarations of *when* and *where*, not procedure.
+**This file and `.claude/rules/dotnet-index.md` are the only always-loaded files**, and the only two
+under a size budget. Keep them declarations of *when* and *where*, not procedure.
 
 The policy — the targets, what counts as scatter, why an overage is fixed by moving guidance behind a
 pointer rather than deleting it, and the harness facts behind all of it — is owned and enforced by
-`dotnet-toolkit-consistency` (`harness-compliance.md` §D–§F). Don't re-derive it here.
+`dotnet-consistency` (`harness-compliance.md` §D–§F). Don't re-derive it here.
 
 # Compact instructions
 

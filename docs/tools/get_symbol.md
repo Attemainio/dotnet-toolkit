@@ -44,7 +44,7 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 | Component | Returns |
 |---|---|
 | `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`exact`/`compact` work under either (`lineNumbers` is a deprecated alias for `compact`). No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
-| `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
+| `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. **One exception: a multi-file partial reports `"compact"` even under a forced `-exact`**, because that request cannot be honoured (see below) — this field is how you find out it lost. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
 | `source@lines` | Not a separate component — `@` plus line ranges appended to `source` (after any modifiers): `"source@46-76"`, `"source:code@46-76;79-83"` (`;` separates ranges, **not** `,`, which already separates component names), `"source@-50"`, `"source@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. Suppressed when `source` is also requested **and the lines actually returned carry the whole doc comment**. `source:code` exists precisely to strip the `///` block, so it never suppresses. An `@` line selection is judged on what it kept: a slice covering every line of the doc comment suppresses, one that cut any of it away serves `xmlDoc` — half a summary read as prose is not the summary. Suppressing on "is a slice" alone deleted the documentation from the response rather than deduplicating it. |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. |
@@ -80,10 +80,58 @@ wider than what `source:code` returned.
 (`[{line, text}]`) and the `@start-end` span form (`[{lines, text}]`) and keeps whichever is
 literally fewer characters. The gutter costs a few characters *per line*; a span header costs a few
 characters *per contiguous run* — so for an unmodified declaration of any real size, Compact wins
-almost every time. `-exact` forces the numbered gutter even on the rare declaration where the spans
-would be shorter; `-compact` forces the spans even when the gutter would be shorter (`-lineNumbers`
-is a deprecated alias for `-compact`). The two force-modifiers contradict each other —
-`-exact-compact` together is an `invalid_component`.
+almost every time.
+
+Under `toon`, the gutter renders as **`120│ text`, with the numbers right-aligned to the widest one
+in the block**:
+
+```
+  98│     public int Bar()
+  99│     {
+ 100│         return 1;
+```
+
+The code therefore starts at the same column on every row, so the boundary between the number and
+the source it labels is never something to re-find per line — which is where a line number gets read
+as part of the code. The padding is real and is charged to `Automatic`'s comparison, so a block
+spanning a digit boundary is measured at what it actually costs rather than at its narrowest row.
+`json`/`compact` keep the structured `[{line, text}]` array and have no gutter to align.
+
+`-exact` forces the numbered gutter even on the rare declaration where the spans would be shorter;
+`-compact` forces the spans even when the gutter would be shorter (`-lineNumbers` is a deprecated
+alias for `-compact`). The two force-modifiers contradict each other — `-exact-compact` together is
+an `invalid_component`.
+
+### A partial declared across several files
+
+`source` returns **every part**, in the same order `declarationSites` lists them — that is what the
+promise of "the whole symbol, where `Read` gives one fragment" means for a partial. Through contract
+3.62 it returned only the first part while `declarationSites` named them all, so the response
+contradicted itself; if you are reading an older transcript, that is what you are seeing.
+
+Each run is then prefixed with its file, because a bare line number stops identifying a place once
+every part has its own line 100:
+
+```
+@src/Store/SymbolStore.cs:5-698
+…
+@src/Store/SymbolStore.Update.cs:5-313
+…
+```
+
+Two consequences worth knowing:
+
+- **The span form is imposed**, even against `-exact`. A per-line gutter carries a number and nothing
+  else, so it has nowhere to put the file, and an `-exact` rendering here would interleave two files'
+  line numbers with no way to tell them apart. `sourceLineFormat` reports `"compact"` so the override
+  is visible rather than silent.
+- **`sourceLines` is omitted** on a sliced fetch of a multi-file partial. Its `kept/whole` denominator
+  is one file's span and there is no single one; `declarationSites` already carries every part's, and
+  each run's `@file:start-end` header says which file its lines came from.
+
+An `@` selection still applies by absolute line number across every part, so a range matching lines in
+two files returns both — labelled, not merged. That is usually not what you wanted: fetch the member
+you actually care about instead, which is a single-file declaration and slices normally.
 
 Force `-exact` for anything you are about to build a `validate_patch` span from. Compact's line
 number is the *start* of each run, not one per line — a line further into a run has to be counted
@@ -112,6 +160,32 @@ straight into another `validate_patch` call — it does not need a `get_symbol` 
 refetch is warranted only for *content* you didn't hold in the first place (a different `include`), for
 a symbol this session hasn't touched, or after `workspace_status`/a tool response reports the file
 `stale`.
+
+## The large-source guard
+
+An unsliced `source` request on a declaration of **500 lines or more** is answered once with advice
+instead of the source. The response is an ordinary one — same `symbolId`, `contentVersion`,
+`limitedBy`, `declarationSites` — carrying `members` (on a type) or `bodyOutline` (on anything else)
+in place of what was asked for, plus a `guard` block:
+
+```
+guard:
+  reason: large_source
+  declaredLines: 2342
+  advice: source would return about 2342 lines, so members is served instead. For one region,
+          slice with source:code@start-end off declarationSites. Repeat this call unchanged to
+          get the source anyway.
+```
+
+**Repeating the call verbatim gets the source.** That is the whole override: no new argument, no
+flag to have known about beforehand. Consent is re-sending, because a guard with no way through
+would make the genuine case — the whole 2000-line type really is wanted — cost more in region-by-
+region fetches than the guard ever saved. The acknowledgement is keyed on the symbol *and* the
+`include`, holds for 15 minutes, and refreshes each time you use it, so a task that reads the same
+large symbol repeatedly is asked once.
+
+It does not fire on a sliced fetch (`source@120-160`), since the slice already bounds the response,
+and it does not fire on `members`, `bodyOutline` or any other component — only on `source`.
 
 ## Several symbols in one call
 

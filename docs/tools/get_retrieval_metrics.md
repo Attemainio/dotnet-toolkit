@@ -49,7 +49,7 @@ collision, and every token number in that run is suspect until it is explained.
 Five tools record nothing and never appear in these numbers: `ping`, `workspace_status`,
 `set_output_format` and `reload_workspace` are constant-cost control calls, and `get_retrieval_metrics`
 is excluded deliberately — a metrics tool that recorded its own calls would perturb every delta it is
-used to compute. `skills/dotnet-toolkit-selfeval/SKILL.md` builds its whole probe matrix on this recipe.
+used to compute. `skills/dotnet-selfeval/SKILL.md` builds its whole probe matrix on this recipe.
 
 Real call and response (trimmed):
 

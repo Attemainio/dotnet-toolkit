@@ -42,19 +42,19 @@ Seven parallel instances each filled to ~160k tokens, starting at ~43k before re
 code, because every instance re-pays an identical fixed cost. Three properties of the agent file exist
 to hold that down, and changing them without understanding the trade re-inflates it:
 
-- **The inherited floor.** `CLAUDE.md` and `.claude/rules/index.md` are injected into every subagent
-  with no opt-out, so ~13 KB of Tier-0 text is part of each instance's fixed cost before it reads
-  anything. Trimming those two files is the only lever on it; the agent file cannot decline them, and
-  an instruction telling an agent not to read them saves a round trip, not a byte.
+- **The inherited floor.** `CLAUDE.md` and `.claude/rules/dotnet-index.md` are injected into every
+  subagent with no opt-out, so ~13 KB of Tier-0 text is part of each instance's fixed cost before it
+  reads anything. Trimming those two files is the only lever on it; the agent file cannot decline
+  them, and an instruction telling an agent not to read them saves a round trip, not a byte.
 - **Tiered standards loading.** Six core files always; the other seven only when the standards
   table's "When" column (in `standards/index.md`) matches the retrieved code (~19k → ~7.8k). The
   cost is that an aspect can go unexamined, so the agent must end every report with a `Standards:`
   line naming what it loaded and skipped, and an untriggered aspect is reported **not-assessed**,
   never clean.
 - **No `skills:` grant.** There is no read-protocol skill to grant: `dotnet-code-query` held one, but
-  every part of it was a second copy of `index.md`'s router or a `docs/tools/` manual, so it was
-  deleted rather than shrunk again. The retrieval guidance the agent needs is inline in the agent
-  file; routing is the always-loaded rule's job, and per-tool mechanics are one `Read` away.
+  every part of it was a second copy of `dotnet-index.md`'s router or a `docs/tools/` manual, so it
+  was deleted rather than shrunk again. The retrieval guidance the agent needs is inline in the
+  agent file; routing is the always-loaded rule's job, and per-tool mechanics are one `Read` away.
 - **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
   declaration-layer → body-layer → references per symbol.
 

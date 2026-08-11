@@ -32,6 +32,22 @@ Rules for the table:
 - **Reading is a prerequisite for writing, not a substitute.** A task that edits C# invokes
   `dotnet-write`; that skill routes back to `dotnet-read` for the fetches it needs.
 
+## If you cannot read a response
+
+Tool responses are **TOON** by default: the same field names JSON would carry, with far fewer
+delimiters. That compression is a large part of why these tools cost less than the file reads they
+replace, which is why it is the default and not an option. But it is a rarer format than JSON, so
+reading it confidently is a real capability boundary — and a half-read response is worse than a
+slower one read correctly, because a misread field becomes a wrong edit rather than a wasted call.
+
+- **Never guess at a response you cannot parse.** If the structure is not unambiguous to you,
+  `dotnet-read` names the one call that switches the session to compact JSON or plain JSON. It holds
+  for the rest of the session, and taking it is a correct decision, not a fallback to apologise for.
+- **If the shape is clear but a field's meaning is not**, the fix is that tool's manual, not another
+  call with different arguments. `dotnet-read` names those paths too.
+- **Re-issuing an identical call returns identical bytes.** If a response disappointed you, change
+  the question or the tool — repeating it only spends the tokens twice.
+
 ## Everything the plugin doesn't cover
 
 Shell and plain file tools, unchanged: `dotnet build` / `dotnet test` / `dotnet publish`, `git`, and

@@ -4,10 +4,10 @@
 > explicitly forbidden from opening it. It documents how the server is built, not how to use it.
 
 How `DotnetToolkit.McpServer` is put together, and the packaging that turns it into a Claude Code
-plugin. **Read this when a change touches server internals** — startup order, the two knowledge tiers,
-a subsystem you haven't worked in, or how the plugin is delivered. Ordinary tool *usage* needs none of
-it: `.claude/rules/index.md` routes to the skill that owns it (`dotnet-read`/`dotnet-write`), and
-`docs/tools/<tool>.md` has the per-tool manual.
+plugin. **Read this when a change touches server internals** — startup order, the two knowledge
+tiers, a subsystem you haven't worked in, or how the plugin is delivered. Ordinary tool *usage*
+needs none of it: `.claude/rules/dotnet-index.md` routes to the skill that owns it
+(`dotnet-read`/`dotnet-write`), and `docs/tools/<tool>.md` has the per-tool manual.
 
 This file is human- and maintainer-facing and is read on demand, so it is deliberately fuller than
 `CLAUDE.md`, which carries only the always-applicable rules and points here.
@@ -112,9 +112,12 @@ bump is what you actually needed.
 - `Output/` — how a response is rendered, never what it contains: `Formats.cs` (the `toon`/`compact`/
   `json` switch and the raw-block splicing TOON needs for source text), `CompactFormatter.cs`,
   `OutlineRenderer.cs`, `SymbolGrouping.cs` (search_index's namespace/file nesting and its collapse
-  rules), `ShapeFacts.cs` (the counted facts one symbol's column is built from) and `SymbolShape.cs`
+  rules), `ShapeFacts.cs` (the counted facts one symbol's column is built from), `SymbolShape.cs`
   (the `P…M…N…L…O…D…C…A…` column on a search hit or a `get_symbol` member row, plus the legend text
-  stated once per envelope). The renderer is deliberately kind-blind and ungated: every non-zero count
+  stated once per envelope) and `ReadAdvice.cs` (the `read` column — the same facts turned into the
+  include to pass next, plus the `intent` override; deliberately redundant with `SymbolShape`, since a
+  derivation a reader does not perform is not information). The renderer is deliberately kind-blind
+  and ungated: every non-zero count
   it is handed is emitted, and **which counts exist is decided where they are gathered** —
   `ProjectIndex.DocSite` for a search hit, `ContextTools.MemberSiteOf` for a member row. A count left
   null is one that kind of declaration cannot have, which is what keeps `M` off a method and `P` off a
@@ -144,6 +147,11 @@ bump is what you actually needed.
   | `RenameTools.cs` | `rename_symbol` |
   | `MetricsTools.cs` | `get_retrieval_metrics` |
   | `ServerTools.cs` | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` |
+
+  `ResponseGuard.cs` is **not** a tool group either: it is `get_symbol`'s one-shot large-source check
+  plus the process-wide table of which (symbol, include) requests have already been warned about, so an
+  identical repeat is served in full. It lives here rather than in `Output/` because it decides *what*
+  a response contains, not how it renders.
 
   `ToolTelemetry.cs` is **not** a tool group: it is the single place a response becomes a
   `RetrievalEvent`, plus the shared `[Description]` text for the optional `taskId`. The five tools
@@ -178,7 +186,7 @@ Two consequences that are easy to miss:
   a session. Growing a description past it is a signal to move detail into `docs/tools/<tool>.md`,
   which the description then points at — not to raise the constant.
 
-Then run the `dotnet-toolkit-consistency` skill, which owns the authoritative list of files describing
+Then run the `dotnet-consistency` skill, which owns the authoritative list of files describing
 the tool surface and checks each against `Tools/*.cs`.
 
 ## Packaging
@@ -205,10 +213,11 @@ fires often, the manual is read once.
 
 ### How rules load
 
-**`.claude/rules/` holds exactly one file: `index.md`.** It is the only always-loaded rule, because a
-rule with no `paths:` frontmatter loads unconditionally, and it is deliberately short for that reason.
-Both it and `CLAUDE.md` are inherited by every subagent — the harness offers no opt-out, and only the
-built-in Explore and Plan agents skip them — so a seven-way parallel review pays them eight times.
+**`.claude/rules/` holds exactly one file: `dotnet-index.md`.** It is the only always-loaded rule,
+because a rule with no `paths:` frontmatter loads unconditionally, and it is deliberately short for
+that reason. Both it and `CLAUDE.md` are inherited by every subagent — the harness offers no
+opt-out, and only the built-in Explore and Plan agents skip them — so a seven-way parallel review
+pays them eight times.
 
 **Why the coding standards are not rules.** A path-scoped rule fires only when the built-in `Read`
 tool touches a matching file, and here `.cs` contact goes through the MCP tools or is blocked by the
@@ -250,6 +259,21 @@ The failure this prevents: if the SDK that *built* the projects differs from the
 with, `obj/project.assets.json` was written for the wrong MSBuild and the workspace load fails with
 `The "ResolvePackageAssets" task failed`. `workspace_status` then reports DEGRADED and semantic results
 go silently **incomplete rather than erroring** — the dangerous part, since answers still come back.
+
+`Register()` therefore also publishes `MSBuildRegistration.HostPath`: the `dotnet` executable belonging
+to the install it registered, derived from the SDK directory (`<root>/sdk/<version>` → `<root>/dotnet`).
+`WorkspaceHost.RestoreAsync` shells out to *that* host rather than resolving `dotnet` on `PATH`, because
+the whole point of the discovery above is to prefer an install `PATH` does not point at — so a restore
+left to `PATH` writes the very assets cache the registered MSBuild then cannot open, causing this
+subsystem to inflict the exact failure it exists to prevent.
+
+`Environment.ProcessPath` cannot carry that on its own: it is the `dotnet` muxer only when the process
+was launched as `dotnet <app>.dll`, which is how `.mcp.json` starts the server but *not* how an apphost
+starts. The integration-test fixture is the case that found this — xUnit v3 runs the test assembly as
+its own executable, so `ProcessPath` was the test app, the restore fell back to `PATH`, and the fixture
+hung for its full three-minute load timeout with no diagnostics. For the same reason the fixture calls
+`MSBuildRegistration.Register()` rather than `MSBuildLocator.RegisterDefaults()`: the tests must load
+projects on the SDK the server would pick, or they are not exercising the shipped configuration.
 
 Check `dotnet --list-sdks` against the `MSBuild:` startup line. If they differ, build with the SDK the
 server picked, or repair with a `restore` from that SDK followed by `reload_workspace`.
