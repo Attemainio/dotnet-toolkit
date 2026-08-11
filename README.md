@@ -267,6 +267,7 @@ You talk to Claude normally; the skills route the work. What changes is undernea
 | "Give me plain JSON, not TOON" | — | **`set_output_format`** — `toon` (default), `compact`, or `json` for the session |
 | "Is the server even running?" | Guess, or restart | **`ping`** — liveness check |
 | "Is the index/workspace ready?" | Guess, or restart | **`workspace_status`**, then **`reload_workspace`** after a large git operation |
+| "Let me measure this against plain grep" | Uninstall the plugin | **`set_hook_guards`** — guards off for a bounded window, and they re-arm themselves |
 | "Where would this feature land?" | Open files until a pattern emerges | **`dotnet-explore`** — symbols, use sites and blast radius, read-only |
 | "Review this subsystem" | Review inline, in a context full of other work | **`dotnet-code-review`** — fresh context, shared standards |
 

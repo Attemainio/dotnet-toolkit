@@ -77,7 +77,42 @@ symbols and edges without waiting for the next periodic full sweep. That rebuild
 background — `reload_workspace` returns before it finishes; check `workspace_status` if you need to
 confirm it's done.
 
+# `set_hook_guards` — suspend the C# guards, briefly
+
+| Arg | Meaning |
+|---|---|
+| `state` | `suspend` \| `restore`. |
+| `minutes` | How long to suspend for. Default 30, capped at 240. Ignored when restoring. |
+
+The `PreToolUse` guards block `Read`, `Edit`/`Write` and shell reads (`cat`/`grep`/`sed`/…) on a
+compiled `.cs` file. This turns them off for a bounded window.
+
+**It is not the way past a guard that is in your way.** A guard's denial names the skill covering what
+you were trying to do, and that route is both cheaper and recorded; suspending the guards to do the
+same work by hand trades a better tool for a worse one. The legitimate uses are the ones where the
+unguarded path *is* the subject: measuring these tools against `grep`/`Read`, or reproducing what a
+repo without the plugin does.
+
+What a suspension actually costs, and why it is worth stating before taking one: an edit made through
+raw `Edit`/`Write` reaches disk **without compiling**, without a dependent-compile check against its
+callers, and **without a development-log entry** — so `search_log` cannot recover why it was made once
+the session ends.
+
+A suspension is stored as an **expiry, not a flag**. The state file under
+`.claude/dotnet-toolkit/cache/` names the instant the guards resume, any read past that instant deletes
+it, and the cap bounds what can be asked for — so there is no way to disable the guards indefinitely
+from here, and nothing has to remember to undo it. While one is in force, `workspace_status` prints a
+`hookGuards: SUSPENDED` line with the time remaining; that line is absent when the guards are active,
+so it costs nothing in the normal case and is impossible to miss in the abnormal one.
+
+`DOTNET_TOOLKIT_DISABLE_HOOKS` is the separate, non-expiring escape hatch, for a harness that owns the
+whole process lifetime (CI, a benchmark runner) where "until this process exits" is already a bound.
+`restore` cannot clear it — it lives in the server's own environment — and says so rather than
+reporting a restore it did not perform.
+
 ## Next steps
 
 - **`workspace_status` says `index_only` or `stale`** → `reload_workspace`, then re-fetch.
 - **`degraded`** → fix the build first; results may be silently wrong, not just thin.
+- **`hookGuards: SUSPENDED` and you did not ask for it** → `set_hook_guards(state: "restore")`; an
+  earlier session in this repo left one running, and until it lapses your `.cs` edits are unrecorded.

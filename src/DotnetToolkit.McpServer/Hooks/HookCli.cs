@@ -75,6 +75,16 @@ internal static class HookCli
         }
 
         var context = HookContext.FromEnvironment();
+
+        // Only the blocking guards honour a suspension, and only they pay the state read. The two hints
+        // stay on throughout: they add context rather than withholding a call, so silencing them would
+        // cost the caller information without buying back any of the freedom a suspension is asked for.
+        if (name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read"
+            && GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow).Suspended)
+        {
+            return HookOutcome.Allow;
+        }
+
         return name switch
         {
             "guard-cs-edit" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" =>

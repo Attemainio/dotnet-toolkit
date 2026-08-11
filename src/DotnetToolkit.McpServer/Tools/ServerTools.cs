@@ -51,6 +51,23 @@ public static class ServerTools
         // it here is what lets an always-loaded rule cite standards/ and docs/tools/ by bare filename.
         sb.Append("pluginRoot: ").Append(PluginLocation.Resolve(locator.Root)).Append('\n');
 
+        // Reported here rather than only from set_hook_guards, because this is the call every skill makes
+        // first. A session that inherits a suspension someone else started would otherwise look entirely
+        // normal while raw Read/Edit passed unchecked, and the edits it made would be missing from the log
+        // with nothing anywhere saying why. Absent when the guards are active, so it costs a line only when
+        // it is telling you something.
+        var guards = Hooks.GuardSuspension.Current(locator.Root, DateTimeOffset.UtcNow);
+        if (guards.Suspended)
+        {
+            sb.Append("hookGuards: SUSPENDED");
+            if (guards.Until is { } until)
+                sb.Append(" for another ").Append((int)(until - DateTimeOffset.UtcNow).TotalMinutes).Append(" min");
+            else
+                sb.Append(" by ").Append(Hooks.GuardSuspension.DisableVariable);
+            sb.Append(" - raw .cs reads and edits pass unchecked, and edits made through them are absent ")
+                .Append("from the development log\n");
+        }
+
         // Ambiguity is a decision the server refuses to make, not a missing solution. Say so with the
         // candidates and the exact fix, and make the workspace line below point back here rather than
         // reporting a bare "nosolution" that reads as "this repo has none".
