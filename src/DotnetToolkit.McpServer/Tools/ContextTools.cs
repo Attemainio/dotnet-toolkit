@@ -429,10 +429,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // what made the name ambiguous in the first place -- so repeating it per row was 29% of a
         // six-candidate payload. This is the same hoist the multi-symbol batch response already takes
         // with its shared: block, finally applied to the shape whose rows share the MOST.
-        var named = resolution.Candidates.Take(10)
+        var named = resolution.Candidates.Take(MaxAmbiguousCandidates)
             .Select(c => (Id: SymbolKey.IdOf(c), Display: SymbolResolver.CompactName(c.ToDisplayString())))
             .ToList();
         var sharedPrefix = named.Count > 1 ? SharedNamePrefix(named.Select(n => n.Display)) : "";
+            var truncated = resolution.Candidates.Count > MaxAmbiguousCandidates;
         return (null, Formats.ToJson(new
         {
             error = "ambiguous_symbol",
@@ -442,6 +443,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 symbolId = n.Id,
                 displayString = n.Display[sharedPrefix.Length..],
             }),
+                totalCandidates = resolution.Candidates.Count,
+                truncated = truncated ? true : (bool?)null,
         }));
     }
 
@@ -556,7 +559,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         SymbolStore symbolStore,
         TelemetryRecorder telemetry,
         [Description("The method, property, class, interface, field or event whose callers, references and usages you want: its fully-qualified name, a unique suffix of it, or a sym_... id from a previous response.")] string symbol,
-        [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
+        [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring, and the response's directionHint names what it probably was.")] string direction = "callers",
         [Description("Max items to return (default 50, cap 200). Lower it when a few worked examples are enough - a high-fan-in symbol's full page is the most expensive response this server produces.")] int limit = 50,
         [Description("Items to skip before limit (default 0). Pass the previous response's nextOffset to reach the references past the page you already have.")] int offset = 0,
         [Description("Include member bodies inline (default false).")] bool includeBodies = false,
@@ -601,6 +604,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 null, 0, "live", "unresolved", error!, direction);
 
         var normalized = direction.Trim().ToLowerInvariant();
+            var directionHint = normalized is "callers" or "implementations" or "overrides" ? null
+                : $"direction:'{direction}' was not recognized and defaulted to 'callers'."
+                    + (VocabularyHint.NearestToken(direction, ["callers", "implementations", "overrides"]) is { } nearestDirection
+                        ? $" Did you mean '{nearestDirection}'?" : "");
         var items = normalized switch
         {
             "implementations" => await Implementations(sym, solution, locator, includeBodies),
@@ -651,6 +658,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var envelope = new
         {
             targetSymbolId = symbol.StartsWith("sym_", StringComparison.Ordinal) ? null : SymbolKey.IdOf(sym),
+                directionHint,
             items = shown.Select(i => new
             {
                 symbolId = i.SymbolId,
@@ -692,7 +700,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "this search down to it. Each hit carries shape (what fetching it costs) and read (which include "
         + "to pass next, absent when the default fetch is already right), both legends stated once per "
         + "response. intent (edit|logic|surface) aims read at what you are about to do. "
-        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
+        + "An unrecognized value on kinds, modifiers, origin, summary, groupBy or intent is named in a "
+            + "<param>Hint response field rather than erroring. "
+            + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
         + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
@@ -700,17 +710,27 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         ProjectIndex index,
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
-        [Description("Free-text query over symbol names.")] string query,
+        [Description("Free-text query over symbol names -- matches identifier text, not structural or "
+                + "modifier keywords. query:\"interface\", \"class\", \"partial\", \"record\", \"enum\"... "
+                + "finds a symbol literally named that, almost never what you want. Use kinds for type "
+                + "shape and modifiers for keywords like partial, together with a real identifier or "
+                + "domain term here.")] string query,
         [Description("Optional kind filter, space/comma-separated: class (alias for type), interface, "
             + "struct, record, enum, delegate, method, property, field, event. Bare tokens restrict to "
             + "those kinds (OR); '-' tokens exclude instead. Mixing both forms lets the bare tokens win. "
-            + "An unrecognized value matches nothing rather than erroring. Omit to search every kind.")] string? kinds = null,
+            + "An unrecognized value matches nothing rather than erroring, and kindsHint names it when that leaves "
+                + "zero hits. Omit to search every kind. Narrows "
+                + "the ranked query hits, so query still needs a real search term -- kinds:\"interface\" "
+                + "with query:\"interface\" finds nothing unless a symbol is literally named that.")] string? kinds = null,
         [Description("Optional modifier filter, space/comma-separated: the literal C# keywords (public, "
             + "private, protected, internal, static, const, readonly, volatile, virtual, abstract, sealed, "
             + "override, async, extern, partial) plus derived tags extension, indexer, initonly, "
             + "disposable, asyncdisposable. UNLIKE kinds, bare tokens are AND-ed (a symbol has several "
             + "modifiers at once), and '-' tokens exclude and COMBINE with them: \"public -sealed\" is "
-            + "public AND NOT sealed. See docs/tools/search_index.md. Omit for no modifier filtering.")] string? modifiers = null,
+            + "public AND NOT sealed. An unrecognized token matches no symbol, and modifiersHint names it when "
+                + "that leaves zero hits. See docs/tools/search_index.md. Omit for no modifier filtering. Narrows "
+                + "the ranked query hits the same way kinds does, so query still needs a real search term -- "
+                + "modifiers:\"partial\" alone still searches query for a symbol literally named that.")] string? modifiers = null,
         [Description("Optional interface name to filter to its DIRECT implementers only. Narrows the "
             + "ranked query hits the same way pathPrefix does, so query still needs a real search term. "
             + "An unresolvable name yields an empty result rather than an error.")] string? implements = null,
@@ -726,7 +746,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "docs/tools/search_index.md. Omit to search the whole index.")] string? pathPrefix = null,
         [Description("Include XML doc <summary> info per hit without a follow-up get_symbol call. \"has\": "
             + "adds hasSummary (bool). \"full\": adds summary (text, capped at 160 chars — get_symbol's "
-            + "xmlDoc.summary for the untruncated version). An unrecognized value is treated as omitted.")] string? summary = null,
+            + "xmlDoc.summary for the untruncated version). An unrecognized value is treated as omitted, and the "
+                + "response's summaryHint names it.")] string? summary = null,
         [Description("How to group results: \"namespace\" nests namespace -> file -> symbols; "
             + "\"file\" nests file -> namespace -> symbols; \"none\" returns the flat items[] list from before "
             + "grouping existed, with file/name repeated per row and no namespace field. Omit this parameter "
@@ -737,19 +758,19 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "comparison). Whichever axis the whole result set collapses to a single value on additionally "
             + "collapses its wrapper array to a flat namespace/file header field instead of a nested array, and "
             + "a leaf's kind column is dropped whenever every hit in that leaf shares one kind. An unrecognized "
-            + "non-null value is treated as \"namespace\".")] string? groupBy = null,
+            + "non-null value is treated as \"namespace\", and the response's groupByHint names it.")] string? groupBy = null,
 
         [Description("\"source\" (default) searches only symbols this repo's own solution declares. "
             + "\"external\" searches only BCL/NuGet symbols already discovered as a call/construction/"
             + "implements target from this repo's source — not a general library browser, only what this "
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
-            + "\"source\".")] string? origin = null,
+            + "\"source\", and the response's originHint names it.")] string? origin = null,
         [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
             + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
             + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
             + "(the API shape, so a type recommends its member list and everything else the default fetch). "
             + "Omit to derive the recommendation from each hit's own shape instead. An unrecognized value is "
-            + "treated as omitted.")] string? intent = null,
+            + "treated as omitted, and the response's intentHint names it.")] string? intent = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -777,6 +798,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         limit = Math.Clamp(limit, 1, ReferenceCap);
         var originFilter = origin is "source" or "external" or "all" ? origin : "source";
+            var originHint = origin is null or "source" or "external" or "all" ? null
+                : $"origin:'{origin}' was not recognized and was treated as 'source'."
+                    + (VocabularyHint.NearestToken(origin, ["source", "external", "all"]) is { } nearestOrigin
+                        ? $" Did you mean '{nearestOrigin}'?" : "");
         var (includeKindTokens, excludeKindTokens) = ParseKindFilter(kinds);
         var includeKinds = NormalizeKinds(includeKindTokens);
         var excludeKinds = includeKindTokens.Length == 0 ? NormalizeKinds(excludeKindTokens) : null;
@@ -803,7 +828,19 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
         var summaryMode = summary is "has" or "full" ? summary : null;
+            var summaryHint = summary is null or "has" or "full" ? null
+                : $"summary:'{summary}' was not recognized and was treated as omitted."
+                    + (VocabularyHint.NearestToken(summary, ["has", "full"]) is { } nearestSummary
+                        ? $" Did you mean '{nearestSummary}'?" : "");
         var intentMode = intent is "edit" or "logic" or "surface" ? intent : null;
+            var intentHint = intent is null or "edit" or "logic" or "surface" ? null
+                : $"intent:'{intent}' was not recognized and was treated as omitted."
+                    + (VocabularyHint.NearestToken(intent, ["edit", "logic", "surface"]) is { } nearestIntent
+                        ? $" Did you mean '{nearestIntent}'?" : "");
+            var groupByHint = groupBy is null or "namespace" or "file" or "none" ? null
+                : $"groupBy:'{groupBy}' was not recognized and was treated as 'namespace'."
+                    + (VocabularyHint.NearestToken(groupBy, ["namespace", "file", "none"]) is { } nearestGroupBy
+                        ? $" Did you mean '{nearestGroupBy}'?" : "");
 
         var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
@@ -831,6 +868,42 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // from "the filters removed what the terms found" - which the caller can then tell apart by
         // seeing every term listed here versus none of them.
         var terms = SearchText.QueryTerms(query);
+
+            string[] kindVocabulary = ["class", "type", "interface", "struct", "record", "enum", "delegate", "method", "property", "field", "event"];
+            var badKindTokens = includeKindTokens.Concat(excludeKindTokens)
+                .Where(t => !kindVocabulary.Contains(t.ToLowerInvariant()))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var kindsHint = limited.Count == 0 && badKindTokens.Count > 0
+                ? "kinds:" + string.Join(", ", badKindTokens.Select(t => $"'{t}'"))
+                    + " matched no symbol kind, which is why this returned no hits."
+                    + (badKindTokens.Count == 1 && VocabularyHint.NearestToken(badKindTokens[0], kindVocabulary) is { } nearestKind
+                        ? $" Did you mean '{nearestKind}'?" : "")
+                : null;
+
+            string[] modifierVocabulary = ["public", "private", "protected", "internal", "static", "const", "readonly", "volatile", "virtual", "abstract", "sealed", "override", "async", "extern", "partial", "extension", "indexer", "initonly", "disposable", "asyncdisposable"];
+            var badModTokens = (includeMods ?? []).Concat(excludeMods ?? [])
+                .Where(t => !modifierVocabulary.Contains(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var modifiersHint = limited.Count == 0 && badModTokens.Count > 0
+                ? "modifiers:" + string.Join(", ", badModTokens.Select(t => $"'{t}'"))
+                    + " matched no symbol modifier, which is why this returned no hits."
+                    + (badModTokens.Count == 1 && VocabularyHint.NearestToken(badModTokens[0], modifierVocabulary) is { } nearestMod
+                        ? $" Did you mean '{nearestMod}'?" : "")
+                : null;
+
+            // A query built entirely from structural filter words (a kind or a modifier) that resolves to
+            // zero hits is the one failure termsWithNoHits doesn't cover -- query matches identifier text
+            // only, so "interface" or "partial class" alone searches for a symbol literally named that.
+            // Naming it here turns the resulting silent empty result into the same correction the tool's
+            // own kinds/modifiers descriptions already state, without changing what query itself matches.
+            var structuralHint = limited.Count == 0 && terms.Count > 0 && terms.All(t => StructuralQueryWords.Contains(t))
+                ? "query matched no symbol literally named " + string.Join(" or ", terms.Select(t => $"\"{t}\"")) +
+                  " -- that reads as a structural filter, not identifier text. Use kinds for type shape " +
+                  "(class/interface/struct/record/enum/delegate) or modifiers for keywords like partial, " +
+                  "together with a real identifier or domain term in query."
+                : null;
         var termsWithNoHits = terms.Count > 1
             ? terms.Where(t => !limited.Any(r => r.Hit.FqName.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList()
             : [];
@@ -861,7 +934,14 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             shape = anyShape ? SymbolShape.Legend : null,
             read = anyRead ? ReadAdvice.Legend : null,
             termsWithNoHits = termsWithNoHits.Count == 0 ? null : termsWithNoHits,
-            items = limited.Select(r => new
+            hint = structuralHint,
+                kindsHint,
+                modifiersHint,
+                originHint,
+                summaryHint,
+                groupByHint,
+                intentHint,
+                items = limited.Select(r => new
             {
                 symbolId = r.Hit.SymbolId,
                 name = SymbolResolver.CompactName(r.Hit.FqName),
@@ -905,7 +985,21 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 withLimit["limitedBy"] = searchLimitedBy;
             if (termsWithNoHits.Count > 0)
                 withLimit["termsWithNoHits"] = termsWithNoHits;
-            foreach (var (key, value) in grouped)
+            if (structuralHint is not null)
+                    withLimit["hint"] = structuralHint;
+                if (kindsHint is not null)
+                    withLimit["kindsHint"] = kindsHint;
+                if (modifiersHint is not null)
+                    withLimit["modifiersHint"] = modifiersHint;
+                if (originHint is not null)
+                    withLimit["originHint"] = originHint;
+                if (summaryHint is not null)
+                    withLimit["summaryHint"] = summaryHint;
+                if (groupByHint is not null)
+                    withLimit["groupByHint"] = groupByHint;
+                if (intentHint is not null)
+                    withLimit["intentHint"] = intentHint;
+                foreach (var (key, value) in grouped)
                 withLimit[key] = value;
             return withLimit;
         }
@@ -2108,7 +2202,20 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     }
 
     /// <summary>
-    /// Canonicalizes caller-supplied kind filters: accepts "Class" as an alias for the stored "Type",
+        /// <summary>Kind and modifier keywords that read as a structural filter, not identifier text, when
+        /// they are the entire query -- backs the corrective hint search_index returns when a query built
+        /// only from these tokens finds zero hits.</summary>
+        private static readonly HashSet<string> StructuralQueryWords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "class", "type", "interface", "struct", "record", "enum", "delegate", "method", "property",
+            "field", "event",
+            "public", "private", "protected", "internal", "static", "const", "readonly", "volatile",
+            "virtual", "abstract", "sealed", "override", "async", "extern", "partial",
+            "extension", "indexer", "initonly", "disposable", "asyncdisposable",
+        };
+
+        /// <summary>
+        /// Canonicalizes caller-supplied kind filters: accepts "Class" as an alias for the stored "Type",
     /// and normalizes casing so "method" behaves like "Method".
     /// </summary>
     private static string[]? NormalizeKinds(string[]? kinds)

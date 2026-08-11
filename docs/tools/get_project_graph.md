@@ -42,6 +42,18 @@ get_project_graph()
 A project named in `workspace_status`'s load diagnostics carries `degraded:true` on its own entry, in
 addition to the envelope-level `limitedBy:"degraded"`.
 
+### An unknown `project`
+
+A `project` that names nothing in the solution is `error: "project_not_found"`, alongside `projects` —
+every project name the graph actually knows, the same closed set `refs.Keys` already holds for the
+whole-graph response — and `didYouMean` naming the nearest one when exactly one is a close match:
+
+```json
+{"error": "project_not_found", "project": "DotnetToolkit.McpServr",
+ "projects": ["DotnetToolkit.McpServer", "DotnetToolkit.McpServer.Tests"],
+ "didYouMean": "DotnetToolkit.McpServer"}
+```
+
 ## Next steps
 
 - **Check for loops** → `detect_circular_dependencies` — `detect_circular_dependencies.md`

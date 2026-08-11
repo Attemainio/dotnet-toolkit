@@ -26,7 +26,7 @@ reference graph via Tarjan's SCC.
 
 | Arg | Meaning |
 |---|---|
-| `scope` | `project` (default, and for now the only supported value) \| `type` — returns `error:"unsupported_scope"` rather than a partial answer; type-level cycle detection would need collapsing member-level call edges up to their containing type, which this server does not do today. |
+| `scope` | `project` (default, and for now the only supported value) \| `type` — returns `error:"unsupported_scope"` rather than a partial answer; type-level cycle detection would need collapsing member-level call edges up to their containing type, which this server does not do today. Any other value is also `unsupported_scope`, but the `message` tells the two apart: `type` gets the "not yet implemented" text above, while a typo or plural of `project` (e.g. `"projects"`) gets a message naming the value that wasn't recognized, plus a `didYouMean` toward `project` — it isn't asking for a feature that doesn't exist, so it doesn't get told it is. |
 
 Reports one representative cycle per strongly-connected component found — not every distinct cycle
 within it, which can be combinatorial.

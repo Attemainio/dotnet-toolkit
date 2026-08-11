@@ -71,7 +71,7 @@ public static class PatchTools
         PatchDraftStore drafts,
         [Description("Map of symbolId -> held contentVersion the patch was built against. Required, except with draftId, whose draft carries its own -- entries sent alongside a draftId are MERGED into it, which is how unheld_symbol is resolved.")] Dictionary<string, string>? baseVersions = null,
         [Description("The edits to apply, each EITHER a line-range edit {file, lines, newText[, symbolId]} OR a symbol-scoped find/replace {symbolId, find, replace[, replaceAll]} -- never both shapes in one edit. Line spans (\"N-M\", 1-based inclusive) address the file as the workspace holds it -- or, with draftId, the draft's proposed text. find/replace resolves against the LIVE workspace only; it is rejected alongside a draftId. May be empty ONLY with draftId, which re-runs validation on the draft unchanged.")] PatchEditInput[]? edits = null,
-        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
+        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate. An unrecognized value is not honored -- ladder.requestedLevelHint in the response says so and names what it probably was.")] string? requestedLevel = null,
         [Description("Whether to run Roslyn analyzers (CA/IDE rules) once the compile rungs are clean (default true). Set false when only the compile/semantic result matters -- checks.analyzers then reports ran:false with a skipReason instead of a verdict.")] bool runAnalyzers = true,
         [Description("Commit to disk when sufficient && successful (default false).")] bool applyOnSuccess = false,
         [Description("Why, in user terms. REQUIRED when applyOnSuccess is true (<=200 chars).")] string? intent = null,
@@ -268,7 +268,8 @@ public static class PatchTools
                 && (int)computedRequired < (int)ValidationLevel.ProjectCompile)
                 computedRequired = ValidationLevel.ProjectCompile;
 
-            var required = Raise(computedRequired, requestedLevel);
+            var (required, requestedLevelRecognized) = Raise(computedRequired, requestedLevel);
+                var requestedLevelHint = RequestedLevelHint(requestedLevel, requestedLevelRecognized, required);
 
             var ladder = await ValidationLadder.RunAsync(
                 sandbox.Forked, sandbox.ChangedDocuments, required,
@@ -300,7 +301,7 @@ public static class PatchTools
                 ? null
                 : await DraftInfoAsync(drafts, sandbox, solution, heldVersions, locator, cancellationToken);
 
-            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo, workspace.IsDegraded);
+            var response = BuildResponse(locator, detected, ladder, required, isSufficient, applied, distillation, draftInfo, workspace.IsDegraded, requestedLevelHint);
             var json = Formats.Render(response);
 
             telemetry.RecordPatch(new TelemetryRecorder.PatchEvent
@@ -383,7 +384,7 @@ public static class PatchTools
         SolutionLocator locator,
         IReadOnlyList<ChangeClassifier.Change> detected, ValidationLadder.LadderResult ladder,
         ValidationLevel required, bool isSufficient, bool applied, DiagnosticDistiller.Distillation distillation,
-        object? draft, bool degraded)
+        object? draft, bool degraded, string? requestedLevelHint = null)
     {
         var (reason, nextAction) = Verdict(ladder, required, isSufficient, degraded);
         return new
@@ -407,6 +408,7 @@ public static class PatchTools
                 isSufficient,
                 reason = isSufficient ? null : reason,
                 nextAction = isSufficient ? null : nextAction,
+                    requestedLevelHint,
             },
             succeeded = ladder.Succeeded,
             applied,
@@ -476,10 +478,29 @@ public static class PatchTools
     }
 
     // internal: shared with rename_symbol so requestedLevel means the same thing on both tools.
-    internal static ValidationLevel Raise(ValidationLevel computed, string? requestedLevel)
+    internal static readonly string[] RequestedLevelTokens =
+            ["parse", "semantic_bind", "project_compile", "dependent_compile", "targeted_tests", "solution_validate"];
+
+        /// <summary>
+        /// The ladder.requestedLevelHint text for an unrecognized requestedLevel -- null once it was
+        /// recognized (including when omitted, which counts as recognized), so the field is absent on the
+        /// overwhelmingly common case. Shared by validate_patch and rename_symbol, which both call
+        /// <see cref="Raise"/>.
+        /// </summary>
+        internal static string? RequestedLevelHint(string? requestedLevel, bool recognized, ValidationLevel required)
+        {
+            if (recognized)
+                return null;
+            var nearest = VocabularyHint.NearestToken(requestedLevel, RequestedLevelTokens);
+            return $"requestedLevel:'{requestedLevel}' was not recognized and was NOT honored -- validation ran "
+                + $"at '{required.Wire()}' only."
+                + (nearest is not null ? $" Did you mean '{nearest}'?" : "");
+        }
+
+        internal static (ValidationLevel Level, bool Recognized) Raise(ValidationLevel computed, string? requestedLevel)
     {
         if (string.IsNullOrWhiteSpace(requestedLevel))
-            return computed;
+            return (computed, true);
         var requested = requestedLevel.Trim().ToLowerInvariant() switch
         {
             "parse" => ValidationLevel.Parse,
@@ -488,9 +509,11 @@ public static class PatchTools
             "dependent_compile" => ValidationLevel.DependentCompile,
             "targeted_tests" => ValidationLevel.TargetedTests,
             "solution_validate" => ValidationLevel.SolutionValidate,
-            _ => computed,
+            _ => (ValidationLevel?)null,
         };
-        return (ValidationLevel)Math.Max((int)computed, (int)requested);
+        return requested is null
+                ? (computed, false)
+                : ((ValidationLevel)Math.Max((int)computed, (int)requested), true);
     }
 
     /// <summary>Stores a fork as an amendable draft and renders the handle the caller sends back.</summary>

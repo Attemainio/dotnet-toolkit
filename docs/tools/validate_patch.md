@@ -11,7 +11,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 |---|---|
 | `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. A **body**-changing edit additionally needs a version that carries the `body` layer, which only an include serving `source`/`bodyOutline`/`mechanicalFacts` hands out; the declaration-only token from a default fetch is `error: "unleased_body"`. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
 | `edits` | Each entry is **either** a line-range edit `{file, lines, newText[, symbolId]}` **or** a symbol-scoped find/replace `{symbolId, find, replace[, replaceAll]}` — never both shapes on one entry. `lines` is `"N-M"` (or a bare `"N"`), 1-based inclusive, straight from `get_symbol`'s `declarationSites`. With `draftId`, line-range spans address the **draft's** proposed text instead, and the array may be empty. See "Two edit shapes" below. |
-| `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. |
+| `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. An unrecognized value is silently **not** honored — the ladder still runs at the mechanically computed level, but `ladder.requestedLevelHint` says so and names what it probably was, so an explicit escalation typo doesn't read as a successful one. |
 | `runAnalyzers` | Whether to run the analyzer pass once the compile rungs are clean (default `true`). Set `false` when only compile/semantic correctness matters — `checks.analyzers` then reports `{"ran": false, "skipReason": "the caller disabled the analyzer pass"}` instead of a verdict, and `notAssessed` states the consequence. Saves the pass's own cost (typically hundreds of ms over the analyzer set); does not change which compile levels run. |
 | `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). Safe to send `true` from the start — nothing is written unless both hold. |
 | `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why*, in user terms — applying with one is what writes to the development log (this tool and `rename_symbol` are its only writers). |
@@ -76,6 +76,11 @@ means all of: `isSufficient: true`, `succeeded: true`, `applied: true` (or a del
 apply). `succeeded: true` with `isSufficient: false` is a **partial** green — the code compiles only up
 to `completedLevel`, and `nextAction` says what to do next (usually resubmit with `requestedLevel`
 raised). Never report a partial as done.
+
+`ladder.requestedLevelHint` is present only when `requestedLevel` was supplied and not one of the six
+valid tokens — a missing underscore (`"solutionvalidate"`) or a bare typo. The ladder still ran at the
+mechanically computed level, exactly as if `requestedLevel` had been omitted; the hint exists so that
+outcome doesn't get misread as the escalation having worked.
 
 `detectedChanges` and, on failure, `diagnostics.rootCauses` are both plain arrays of objects. Each root
 cause is pre-distilled — one entry per root cause, not one per compiler error — carrying

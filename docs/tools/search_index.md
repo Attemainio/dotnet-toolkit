@@ -29,7 +29,8 @@ deep, so a term the result never covered is named back explicitly:
 **Never read an absent term as an absent symbol.** Raise `limit` (cap 200) or re-ask the starved
 term alone. Emitted for any multi-term query, including one that returned nothing at all — that's
 the response with no other evidence, so it's the one that most needs the terms named. A
-single-term query is skipped; its empty `items` already says the same thing.
+single-term query is skipped; its empty `items` already says the same thing — except when that one
+term is itself a kind/modifier keyword, which `hint` covers instead (below).
 
 ### Hit shape
 
@@ -132,7 +133,8 @@ cannot contain:
 | `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body |
 | `surface` | the API shape: `mem` on a type, silent on everything else (the default fetch already leads with the signature) |
 
-An unrecognized value is treated as omitted. `N…` and `A…` have no `read` route of their own —
+An unrecognized value is treated as omitted, and the response carries `intentHint` naming what it
+probably was. `N…` and `A…` have no `read` route of their own —
 nested types are separate symbols reached by `get_scope` or a `pathPrefix` search, and
 `include: "attributes"` remains the cheap `[Authorize]`/`[Obsolete]` check to ask for directly.
 
@@ -158,6 +160,14 @@ Never substitute a structural word for the term you don't have yet — that prod
 `termsWithNoHits: ["partial","class"]` and nothing else: both words describe *shape*, and neither is
 text any real symbol carries. `kinds`/`modifiers` still narrow rather than replace `query` (see below).
 
+**`hint` catches the case `termsWithNoHits` doesn't.** When `query` is built *entirely* from words
+that read as a kind or modifier keyword (`"interface"`, `"partial class"`, `"asyncdisposable"`, …)
+and the result is empty, the response carries a `hint` string pointing at `kinds`/`modifiers` —
+because for exactly this query shape, an empty `items` list on its own reads as "no such symbols
+exist" rather than "you searched for a filter word, not a name". A query mixing in even one real
+identifier or domain term gets no `hint` on a zero-hit result — that's an ordinary failed search, not
+this misuse.
+
 **Don't know this codebase's vocabulary yet?** `query` only finds identifiers that already exist here —
 a real class/method/field name, or a substring of one. Before the first `search_index` call in an
 unfamiliar repo, `Read` its `README.md` for domain nouns and component names; if there is no
@@ -180,15 +190,25 @@ see that error, you omitted `query`.
 
 | Arg | Grammar | Notes |
 |---|---|---|
-| `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event` |
-| `modifiers` | bare tokens **AND** (a symbol carries several at once) — opposite of `kinds`; `-token` excludes and combines | literal C# keywords (`public`, `static`, `readonly`, `sealed`, `override`, `async`, `partial`, …) + derived tags `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable` |
+| `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. An unrecognized token matches no symbol; when that leaves zero hits the response carries `kindsHint` |
+| `modifiers` | bare tokens **AND** (a symbol carries several at once) — opposite of `kinds`; `-token` excludes and combines | literal C# keywords (`public`, `static`, `readonly`, `sealed`, `override`, `async`, `partial`, …) + derived tags `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`. Same zero-hit `modifiersHint` as `kinds` |
 | `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); unresolvable name → empty result, not error |
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
-| `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId` |
-| `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only` |
-| `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind |
+| `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
+| `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only`. An unrecognized value is treated as omitted and the response carries `summaryHint` |
+| `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
+
+`hint` is a response field, not an argument: present only when `query` is built entirely from
+kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
+same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
+`summaryHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
+argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each
+names the value that wasn't recognized, what it was silently treated as, and a `didYouMean`-style
+suggestion when exactly one vocabulary token is a close-enough match. All six are additive: the call
+still succeeds and returns the same fallback behavior it always has, only now with a signal that a
+fallback happened.
 
 ## Reference
 

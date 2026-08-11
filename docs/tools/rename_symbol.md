@@ -21,7 +21,7 @@ distiller, the disk commit, the development-log entry — is literally the same 
 | `renameOverloads` | Also rename this method's sibling overloads (default `false`). Ignored for a non-method symbol. |
 | `renameInComments` | Also rewrite the old name where it appears in comments and doc comments (default `false`). |
 | `renameInStrings` | Also rewrite it inside string literals (default `false`). |
-| `requestedLevel` | Optional floor, same vocabulary as `validate_patch`. The computed level is already floored at `dependent_compile` (see below), so this only ever raises past that. |
+| `requestedLevel` | Optional floor, same vocabulary as `validate_patch`. The computed level is already floored at `dependent_compile` (see below), so this only ever raises past that. An unrecognized value is silently not honored, same as `validate_patch` — `ladder.requestedLevelHint` says so and names what it probably was. |
 | `tags` | Optional `string[]` on the development-log entry. |
 
 ## The dry run is the point

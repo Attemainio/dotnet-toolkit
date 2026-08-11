@@ -60,7 +60,7 @@ public static class RenameTools
         [Description("Also rename the other overloads of this method (default false). Ignored for a non-method symbol.")] bool renameOverloads = false,
         [Description("Also update occurrences of the old name inside comments and doc comments (default false). Textual and best-effort, unlike the reference rewrite itself.")] bool renameInComments = false,
         [Description("Also update occurrences of the old name inside string literals (default false). Textual and best-effort; leave off unless the name is genuinely reflected over.")] bool renameInStrings = false,
-        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate.")] string? requestedLevel = null,
+        [Description("Optional floor: raise (never lower) the required level. parse|semantic_bind|project_compile|dependent_compile|targeted_tests|solution_validate. An unrecognized value is not honored -- ladder.requestedLevelHint in the response says so and names what it probably was.")] string? requestedLevel = null,
         [Description("Optional tags for the development-log entry.")] string[]? tags = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null,
         CancellationToken cancellationToken = default)
@@ -214,7 +214,8 @@ public static class RenameTools
             if ((int)computedRequired < (int)ValidationLevel.DependentCompile)
                 computedRequired = ValidationLevel.DependentCompile;
 
-            var required = PatchTools.Raise(computedRequired, requestedLevel);
+            var (required, requestedLevelRecognized) = PatchTools.Raise(computedRequired, requestedLevel);
+                var requestedLevelHint = PatchTools.RequestedLevelHint(requestedLevel, requestedLevelRecognized, required);
 
             var ladder = await ValidationLadder.RunAsync(
                 forked, changedDocs, required,
@@ -271,6 +272,7 @@ public static class RenameTools
                     isSufficient,
                     reason = isSufficient ? null : Reason(ladder, required, workspace.IsDegraded),
                     nextAction = isSufficient ? null : NextAction(ladder, required, workspace.IsDegraded),
+                        requestedLevelHint,
                 },
                 succeeded = ladder.Succeeded,
                 applied,

@@ -48,7 +48,13 @@ public static class GraphTools
         if (project is not null && !refs.ContainsKey(project))
         {
             return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_project_graph",
-                requested, Formats.Render(new { error = "project_not_found", project }),
+                requested, Formats.Render(new
+                    {
+                        error = "project_not_found",
+                        project,
+                        projects = refs.Keys.OrderBy(n => n, StringComparer.Ordinal).ToList(),
+                        didYouMean = VocabularyHint.NearestToken(project, [.. refs.Keys]),
+                    }),
                 errorKind: "project_not_found");
         }
 
@@ -104,7 +110,11 @@ public static class GraphTools
             var unsupported = Formats.Render(new
             {
                 error = "unsupported_scope",
-                message = "type-level cycle detection is not yet implemented; use scope: \"project\"",
+                message = normalized == "type"
+                        ? "type-level cycle detection is not yet implemented; use scope: \"project\""
+                        : $"scope:'{scope}' was not recognized; the only supported value is \"project\"."
+                            + (VocabularyHint.NearestToken(scope, ["project"]) is { } nearestScope
+                                ? $" Did you mean '{nearestScope}'?" : ""),
             });
             return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask,
                 "detect_circular_dependencies", normalized, unsupported, errorKind: "unsupported_scope");

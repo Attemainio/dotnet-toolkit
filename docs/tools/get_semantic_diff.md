@@ -37,7 +37,8 @@ routinely checked out side by side under a folder that was never one itself. The
 the root when the root (or an ancestor) holds the `.git` entry, and otherwise from the repositories
 directly beneath it — one of them per call. `error: "ambiguous_repository"` lists the candidates when
 there is more than one and no `repo` was given; `error: "unknown_repository"` lists them when `repo`
-names none of them; `error: "not_a_git_repository"` means there was no repository to find at all.
+names none of them, plus a `didYouMean` naming the nearest one when exactly one candidate is a close
+match to what was typed; `error: "not_a_git_repository"` means there was no repository to find at all.
 
 Real call and response (trimmed):
 

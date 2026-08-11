@@ -1428,7 +1428,24 @@ public sealed class WorkspaceIntegrationTests
 
 
     [Fact]
-    public async Task GetReferences_Implementations_FindsBothWidgets()
+    public async Task GetReferences_DirectionTypoOfImplementations_FallsBackToCallersWithHint()
+        {
+            var root = Root(await GetReferences("Sample.Lib.IWidget", "implementaton"));
+
+            var hint = root.GetProperty("directionHint").GetString();
+            Assert.Contains("implementations", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task GetReferences_DirectionCallers_CarriesNoHint()
+        {
+            var root = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
+
+            Assert.False(root.TryGetProperty("directionHint", out _));
+        }
+
+        [Fact]
+        public async Task GetReferences_Implementations_FindsBothWidgets()
     {
         var root = Root(await GetReferences("Sample.Lib.IWidget", "implementations"));
         var displays = TableRows(root.GetProperty("items")).Select(MergedRow)
@@ -1669,7 +1686,22 @@ public sealed class WorkspaceIntegrationTests
     }
 
     [Fact]
-    public async Task RenameSymbol_StaleBaseVersion_IsRejected()
+    public async Task RenameSymbol_RequestedLevelTypo_SurfacesUnhonoredHint()
+        {
+            var version = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline")).GetProperty("contentVersion").GetString()!;
+
+            var root = Root(await RenameTools.RenameSymbol(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+                "Sample.Lib.BodyOutlineFixture.TooShortForOutline", "RenamedForHintTestOnly", version, applyOnSuccess: false, intent: null,
+                renameOverloads: false, renameInComments: false, renameInStrings: false,
+                requestedLevel: "solutionvalidate", tags: null, taskId: null));
+
+            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
+                var hint = ladderEl.GetProperty("requestedLevelHint").GetString();
+            Assert.Contains("solution_validate", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task RenameSymbol_StaleBaseVersion_IsRejected()
     {
         var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Doubled"));
         var root = Root(await RenameSymbolCall(
@@ -2226,7 +2258,18 @@ public sealed class WorkspaceIntegrationTests
         var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, _f.Telemetry, project: "NoSuchProject"));
 
         Assert.Equal("project_not_found", root.GetProperty("error").GetString());
-    }
+            }
+
+            [Fact]
+            public async Task GetProjectGraph_ScopedToUnknownProject_SurfacesCandidatesAndDidYouMean()
+            {
+                var root = Root(await GraphTools.GetProjectGraph(_f.Workspace, _f.Telemetry, project: "Li"));
+
+                Assert.Equal("project_not_found", root.GetProperty("error").GetString());
+                var projects = root.GetProperty("projects").EnumerateArray().Select(p => p.GetString()).ToList();
+                Assert.Contains("Lib", projects);
+                Assert.Equal("Lib", root.GetProperty("didYouMean").GetString());
+            }
 
     [Fact]
     public async Task DetectCircularDependencies_AcyclicSample_ReportsNoCycles()
@@ -2244,7 +2287,18 @@ public sealed class WorkspaceIntegrationTests
         var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, _f.Telemetry, scope: "type"));
 
         Assert.Equal("unsupported_scope", root.GetProperty("error").GetString());
-    }
+            }
+
+            [Fact]
+            public async Task DetectCircularDependencies_ScopeTypo_SurfacesDidYouMeanNotUnsupportedMessage()
+            {
+                var root = Root(await GraphTools.DetectCircularDependencies(_f.Workspace, _f.Telemetry, scope: "projects"));
+
+                Assert.Equal("unsupported_scope", root.GetProperty("error").GetString());
+                var message = root.GetProperty("message").GetString();
+                Assert.DoesNotContain("not yet implemented", message, StringComparison.Ordinal);
+                Assert.Contains("project", message, StringComparison.Ordinal);
+            }
 
     [Fact]
     public async Task GetTypeHierarchy_Interface_ListsDirectImplementers()
@@ -2508,11 +2562,178 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// receiver names something that HAS a type; a method name is the common miss. Reporting the bare error
+    /// <summary>
+        /// A query built only from words that read as a kind/modifier keyword is the one failure
+        /// termsWithNoHits does not cover -- query matches identifier text, so a bare structural word
+        /// almost never names a real symbol. hint is the self-correcting nudge toward kinds/modifiers that
+        /// an empty items list alone does not carry.
+        /// </summary>
+        [Fact]
+        public async Task SearchIndex_StructuralWordOnlyZeroHitQuery_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "asyncdisposable initonly", groupBy: "none"));
+
+            Assert.Empty(TableRows(root.GetProperty("items")));
+            var hint = root.GetProperty("hint").GetString();
+            Assert.Contains("kinds", hint, StringComparison.Ordinal);
+            Assert.Contains("modifiers", hint, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The hint is scoped to queries built entirely from structural words: a real term mixed in means the
+        /// caller is searching for an actual identifier, not misusing query as a structural filter, so a
+        /// zero-hit result there carries no hint -- exactly like any other zero-hit search.
+        /// </summary>
+        [Fact]
+        public async Task SearchIndex_ZeroHitQueryWithARealTerm_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "asyncdisposable ZzzNoSuchSymbolAnywhereXyz123", groupBy: "none"));
+
+            Assert.Empty(TableRows(root.GetProperty("items")));
+            Assert.False(root.TryGetProperty("hint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_KindsTypoZeroHits_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", kinds: "clas", groupBy: "none"));
+
+            Assert.Empty(TableRows(root.GetProperty("items")));
+            var hint = root.GetProperty("kindsHint").GetString();
+            Assert.Contains("class", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_KindsValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", kinds: "class", groupBy: "none"));
+
+            Assert.False(root.TryGetProperty("kindsHint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_ModifiersTypoZeroHits_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", modifiers: "publi", groupBy: "none"));
+
+            Assert.Empty(TableRows(root.GetProperty("items")));
+            var hint = root.GetProperty("modifiersHint").GetString();
+            Assert.Contains("public", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_ModifiersValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", modifiers: "public", groupBy: "none"));
+
+            Assert.False(root.TryGetProperty("modifiersHint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_OriginTypo_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", origin: "extern", groupBy: "none"));
+
+            var hint = root.GetProperty("originHint").GetString();
+            Assert.Contains("external", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_OriginValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", origin: "source", groupBy: "none"));
+
+            Assert.False(root.TryGetProperty("originHint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_SummaryTypo_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", summary: "hass", groupBy: "none"));
+
+            var hint = root.GetProperty("summaryHint").GetString();
+            Assert.Contains("has", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_SummaryValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", summary: "has", groupBy: "none"));
+
+            Assert.False(root.TryGetProperty("summaryHint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_GroupByTypo_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", groupBy: "fil"));
+
+            var hint = root.GetProperty("groupByHint").GetString();
+            Assert.Contains("file", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_GroupByValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", groupBy: "file"));
+
+            Assert.False(root.TryGetProperty("groupByHint", out _));
+        }
+
+        [Fact]
+        public async Task SearchIndex_IntentTypo_ReturnsCorrectiveHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", intent: "logicc", groupBy: "none"));
+
+            var hint = root.GetProperty("intentHint").GetString();
+            Assert.Contains("logic", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task SearchIndex_IntentValid_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", intent: "logic", groupBy: "none"));
+
+            Assert.False(root.TryGetProperty("intentHint", out _));
+        }
+
+        /// <summary>
+        /// receiver names something that HAS a type; a method name is the common miss. Reporting the bare error
     /// code left the caller with a correct diagnosis and nothing to do about it.
     /// </summary>
     [Fact]
-    public async Task GetScope_ReceiverNamingAMethod_SaysWhatAReceiverIsAndHowToProceed()
+    public async Task GetScope_FilterSingularTypo_FallsBackToAllWithHint()
+        {
+            var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry, "Lib/Widget.cs", 12, filter: "method"));
+
+            var hint = root.GetProperty("filterHint").GetString();
+            Assert.Contains("methods", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task GetScope_FilterAll_CarriesNoHint()
+        {
+            var root = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry, "Lib/Widget.cs", 12, filter: "all"));
+
+            Assert.False(root.TryGetProperty("filterHint", out _));
+        }
+
+        [Fact]
+        public async Task GetScope_ReceiverNamingAMethod_SaysWhatAReceiverIsAndHowToProceed()
     {
         var root = Root(await FlowTools.GetScope(
             _f.Workspace, _f.Locator, _f.Telemetry, "Lib/Widget.cs", 12, receiver: "Spin"));
@@ -2577,7 +2798,27 @@ public sealed class WorkspaceIntegrationTests
     }
 
     [Fact]
-    public async Task GetCallHierarchy_UnknownSymbol_ReportsSymbolNotFound()
+    public async Task GetCallHierarchy_DirectionTypoOfCallees_FallsBackToCallersWithHint()
+        {
+            var root = Root(await FlowTools.GetCallHierarchy(
+                _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin", direction: "callee"));
+
+            Assert.Equal("callers", root.GetProperty("direction").GetString());
+            var hint = root.GetProperty("directionHint").GetString();
+            Assert.Contains("callees", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task GetCallHierarchy_DirectionCallers_CarriesNoHint()
+        {
+            var root = Root(await FlowTools.GetCallHierarchy(
+                _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin", direction: "callers"));
+
+            Assert.False(root.TryGetProperty("directionHint", out _));
+        }
+
+        [Fact]
+        public async Task GetCallHierarchy_UnknownSymbol_ReportsSymbolNotFound()
     {
         var root = Root(await FlowTools.GetCallHierarchy(
             _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.NoSuchMethod"));
@@ -2658,7 +2899,42 @@ public sealed class WorkspaceIntegrationTests
 
     /// <summary>Find/replace mode locates the unique match inside the symbol's own span and resolves it into an ordinary line-range edit, with no line numbers supplied by the caller.</summary>
     [Fact]
-    public async Task ValidatePatch_FindReplace_UniqueMatchResolvesAndValidatesNormally()
+    public async Task ValidatePatch_RequestedLevelTypo_SurfacesUnhonoredHint()
+        {
+            var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline", "all"));
+            var symbolId = sym.GetProperty("symbolId").GetString()!;
+            var version = sym.GetProperty("contentVersion").GetString()!;
+
+            var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "x + 1", Replace: "x + 1") };
+            var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+                new PatchDraftStore(TimeProvider.System),
+                new Dictionary<string, string> { [symbolId] = version }, edits, requestedLevel: "solutionvalidate",
+                applyOnSuccess: false, intent: "requestedLevel typo test", tags: null, draftId: null));
+
+            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
+                var hint = ladderEl.GetProperty("requestedLevelHint").GetString();
+                Assert.Contains("solution_validate", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public async Task ValidatePatch_RequestedLevelValid_CarriesNoHint()
+        {
+            var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline", "all"));
+            var symbolId = sym.GetProperty("symbolId").GetString()!;
+            var version = sym.GetProperty("contentVersion").GetString()!;
+
+            var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "x + 1", Replace: "x + 1") };
+            var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
+                new PatchDraftStore(TimeProvider.System),
+                new Dictionary<string, string> { [symbolId] = version }, edits, requestedLevel: "project_compile",
+                applyOnSuccess: false, intent: "requestedLevel valid test", tags: null, draftId: null));
+
+            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
+                Assert.False(ladderEl.TryGetProperty("requestedLevelHint", out _));
+        }
+
+        [Fact]
+        public async Task ValidatePatch_FindReplace_UniqueMatchResolvesAndValidatesNormally()
     {
         var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;

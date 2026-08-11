@@ -86,7 +86,18 @@ public sealed class HistoryToolsGetSemanticDiffTests : IAsyncLifetime
         var root = Root(await HistoryTools.GetSemanticDiff(_git, _diff, _telemetry, "does-not-exist", "HEAD"));
 
         Assert.Equal("unresolved_ref", root.GetProperty("error").GetString());
-    }
+        }
+
+        [Fact]
+        public async Task RepoTypo_SurfacesDidYouMean()
+        {
+            var repoName = Path.GetFileName(_root);
+            var typo = repoName[..^1];
+            var root = Root(await HistoryTools.GetSemanticDiff(_git, _diff, _telemetry, repo: typo));
+
+            Assert.Equal("unknown_repository", root.GetProperty("error").GetString());
+            Assert.Equal(repoName, root.GetProperty("didYouMean").GetString());
+        }
 
     private async Task Git(params string[] args)
     {

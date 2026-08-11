@@ -56,7 +56,7 @@ upward toward entry points; `"callees"` walks downward into what the symbol invo
 | Arg | Meaning |
 |---|---|
 | `symbol` | Required. Same addressing as `get_symbol`. |
-| `direction` | `callers` (default) \| `callees`. |
+| `direction` | `callers` (default) \| `callees`. An unrecognized value falls back to `callers` and the response carries `directionHint` naming what it probably was. |
 | `maxDepth` | Default 3, clamped 1-8 — a well-connected graph grows fast past that. |
 | `maxChildrenPerNode` | Default 25, clamped 1-200. A node past the cap keeps its own entry but stops expanding, marked `truncated:true` with `omittedChildren`. The children it left out are still **counted** in `blastRadius`, so the cap never hides a node at the depth it was found; but their own callers go unvisited, so at `maxDepth` above 1 a tighter cap does reduce the total. |
 | `includeTree` | Default `true`. Set `false` for just `blastRadius` — the cheapest possible answer to "how much does changing this ripple." That shape is also the only one carrying a separate `root` block: with a tree, its head node **is** the root, and emitting both repeated every root field. |
@@ -158,6 +158,19 @@ blastRadius:
 
 The type seeds are resolved through Roslyn and cost a little more than the cached edge walk, so they are
 computed **only** when the cheap walk found nothing — a member root never pays for them.
+
+### A typo'd `direction`
+
+`direction` accepts only `"callers"`/`"callees"`, and a value that matches neither falls back to
+`"callers"` silently — the same failure mode `search_index`'s `kinds`/`modifiers` used to have,
+except here a typo doesn't just find nothing, it finds the *opposite* of what was asked. When that
+happens the response carries `directionHint`, e.g. for `direction: "callee"`:
+
+```
+directionHint: direction:'callee' was not recognized and defaulted to 'callers'. Did you mean 'callees'?
+```
+
+Absent whenever `direction` matched, so an ordinary call carries no extra field.
 
 ## Next steps
 

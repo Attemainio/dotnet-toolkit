@@ -58,7 +58,7 @@ exist, or when you don't yet know a receiver's type so `get_symbol` has no targe
 |---|---|
 | `file`, `line`, `column` | Required position (column defaults to 1). |
 | `receiver` | Optional variable/expression — narrows to what's callable *on it*, including applicable extension methods. It must name something that **has a type** and that **appears inside the member containing `line`**: the lookup is positional, so a shadowed local resolves the way the compiler sees it. A method or type name does not qualify — it names something callable, not something callable *on* — and yields `error: "receiver_not_resolved"` with a `message` saying so. Omit `receiver` to list everything in scope at that line instead. |
-| `filter` | `all` (default) \| `methods` \| `properties` \| `locals` \| `types`. |
+| `filter` | `all` (default) \| `methods` \| `properties` \| `locals` \| `types`. An unrecognized value matches everything (same as `all`) rather than erroring, and the response carries `filterHint` naming what it probably was. |
 | `nameContains`, `limit` | Narrow a large result. `limit` defaults to 40 (cap 200) and is spent **across origins**, round-robin, so a receiver's own members cannot crowd out the applicable extension methods this tool exists to surface. A capped result carries `totalItems` and `truncated: true`. |
 
 Real call and response (trimmed):
@@ -117,6 +117,19 @@ Drop `receiver` to see
 what's in scope at that line generally. (The line number above
 tracks a real call site in this file; if a future refactor moves it, re-find the receiver with
 `search_index`/`get_symbol` rather than assuming this line still resolves.)
+
+### A typo'd `filter`
+
+`filter` accepts only the five listed tokens; anything else matches everything, same as omitting
+it — the singular `"method"` is the natural typo of the plural `"methods"` the tool actually
+expects, and it silently means "no filtering happened" rather than narrowing. When that happens
+the response carries `filterHint`, e.g. for `filter: "method"`:
+
+```
+filterHint: filter:'method' was not recognized and matched everything (same as 'all'). Did you mean 'methods'?
+```
+
+Absent whenever `filter` matched, so an ordinary call carries no extra field.
 
 ## Next steps
 

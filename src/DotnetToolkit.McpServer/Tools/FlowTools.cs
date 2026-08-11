@@ -49,7 +49,7 @@ public static class FlowTools
         [Description("1-based line number.")] int line,
         [Description("1-based column (default 1).")] int column = 1,
         [Description("Optional variable or expression name; results become what is callable ON it - the autocomplete list for that receiver, including applicable extension methods.")] string? receiver = null,
-        [Description("all | methods | properties | locals | types (default all).")] string filter = "all",
+            [Description("all | methods | properties | locals | types (default all). An unrecognized value matches everything (same as \"all\") rather than erroring, and the response's filterHint names what it probably was.")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
         [Description("Max results (default 40, cap 200).")] int limit = 40,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
@@ -58,6 +58,11 @@ public static class FlowTools
         var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
         var requested = $"{file}:{line}:{column}";
+            var normalizedFilter = filter.Trim().ToLowerInvariant();
+            var filterHint = normalizedFilter is "all" or "methods" or "properties" or "locals" or "types" ? null
+                : $"filter:'{filter}' was not recognized and matched everything (same as 'all')."
+                    + (VocabularyHint.NearestToken(filter, ["all", "methods", "properties", "locals", "types"]) is { } nearestFilter
+                        ? $" Did you mean '{nearestFilter}'?" : "");
 
         string Fail(string kind, object payload, string? limitedBy = null) =>
             ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_scope",
@@ -161,6 +166,7 @@ public static class FlowTools
         {
             position = new { file, line },
             receiverType = receiverTypeName,
+                filterHint,
             totalItems = ranked.Count > items.Count ? (int?)ranked.Count : null,
             truncated = ranked.Count > items.Count ? (bool?)true : null,
             items,
@@ -339,7 +345,7 @@ public static class FlowTools
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
         [Description("The symbol to root the call tree at - the method, property or type whose callers, callees or blast radius you want: fully-qualified name, unique suffix, or sym_... id.")] string symbol,
-        [Description("callers | callees (default callers). callers walks upward toward entry points; callees walks downward into what this symbol invokes. An unrecognized value falls back to callers rather than erroring.")] string direction = "callers",
+        [Description("callers | callees (default callers). callers walks upward toward entry points; callees walks downward into what this symbol invokes. An unrecognized value falls back to callers rather than erroring, and the response's directionHint names what it probably was.")] string direction = "callers",
         [Description("Maximum tree depth (default 3, clamped 1-8 — deeper trees grow exponentially on a well-connected graph).")] int maxDepth = 3,
         [Description("Maximum children expanded per node before truncating (default 25, clamped 1-200). A node past the cap keeps its own entry but stops expanding, marked truncated:true with omittedChildren.")] int maxChildrenPerNode = 25,
         [Description("Emit the full tree (default true). Set false to return only blastRadius — the cheapest possible answer to 'how much does changing this ripple'.")] bool includeTree = true,
@@ -376,7 +382,12 @@ public static class FlowTools
             });
         }
 
-        var callers = direction.Trim().ToLowerInvariant() != "callees";
+        var normalizedDirection = direction.Trim().ToLowerInvariant();
+            var callers = normalizedDirection != "callees";
+            var directionHint = normalizedDirection is "callers" or "callees" ? null
+                : $"direction:'{direction}' was not recognized and defaulted to 'callers'."
+                    + (VocabularyHint.NearestToken(direction, ["callers", "callees"]) is { } nearestDirection
+                        ? $" Did you mean '{nearestDirection}'?" : "");
         maxDepth = Math.Clamp(maxDepth, 1, 8);
         maxChildrenPerNode = Math.Clamp(maxChildrenPerNode, 1, 200);
 
@@ -463,6 +474,7 @@ public static class FlowTools
                 displayString = DisplayFor(rootId, rootRow),
             },
             direction = callers ? "callers" : "callees",
+                directionHint,
             tree = includeTree ? Project(result.Root) : null,
             blastRadius = new
             {

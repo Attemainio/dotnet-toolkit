@@ -66,6 +66,7 @@ public static class HistoryTools
                 {
                     error = "unknown_repository",
                     message = $"no repository '{repo}' under the solution root",
+                        didYouMean = VocabularyHint.NearestToken(wanted, [.. repositories.Select(r => Path.GetFileName(r) ?? r)]),
                     repositories = repositories.Select(Path.GetFileName),
                 });
             }

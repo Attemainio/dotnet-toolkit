@@ -6,7 +6,7 @@ string matches as hits, and silently drops sites when output is truncated.
 | Arg | Meaning |
 |---|---|
 | `symbol` | Required. Same addressing as `get_symbol`. |
-| `direction` | `callers` (default) \| `implementations` \| `overrides`. |
+| `direction` | `callers` (default) \| `implementations` \| `overrides`. An unrecognized value falls back to `callers` and the response carries `directionHint` naming what it probably was. |
 | `limit` | Max items per page (default `50`, cap `200`). Lower it when a few worked examples are enough — a high-fan-in symbol's full page is the most expensive response this server produces. |
 | `offset` | Items to skip before `limit` (default `0`). Pass the previous response's `nextOffset` to reach the rest. |
 | `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source`, including the `toon`-format raw-block rendering (default `false` — fetch bodies only for the ones you'll actually edit). |
@@ -133,6 +133,18 @@ dispatchKind: delegate
 
 For an interface, `implementations` still answers "who implements it" — `callers` answers the different
 question of who merely mentions the type.
+
+### A typo'd `direction`
+
+A value that matches none of `callers`/`implementations`/`overrides` falls back to `callers`
+silently — a typo of the non-default value gets you the wrong answer, not an error. When that
+happens the response carries `directionHint`, e.g. for `direction: "implementaton"`:
+
+```
+directionHint: direction:'implementaton' was not recognized and defaulted to 'callers'. Did you mean 'implementations'?
+```
+
+Absent whenever `direction` matched, so an ordinary call carries no extra field.
 
 ## Next steps
 

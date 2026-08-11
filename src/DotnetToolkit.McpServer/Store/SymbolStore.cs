@@ -401,7 +401,7 @@ public sealed partial class SymbolStore
     /// exceeds the tolerance — the common case for a name that is simply unrelated, which is nearly every
     /// row in the store.
     /// </remarks>
-    private static int EditDistance(string candidate, string target, int tolerance)
+    internal static int EditDistance(string candidate, string target, int tolerance)
     {
         var previous = new int[target.Length + 1];
         var current = new int[target.Length + 1];
