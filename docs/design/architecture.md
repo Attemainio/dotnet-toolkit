@@ -134,7 +134,10 @@ bump is what you actually needed.
 - `Hooks/` — the five Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
   `BashCommandScanner.cs` carry the logic the read guards share; `WriteChecklistHint.cs` is the one
-  matching an MCP tool rather than a built-in. `docs/design/hooks.md`.
+  matching an MCP tool rather than a built-in. `GuardSuspension.cs` holds the three blocking guards'
+  off-switch, read by `HookCli` before it dispatches to any of them and written by `set_hook_guards`;
+  its state is an expiry rather than a flag, and it inverts `HookCli`'s fail-open rule on purpose —
+  an unreadable state file leaves the guards **on**. `docs/design/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -147,6 +150,12 @@ bump is what you actually needed.
   | `RenameTools.cs` | `rename_symbol` |
   | `MetricsTools.cs` | `get_retrieval_metrics` |
   | `ServerTools.cs` | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` |
+  | `GuardTools.cs` | `set_hook_guards` |
+
+  `set_hook_guards` sits in its own file rather than joining `ServerTools`' other session-scoped
+  settings because it is the one tool whose effect is to make the rest of the plugin optional. Keeping
+  it separate means the guards' off-switch is never edited as a side effect of touching an unrelated
+  server tool.
 
   `ResponseGuard.cs` is **not** a tool group either: it is `get_symbol`'s one-shot large-source check
   plus the process-wide table of which (symbol, include) requests have already been warned about, so an
@@ -154,9 +163,9 @@ bump is what you actually needed.
   a response contains, not how it renders.
 
   `ToolTelemetry.cs` is **not** a tool group: it is the single place a response becomes a
-  `RetrievalEvent`, plus the shared `[Description]` text for the optional `taskId`. The five tools
-  taking no `TelemetryRecorder` (`ServerTools`' four and `get_retrieval_metrics`) record nothing by
-  design.
+  `RetrievalEvent`, plus the shared `[Description]` text for the optional `taskId`. The six tools
+  taking no `TelemetryRecorder` (`ServerTools`' four, `get_retrieval_metrics`, and `set_hook_guards`)
+  record nothing by design.
 
 ## Id namespaces
 

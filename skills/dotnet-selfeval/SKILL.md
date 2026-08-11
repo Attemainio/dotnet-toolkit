@@ -91,11 +91,17 @@ repeat the identical call: a **drifting delta means the instrument is unreliable
 important finding available. Finally confirm the filter isolates — an unfiltered snapshot should show
 strictly more calls than the same one filtered to your id, unless you are genuinely alone on the server.
 
-**Five tools record no telemetry and cannot be measured this way**: `ping`, `workspace_status`,
-`set_output_format`, `reload_workspace` (constant-cost control calls) and `get_retrieval_metrics` itself
-— deliberately, because a metrics tool that recorded its own calls would perturb every delta it is used
-to compute. Probe them for correctness and judge their output size by eye; say so in the report rather
-than reporting a measured number you did not measure.
+**Six tools record no telemetry and cannot be measured this way**: `ping`, `workspace_status`,
+`set_output_format`, `reload_workspace`, `set_hook_guards` (constant-cost control calls) and
+`get_retrieval_metrics` itself — the last deliberately, because a metrics tool that recorded its own
+calls would perturb every delta it is used to compute. Probe them for correctness and judge their
+output size by eye; say so in the report rather than reporting a measured number you did not measure.
+
+**Do not probe `set_hook_guards` by calling it.** It is the one tool on that list whose effect
+outlives its response: suspending the guards would let the rest of this run make raw `.cs` reads that
+silently bypass the tools being evaluated, which is precisely the measurement error this skill exists
+to avoid. Check it by reading its source and `docs/tools/server.md`. Measuring the *unguarded* route
+on purpose is `dotnet-performance`'s job, not this one's.
 
 Record `totals.toolCalls` and `totals.tokensReturned` for your `taskId` at the start and end, so the
 report can state what the evaluation itself cost.

@@ -31,6 +31,39 @@ the path that has to be reliable.
 Each hook adds roughly 70ms per matched tool call — one short-lived .NET process that returns before
 MSBuild discovery or host startup runs.
 
+## The off-switch, and why it expires
+
+`HookCli` reads `GuardSuspension` before dispatching to any of the three **blocking** guards; when a
+suspension is in force they return allow without evaluating. The two hints are unaffected — they add
+context rather than withhold a call, so silencing them would cost the caller information without
+buying back any of the freedom a suspension is asked for.
+
+The reason this exists at all is `dotnet-performance`: the claim that these tools beat `grep`/`Read`
+cannot be *measured* without running `grep`/`Read` in the same repo, and the guards make that route
+unreachable by construction. A benchmark that cannot run the baseline is not a benchmark.
+
+Two properties carry the risk, and both are deliberate inversions of what the rest of this page says:
+
+- **State is an expiry, not a flag.** The file under `.claude/dotnet-toolkit/cache/` holds the instant
+  the guards resume; any read past it deletes the file, and requests are capped at 4 hours. So there is
+  no way to disable the guards indefinitely through `set_hook_guards`, and nothing has to remember to
+  undo it. This matters more than it would for most switches: a guard left off does not fail loudly,
+  it just stops recording work, and the repo then looks exactly as it does when the plugin was never
+  installed.
+- **Reading the state fails *closed*.** An unreadable or unparseable state file leaves the guards on,
+  which is the opposite of the fail-open rule above. Both are the same principle applied to different
+  risks — failing open keeps a broken guard from wedging the user's editing; failing closed keeps a
+  broken state file from silently disarming a guard that works.
+
+`workspace_status` prints a `hookGuards: SUSPENDED` line with the time remaining, and nothing when the
+guards are active. It carries this rather than `set_hook_guards` alone because it is the call every
+skill makes first, so a session inheriting a suspension it did not start finds out before it edits
+rather than after.
+
+`DOTNET_TOOLKIT_DISABLE_HOOKS` remains the separate, non-expiring hatch for a harness that owns the
+process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
+environment — and reports that rather than claiming a restore it did not perform.
+
 ## `hook guard-cs-edit` — PreToolUse on `Edit`/`Write`/`NotebookEdit`
 
 Blocks `Edit`/`Write`/`NotebookEdit` on an **existing** `.cs` file and returns the `validate_patch`
