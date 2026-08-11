@@ -52,6 +52,11 @@ Done means all of `succeeded: true`, `isSufficient: true`, `applied: true` (or a
 same scope. `diagnostics.rootCauses` has the same distilled shape `validate_patch` returns; fix the
 collision with `validate_patch` first, then retry the rename. Nothing reached disk either way.
 
+**On failure, `rename.newSymbolId` and every `detectedChanges[].symbolId` are omitted**, not just
+absent from the example above. A symbol id is a hash of its fully-qualified name, so a rename that
+collided with an existing name would otherwise mint an id that is already taken — exposing it would
+silently point a caller at the wrong (pre-existing) symbol rather than the one just renamed.
+
 The response also carries the same **`checks`** block `validate_patch` returns — which rungs ran and over
 what, the analyzer pass's findings by severity, and what went unassessed. See
 `docs/tools/validate_patch.md` for the shape and for how `.editorconfig` severity decides what blocks.

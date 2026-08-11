@@ -191,6 +191,10 @@ large symbol repeatedly is asked once.
 It does not fire on a sliced fetch (`source@120-160`), since the slice already bounds the response,
 and it does not fire on `members`, `bodyOutline` or any other component — only on `source`.
 
+**A guard triggered by `include: "all"` still serves a leaseable `members` list**: each member row
+carries its own `contentVersion`, exactly as it would outside the guard, so an about-to-edit call
+does not lose that just because the type was too large to serve `source` whole.
+
 ## Several symbols in one call
 
 `symbols` fetches a list instead of `symbol` fetching one — the same `include` applied to every
