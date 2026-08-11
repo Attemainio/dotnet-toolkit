@@ -286,7 +286,7 @@ committed before the note that prevents it was ever read.
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
 | Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |
-| `get_call_hierarchy` for a plain one-hop caller list on a low-fan-in symbol | `get_references` — below ~a dozen callers it wins, because the `{file, line, snippet}` sites come free |
+| `get_references` for a caller list you only need as names | `get_call_hierarchy(maxDepth: 1)` — measured ~1/3 the tokens at 8 callers; reach for `get_references` when you need the `{file, line, snippet}` sites, and pay for it deliberately |
 | `get_references` for an open-ended multi-level tree on a high-fan-in symbol | `get_call_hierarchy(maxDepth: 1)` — at 105 callers it measured ~1/8 the tokens |
 | Repeated `get_references` walking outward to see whether X reaches Y | `get_call_slice(from: "X", to: "Y")` |
 | Chaining `get_references` by hand three levels up | `get_call_hierarchy` |

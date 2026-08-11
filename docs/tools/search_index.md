@@ -86,6 +86,13 @@ nested type is counted by `N` yet still listed as a member there too. `C` on a t
 **transitive total** across its members (double-counts each member's own `C` by design — it
 answers "what would fetching the whole type cost"). `D` never overlaps `C`.
 
+**`C` is a fact at any count, but only worth acting on above roughly `C10`.** `source:code-comments`
+(dropping just the comments, keeping doc comments and code) saves one token per comment line — real,
+but at `C1`–`C5` the saving rounds to nothing next to the call itself. `P`, by contrast, names no
+route at all: it disambiguates an overload set at the point of choosing a `get_symbol` target, which
+is a real use, but no `include` answers "which overload" more cheaply than picking the right
+`symbol` argument in the first place — treat it as a fact, not advice, the way `read`'s absence is.
+
 ### The `read` column — which `include` to pass next
 
 `shape` states the facts and leaves the inference to you. `read` is that inference already made: one
@@ -155,6 +162,12 @@ and passing it costs nothing extra alongside a real term in `query`:
 - "is nested" → not a filter — read it off a hit's `shape` (the `N` count), or fetch the containing
   type's `members` with `get_symbol`
 
+**`query` also matches namespace segments, not only type/member/file names** — `query: "WebResearch"`
+against a symbol whose name carries no such substring still hits every member under namespace
+`…WebResearch`, and this is often the cheapest handle on a whole subsystem when you know the area but
+not a specific name in it. `pathPrefix` narrows by folder; a namespace term in `query` narrows by
+namespace, without needing to already know a real identifier inside it.
+
 Never substitute a structural word for the term you don't have yet — that produces exactly the
 `search_index(query: "partial class", kinds: "class", modifiers: "partial")` call that returns
 `termsWithNoHits: ["partial","class"]` and nothing else: both words describe *shape*, and neither is
@@ -199,6 +212,12 @@ see that error, you omitted `query`.
 | `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only`. An unrecognized value is treated as omitted and the response carries `summaryHint` |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
+
+**`summary: "has"` is usually redundant against `shape`'s `D` count**, which is already present on
+every hit: measured, `hasSummary` agreed with `D > 0` on every hit checked. `D` counts doc *lines*
+though, so a symbol carrying only `<remarks>` and no `<summary>` could in principle break the
+equivalence — pass `"has"` only if you've actually seen that happen. `"full"` is the one that earns
+its own call: the summary *text* isn't in `shape` at all.
 
 `hint` is a response field, not an argument: present only when `query` is built entirely from
 kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the

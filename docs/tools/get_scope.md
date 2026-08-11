@@ -60,6 +60,7 @@ exist, or when you don't yet know a receiver's type so `get_symbol` has no targe
 | `receiver` | Optional variable/expression — narrows to what's callable *on it*, including applicable extension methods. It must name something that **has a type** and that **appears inside the member containing `line`**: the lookup is positional, so a shadowed local resolves the way the compiler sees it. A method or type name does not qualify — it names something callable, not something callable *on* — and yields `error: "receiver_not_resolved"` with a `message` saying so. Omit `receiver` to list everything in scope at that line instead. |
 | `filter` | `all` (default) \| `methods` \| `properties` \| `locals` \| `types`. An unrecognized value matches everything (same as `all`) rather than erroring, and the response carries `filterHint` naming what it probably was. |
 | `nameContains`, `limit` | Narrow a large result. `limit` defaults to 40 (cap 200) and is spent **across origins**, round-robin, so a receiver's own members cannot crowd out the applicable extension methods this tool exists to surface. A capped result carries `totalItems` and `truncated: true`. |
+| `offset` | Items to skip, in that same round-robin order, before taking `limit` (default 0). Pass the previous response's `nextOffset` to reach the results past the page you already have — parity with `get_references`. |
 
 Real call and response (trimmed):
 
@@ -99,7 +100,9 @@ about — one in a different file was never really callable there.
 
 When more is in scope than `limit` allows, the budget is spent round-robin across origins rather than
 alphabetically, so applicable extension methods appear alongside the receiver's own members instead of
-being crowded out; `totalItems` and `truncated` then report what was left out. Within one origin,
+being crowded out; `totalItems` and `truncated` then report what was left out, and a truncated response
+carries `nextOffset` — pass it back as `offset` to reach the rest, the same round-robin order continued
+rather than restarted. Within one origin,
 source-declared symbols sort ahead of metadata ones: at a cursor with 919 symbols in scope, ordering by
 name alone spent the type share of the budget on `AbandonedMutexException` and friends rather than on
 anything the caller was choosing between.

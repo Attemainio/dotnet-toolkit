@@ -202,21 +202,23 @@ public sealed class MetricsReader
                 )
                 GROUP BY session_id ORDER BY MAX(created_at) DESC;
                 """,
-            // validate_patch never appears in retrieval_events (it has its own patch_events table -
-            // see the comment in ReadTotals), so the tool-grouped view needs a second branch unioned
-            // in under a literal label; patch_events has no tool_name column to group by since it is
-            // the only tool writing there, and HAVING with no GROUP BY filters the single whole-table
-            // aggregate row down to nothing when this scope has no patch_events at all. rename_symbol
-            // does carry its own tool_name in retrieval_events, so NotAlreadyCounted is what stops its
-            // patch row being relabelled 'validate_patch' and counted a second time.
+            // A validate_patch REJECT (stale_base, unheld_symbol, ...) writes to retrieval_events under
+            // tool_name 'validate_patch' (PatchTools.Reject), while a validation that actually ran writes to
+            // patch_events instead (see the comment in ReadTotals) - so both sources can carry that same key,
+            // and grouping them as two separate UNION ALL rows split 'validate_patch' into two groups that
+            // silently divided its true total (self-eval finding, 2026-08-10). They must be unioned inside one
+            // subquery and grouped together outside it, same as "task"/"session" above. patch_events has no
+            // tool_name column since it is the only tool writing there without a retrieval_events row of its
+            // own, hence the literal label. rename_symbol carries its own tool_name in retrieval_events, so
+            // NotAlreadyCounted is what stops its patch row being relabelled 'validate_patch' and counted twice.
             _ => $"""
                 SELECT tool_name, COUNT(*), COALESCE(SUM(returned_tokens),0)
-                FROM retrieval_events WHERE {where} GROUP BY tool_name
-                UNION ALL
-                SELECT 'validate_patch', COUNT(*), COALESCE(SUM(returned_tokens),0)
-                FROM patch_events p WHERE {where} AND {NotAlreadyCounted}
-                HAVING COUNT(*) > 0
-                ORDER BY 3 DESC;
+                FROM (
+                    SELECT tool_name, returned_tokens FROM retrieval_events WHERE {where}
+                    UNION ALL
+                    SELECT 'validate_patch', returned_tokens FROM patch_events p WHERE {where} AND {NotAlreadyCounted}
+                )
+                GROUP BY tool_name ORDER BY 3 DESC;
                 """,
         };
 

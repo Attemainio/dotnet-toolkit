@@ -103,8 +103,7 @@ ran at all — so a clean result has to state its own scope.
   "analyzers":{"ran":true,"analyzerCount":8,"documentCount":1,"durationMs":900,
                "clean":false,
                "warnings":{"count":2,"truncated":0,"items":[{"id":"CA1822","message":"…","file":"…","line":16,"column":18}]}},
-  "notAssessed":["levels not run: targeted_tests, solution_validate",
-                 "analyzers covered 1 changed document(s); analyzer findings in files this patch did not touch are not assessed"]
+  "notAssessed":["analyzers covered 1 changed document(s); analyzer findings in files this patch did not touch are not assessed"]
 }
 ```
 
@@ -118,8 +117,11 @@ ran at all — so a clean result has to state its own scope.
   verdict covers: `analyzerCount`, `documentCount`, `durationMs`. And when the pass never ran, the block
   is just `{"ran": false, "skipReason": "…"}` — every other field would be a constant by construction,
   and `notAssessed` states the consequence in words.
-- **`notAssessed`** — the gaps, in plain language. Always non-empty in practice: the analyzer pass only
-  looks at files the patch touched, which is stated on every run.
+- **`notAssessed`** — the gaps `levels`/`analyzers` don't already say in structured form. Which rungs
+  above `completedLevel` didn't run is NOT restated here — the fixed rung order
+  (parse→semantic_bind→project_compile→dependent_compile→targeted_tests→solution_validate) plus
+  `levels` already answers that. Always non-empty in practice: the analyzer pass only looks at files
+  the patch touched, which is stated on every run.
 
 ## `limitedBy: "degraded"` — the verdict itself is suspect
 

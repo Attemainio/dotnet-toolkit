@@ -211,7 +211,23 @@ public sealed class TelemetryTests : IDisposable
         var byTask = Assert.Single(_metrics.Read("global", null, null, null, "task").Groups);
         Assert.Equal(1, byTask.Calls);
         Assert.Equal(400, byTask.TokensReturned);
-    }
+        }
+
+        // Regression: a validate_patch REJECT (stale_base, unheld_symbol, ...) records a retrieval_events
+        // row under tool_name 'validate_patch' via PatchTools.Reject, same as any other tool call - it is
+        // not routed through RecordPatch. groupBy:"tool" must merge that row with an actual validation's
+        // patch_events row into ONE 'validate_patch' group, not two (self-eval finding, 2026-08-10).
+        [Fact]
+        public void RejectAndPatchEventsMergeIntoOneToolGroup()
+        {
+            _recorder.RecordRetrieval(Sample("ses_a", "tsk_1", "validate_patch", tokens: 50));
+            _recorder.RecordPatch(SamplePatch("ses_a", "tsk_1", tokens: 150));
+
+            var byTool = _metrics.Read("global", null, null, null, "tool");
+            var patchGroup = Assert.Single(byTool.Groups, g => g.Key == "validate_patch");
+            Assert.Equal(2, patchGroup.Calls);
+            Assert.Equal(200, patchGroup.TokensReturned);
+        }
 
     private static TelemetryRecorder.PatchEvent SamplePatch(string session, string task, int tokens,
         string? toolCallId = null) =>

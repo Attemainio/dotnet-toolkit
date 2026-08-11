@@ -45,13 +45,20 @@ public readonly record struct SymbolComponents
 
     private readonly HashSet<string> _set;
 
-    private SymbolComponents(HashSet<string> set, SourceQuery? sourceQuery = null)
+    private SymbolComponents(HashSet<string> set, SourceQuery? sourceQuery = null, bool isAll = false)
     {
         _set = set;
         SourceQuery = sourceQuery ?? SourceQuery.Full;
+        IsAll = isAll;
     }
 
+    // Distinguishes "all" from a component list that happens to include Members: only under "all" is a
+    // member row's contentVersion worth its tokens, since a read-only members-only call never uses it and
+    // an about-to-edit call re-fetches the member itself before patching anyway (see the write skill).
+    public bool IsAll { get; init; }
+
     public bool Has(string component) => _set is not null && _set.Contains(component);
+
 
     /// <summary>
     /// The resolved <see cref="Contracts.SourceQuery"/> to render <see cref="Source"/> with — meaningless
@@ -119,7 +126,8 @@ public readonly record struct SymbolComponents
             return new SymbolComponents(new HashSet<string>(Standard, StringComparer.Ordinal));
 
         if (string.Equals(trimmed, "all", StringComparison.OrdinalIgnoreCase))
-            return new SymbolComponents(new HashSet<string>(All, StringComparer.Ordinal));
+            return new SymbolComponents(new HashSet<string>(All, StringComparer.Ordinal), isAll: true);
+
 
         var set = new HashSet<string>(StringComparer.Ordinal);
         SourceQuery? sourceQuery = null;

@@ -127,7 +127,7 @@ matrix keeps one for this. For each hit, run **both** routes to the same stated 
 | `L…` with a large `O…` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source"` |
 | `L…` with a small `O…` | what this member does | `include: "source:code"` whole | `bodyOutline` → `source:code@a-b` |
 | `M…` | what is on this type | `include: "members"` | `include: "source"` |
-| `N…` | what is nested inside | `get_scope` on the file | `include: "source"` |
+| `N…` | what is nested inside | `include: "members"` | `include: "source"` |
 | `D…` | the implementation only | `include: "source:code"` | `include: "source:full"` |
 | `C…` | what the body does | `include: "source:code-comments"` | `include: "source:code"` |
 | `A…` | which attributes it carries | `include: "attributes"` | `include: "source"` |

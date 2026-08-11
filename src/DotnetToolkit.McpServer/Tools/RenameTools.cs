@@ -241,7 +241,14 @@ public static class RenameTools
             }
 
             var files = await FileSummariesAsync(solution, forked, changedDocs, oldName, locator, cancellationToken);
-            var newSymbol = RenamedSymbolId(detected, target, oldSymbolId, bare);
+            // A collision (renaming to a name already in scope) is not rejected up front - Roslyn's Renamer
+            // just renames the syntax and lets the resulting duplicate surface as a compile error (CS0102/
+            // CS0229) below. Every symbol id is a hash of its fully-qualified name, so in that case the
+            // rewritten symbol's id is IDENTICAL to the pre-existing symbol's id it collided with - there is
+            // no way to compute a distinct id for it. Only resolve/expose it once the ladder actually
+            // succeeded; on failure the id would silently identify the wrong symbol (self-eval, 2026-08-10).
+            var newSymbol = ladder.Succeeded ? RenamedSymbolId(detected, target, oldSymbolId, bare) : null;
+
 
             var response = new
             {
@@ -259,12 +266,15 @@ public static class RenameTools
                 membersRekeyed = membersRekeyed == 0 ? (int?)null : membersRekeyed,
                 detectedChanges = reported.Select(c => new
                 {
-                    symbolId = c.SymbolId,
+                    // Same reason newSymbol above is gated on ladder.Succeeded: on a failed rename this id
+                    // can alias a different, pre-existing symbol rather than identify the one just renamed.
+                    symbolId = ladder.Succeeded ? c.SymbolId : null,
                     previousSymbolId = c.OldSymbolId == c.SymbolId ? null : c.OldSymbolId,
                     changeKinds = c.Kinds.Select(k => k.Wire()).ToList(),
                     apiImpact = c.ApiImpact,
                     declarationSites = c.NewSymbol is null ? null : ContextTools.DeclarationSites(c.NewSymbol, locator),
                 }),
+
                 ladder = new
                 {
                     completedLevel = ladder.Completed.Wire(),

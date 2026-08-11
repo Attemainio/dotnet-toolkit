@@ -312,7 +312,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 // "what is in here", which is the question a whole-source fetch is usually a blunt way
                 // of asking — so the guard costs a round trip only when it guessed wrong.
                 var instead = sym is INamedTypeSymbol ? SymbolComponents.Members : SymbolComponents.BodyOutline;
+                // Carries the caller's original include:"all" intent through the substitution: without this,
+                // a member row served here never had a leaseable contentVersion even when "all" was explicitly
+                // requested, because "members" alone resolves with IsAll false (self-eval follow-up, 2026-08-11).
                 var guardParts = SymbolComponents.Resolve(instead, out _)!.Value;
+                if (parts.IsAll)
+                    guardParts = guardParts with { IsAll = true };
+
                 var guardContent = await BuildContent(sym, guardParts, solution, locator, symbolStore, indexBuilder, featureLog);
                 var guardVersion = FullVersionOf(sym, symbolStore).Narrow(guardParts.RequiredLayers).ToString();
                 var guarded = Formats.ToJson(new
@@ -1119,8 +1125,10 @@ private static async Task<object> BuildContent(
             // Narrowed to decl, matching what a member ROW actually serves: a name, a location and a shape,
             // never a body. VersionOf computes both layers, so handing its token over unnarrowed leased a
             // body this response never showed - the exact thing unleased_body exists to prevent, and the
-            // opposite of what the line above it had claimed since it was written.
-            contentVersion = VersionOf(row.Symbol).Narrow(["decl"]).ToString(),
+            // opposite of what the line above it had claimed since it was written. Emitted only under
+            // include:"all": a read-only members-only call never uses it, and an about-to-edit call
+            // re-fetches the member itself for its body version anyway (self-eval finding, 2026-08-10).
+            contentVersion = components.IsAll ? VersionOf(row.Symbol).Narrow(["decl"]).ToString() : null,
         }).ToArray();
         var memberShapeLegend = memberRows?.Any(row => row.Site is { } s && SymbolShape.For(s.Facts) is not null) == true
             ? SymbolShape.Legend

@@ -40,13 +40,11 @@ public static class CheckReport
         var analyzers = ladder.Analyzers;
         var notAssessed = new List<string>();
 
-        if ((int)ladder.Completed < (int)ValidationLadder.MaxSupported)
-        {
-            var skipped = Enumerable
-                .Range((int)ladder.Completed + 1, (int)ValidationLadder.MaxSupported - (int)ladder.Completed)
-                .Select(i => ((ValidationLevel)i).Wire());
-            notAssessed.Add($"levels not run: {string.Join(", ", skipped)}");
-        }
+        // Which rungs above ladder.Completed didn't run is already derivable from `levels` below (the fixed
+        // parse→semantic_bind→project_compile→dependent_compile→targeted_tests→solution_validate order is
+        // documented on validate_patch itself) - restating it here cost ~20 tokens on every response for
+        // information the caller already held (self-eval finding, 2026-08-10). The analyzer-scope caveat
+        // below stays: which DOCUMENTS were analyzed is not otherwise stated anywhere in the response.
 
         if (analyzers is null || !analyzers.Ran)
         {

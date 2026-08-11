@@ -736,6 +736,31 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains(items, i => i.Contains("SpinTwice"));  // the extension method
     }
 
+    [Fact]
+    public async Task GetScope_Paging_ReachesItemsPastTheFirstPage()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.Pipeline.Deep"));
+        var site = sym.GetProperty("content").GetProperty("declarationSites")[0];
+        var line = site.GetProperty("startLine").GetInt32();
+
+        var first = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
+            file: "Lib/Pipeline.cs", line: line, column: 40, receiver: "_widget", filter: "methods", limit: 1));
+        var total = first.GetProperty("totalItems").GetInt32();
+        Assert.True(total >= 2, $"fixture needs a receiver with >=2 in-scope methods, got {total}");
+        Assert.Single(first.GetProperty("items").EnumerateArray());
+        Assert.True(first.GetProperty("truncated").GetBoolean());
+        Assert.Equal(1, first.GetProperty("nextOffset").GetInt32());
+
+        var second = Root(await FlowTools.GetScope(_f.Workspace, _f.Locator, _f.Telemetry,
+            file: "Lib/Pipeline.cs", line: line, column: 40, receiver: "_widget", filter: "methods",
+            limit: 1, offset: 1));
+        Assert.Equal(1, second.GetProperty("offset").GetInt32());
+        Assert.NotEqual(
+            first.GetProperty("items")[0].GetProperty("displayString").GetString(),
+            second.GetProperty("items")[0].GetProperty("displayString").GetString());
+    }
+
+
     /// <summary>
     /// Roslyn's LookupSymbols answers a position with the synthesized top-level-statements entry point's
     /// locals no matter which file the position is in, so "what is callable here" has to discard any local
@@ -1637,6 +1662,26 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal(2, root.GetProperty("membersRekeyed").GetInt32());
     }
 
+    [Fact]
+    public async Task RenameSymbol_CollidingMemberName_OmitsTheAliasedSymbolId()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Doubled",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+
+        // Renaming Seed to Doubled collides with the pre-existing Doubled() of the same signature. A
+        // symbol id is a hash of its fully-qualified name, so the rewritten symbol's id is IDENTICAL
+        // to the pre-existing one it collided with - exposing it would silently point a caller at the
+        // wrong member (self-eval finding, 2026-08-10).
+        Assert.False(root.GetProperty("rename").TryGetProperty("newSymbolId", out _));
+        foreach (var change in root.GetProperty("detectedChanges").EnumerateArray())
+            Assert.False(change.TryGetProperty("symbolId", out _));
+    }
+
+
     /// <summary>
     /// The tool's advice is to put every term in one call, so one call has to answer for each of them:
     /// each term takes a floor share of limit before the globally ranked union spends the remainder.
@@ -2458,15 +2503,23 @@ public sealed class WorkspaceIntegrationTests
     /// not lease one. Leasing what was never served is exactly what unleased_body exists to prevent.
     /// </summary>
     [Fact]
-    public async Task GetSymbol_Members_LeaseDeclarationsOnly()
+    public async Task GetSymbol_Members_ContentVersionOnlyUnderIncludeAll()
     {
-        var rows = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "members"))
+        // A member row's contentVersion is narrowed to decl and is only worth its tokens when the caller
+        // is about to edit (include:"all"): a plain members-only fetch never patches from the row directly
+        // (self-eval finding, 2026-08-10).
+        var membersOnly = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "members"))
             .GetProperty("content").GetProperty("members"));
+        Assert.NotEmpty(membersOnly);
+        Assert.All(membersOnly, row => Assert.False(row.ContainsKey("contentVersion")));
 
-        Assert.NotEmpty(rows);
-        Assert.All(rows, row => Assert.DoesNotContain(
+        var all = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "all"))
+            .GetProperty("content").GetProperty("members"));
+        Assert.NotEmpty(all);
+        Assert.All(all, row => Assert.DoesNotContain(
             "body:", row["contentVersion"].GetString() ?? "", StringComparison.Ordinal));
     }
+
 
     /// <summary>
     /// A branch the per-node cap left unexpanded hides the depths past it exactly as maxDepth does, so it

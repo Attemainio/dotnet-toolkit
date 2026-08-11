@@ -52,7 +52,9 @@ public static class FlowTools
             [Description("all | methods | properties | locals | types (default all). An unrecognized value matches everything (same as \"all\") rather than erroring, and the response's filterHint names what it probably was.")] string filter = "all",
         [Description("Optional case-insensitive substring filter on the name.")] string? nameContains = null,
         [Description("Max results (default 40, cap 200).")] int limit = 40,
+        [Description("Items to skip in the fair (round-robin-across-origins) order before taking limit (default 0). Pass the previous response's nextOffset to reach the results past the page you already have.")] int offset = 0,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
+
     {
         var sessionId = Ids.AmbientSession;
         var attributedTask = Ids.TaskId(taskId);
@@ -138,7 +140,9 @@ public static class FlowTools
             .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
             .ToList();
 
-        var items = TakeAcrossOrigins(ranked, Math.Clamp(limit, 1, 200))
+        var pageSize = Math.Clamp(limit, 1, 200);
+        var skipped = Math.Clamp(offset, 0, ranked.Count);
+        var items = TakeAcrossOrigins(ranked, skipped, pageSize)
             .Select(t =>
             {
                 var s = t.Symbol;
@@ -161,16 +165,22 @@ public static class FlowTools
                 };
             })
             .ToList();
+        var nextOffset = skipped + items.Count;
+        var truncated = nextOffset < ranked.Count;
 
         var json = Formats.Render(new
         {
             position = new { file, line },
             receiverType = receiverTypeName,
                 filterHint,
-            totalItems = ranked.Count > items.Count ? (int?)ranked.Count : null,
-            truncated = ranked.Count > items.Count ? (bool?)true : null,
+            totalItems = ranked.Count,
+            offset = skipped > 0 ? (int?)skipped : null,
+            nextOffset = truncated ? (int?)nextOffset : null,
+            truncated = truncated ? (bool?)true : null,
             items,
         });
+
+
 
 
         return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_scope",
@@ -784,8 +794,8 @@ public static class FlowTools
     }
 
     /// <summary>
-    /// Takes up to <paramref name="limit"/> items, round-robin across origin groups in rank order, so one
-    /// crowded origin cannot spend the whole budget.
+    /// Takes up to <paramref name="limit"/> items starting at <paramref name="offset"/>, round-robin
+    /// across origin groups in rank order, so one crowded origin cannot spend the whole budget.
     /// </summary>
     /// <remarks>
     /// Rank-then-alphabetical order alone buried this tool's own value proposition: on a
@@ -794,20 +804,35 @@ public static class FlowTools
     /// grep genuinely cannot answer -- appeared at that limit or at the default one.
     /// </remarks>
     /// <param name="ranked">Every in-scope symbol, already ordered by origin rank, then source-first, then name.</param>
+    /// <param name="offset">Items to skip in the fair order before taking <paramref name="limit"/>.</param>
     /// <param name="limit">How many items the response may carry.</param>
-    /// <returns>The chosen items, back in that same order.</returns>
+    /// <returns>The chosen items, back in canonical (rank-then-alphabetical) order.</returns>
     private static List<(ISymbol Symbol, string Origin)> TakeAcrossOrigins(
-        List<(ISymbol Symbol, string Origin)> ranked, int limit)
+        List<(ISymbol Symbol, string Origin)> ranked, int offset, int limit)
     {
-        if (ranked.Count <= limit)
+        if (offset == 0 && ranked.Count <= limit)
             return ranked;
 
-        // Grouped by origin AND by whether System.Object declares the member. The round-robin hands
-        // every group it walks a share per round, so grouping by origin alone gave object's members --
-        // all one origin (inherited) -- a full share however many of the receiver's own methods were
-        // waiting: 6 of 15 rows on the specimen that found this. Ordering that group last is NOT
-        // enough, because a later group still draws once per round; it has to be held back as a
-        // RESERVE tier, walked only once every other group is exhausted and budget is still unspent.
+        var page = FairOrder(ranked).Skip(offset).Take(limit).ToList();
+
+        return page
+            .OrderBy(t => ObjectRank(t.Symbol))
+            .ThenBy(t => OriginRank(t.Origin))
+            .ThenBy(t => SourceRank(t.Symbol))
+            .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The full fair generation order underlying <see cref="TakeAcrossOrigins"/>: every item exactly
+    /// once, round-robin across origin groups, System.Object's members held back as a reserve tier.
+    /// </summary>
+    /// <remarks>
+    /// Computed in full rather than capped at a page size, so offset/limit can slice ANY page out of
+    /// the same fair order rather than only ever answering for the first one.
+    /// </remarks>
+    private static List<(ISymbol Symbol, string Origin)> FairOrder(List<(ISymbol Symbol, string Origin)> ranked)
+    {
         var groups = ranked
             .GroupBy(t => (t.Origin, Object: ObjectRank(t.Symbol)))
             .OrderBy(g => g.Key.Object)
@@ -815,37 +840,20 @@ public static class FlowTools
             .Select(g => (g.Key.Object, Items: g.ToList()))
             .ToList();
 
-        var taken = new List<(ISymbol Symbol, string Origin)>(limit);
+        var ordered = new List<(ISymbol Symbol, string Origin)>(ranked.Count);
         Fill(0);
         Fill(1);
+        return ordered;
 
         void Fill(int tier)
         {
             var walked = groups.Where(g => g.Object == tier).Select(g => g.Items).ToList();
-            for (var round = 0; taken.Count < limit; round++)
-            {
-                var addedThisRound = false;
+            var rounds = walked.Count == 0 ? 0 : walked.Max(g => g.Count);
+            for (var round = 0; round < rounds; round++)
                 foreach (var group in walked)
-                {
-                    if (round >= group.Count)
-                        continue;
-
-                    taken.Add(group[round]);
-                    addedThisRound = true;
-                    if (taken.Count == limit)
-                        break;
-                }
-
-                if (!addedThisRound)
-                    break;
-            }
+                    if (round < group.Count)
+                        ordered.Add(group[round]);
         }
-
-        return taken
-            .OrderBy(t => ObjectRank(t.Symbol))
-            .ThenBy(t => OriginRank(t.Origin))
-            .ThenBy(t => SourceRank(t.Symbol))
-            .ThenBy(t => t.Symbol.Name, StringComparer.Ordinal)
-            .ToList();
     }
+
 }
