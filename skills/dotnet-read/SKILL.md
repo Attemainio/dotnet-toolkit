@@ -80,7 +80,7 @@ it off `shape`'s `N` count. If you don't yet know a real identifier or domain no
 this project's `README.md` (or `CLAUDE.md` if there is no `README.md`) before the first `search_index`
 call — both are plain Markdown, not `.cs`, so this skill's tools don't apply to them.
 
-A hit's `lines` is an `@from-to` selector — the same one `get_symbol`'s `source` include takes, so it
+A hit's `lines` is an `@from-to` selector — the same one `get_symbol`'s `source` argument takes, so it
 pastes straight into the next call. It marks the **signature span only** and excludes a leading `///`
 doc comment. The `@` is what says "read slice": `validate_patch` takes a bare `"N-M"`, and an edit
 anchored here would silently drop the doc comment. Use `get_symbol`'s `declarationSites` for that.
@@ -153,9 +153,22 @@ the doc comment; `signatureLine` is where the declaration itself begins, and mat
 `startLine`". Answering "declared at line 3" when the `class` keyword is on line 7 is the mistake it
 exists to prevent.
 
-`include` picks the components and replaces the default set: `members` for a type's surface,
-`source:code` to read source without doc comments, `source:code@120-160` for one region of a long
-member, `bodyOutline` to map a member before slicing it, `all` when about to edit.
+**`include` and `source` are two arguments with one grammar each**, and that is the whole point:
+`include` is a plain comma list of component names that only ever **adds**, and `source` is the source
+query that only ever **subtracts**. No `-` ever appears in `include`; no component name ever appears
+in `source`.
+
+```
+include: "members"                      a type's surface
+source:  "code"                         the source without doc comments
+source:  "code@120-160"                 one region of a long member
+source:  "full-exact@120-121"           an exact slice, for anchoring an edit
+include: "all"                          about to edit
+source: "code", include: "xmlDoc"       both — they union
+```
+
+**`source` alone replaces the default set**, so asking for the code does not also drag back members,
+attributes and interfaces. `bodyOutline` maps a member before you slice it.
 
 **An unsliced `source` on a 500+ line declaration is warned about once** rather than served: the
 response carries `members`/`bodyOutline` and a `guard` block naming the size and the cheaper route.
@@ -355,7 +368,7 @@ committed before the note that prevents it was ever read.
 | Guessing a base chain from `get_symbol`'s one-hop `containingType` | `get_type_hierarchy` |
 | Grepping for a helper to find out whether one already exists | `get_scope` at the line you are standing on — it includes inherited and extension methods |
 | Batch `get_symbol(symbols: [...])` used reflexively as "obviously cheaper" at any size | Below roughly n=8–10 it is a wash or a slight loss; the `shared` hoisting block only pays off at scale |
-| Fetching a whole long member to read one region | `get_symbol(include: "bodyOutline")` to map it, then `source:code@120-160` for the region |
+| Fetching a whole long member to read one region | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@120-160"` for the region |
 | `get_symbol(include: "all")` on a read-only pass | The default include, or a named component list — `all` is a write-path lease you have no use for |
 | Opening every `.csproj` to trace references | `get_project_graph` |
 | Reading `git diff` and inferring what changed | `get_semantic_diff` |

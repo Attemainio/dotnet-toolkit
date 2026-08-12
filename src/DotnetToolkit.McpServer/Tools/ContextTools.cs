@@ -1255,19 +1255,27 @@ private static async Task<object> BuildContent(
         // unpopulated field is pure overhead until it carries data.
         return new
         {
-            kind = SymbolKey.KindOf(sym),
+            // Suppressed alongside displayString and modifiers for the same reason: a served signature line
+            // already says "public static string KindOf(...)", and restating the kind beside it is a field the
+            // response can be read without.
+            kind = restatesSignature ? null : SymbolKey.KindOf(sym),
             displayString = restatesSignature ? null : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             // "external": no location in this repo's own solution — a BCL/NuGet symbol resolved via its
             // stored documentation-comment id (see ResolveExternalAsync), never a declaration this repo
-            // walked. Unconditional: cheap, and callers need it to know why declarationSites/source/xmlDoc
-            // came back empty rather than assuming a lookup bug.
-            origin = sym.Locations.Any(l => l.IsInSource) ? "source" : "external",
+            // walked. Callers need it to know why declarationSites/source/xmlDoc came back empty rather than
+            // assuming a lookup bug. Emitted ONLY then: "source" was true of almost every response ever
+            // returned, so it cost a field on all of them to carry information on nearly none. Absent is the
+            // common case and means source, exactly as the shape and refs columns treat their own defaults.
+            origin = sym.Locations.Any(l => l.IsInSource) ? null : "external",
             // A symbol only a source generator declares IS in source by Roslyn's reckoning, so origin says
             // "source" - while DeclarationSites deliberately drops obj/** and hands back an empty array.
             // In source, and nowhere to be found, read together as a lookup bug. Naming it says which of
             // the two it is, and that there is no span to patch because the file is rewritten every build.
             generated = IsGeneratedOnly(sym, locator) ? true : (bool?)null,
-            containingType = ContainingType(sym),
+            // Same suppression: a caller reading source is reading the declaration itself, and knew the
+            // containing type well enough to name the symbol. It stays on every non-source fetch, where it is
+            // the handle for walking up from a hit whose suffix resolved to something unexpected.
+            containingType = restatesSignature ? null : ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
             source = renderedSource,
             // Only when Automatic actually had to choose — an explicit -lineNumbers/-compact already told

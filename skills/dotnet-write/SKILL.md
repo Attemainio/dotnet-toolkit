@@ -142,7 +142,7 @@ you haven't. The write-specific rules are in the loop below.
    **On a 500+ line declaration that fetch is guarded**, and comes back with `members`/`bodyOutline`
    and a `guard: large_source` block instead of the source. That is not an obstacle to route around
    — it is this same step's narrow-slice rule, enforced: take `declarationSites` from what came back
-   and re-fetch the exact target with `include: "source:full-exact@N-M"`, which leases the body just
+   and re-fetch the exact target with `source: "full-exact@N-M"`, which leases the body just
    as a whole fetch does. Repeat the call verbatim only when you genuinely need the whole declaration
    in front of you; that repeat is served in full.
 
@@ -150,7 +150,7 @@ you haven't. The write-specific rules are in the loop below.
    symbol you already read (or read wide to explore), do not scroll the wide response and count rows
    to find their absolute file line — that arithmetic is exactly what produces a patch against the
    wrong span, silently, with no error. Instead, **re-fetch that exact target with a narrow `@`
-   slice** — `include: "source:full-exact@120-121"` — and take `startLine`/`endLine` straight from
+   slice** — `source: "full-exact@120-121"` — and take `startLine`/`endLine` straight from
    what comes back. A sliced `source` narrows `contentVersion` to `decl|body` exactly as a whole fetch
    does, so it leases the body without re-sending the member, and forcing `-exact` guarantees a number
    on every line so there is nothing left to count. Only when the edit's real boundary is ambiguous
@@ -158,7 +158,7 @@ you haven't. The write-specific rules are in the loop below.
    line or two — never by re-deriving the number from the original wide fetch.
 
    **Whatever you fetch, do not anchor a patch on a stripped one**: `-comments`, `-attributes` and
-   `source:code` on a *type* drop lines from the response but not from the file, and `newText`
+   `source: "code"` on a *type* drops lines from the response but not from the file, and `newText`
    replaces its span verbatim — so the lines you never saw are deleted. Strip on the read pass, fetch
    unstripped on the write pass.
 2. **Know the blast radius.** If you are changing a signature, accessibility, base type or interface,

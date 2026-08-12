@@ -627,7 +627,10 @@ public sealed class WorkspaceIntegrationTests
         // "changed" is omitted when content is present — its presence is the signal.
         Assert.False(root.TryGetProperty("changed", out _));
         Assert.StartsWith("decl:", root.GetProperty("contentVersion").GetString());
-        Assert.Equal("Interface", root.GetProperty("content").GetProperty("kind").GetString());
+        // include:"all" serves the source, and kind is suppressed alongside displayString and modifiers
+        // whenever a served signature line already states it.
+        Assert.True(root.GetProperty("content").TryGetProperty("source", out _));
+        Assert.False(root.GetProperty("content").TryGetProperty("kind", out _));
         // IWidget is implemented by Widget and TurboWidget.
         Assert.Equal(2, root.GetProperty("content").GetProperty("referenceCounts").GetProperty("implementations").GetInt32());
     }
@@ -2313,12 +2316,16 @@ public sealed class WorkspaceIntegrationTests
         Assert.Empty(resolved.GetProperty("content").GetProperty("declarationSites").EnumerateArray());
     }
 
-    /// <summary>A source symbol's origin still reads "source", unaffected by external indexing.</summary>
+    /// <summary>
+    /// A source symbol carries NO origin field: absent means "declared in this solution", which is almost
+    /// every response, so stating it cost a field on all of them to carry information on nearly none. Only
+    /// "external" is worth saying, because only it explains empty declarationSites/source/xmlDoc.
+    /// </summary>
     [Fact]
-    public async Task GetSymbol_SourceSymbol_OriginReadsSource()
+    public async Task GetSymbol_SourceSymbol_OmitsOriginEntirely()
     {
         var root = Root(await GetSymbol("Sample.Lib.Widget"));
-        Assert.Equal("source", root.GetProperty("content").GetProperty("origin").GetString());
+        Assert.False(root.GetProperty("content").TryGetProperty("origin", out _));
     }
 
     [Fact]
