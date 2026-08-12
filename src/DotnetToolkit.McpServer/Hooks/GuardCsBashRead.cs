@@ -33,15 +33,26 @@ internal static class GuardCsBashRead
             return HookOutcome.Allow;
         }
 
+        var workingDirectory = context.WorkingDirectory;
+
         foreach (var segment in BashCommandScanner.Segments(command))
         {
+            // A cd earlier in the same command changes what a later relative path means. Resolved against
+            // the hook's own directory instead, `cd ../other-repo && grep -rn x .` was denied as a read of
+            // THIS repo, citing a csproj from a repository the command had already left.
+            if (BashCommandScanner.CdTarget(segment) is { } moved)
+            {
+                workingDirectory = Path.GetFullPath(Path.Combine(workingDirectory, moved));
+                continue;
+            }
+
             var name = BashCommandScanner.CommandName(segment);
             if (name is null || !context.ReadBlocklist.Contains(name))
             {
                 continue;
             }
 
-            if (NamedCompiledFile(segment, context) is { } named)
+            if (NamedCompiledFile(segment, context, workingDirectory) is { } named)
             {
                 return HookOutcome.Deny(FileMessage(name, named.Argument, named.Project, context));
             }
@@ -50,7 +61,7 @@ internal static class GuardCsBashRead
             // and it reads every compiled file under the directory rather than one. Left unguarded, the
             // broader read was the one that got through: `grep -rn "x" --include=*.cs src/` carried its
             // only .cs token inside an option flag, which FindCsArgument discards as a flag.
-            if (ScannedProject(segment, name, context) is { } scanned)
+            if (ScannedProject(segment, name, context, workingDirectory) is { } scanned)
             {
                 return HookOutcome.Deny(TreeMessage(name, scanned.Target, scanned.Project, context));
             }
@@ -70,9 +81,10 @@ internal static class GuardCsBashRead
 
     /// <summary>The compiled <c>.cs</c> file a segment names outright, if it names one.</summary>
     /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>
-    /// <param name="context">The repo root and working directory to resolve against.</param>
+    /// <param name="context">The repo root the guard is scoped to.</param>
+    /// <param name="workingDirectory">The directory this segment runs in, after any earlier <c>cd</c>.</param>
     /// <returns>The argument as written and its owning project, or null when neither applies.</returns>
-    private static (string Argument, string Project)? NamedCompiledFile(string segment, HookContext context)
+    private static (string Argument, string Project)? NamedCompiledFile(string segment, HookContext context, string workingDirectory)
     {
         var argument = BashCommandScanner.FindCsArgument(segment);
         if (argument is null)
@@ -80,8 +92,8 @@ internal static class GuardCsBashRead
             return null;
         }
 
-        var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, argument));
-        if (!File.Exists(absolute))
+        var absolute = Path.GetFullPath(Path.Combine(workingDirectory, argument));
+        if (!File.Exists(absolute) || !IsUnderRoot(absolute, context.Root))
         {
             return null;
         }
@@ -91,21 +103,38 @@ internal static class GuardCsBashRead
             : null;
     }
 
+    /// <summary>Whether a resolved path lies inside the repo this guard speaks for.</summary>
+    /// <param name="absolute">An already-resolved absolute path.</param>
+    /// <param name="root">The repo root from <see cref="HookContext"/>.</param>
+    /// <returns>True when the path is the root or sits under it.</returns>
+    /// <remarks>
+    /// The guard's whole justification is that THIS repo's MCP tools answer the read better, which says
+    /// nothing about a sibling checkout the server is not pointed at. Checking before enumerating also keeps
+    /// the hook from walking an unrelated tree on every command.
+    /// </remarks>
+    private static bool IsUnderRoot(string absolute, string root)
+    {
+        var bounded = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        return string.Equals(absolute, root, StringComparison.OrdinalIgnoreCase)
+            || absolute.StartsWith(bounded, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>The first compiled <c>.cs</c> file a recursive or glob-scoped segment would reach.</summary>
     /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>
     /// <param name="name">The segment's command name, which decides whether it recurses by default.</param>
-    /// <param name="context">The repo root and working directory to resolve against.</param>
+    /// <param name="context">The repo root the guard is scoped to.</param>
+    /// <param name="workingDirectory">The directory this segment runs in, after any earlier <c>cd</c>.</param>
     /// <returns>
     /// The directory as written and the project compiling something under it, or null when the segment
     /// scans no tree or the trees it scans hold nothing compiled — which is what keeps a search over
     /// docs/ or a non-project folder unaffected.
     /// </returns>
-    private static (string Target, string Project)? ScannedProject(string segment, string name, HookContext context)
+    private static (string Target, string Project)? ScannedProject(string segment, string name, HookContext context, string workingDirectory)
     {
         foreach (var root in BashCommandScanner.CsScanRoots(segment, recursesByDefault: name is "rg" or "ag"))
         {
-            var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, root));
-            if (!Directory.Exists(absolute))
+            var absolute = Path.GetFullPath(Path.Combine(workingDirectory, root));
+            if (!Directory.Exists(absolute) || !IsUnderRoot(absolute, context.Root))
             {
                 continue;
             }

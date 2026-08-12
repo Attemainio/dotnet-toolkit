@@ -37,9 +37,24 @@ public sealed class HookRepoFixture : IDisposable
 
         Directory.CreateDirectory(Path.Combine(Root, "loose"));
         File.WriteAllText(Path.Combine(Root, "loose", "NoProject.cs"), "class NoProject;");
+
+        // A separate checkout the guard must not speak for. Same shape as Root -- solution, project, a
+        // compiled .cs -- so a command that reaches it is only allowed because it is somewhere else, not
+        // because there was nothing there to find.
+        Sibling = Path.Combine(Path.GetTempPath(), "dotnet-toolkit-sibling-" + Guid.NewGuid().ToString("N"));
+        var siblingProject = Path.Combine(Sibling, "src", "Other");
+        Directory.CreateDirectory(siblingProject);
+        File.WriteAllText(Path.Combine(Sibling, "Other.slnx"), "<Solution />");
+        File.WriteAllText(
+            Path.Combine(siblingProject, "Other.csproj"),
+            """<Project Sdk="Microsoft.NET.Sdk" />""");
+        File.WriteAllText(Path.Combine(siblingProject, "Elsewhere.cs"), "class Elsewhere;");
     }
 
     public string Root { get; }
+
+    /// <summary>A second repo tree, deliberately NOT under <see cref="Root"/>.</summary>
+    public string Sibling { get; }
 
     public string CompiledFile => Path.Combine(Root, "src", "App", "Compiled.cs");
 
@@ -57,6 +72,7 @@ public sealed class HookRepoFixture : IDisposable
         try
         {
             Directory.Delete(Root, recursive: true);
+            Directory.Delete(Sibling, recursive: true);
         }
         catch (IOException)
         {
@@ -257,6 +273,32 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
         Assert.Equal(
             HookOutcome.Allow,
             GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    /// <summary>
+    /// A cd earlier in the same command decides what a later relative path means. Resolved against the
+    /// hook's own directory instead, a search of an unrelated checkout was denied as a read of THIS repo,
+    /// in a message naming a project the command had already left.
+    /// </summary>
+    [Fact]
+    public void Evaluate_TreeScanAfterCdIntoAnotherRepo_Allows()
+    {
+        var command = $"cd {_repo.Sibling} && grep -rn \"Alpha\" .";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    /// <summary>The cd is honoured, not treated as a way out: one INTO this repo still guards what it reaches.</summary>
+    [Fact]
+    public void Evaluate_TreeScanAfterCdWithinTheRepo_StillDenies()
+    {
+        var outcome = GuardCsBashRead.Evaluate(
+            new HookPayload("Bash", null, "cd src && grep -rn \"Alpha\" ."), _repo.Context());
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("searching", outcome.Stderr);
     }
 
     /// <summary>

@@ -121,6 +121,32 @@ internal static class BashCommandScanner
         return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
     }
 
+    /// <summary>The directory a <c>cd</c> segment moves to, or null when the segment is not a <c>cd</c>.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>The target as written, or null when the segment is not a cd or names no target.</returns>
+    /// <remarks>
+    /// Segments are scanned independently, so without this a later segment's relative path resolves against
+    /// the hook process's own directory rather than the one the command actually runs in -- which is how a
+    /// search of an unrelated repository got attributed to this one.
+    /// </remarks>
+    public static string? CdTarget(string segment)
+    {
+        if (!string.Equals(CommandName(segment), "cd", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        foreach (var token in Tokenize(segment).Skip(1))
+        {
+            if (!token.StartsWith('-'))
+            {
+                return token;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>The last <c>.cs</c>-suffixed argument in a segment, ignoring option flags.</summary>
     /// <param name="segment">One segment from <see cref="Segments"/>.</param>
     /// <returns>The path token as written, or null when the segment names no <c>.cs</c> file.</returns>

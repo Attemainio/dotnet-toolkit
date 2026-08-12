@@ -1540,13 +1540,14 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task ValidatePatch_BodyChange_AppliesAndLogsOnce_C12()
     {
-        // The fixture runs on a throwaway temp copy, so this apply's disk write is discarded on dispose.
+        // This apply reaches DISK, and every test in this class shares one fixture copy. Being the only test
+        // that EDITS Widget.Spin is not isolation -- ValidatePatch_FindReplace_* search its body for
+        // "turns * 2", so they break on whichever ordering runs them after this. Undone in the finally.
         var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
         var version = sym.GetProperty("contentVersion").GetString()!;
         // Scoped by symbolId rather than a unique taskId (task ids are no longer a caller-facing
-        // concept - every call in this process shares one ambient session id), so isolation from other
-        // tests comes from this being the only test that edits Widget.Spin.
+        // concept - every call in this process shares one ambient session id).
         var before = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
 
         var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 3;") };
@@ -1555,11 +1556,18 @@ public sealed class WorkspaceIntegrationTests
             new Dictionary<string, string> { [symbolId] = version }, edits,
             requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
 
-        Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean(), root.GetRawText());
-        Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+        try
+        {
+            Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean(), root.GetRawText());
+            Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
 
-        var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
-        Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
+            var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
+            Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
+        }
+        finally
+        {
+            await RestoreSpinBodyAsync();
+        }
     }
 
     [Fact]
@@ -1601,8 +1609,11 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task RenameSymbol_AppliesRewritesEveryReferenceAndLogsOnce()
     {
-        // The fixture runs on a throwaway temp copy, so this apply's disk write is discarded on dispose.
-        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
+        // This apply reaches DISK, and every test in this class shares one fixture copy, so the target has to
+        // be one nothing else reads: RenameApplySample exists only for this test. Aimed at RenameSample, it
+        // broke whichever sibling xUnit scheduled next -- an order that moves whenever the assembly changes,
+        // so the failure looked unrelated and landed on a different test each build.
+        var sym = Root(await GetSymbol("Sample.Lib.RenameApplySample.Seed"));
         var root = Root(await RenameSymbolCall(
             sym.GetProperty("symbolId").GetString()!, "Origin",
             sym.GetProperty("contentVersion").GetString()!,
@@ -1614,7 +1625,7 @@ public sealed class WorkspaceIntegrationTests
         var rename = root.GetProperty("rename");
         Assert.Equal("Origin", rename.GetProperty("newName").GetString());
         Assert.Equal(1, rename.GetProperty("filesChanged").GetInt32());
-        // The declaration plus every reference: Doubled(), RenameSampleUser.Use, and the <see cref="Seed"/>.
+        // The declaration plus every reference: Doubled(), RenameApplySampleUser.Use, and the <see cref="Seed"/>.
         Assert.True(rename.GetProperty("occurrencesRewritten").GetInt32() >= 3, root.GetRawText());
 
         // The apply is only half the point — a rename that reaches disk without a development-log entry
@@ -1767,6 +1778,30 @@ public sealed class WorkspaceIntegrationTests
             symbol, newName, baseVersion, applyOnSuccess, intent,
             renameOverloads: false, renameInComments: renameInComments, renameInStrings: false,
             requestedLevel: null, tags: null, taskId: null);
+
+    /// <summary>Puts Widget.Spin's body back to its fixture text after the one test that applies a change to it.</summary>
+    /// <remarks>
+    /// Every test in this class shares one fixture copy, and ValidatePatch_FindReplace_* search Widget.Spin's
+    /// body for its original text. Unlike a rename, the symbol's NAME is unchanged by that apply, so the undo
+    /// can resolve its target normally and go back through validate_patch -- which keeps disk, the MSBuild
+    /// workspace and the symbol index in agreement, where rewriting the file alone would not.
+    /// </remarks>
+
+    /// <summary>Puts Widget.Spin's body back to its fixture text, for the same reason as <see cref="RestoreRenameAsync"/>.</summary>
+    private async Task RestoreSpinBodyAsync()
+    {
+        var patched = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
+        var restore = Root(await ContextToolsValidate(
+            new Dictionary<string, string>
+            {
+                [patched.GetProperty("symbolId").GetString()!] = patched.GetProperty("contentVersion").GetString()!,
+            },
+            [new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 2;")],
+            applyOnSuccess: true, intent: "restore the shared fixture for sibling tests"));
+
+        Assert.True(restore.GetProperty("applied").GetBoolean(),
+            $"fixture restore failed; every sibling test reading Widget.Spin will now fail too: {restore.GetRawText()}");
+    }
 
     /// <summary>
     /// An identity edit (newText identical to what's already on disk) makes ChangeClassifier report no
@@ -2555,11 +2590,27 @@ public sealed class WorkspaceIntegrationTests
         Assert.NotEmpty(membersOnly);
         Assert.All(membersOnly, row => Assert.False(row.ContainsKey("contentVersion")));
 
-        var all = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "all"))
-            .GetProperty("content").GetProperty("members"));
-        Assert.NotEmpty(all);
-        Assert.All(all, row => Assert.DoesNotContain(
-            "body:", row["contentVersion"].GetString() ?? "", StringComparison.Ordinal));
+        // A member row only appears under include:"all" when the large-source guard substitutes members for
+        // source -- otherwise source is served and members are suppressed, so content.members is absent and
+        // there is no lease to check. Nothing in the fixture is within two orders of magnitude of the
+        // 500-line default, so the threshold is lowered for this call instead. Reset() clears any earlier
+        // acknowledgement, since a repeat of the same fetch is exactly how a caller overrides the guard.
+        var originalThreshold = ResponseGuard.LineThreshold;
+        ResponseGuard.LineThreshold = 1;
+        ResponseGuard.Reset();
+        try
+        {
+            var all = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "all"))
+                .GetProperty("content").GetProperty("members"));
+            Assert.NotEmpty(all);
+            Assert.All(all, row => Assert.DoesNotContain(
+                "body:", row["contentVersion"].GetString() ?? "", StringComparison.Ordinal));
+        }
+        finally
+        {
+            ResponseGuard.LineThreshold = originalThreshold;
+            ResponseGuard.Reset();
+        }
     }
 
 
