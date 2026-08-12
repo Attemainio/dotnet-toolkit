@@ -22,7 +22,7 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read
 model: haiku
-color: gray
+color: green
 ---
 
 You are one half of a token-cost comparison run by `dotnet-performance`. Your half plays a session

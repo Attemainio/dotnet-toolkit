@@ -10,7 +10,7 @@ description: >
   directly, and never for a real task. Read-only: it cannot edit.
 tools: Read, Grep, Glob, Bash
 model: haiku
-color: gray
+color: orange
 ---
 
 You are one half of a token-cost comparison run by `dotnet-performance`. Your half plays a session
