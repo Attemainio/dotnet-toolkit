@@ -720,8 +720,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "reads what is in it. A hit's lines is an @from-to READ selector (paste it into get_symbol's source "
         + "include) marking the signature span only, EXCLUDING any leading /// doc comment — anchor a patch on "
         + "get_symbol's declarationSites instead. "
-        + "Already know which file? Ask get_symbol for that type with include:\"members\" rather than narrowing "
-        + "this search down to it. include picks each hit's columns -- shape,read,refs,modifiers by default, "
+        + "include picks each hit's columns -- shape,read,refs,modifiers by default, "
         + "plus summary or summary:full -- and every column's legend is stated once per response. intent "
         + "(edit|logic|surface) aims read at what you are about to do. "
         + "An unrecognized value on kinds, modifiers, origin, include, groupBy or intent is named in a "
@@ -734,70 +733,46 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         ProjectIndex index,
         WorkspaceHost workspace,
         TelemetryRecorder telemetry,
-        [Description("Free-text query over symbol names -- matches identifier text, not structural or "
-                + "modifier keywords. query:\"interface\", \"class\", \"partial\", \"record\", \"enum\"... "
-                + "finds a symbol literally named that, almost never what you want. Use kinds for type "
-                + "shape and modifiers for keywords like partial, together with a real identifier or "
-                + "domain term here.")] string query,
-        [Description("Optional kind filter, space/comma-separated: class (alias for type), interface, "
-            + "struct, record, enum, delegate, method, property, field, event. Bare tokens restrict to "
-            + "those kinds (OR); '-' tokens exclude instead. Mixing both forms lets the bare tokens win. "
-            + "An unrecognized value matches nothing rather than erroring, and kindsHint names it when that leaves "
-                + "zero hits. Omit to search every kind. Narrows "
-                + "the ranked query hits, so query still needs a real search term -- kinds:\"interface\" "
-                + "with query:\"interface\" finds nothing unless a symbol is literally named that.")] string? kinds = null,
-        [Description("Optional modifier filter, space/comma-separated: the literal C# keywords (public, "
-            + "private, protected, internal, static, const, readonly, volatile, virtual, abstract, sealed, "
-            + "override, async, extern, partial) plus derived tags extension, indexer, initonly, "
-            + "disposable, asyncdisposable. UNLIKE kinds, bare tokens are AND-ed (a symbol has several "
-            + "modifiers at once), and '-' tokens exclude and COMBINE with them: \"public -sealed\" is "
-            + "public AND NOT sealed. An unrecognized token matches no symbol, and modifiersHint names it when "
-                + "that leaves zero hits. See docs/tools/search_index.md. Omit for no modifier filtering. Narrows "
-                + "the ranked query hits the same way kinds does, so query still needs a real search term -- "
-                + "modifiers:\"partial\" alone still searches query for a symbol literally named that.")] string? modifiers = null,
-        [Description("Optional interface name to filter to its DIRECT implementers only. Narrows the "
-            + "ranked query hits the same way pathPrefix does, so query still needs a real search term. "
-            + "An unresolvable name yields an empty result rather than an error.")] string? implements = null,
-        [Description("Optional filter on which XML doc sections a hit has beyond plain <summary> (use the "
-            + "summary parameter for that). Tokens: summary, returns, remarks, value, inheritdoc, params, "
-            + "typeparams, exceptions. Same AND/exclude grammar as modifiers. Narrows the ranked query "
-            + "hits, so query still needs a real search term. Omit for no doc-section filtering.")] string? xmlDoc = null,
+        [Description("Free-text query over symbol NAMES -- identifier text, not structural keywords. "
+            + "query:\"class\"/\"interface\"/\"partial\" finds a symbol literally NAMED that, almost never "
+            + "what you want: use kinds for type shape and modifiers for keywords, with a real identifier or "
+            + "domain term here.")] string query,
+        [Description("Kind filter, space/comma-separated: class (alias type), interface, struct, record, "
+            + "enum, delegate, method, property, field, event. Bare tokens OR; '-' excludes; bare wins when "
+            + "mixed. Narrows the ranked query hits, so query still needs a real term. kindsHint names an "
+            + "unrecognized token on zero hits.")] string? kinds = null,
+        [Description("Modifier filter, space/comma-separated: the C# keywords (public, static, abstract, "
+            + "virtual, override, async, partial, sealed, readonly, const, ...) plus derived tags extension, "
+            + "indexer, initonly, disposable, asyncdisposable. UNLIKE kinds, bare tokens are AND-ed and '-' "
+            + "combines with them: \"public -sealed\". Narrows the ranked hits, so query still needs a real "
+            + "term. modifiersHint names an unrecognized token on zero hits.")] string? modifiers = null,
+        [Description("Interface name; filters to its DIRECT implementers only. Narrows the ranked hits, so "
+            + "query still needs a real term. An unresolvable name yields an empty result, not an "
+            + "error.")] string? implements = null,
+        [Description("Filter on which XML doc sections a hit carries: summary, returns, remarks, value, "
+            + "inheritdoc, params, typeparams, exceptions. Same AND/exclude grammar as modifiers. This only "
+            + "FILTERS -- include:\"summary:full\" is how you get the text.")] string? xmlDoc = null,
         [Description("Max results (default 10, cap 200).")] int limit = 10,
-        [Description("Optional path prefix narrowing results to a folder or file, e.g. \"src/Tools\" "
-            + "(repo-root-relative, forward slashes, matched on a full path-segment boundary). Ranking runs "
-            + "over the whole index before scoping, so a query with far more hits outside the prefix can "
-            + "return fewer than limit — narrow the query text itself if that happens. See "
-            + "docs/tools/search_index.md. Omit to search the whole index.")] string? pathPrefix = null,
-        [Description("Which columns each hit carries, comma-separated. REPLACES the default set, exactly as "
-            + "get_symbol's include does -- commas, never hyphens, since '-' already means SUBTRACT in that "
-            + "grammar. Default: \"shape,read,refs,modifiers\". Columns: shape (what fetching it costs), read "
-            + "(which include to pass next), refs (R=callers E=callees I=implementations V=overrides T=tests, "
-            + "one batched lookup for the whole page), modifiers (p=public s=static v=virtual o=override ...), "
-            + "summary (hasSummary bool) or summary:full (the text, capped at 160 chars). An unrecognized "
-            + "column is named in includeHint rather than erroring.")] string? include = null,
-        [Description("How to group results: \"namespace\" nests namespace -> file -> symbols; "
-            + "\"file\" nests file -> namespace -> symbols; \"none\" returns the flat items[] list from before "
-            + "grouping existed, with file/name repeated per row and no namespace field. Omit this parameter "
-            + "entirely (rather than passing \"namespace\" explicitly) to let the server render both the flat "
-            + "and namespace-grouped shapes from the same data and keep whichever actually costs fewer tokens — "
-            + "grouping only pays for itself when hits concentrate onto few namespaces/files; scattered results "
-            + "make the nesting overhead a net loss. An explicit value is always honored as given (no "
-            + "comparison). Whichever axis the whole result set collapses to a single value on additionally "
-            + "collapses its wrapper array to a flat namespace/file header field instead of a nested array, and "
-            + "a leaf's kind column is dropped whenever every hit in that leaf shares one kind. An unrecognized "
-            + "non-null value is treated as \"namespace\", and the response's groupByHint names it.")] string? groupBy = null,
-
-        [Description("\"source\" (default) searches only symbols this repo's own solution declares. "
-            + "\"external\" searches only BCL/NuGet symbols already discovered as a call/construction/"
-            + "implements target from this repo's source — not a general library browser, only what this "
-            + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
-            + "\"source\", and the response's originHint names it.")] string? origin = null,
-        [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
-            + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
-            + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
-            + "(the API shape, so a type recommends its member list and everything else the default fetch). "
-            + "Omit to derive the recommendation from each hit's own shape instead. An unrecognized value is "
-            + "treated as omitted, and the response's intentHint names it.")] string? intent = null,
+        [Description("Folder or file prefix, repo-root-relative, forward slashes, matched on a path-segment "
+            + "boundary, e.g. \"src/Tools\". Ranking runs over the whole index BEFORE scoping, so a query "
+            + "with far more hits outside the prefix can return fewer than limit -- narrow the query text "
+            + "too.")] string? pathPrefix = null,
+        [Description("Which columns each hit carries, comma-separated; REPLACES the default "
+            + "\"shape,read,refs,modifiers\". Also summary (a hasSummary bool) or summary:full (the text, "
+            + "capped 160 chars). Commas, NEVER hyphens -- '-' means subtract in get_symbol's source grammar. "
+            + "refs is R=callers E=callees I=implementations V=overrides T=tests. Letter tables and legends: "
+            + "docs/tools/search_index.md. An unrecognized column is named in includeHint.")] string? include = null,
+        [Description("\"namespace\" nests namespace->file->symbols; \"file\" the reverse; \"none\" returns a "
+            + "flat items[]. OMIT IT: the server then renders both shapes and keeps whichever costs fewer "
+            + "tokens. An explicit value is always honored as given. groupByHint names an unrecognized "
+            + "one.")] string? groupBy = null,
+        [Description("\"source\" (default) searches this repo's own declarations; \"external\" only the "
+            + "BCL/NuGet symbols this repo's source already calls or implements -- not a library browser; "
+            + "\"all\" both. originHint names an unrecognized value.")] string? origin = null,
+        [Description("What you are about to do, which aims the read column: \"edit\" (recommends the "
+            + "body-carrying include a patch needs), \"logic\" (behaviour, so source over docs), \"surface\" "
+            + "(the API shape). Omit to derive it from each hit's own shape. intentHint names an unrecognized "
+            + "value.")] string? intent = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
