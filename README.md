@@ -152,7 +152,7 @@ content:
 **Step 3 — exactly those lines, comments and docs stripped.**
 
 ```
-get_symbol(symbol: "sym_4c1e9a77b2d0f318", include: "source:code@97-105")
+get_symbol(symbol: "sym_4c1e9a77b2d0f318", source: "code@97-105")
 ```
 
 ```

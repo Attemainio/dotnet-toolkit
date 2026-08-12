@@ -53,8 +53,8 @@ symbol, and do not fetch the declaration layer, then the body layer, then refere
 that is three round-trips per symbol for what one batched call returns.
 
 Reserve narrower fetches for follow-up on something the batch already pointed you at: a region of a
-long member via `include: "source:code@120-160"`, or `include: "bodyOutline"` first when the right
-region isn't known yet. Only `Read` a file in full when you are about to judge specific lines and no
+long member via `source: "code@120-160"` — the source query is its own argument, separate from
+`include` — or `include: "bodyOutline"` first when the right region isn't known yet. Only `Read` a file in full when you are about to judge specific lines and no
 `get_symbol` fetch gave you them — note that a `PreToolUse` guard blocks `Read` on `.cs` files that a
 project compiles, so this path is rarely available and rarely needed.
 
@@ -150,7 +150,7 @@ Covering all aspects at once does not lower any aspect's evidence bar.
 - `[testing]` — for every changed/scoped public symbol, run `get_references` (`direction: "callers"`)
   and check for a test-project caller before asserting a coverage gap; `search_index` for a test method
   matching the symbol's name before assuming none exists. Never a guess from "this looks untested."
-- `[security]` — read the full source of every changed/scoped symbol (`include: "source"`); no static
+- `[security]` — read the full source of every changed/scoped symbol (`source: "full"`); no static
   scanner backs this aspect, so the finding comes from what's on the line. Check
   `[Authorize]`/`[AllowAnonymous]` via `get_symbol` (`include: "attributes"`). Use `get_references` for
   the blast radius of anything handling credentials/connection strings.

@@ -70,12 +70,19 @@ right thing to measure rather than the source literal.
 
 | | |
 | --- | --- |
-| Tools | 18 |
+| Tools | 18 (19 as of 2026-08-12) |
 | Longest description | `get_references`, 1,850 chars |
 | Descriptions in the 1,490–1,850 band | 5 (`get_references`, `get_symbol`, `get_call_hierarchy`, `get_scope`, `search_index`) |
 | All tool descriptions | ≈ 16,100 chars |
 | All parameter descriptions | ≈ 15,900 chars |
 | `taskId` parameter blurb | 396 chars × 13 tools = **5,148 chars — 32% of all parameter text** |
+
+**Re-measured 2026-08-12**, after `get_symbol`'s source query was split into its own `source`
+argument: the per-tool rule is still a guard (`ToolDescriptionBudgetTests` now enforces 1,900 bytes
+per description *and* 5,000 per whole schema in CI, which is stricter than this section). The
+**per-parameter** rule is not enforced by any test and now has one live breach —
+`get_symbol.source` at **698 chars**, against the 500 threshold. `get_symbol.include` (476) is the
+next closest. Everything else measured is comfortably inside.
 
 Nothing exceeded 2,000, so §B's per-tool rule is currently a **guard**, not a repair. The `taskId`
 blurb's 5,148 rendered chars are **not** a live finding under the third row: the source already holds

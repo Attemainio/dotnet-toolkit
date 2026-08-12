@@ -24,10 +24,10 @@ because the documentation recommending it is wrong.
 
 | Outcome wanted | Cheap route | Expensive route |
 | --- | --- | --- |
-| What is this symbol for? | `search_index(summary: "full")` — answered by the search itself | `search_index` → `get_symbol(include: "source")` |
-| What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol(include: "source")` |
-| What happens near line N of a long member? | `bodyOutline` → `get_symbol(include: "source:code@N-M")` | `get_symbol(include: "source")` |
-| What is its signature? | default `include` | `include: "source"` |
+| What is this symbol for? | `search_index(include: "summary:full")` — answered by the search itself | `search_index` → `get_symbol(source: "full")` |
+| What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol(source: "full")` |
+| What happens near line N of a long member? | `bodyOutline` → `get_symbol(source: "code@N-M")` | `get_symbol(source: "full")` |
+| What is its signature? | default `include` | `source: "full"` |
 | What shape are these five symbols? | one `get_symbol(symbols: [...])` — **calls only; see below** | five `get_symbol` calls |
 | Who calls it (just the list, one hop)? | `get_call_hierarchy(maxDepth: 1)` | `get_references` |
 | Where exactly is it called (file/line/snippet)? | `get_references` | repeated file reads |
@@ -118,19 +118,19 @@ matrix keeps one for this. For each hit, run **both** routes to the same stated 
 
 | Label | Outcome wanted | Route it advises | Compare against |
 | --- | --- | --- | --- |
-| `read: mem` | what is on this type | `include: "members"` | `include: "source"` |
-| `read: out` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source:code"` whole |
-| `read: code` | what this member does | `include: "source:code"` | `include: "source"` |
+| `read: mem` | what is on this type | `include: "members"` | `source: "full"` |
+| `read: out` | what this member does | `bodyOutline` → `source: "code@a-b"` | `source: "code"` whole |
+| `read: code` | what this member does | `source: "code"` | `source: "full"` |
 | `read` absent on a hit | anything | the default `include` | whichever labelled route its `shape` would have implied |
 | `intent: "logic"` vs. omitted | behaviour, not docs | whatever `read` then says | the same query with no `intent` |
 | `guard: large_source` | what is in this declaration | the served `members`/`bodyOutline`, then a slice | the repeat call that returns the whole source |
-| `L…` with a large `O…` | what this member does | `bodyOutline` → `source:code@a-b` | `include: "source"` |
-| `L…` with a small `O…` | what this member does | `include: "source:code"` whole | `bodyOutline` → `source:code@a-b` |
-| `M…` | what is on this type | `include: "members"` | `include: "source"` |
-| `N…` | what is nested inside | `include: "members"` | `include: "source"` |
-| `D…` | the implementation only | `include: "source:code"` | `include: "source:full"` |
-| `C…` | what the body does | `include: "source:code-comments"` | `include: "source:code"` |
-| `A…` | which attributes it carries | `include: "attributes"` | `include: "source"` |
+| `L…` with a large `O…` | what this member does | `bodyOutline` → `source: "code@a-b"` | `source: "full"` |
+| `L…` with a small `O…` | what this member does | `source: "code"` whole | `bodyOutline` → `source: "code@a-b"` |
+| `M…` | what is on this type | `include: "members"` | `source: "full"` |
+| `N…` | what is nested inside | `include: "members"` | `source: "full"` |
+| `D…` | the implementation only | `source: "code"` | `source: "full"` |
+| `C…` | what the body does | `source: "code-comments"` | `source: "code"` |
+| `A…` | which attributes it carries | `include: "attributes"` | `source: "full"` |
 | small `L`, nothing else | what this does | default `include` | any labelled route above |
 
 Four outcomes, and **three of them are findings**:

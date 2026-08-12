@@ -71,7 +71,7 @@ All fourteen resolved on `last-verified`.
   who knows the name doesn't need search.
 - Enabled by default on Opus / Sonnet / Haiku 4.5 and later; `ENABLE_TOOL_SEARCH` = `true` / `false` /
   `auto` / `auto:N` (load upfront when the definitions are under N% of the context window).
-- Catalogue cap is 10,000 tools. We ship 18 — the cap is not our constraint; **ranking** is.
+- Catalogue cap is 10,000 tools. We ship 19 — the cap is not our constraint; **ranking** is.
 - Cost model: one extra round-trip the first time a tool is discovered, repaid by a smaller context on
   every turn. A fetched tool stays available until compaction.
 

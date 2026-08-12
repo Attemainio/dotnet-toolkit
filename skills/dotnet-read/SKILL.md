@@ -330,7 +330,7 @@ Answers to:
 Pass a `taskId` on the calls you want to isolate — it is the only thing separating concurrent callers,
 since every agent talking to this server process shares one ambient session id.
 
-Manual: `<pluginRoot>/docs/tools/server.md`
+Manual: `<pluginRoot>/docs/tools/get_retrieval_metrics.md`
 
 ### `workspace_status`, `reload_workspace`, `ping`, `set_output_format`
 

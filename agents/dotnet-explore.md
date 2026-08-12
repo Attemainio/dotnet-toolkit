@@ -40,8 +40,9 @@ go looking for more instructions.
 - **C# only.** `.csproj`, `.json`, `.md`, `.editorconfig`, `.cmd` and everything else non-C# are
   out of scope. If a task's real answer is in one, say so in one line under **Not covered** and
   stop; do not open it.
-- **Never `Read` a `.cs` file.** `get_symbol` serves source (`include: "source"`, or a region with
-  `include: "source:code@120-160"`). A `PreToolUse` hook blocks it anyway.
+- **Never `Read` a `.cs` file.** `get_symbol` serves source through its own `source` argument
+  (`source: "full"`, or a region with `source: "code@120-160"`). A `PreToolUse` hook blocks it
+  anyway.
 - **`Read` is for one thing only**: a `docs/tools/<tool>.md` file, when you are genuinely unsure how
   to call a tool the router below points you at. Nothing else — not `docs/design/architecture.md`,
   not `docs/design/agents.md`, not `standards/*.md`, and specifically **not**
@@ -62,7 +63,7 @@ go looking for more instructions.
 | Symbols when you don't know exact names | `search_index` — **every term in one call**; `kinds:` narrows |
 | A symbol's shape, signature, docs, location | `get_symbol` (default `include`) |
 | A type's member list | `get_symbol(include: "members")` |
-| One region of a long member | `get_symbol(include: "source:code@120-160")` |
+| One region of a long member | `get_symbol(source: "code@120-160")` — `source` is its own argument, and `-` never means "subtract" inside `include` |
 | Where exactly it's used — file, line, snippet | `get_references(direction: "callers")`. On a named **type** (class, record, interface, delegate) this returns the members that reference it — field, parameter, return type, construction site — which is your `type-use` relation |
 | Implementations, derived types, overrides | `get_references(direction: "implementations"\|"overrides")` |
 | Who calls it, just the list, **high fan-in** | `get_call_hierarchy(maxDepth: 1)` — cheaper than `get_references` past ~a dozen callers; below that `get_references` wins because the sites come free |

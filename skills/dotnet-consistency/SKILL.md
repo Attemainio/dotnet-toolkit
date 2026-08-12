@@ -52,10 +52,12 @@ parameter and default. Confirm the class list itself first with
 That search is also what keeps the list above honest: it is an example, and an example of the thing
 being audited goes stale exactly like any other doc claim.
 
-Not every file under `Tools/` is a tool group. `ToolTelemetry.cs` and `ResponseGuard.cs` carry no
-`[McpServerToolType]` and are shared internal helpers; they belong in
+Not every file under `Tools/` is a tool group. `ToolTelemetry.cs`, `ResponseGuard.cs` and
+`VocabularyHint.cs` carry no `[McpServerToolType]` and are shared internal helpers; they belong in
 `docs/design/architecture.md`'s `Tools/` table, not in any tool list. **Check the attribute, not the
-folder.**
+folder.** A search hit's `modifiers` column separates them at a glance without a second call: a tool
+group renders `ps` *and* an `A1` in `shape` (the `[McpServerToolType]` attribute), a helper renders
+`is` with no `A`.
 
 ## The audit, step by step
 
@@ -167,9 +169,12 @@ categorising it correctly *is* closing it.
 
 **6. Hooks and launch path.** All five hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
-`Guard*`/`ReloadHint`/`WriteChecklistHint` files carry the messages,
-`CsFileMembership.cs`/`BashCommandScanner.cs` are shared with no `hooks.json` entry. Read those with
-`get_symbol` (not `grep`), plus `hooks/hooks.json` and `.mcp.json`:
+`Guard*`/`ReloadHint`/`WriteChecklistHint` files carry the messages, and four more have no
+`hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard logic),
+`GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
+`set_hook_guards`) and `ControlClient.cs` (how `hint-reload-new-cs-file` reaches the running server).
+Read those with `get_symbol` (not `grep` — the `guard-cs-bash-read` hook blocks a tree grep here, as
+it should), plus `hooks/hooks.json` and `.mcp.json`:
    - Does each guard's deny/hint text still name the correct tool(s) and procedure (`validate_patch`'s
      current argument names, `search_index`/`get_symbol` for the read guards,
      `reload_workspace(scope: "all")` for the reload hint)? It is read at the exact moment a caller is

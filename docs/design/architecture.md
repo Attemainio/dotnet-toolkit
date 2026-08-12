@@ -162,6 +162,18 @@ bump is what you actually needed.
   identical repeat is served in full. It lives here rather than in `Output/` because it decides *what*
   a response contains, not how it renders.
 
+  **Its key has not caught up with the `source`/`include` split** (contract 3.90): `ShouldWarn` still
+  takes only `(symbolId, include)`, and the source query now lives in a separate `source` argument
+  that never reaches it. Two different whole-declaration source queries on one symbol — `source:
+  "full"` then `source: "code"` — therefore share a key, so the second is served unwarned even though
+  it is not the verbatim repeat the override is documented to require. Fixing it means keying on both
+  arguments; `ResponseGuardTests` also still passes `"source:full"` as an *include* value, which the
+  grammar no longer accepts, so those tests are green on strings the tool would now reject.
+
+  `VocabularyHint.cs` is **not** a tool group: it is the shared "you passed something I don't
+  recognise" responder behind the `kindsHint`/`modifiersHint`/`includeHint`/`groupByHint`/`intentHint`
+  fields, which name an unrecognized argument value in the response instead of failing the call.
+
   `ToolTelemetry.cs` is **not** a tool group: it is the single place a response becomes a
   `RetrievalEvent`, plus the shared `[Description]` text for the optional `taskId`. The six tools
   taking no `TelemetryRecorder` (`ServerTools`' four, `get_retrieval_metrics`, and `set_hook_guards`)
