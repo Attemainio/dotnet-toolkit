@@ -3,7 +3,17 @@
 Replaces `Read` on a `.cs` file — returns the whole symbol even when split across partial-class
 files (`Read` gives one fragment with no signal the rest exists), for a fraction of the tokens.
 
-## The `include` selector
+## Two selectors, one grammar each
+
+`include` and `source` are separate arguments on purpose. **`include` only ever adds; `source` only
+ever subtracts.** No `-` appears in `include`; no component name appears in `source`.
+
+They used to share one string, and that string carried both grammars at once: an additive list of
+component names with a subtractive source spec nested inside it. `comments` as a list entry would
+have *added* while `-comments` inside the spec *removed* — the same word meaning opposite things one
+comma apart. Splitting them is what makes `-` unambiguous here and everywhere else in the toolkit.
+
+### `include` — which components
 
 Three forms:
 
@@ -11,24 +21,50 @@ Three forms:
 2. **`"all"`** — every component below. Reach for this only when about to edit the symbol, or
    genuinely want everything about it at once. **In practice this is `source` plus a `refs` lease**:
    every other component (`members`, `attributes`, `baseType`, `interfaces`, `xmlDoc`, `bodyOutline`)
-   is suppressed once `source` is present (each component's own row above states this), so `"all"`'s
-   only real addition over `include: "source"` is `referenceCounts` and the `|refs:` layer `all`
-   narrows `contentVersion` to. Measured: 613 tokens vs. 603 for `source` alone on the same symbol.
-3. **An explicit comma list**, e.g. `"source,members"` — **replaces** the default set rather than
+   is suppressed once source is present (each component's own row above states this), so `"all"`'s
+   only real addition over a bare `source: "full"` is `referenceCounts` and the `|refs:` layer `all`
+   narrows `contentVersion` to. Measured: 613 tokens vs. 603 for source alone on the same symbol.
+3. **An explicit comma list**, e.g. `"members,xmlDoc"` — **replaces** the default set rather than
    adding to it. Use whenever `standard`/`all` is close but not quite right.
 
 An unrequested component is absent from the JSON entirely, not `null` — it costs nothing. A
 misspelled name is an `invalid_component` error rather than being silently dropped.
 
+### `source` — which lines, and what to strip from them
+
+`"full"` (default) keeps the leading `///` doc comment; `"code"` drops it — and, for a **type**,
+every member's own doc comment too. Append `-modifier` suffixes to subtract further, and `@ranges`
+to select lines. Given **alone it replaces the default set**, so asking for code does not also drag
+back `xmlDoc`, `referenceCounts` and `recentLog`:
+
+```
+source: "code"                          the declaration, no doc comments
+source: "code@120-160"                  one region of a long member
+source: "full-exact@120-121"            an exact slice, for anchoring an edit
+source: "full-remarks-attributes"       full, minus the <remarks> tag and attribute lines
+source: "code", include: "xmlDoc"       both arguments — they union
+```
+
+A malformed source query is its own error, distinct from an unknown component name: the response
+names the source argument and its grammar rather than listing component names, which told a caller
+nothing when what they had mistyped was a modifier.
+
 ### The unconditional skeleton
 
-Every call, regardless of `include`, gets `kind`, `origin`, `containingType`, `declarationSites`
-(`file`, `startLine`, `endLine` — exactly what a `validate_patch` edit takes, computed live so it's
-correct even for a symbol split across partial-class files). `displayString`/`modifiers` sit one
-tier below — also always computed, but suppressed to `null` when `source` is also requested, since
-the declaration's own signature line already states both as text. **Exception: a line-sliced
-`source` (`@`, below)** usually cuts the signature line out of the result, so both are restored
-there. **There is no `accessibility` field** — `modifiers`' literal keyword phrase (`"public
+Every call gets `symbolId`, `contentVersion` and `declarationSites` (`file`, `startLine`,
+`endLine` — exactly what a `validate_patch` edit takes, computed live so it's correct even for a
+symbol split across partial-class files).
+
+`kind`, `displayString`, `containingType` and `modifiers` sit one tier below — always computed, but
+**suppressed when the source actually served already states them**. A signature line reading
+`public static string KindOf(ISymbol symbol)` has already said Method, said the name, and said the
+modifiers; repeating them beside it is four fields the response can be read without. **Exception: a
+line-sliced `source` (`@`, below)** usually cuts the signature line out of the result, so they are
+restored there.
+
+`origin` is emitted **only** when it reads `"external"`. It was `"source"` on almost every response
+ever returned, so stating it cost a field on all of them to carry information on nearly none —
+absent now means "declared in this solution". **There is no `accessibility` field** — `modifiers`' literal keyword phrase (`"public
 sealed"`) already carries it.
 
 That means **location never costs a second call** — the default `standard` fetch already carries
@@ -52,10 +88,10 @@ Anchor a `validate_patch` edit on `startLine`. Quote `signatureLine` when report
 lives — answering "declared at line 3" when the `class` keyword is on line 7 is the measured failure
 this field removes.
 
-`origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a
-BCL/NuGet symbol resolved only because this repo's own code calls/constructs/implements/extends it
-(`search_index(origin: "external")` is how such a symbol is found in the first place). An external
-symbol's `declarationSites` is always `[]`.
+`origin: "external"` marks a BCL/NuGet symbol resolved only because this repo's own code
+calls/constructs/implements/extends it (`search_index(origin: "external")` is how such a symbol is
+found in the first place). An external symbol's `declarationSites` is always `[]`, and the field
+exists to say why — an absent `origin` means the ordinary case, a symbol this solution declares.
 
 `generated: true` marks a symbol whose every declaration is source-generator output — no span to
 patch, the file is rewritten on every build. Roslyn still counts it as `"source"`, so
@@ -65,10 +101,10 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. `"source"` = `"source:full"` (includes the leading `///` doc comment); `"source:code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`exact`/`compact` work under either (`lineNumbers` is a deprecated alias for `compact`). No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
+| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. Requested through the **`source` argument**, not `include`. `"full"` (default) includes the leading `///` doc comment; `"code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`exact`/`compact` work under either (`lineNumbers` is a deprecated alias for `compact`). No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
 | `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. **One exception: a multi-file partial reports `"compact"` even under a forced `-exact`**, because that request cannot be honoured (see below) — this field is how you find out it lost. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
-| `source@lines` | Not a separate component — `@` plus line ranges appended to `source` (after any modifiers): `"source@46-76"`, `"source:code@46-76;79-83"` (`;` separates ranges, **not** `,`, which already separates component names), `"source@-50"`, `"source@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
-| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. Suppressed when `source` is also requested **and the lines actually returned carry the whole doc comment**. `source:code` exists precisely to strip the `///` block, so it never suppresses. An `@` line selection is judged on what it kept: a slice covering every line of the doc comment suppresses, one that cut any of it away serves `xmlDoc` — half a summary read as prose is not the summary. Suppressing on "is a slice" alone deleted the documentation from the response rather than deduplicating it. |
+| `source` `@lines` | `@` plus line ranges appended to the source query (after any modifiers): `source: "@46-76"`, `source: "code@46-76;79-83"` (`;` separates ranges, **not** `,`), `source: "@-50"`, `source: "@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
+| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. Suppressed when `source` is also requested **and the lines actually returned carry the whole doc comment**. `source: "code"` exists precisely to strip the `///` block, so it never suppresses. An `@` line selection is judged on what it kept: a slice covering every line of the doc comment suppresses, one that cut any of it away serves `xmlDoc` — half a summary read as prose is not the summary. Suppressing on "is a slice" alone deleted the documentation from the response rather than deduplicating it. |
 | `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. |
 | `bodyOutline` | Control-flow landmarks (`switch/case`, `if`, `for/foreach/while/do`, `catch`, `using`, `lock`) for mapping a long body before slicing it — purely syntactic, same cost tier as `source`, not `mechanicalFacts`' semantic tier. `text` truncated to 28 chars. A bare `try`/`else`/`finally` has no name of its own and is omitted; infer its span from the parent row. Absent (with `bodyOutlineNote`) for anything without an executable body (a type, a field, an auto-property). `bodyOutlineNote` also appears — rows still returned — when the outline is unlikely to earn its cost: under ~40 lines, or past that but averaging worse than one landmark per 25 lines (a mostly linear body). Suppressed when `source` is also requested — both exist as a structural stand-in for the body, so once `source` is present they'd only restate what it already shows. |
 | `referenceCounts` | `{callers, tests}` for a member (never a type), plus `{implementations, overrides}` only where the kind makes a non-zero answer possible (interface/unsealed class/interface member; virtual/abstract member). An enum, static class or plain method omits them rather than reporting a structural `0`; the whole component is absent when nothing is left to report. |
@@ -81,22 +117,22 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 
 ## Reading vs. editing — the invariant that bites
 
-A `-modifier` (or `source:code` on a type) removes a line from the **response**, never the file —
+A `-modifier` (or `source: "code"` on a type) removes a line from the **response**, never the file —
 and `validate_patch` replaces `startLine`–`endLine` **verbatim**. A span built from a stripped
 fetch silently deletes every line the modifier hid inside it:
 
 ```
-get_symbol(include: "source:code-comments@40-80")   →  you see 40, 41, 44, 45, …
+get_symbol(source: "code-comments@40-80")           →  you see 40, 41, 44, 45, …
 validate_patch(startLine: 40, endLine: 80, …)       →  42-43 were `// comments`. They are now gone.
 ```
 
-Unsafe to anchor an edit on: `-comments`, `-attributes`, `source:code` **on a type**. Safe by
-construction: a leading `///` doc comment dropped by `source:code` is always at the *start*, so a
+Unsafe to anchor an edit on: `-comments`, `-attributes`, `source: "code"` **on a type**. Safe by
+construction: a leading `///` doc comment dropped by `code` is always at the *start*, so a
 first-to-last-line span never covered it anyway — which is also why `declarationSites` can be
-wider than what `source:code` returned.
+wider than what `code` returned.
 
-**Rule: strip on the way in, fetch whole on the way out.** Read with `source:code` or
-`source:code-comments`; patch from `source`/`source:full` with the gutter left on.
+**Rule: strip on the way in, fetch whole on the way out.** Read with `source: "code"` or
+`source: "code-comments"`; patch from `source: "full"` with the gutter left on.
 
 `source`'s line format is **`Automatic` by default**: the server renders both the numbered gutter
 (`[{line, text}]`) and the `@start-end` span form (`[{lines, text}]`) and keeps whichever is
@@ -195,7 +231,7 @@ guard:
   reason: large_source
   declaredLines: 2342
   advice: source would return about 2342 lines, so members is served instead. For one region,
-          slice with source:code@start-end off declarationSites. Repeat this call unchanged to
+          slice with source:"code@start-end" off declarationSites. Repeat this call unchanged to
           get the source anyway.
 ```
 
@@ -206,7 +242,7 @@ region fetches than the guard ever saved. The acknowledgement is keyed on the sy
 `include`, holds for 15 minutes, and refreshes each time you use it, so a task that reads the same
 large symbol repeatedly is asked once.
 
-It does not fire on a sliced fetch (`source@120-160`), since the slice already bounds the response,
+It does not fire on a sliced fetch (`source: "@120-160"`), since the slice already bounds the response,
 and it does not fire on `members`, `bodyOutline` or any other component — only on `source`.
 
 **A guard triggered by `include: "all"` still serves a leaseable `members` list**: each member row
@@ -271,7 +307,8 @@ a duplicate implementation.
 | Arg | Meaning |
 |---|---|
 | `symbol` / `symbols` | Fully-qualified name, unique suffix, `Name(ParamType)` to pick an overload, or a `sym_…` id from any earlier response. Exactly one of the two. |
-| `include` | Omitted/`"standard"` (default) \| `"all"` \| a comma list that replaces the default. |
+| `include` | Omitted/`"standard"` (default) \| `"all"` \| a comma list of component names that replaces the default. Only ever **adds**; contains no `-` or `:`. |
+| `source` | The source query: `"full"` (default) or `"code"`, `-modifier` suffixes to subtract, `@ranges` to select lines. Only ever **subtracts**. Given alone it replaces the default component set. |
 
 Default call, real response:
 
@@ -281,7 +318,7 @@ get_symbol(symbol: "FeatureLogStore.Append")
 ```json
 {"symbolId":"sym_c25d7c88b0e916b0","contentVersion":"decl:ddca3badaba1|refs:532f4bebd9ac",
  "content":{"kind":"Method","displayString":"string FeatureLogStore.Append(LogEntry entry)",
-   "origin":"source","modifiers":"public",
+   "modifiers":"public",
    "containingType":{"symbolId":"sym_fc346a8c5efa6a88","displayString":"FeatureLogStore"},
    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs",
                          "startLine":27,"endLine":78}],
@@ -298,7 +335,7 @@ computed" (that distinction is `limitedBy`'s job).
 
 - **Expand to call sites** → `get_references` — `get_references.md`
 - **Open-ended caller tree** → `get_call_hierarchy` — `get_call_hierarchy.md`
-- **Only need part of a long member** → re-call with `include: "source:code@120-160"`
-- **Editing part of one you have already read** → `include: "source@120-160"` — unstripped, and
+- **Only need part of a long member** → re-call with `source: "code@120-160"`
+- **Editing part of one you have already read** → `source: "@120-160"` — unstripped, and
   the slice leases the body layer, so this is a complete pre-edit fetch
 - **Editing it** → keep `contentVersion` and `declarationSites`, then `validate_patch` — `validate_patch.md`

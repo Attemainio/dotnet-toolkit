@@ -36,7 +36,7 @@ public static class ReadAdvice
     /// exists to catch, shipped in the one field whose whole job is to be read once and understood.
     /// </remarks>
     public const string Legend =
-        "mem=include:members out=bodyOutline then source:code@from-to code=include:source:code "
+        "mem=include:members out=include:bodyOutline then source:code@from-to code=source:code "
         + "all=include:all; absent=default fetch is right";
 
     /// <summary>
@@ -72,7 +72,7 @@ public static class ReadAdvice
 
         var lines = facts.LineCount ?? 0;
 
-        // A caller after behaviour is better served by source:code at any size: the default fetch
+        // A caller after behaviour is better served by the source argument at any size: the default fetch
         // returns docs and reference counts and no code at all, so "small enough to fetch whole" is
         // not the question being asked.
         if (intent is "logic")

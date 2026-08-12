@@ -93,7 +93,7 @@ nested type is counted by `N` yet still listed as a member there too. `C` on a t
 **transitive total** across its members (double-counts each member's own `C` by design — it
 answers "what would fetching the whole type cost"). `D` never overlaps `C`.
 
-**`C` is a fact at any count, but only worth acting on above roughly `C10`.** `source:code-comments`
+**`C` is a fact at any count, but only worth acting on above roughly `C10`.** `source: "code-comments"`
 (dropping just the comments, keeping doc comments and code) saves one token per comment line — real,
 but at `C1`–`C5` the saving rounds to nothing next to the call itself. `P`, by contrast, names no
 route at all: it disambiguates an overload set at the point of choosing a `get_symbol` target, which
@@ -109,8 +109,8 @@ same way `shape`'s is.
 | Value | Next call |
 |---|---|
 | `mem` | `get_symbol(include: "members")` — navigate by member list, not a full-type read |
-| `out` | `get_symbol(include: "bodyOutline")` to map it, then `source:code@from-to` for the region |
-| `code` | `get_symbol(include: "source:code")` — one linear block, docs stripped |
+| `out` | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@from-to"` for the region |
+| `code` | `get_symbol(source: "code")` — one linear block, docs stripped |
 | `all` | `get_symbol(include: "all")` — the body-carrying `contentVersion` a patch needs |
 | *absent* | the default fetch is already the right call |
 
@@ -216,7 +216,7 @@ see that error, you omitted `query`.
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`lines`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
-| `include` | comma-separated; **replaces** the default set | `shape,read,refs,modifiers` (the default) plus `summary` (a `hasSummary` bool) or `summary:full` (the text, capped 160 chars, read from the syntax index — free even at `index_only`). **Commas, never hyphens**: `-` already means *subtract* in `get_symbol`'s include grammar, so `"shape-refs"` would read there as "shape without refs". An unrecognized column is named in `includeHint` and ignored |
+| `include` | comma-separated; **replaces** the default set | `shape,read,refs,modifiers` (the default) plus `summary` (a `hasSummary` bool) or `summary:full` (the text, capped 160 chars, read from the syntax index — free even at `index_only`). **Commas, never hyphens**: `-` already means *subtract* in `get_symbol`'s source grammar, so `"shape-refs"` would read there as "shape without refs". An unrecognized column is named in `includeHint` and ignored |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
 
