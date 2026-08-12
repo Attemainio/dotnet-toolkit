@@ -104,7 +104,14 @@ public readonly record struct SymbolComponents
     }
 
     /// <summary>The default set: whichever components are meaningful on essentially every call.</summary>
-    public static readonly IReadOnlyList<string> Standard = [XmlDoc, ReferenceCounts, RecentLog];
+    /// <remarks>
+    /// <see cref="RecentLog"/> is deliberately NOT here, though it is cheap to compute. Measured, it was 57% of
+    /// the default response (330 tokens against 142 without it) on the tool that is 68% of all retrieval spend,
+    /// and nothing on a read pass branches on it -- "why does this code look like this" routes to
+    /// <c>search_log</c>, not here. It stays load-bearing on a write pass, which asks for it by name or via
+    /// <c>"all"</c>.
+    /// </remarks>
+    public static readonly IReadOnlyList<string> Standard = [XmlDoc, ReferenceCounts];
 
     /// <summary>
     /// Resolves <c>include</c> and <c>source</c> into an exact component set. <c>include</c> is a plain

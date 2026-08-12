@@ -30,7 +30,8 @@ public static class FlowTools
         + "cursor deciding what to call, before writing a helper that may already exist, or when the receiver's"
         + " type isn't known yet so get_symbol has no target to query. Each item's displayString has its "
         + "containing type's prefix stripped, and definedIn/origin render as an EMPTY CELL wherever they would "
-        + "only restate what a receiverType header already said — one array, one row schema, so an empty cell "
+        + "only restate what a receiverType header or the row's own kind already said — one array, one row "
+        + "schema, so an empty cell "
         + "means 'nothing to say here', never 'not looked up'. Within one origin, symbols this solution "
         + "declares come first, so a crowded cursor does not spend its budget alphabetically in the A's of the "
         + "referenced assemblies. When more is in scope than limit allows, the budget is split across origins "
@@ -158,9 +159,13 @@ public static class FlowTools
                 {
                     displayString = display,
                     kind = SymbolKey.KindOf(s),
-                    // "member" is derivable once a receiverType header exists: it is the only origin left
-                    // once local/parameter/extension/type/inherited are ruled out, i.e. definedIn == receiverType.
-                    origin = receiverType is not null && origin == "member" ? null : origin,
+                    // The column is only worth its delimiter when a receiver was given. Without one, origin is a
+                    // mechanical restatement of kind -- Local->local, Parameter->parameter, a named type->type,
+                    // everything else->member -- and "extension" cannot occur at all, since reduced extension
+                    // methods are only looked up against a receiver. With a receiver it earns its place at once:
+                    // empty for the receiver's own members, "inherited" plus a definedIn for the rest, and
+                    // "member" itself stays derivable there too (it is definedIn == receiverType).
+                    origin = receiverType is not null && origin != "member" ? origin : null,
                     definedIn,
                 };
             })

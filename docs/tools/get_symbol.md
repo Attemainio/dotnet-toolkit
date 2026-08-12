@@ -17,7 +17,11 @@ comma apart. Splitting them is what makes `-` unambiguous here and everywhere el
 
 Three forms:
 
-1. **Omitted, or `"standard"`** (default) — `xmlDoc`, `referenceCounts`, `recentLog`. Start here.
+1. **Omitted, or `"standard"`** (default) — `xmlDoc`, `referenceCounts`. Start here.
+   `recentLog` is deliberately **not** in it, though it is cheap to compute: measured, it was 57% of
+   the default response (330 tokens against 142 without it) on the tool that is 68% of all retrieval
+   spend, and nothing on a read pass branches on it — *why does this code look like this* routes to
+   `search_log`, not here. Ask for it by name on a write pass, where it is load-bearing.
 2. **`"all"`** — every component below. Reach for this only when about to edit the symbol, or
    genuinely want everything about it at once. **In practice this is `source` plus a `refs` lease**:
    every other component (`members`, `attributes`, `baseType`, `interfaces`, `xmlDoc`, `bodyOutline`)
@@ -35,7 +39,7 @@ misspelled name is an `invalid_component` error rather than being silently dropp
 `"full"` (default) keeps the leading `///` doc comment; `"code"` drops it — and, for a **type**,
 every member's own doc comment too. Append `-modifier` suffixes to subtract further, and `@ranges`
 to select lines. Given **alone it replaces the default set**, so asking for code does not also drag
-back `xmlDoc`, `referenceCounts` and `recentLog`:
+back `xmlDoc` and `referenceCounts`:
 
 ```
 source: "code"                          the declaration, no doc comments
@@ -105,7 +109,7 @@ patch, the file is rewritten on every build. Roslyn still counts it as `"source"
 | `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. **One exception: a multi-file partial reports `"compact"` even under a forced `-exact`**, because that request cannot be honoured (see below) — this field is how you find out it lost. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
 | `source` `@lines` | `@` plus line ranges appended to the source query (after any modifiers): `source: "@46-76"`, `source: "code@46-76;79-83"` (`;` separates ranges, **not** `,`), `source: "@-50"`, `source: "@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
 | `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. Suppressed when `source` is also requested **and the lines actually returned carry the whole doc comment**. `source: "code"` exists precisely to strip the `///` block, so it never suppresses. An `@` line selection is judged on what it kept: a slice covering every line of the doc comment suppresses, one that cut any of it away serves `xmlDoc` — half a summary read as prose is not the summary. Suppressing on "is a slice" alone deleted the documentation from the response rather than deduplicating it. |
-| `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. |
+| `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. **Reach for it over `bodyOutline` when the question is what the body *does to the world* — does it throw, await, take a lock, write state, satisfy an interface member — rather than how it is *shaped inside*.** `bodyOutline` answers "where in this 300-line method is the loop I want to slice out"; this answers "is this method safe to call under a lock", "does it have I/O in it", "which interface member does it implement", each without reading the body at all. It is the semantic tier and costs more than the outline's purely syntactic scan, so it is the wrong reflex for navigation and the right one for a judgment about behaviour. Like `bodyOutline` and `source`, it leases the `body` layer. |
 | `bodyOutline` | Control-flow landmarks (`switch/case`, `if`, `for/foreach/while/do`, `catch`, `using`, `lock`) for mapping a long body before slicing it — purely syntactic, same cost tier as `source`, not `mechanicalFacts`' semantic tier. `text` truncated to 28 chars. A bare `try`/`else`/`finally` has no name of its own and is omitted; infer its span from the parent row. Absent (with `bodyOutlineNote`) for anything without an executable body (a type, a field, an auto-property). `bodyOutlineNote` also appears — rows still returned — when the outline is unlikely to earn its cost: under ~40 lines, or past that but averaging worse than one landmark per 25 lines (a mostly linear body). Suppressed when `source` is also requested — both exist as a structural stand-in for the body, so once `source` is present they'd only restate what it already shows. |
 | `referenceCounts` | `{callers, tests}` for a member (never a type), plus `{implementations, overrides}` only where the kind makes a non-zero answer possible (interface/unsealed class/interface member; virtual/abstract member). An enum, static class or plain method omits them rather than reporting a structural `0`; the whole component is absent when nothing is left to report. |
 | `recentLog` | Recent dev-log entries touching this symbol, each flagged `current: true/false` against the live body. |
@@ -326,8 +330,9 @@ get_symbol(symbol: "FeatureLogStore.Append")
    "referenceCounts":{"callers":2,"implementations":0,"overrides":0,"tests":0}}}
 ```
 
-`recentLog` is absent here because it had nothing to report — absence means "nothing", not "not
-computed" (that distinction is `limitedBy`'s job).
+`recentLog` is absent here because the default set no longer asks for it — name it in `include` (or
+use `"all"`) when you want it. When it *is* requested and still absent, that absence means
+"nothing to report", not "not computed" (that distinction is `limitedBy`'s job).
 
 ## Next steps
 

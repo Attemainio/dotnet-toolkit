@@ -56,8 +56,11 @@ public static class PatchTools
         + " honestly whether that was sufficient for the change. baseVersions is required (stale context is "
         + "rejected -- and a patch that rewrites a BODY must hold a version carrying the body layer, which only"
         + " a get_symbol that served the source, bodyOutline or mechanicalFacts hands out); intent is required "
-        + "to apply, and is the only record of WHY. Any result that was NOT applied returns a draft: pass its "
-        + "draftId back with only the lines you are correcting, instead of resubmitting the whole patch. A "
+        + "to apply, and is the only record of WHY. Almost any result that was NOT applied returns a draft: pass"
+        + " its draftId back with only the lines you are correcting, instead of resubmitting the whole patch. "
+        + "The exception is stale_base, which returns none on purpose -- a patch built on content that has since"
+        + " moved addresses lines that no longer exist, so it must be rebuilt from a fresh get_symbol rather "
+        + "than amended. A "
         + "change that is purely a rename goes to rename_symbol instead. Error codes, draft lifetimes and the "
         + "full response contract: docs/tools/validate_patch.md.")]
     public static async Task<string> ValidatePatch(
@@ -274,6 +277,7 @@ public static class PatchTools
 
             var ladder = await ValidationLadder.RunAsync(
                 sandbox.Forked, sandbox.ChangedDocuments, required,
+                original: solution,
                 testRunner: ct => targetedTests.RunAsync(affectedTests, ct),
                 runAnalyzers: runAnalyzers,
                 cancellationToken: cancellationToken);

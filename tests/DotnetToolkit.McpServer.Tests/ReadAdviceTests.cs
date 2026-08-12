@@ -34,14 +34,15 @@ public sealed class ReadAdviceTests
         Assert.Equal("code", ReadAdvice.For(null, LinearBody));
 
     /// <summary>
-    /// An edit needs the body-carrying lease whatever the symbol looks like — the one answer that is
-    /// not derived from the facts, which is exactly why stating the intent beats reading the shape.
+    /// An edit needs a body-carrying lease, but every body-serving include grants the identical layer, so
+    /// the advice is the CHEAPEST one rather than the widest — and a type, which has no body layer at all,
+    /// is sent to its surface instead. Answering one constant on every row carried no information.
     /// </summary>
     [Fact]
-    public void AnEditTargetWantsEverythingRegardlessOfSize()
+    public void AnEditTargetGetsTheCheapestLeaseThatCarriesTheBody()
     {
-        Assert.Equal("all", ReadAdvice.For("edit", SmallMethod));
-        Assert.Equal("all", ReadAdvice.For("edit", LargeType));
+        Assert.Equal("out", ReadAdvice.For("edit", SmallMethod));
+        Assert.Equal("mem", ReadAdvice.For("edit", LargeType));
     }
 
     /// <summary>The API surface is a member-list question on a type and a signature question elsewhere.</summary>
@@ -53,12 +54,16 @@ public sealed class ReadAdviceTests
     }
 
     /// <summary>
-    /// A caller after behaviour is served by source:code at any size: the default fetch returns docs
-    /// and reference counts and no code at all, so "small enough to fetch whole" is not the question.
+    /// source:code is source:full minus the leading doc comment, so on a symbol with no doc lines the two
+    /// are byte-identical and the label names a saving that does not exist — while every silent row pays a
+    /// cell for the column it keeps alive. With docs to drop it fires as before.
     /// </summary>
     [Fact]
-    public void LogicRecommendsCodeEvenOnASmallSymbol() =>
-        Assert.Equal("code", ReadAdvice.For("logic", SmallMethod));
+    public void LogicRecommendsCodeOnlyWhenThereAreDocsToDrop()
+    {
+        Assert.Null(ReadAdvice.For("logic", SmallMethod));
+        Assert.Equal("code", ReadAdvice.For("logic", SmallMethod with { DocLines = 4 }));
+    }
 
     [Fact]
     public void LogicStillMapsALongBranchingBodyFirst() =>
@@ -73,25 +78,32 @@ public sealed class ReadAdviceTests
         Assert.Equal(ReadAdvice.For(null, LargeType), ReadAdvice.For("whatever", LargeType));
 
     /// <summary>
-    /// The legend is the caller's only key to the column, so a value the router emits but the legend
-    /// never names would be an unreadable recommendation — worse than no column at all.
+    /// The legend is the caller's only key to the column, so a value the router emits but the legend never
+    /// names would be an unreadable recommendation — worse than no column at all. The converse is asserted
+    /// too: <c>all=include:all</c> outlived the router's last use of it, and a legend entry for a value that
+    /// cannot occur is exactly the restatement this column is meant not to ship.
     /// </summary>
     [Fact]
-    public void LegendNamesEveryValueTheRouterCanEmit()
+    public void LegendNamesEveryValueTheRouterCanEmitAndNoOthers()
     {
         string?[] emitted =
         [
+            ReadAdvice.For("edit", LargeType),
             ReadAdvice.For("edit", SmallMethod),
-            ReadAdvice.For(null, LargeType),
-            ReadAdvice.For(null, BranchingBody),
             ReadAdvice.For(null, LinearBody),
         ];
 
-        Assert.Equal(4, emitted.Distinct().Count());
+        Assert.Equal(3, emitted.Distinct().Count());
         Assert.All(emitted, value =>
         {
             Assert.NotNull(value);
             Assert.Contains($"{value}=", ReadAdvice.Legend);
         });
+
+        var defined = ReadAdvice.Legend.Split(' ')
+            .Where(token => token.Contains('='))
+            .Select(token => token[..token.IndexOf('=')])
+            .ToList();
+        Assert.Equal(["mem", "out", "code", "absent"], defined);
     }
 }

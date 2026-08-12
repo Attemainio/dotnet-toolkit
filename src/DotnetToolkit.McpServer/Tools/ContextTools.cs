@@ -2160,6 +2160,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
         {
             if (!caller.Locations.Any(l => l.IsInSource))
                 continue;
+            var callingSymbol = AttributionTarget(caller.CallingSymbol);
             var sites = caller.Locations
                 .Where(l => l.IsInSource)
                 .Select(l =>
@@ -2175,16 +2176,49 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 .DistinctBy(s => (s.File, s.Line))
                 .ToList();
             items.Add(new RefItem(
-                SymbolKey.IdOf(caller.CallingSymbol),
-                VersionOf(caller.CallingSymbol).ToString(),
-                caller.CallingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                CompactDisplay(caller.CallingSymbol),
+                SymbolKey.IdOf(callingSymbol),
+                VersionOf(callingSymbol).ToString(),
+                callingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                CompactDisplay(callingSymbol),
                 sites,
                 dispatch,
-                includeBodies ? SourceOf(caller.CallingSymbol, locator) : null,
-                TestAttributes.IsTestMethod(caller.CallingSymbol), caller.IsDirect));
+                includeBodies ? SourceOf(callingSymbol, locator) : null,
+                TestAttributes.IsTestMethod(callingSymbol), caller.IsDirect));
         }
-        return items;
+
+        // Two callers can now land on one row -- a member that reaches the target both directly and from a
+        // local function inside it -- so merge their sites instead of emitting the member twice.
+        return items
+            .GroupBy(i => i.SymbolId)
+            .Select(g => g.Count() == 1
+                ? g.First()
+                : g.First() with
+                {
+                    Sites = [.. g.SelectMany(i => i.Sites).DistinctBy(s => (s.File, s.Line))],
+                    IsDirect = g.Any(i => i.IsDirect),
+                    IsTest = g.Any(i => i.IsTest),
+                })
+            .ToList();
+    }
+
+    /// <summary>
+    /// The member a call site should be attributed to: a local function or lambda walked up to the member that
+    /// encloses it, everything else returned unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Roslyn names a local function as the calling symbol, but a local function is not a fetch target: it is
+    /// not in the symbol index, so <c>get_symbol</c> answers <c>symbol_not_found</c> for the very handle
+    /// <c>get_references</c> just handed out, and its documentation-comment id is minted as though it were a
+    /// member of the containing type, so same-signature helpers in different methods of one class collide onto
+    /// one id. Attributing the call to the enclosing member gives every row a real fetch target; nothing is
+    /// lost, because each site still carries the exact file, line and source line of the call itself.
+    /// </remarks>
+    private static ISymbol AttributionTarget(ISymbol symbol)
+    {
+        var current = symbol;
+        while (current is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction })
+            current = current.ContainingSymbol;
+        return current;
     }
 
     /// <summary>Members that reference a named type, grouped one item per referencing member.</summary>

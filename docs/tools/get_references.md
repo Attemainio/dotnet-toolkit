@@ -46,6 +46,16 @@ members returned actually invoke it. Each item carries `symbolId, displayString,
 here, correctly excluded. `targetSymbolId` and `targetDisplayString` are omitted when `symbol` was
 already a `sym_...` id, since they would only restate the input.
 
+**A call made from inside a local function or a lambda is attributed to the member that encloses it.**
+Roslyn names the local function as the caller, but a local function is not a fetch target: it is not in
+the symbol index, so `get_symbol` answers `symbol_not_found` for the very handle this tool just handed
+out, and its documentation-comment id is minted as though it were a member of the containing *type* —
+four same-signature `Fail` helpers in four different methods of one class all collapsed onto one id,
+simultaneously ambiguous and dead. Attributing upward makes every row a real `get_symbol` target, and
+nothing is lost: each `site` still carries the exact file, line and source line of the call itself. A
+member that reaches the target both directly and through a local function inside it is one item with
+both sites, not two items.
+
 ### Which symbol did it actually answer for
 
 `targetSymbolId` is a hash, so it confirms the binding only to a caller who looks it up.

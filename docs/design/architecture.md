@@ -102,7 +102,12 @@ bump is what you actually needed.
   `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4, then the analyzer pass),
   `AnalyzerRunner.cs` (runs each project's referenced `DiagnosticAnalyzer`s over the changed documents —
   `Compilation.GetDiagnostics()` runs none of them, so without this every `CA*`/`IDE*` rule an
-  `.editorconfig` configures was invisible to validation), `CheckReport.cs` (the `checks` block: which
+  `.editorconfig` configures was invisible to validation. It also diffs each changed document against
+  the pre-patch solution and holds **suggestions** to the lines the patch actually rewrote, counting
+  the rest as `PreexistingSuggestions`: suggestions scale with the size of the changed *file*, not of
+  the change, so an unfiltered pass made the caller triage findings it did not cause. Errors and
+  warnings stay unfiltered — those are consequences worth hearing wherever they land),
+  `CheckReport.cs` (the `checks` block: which
   rungs ran over what, analyzer findings by severity, and an explicit not-assessed list, so a clean run
   is distinguishable from an unexamined one),
   `DiagnosticDistiller.cs` (root causes, suggested inspections, and the `locations` where each error
@@ -186,7 +191,7 @@ Four disjoint namespaces, deliberately never sharing a hash space:
 | Prefix | Meaning |
 |---|---|
 | `sym_` | live, doc-comment-derived |
-| `symfb_` | `Ids.FallbackSymbolId`, when `GetDocumentationCommentId()` returns null |
+| `symfb_` | `Ids.FallbackSymbolId` — not a `get_symbol` fetch target. Either `GetDocumentationCommentId()` returned null, or it returned an id that does not identify the symbol uniquely: a **local function or lambda**, whose id is minted as though it were a member of the containing type, so same-signature helpers in different methods of one class all collide onto one `sym_` id |
 | `symidx_` | `Ids.IndexOnlySymbolId`, `get_symbol`'s syntax-only fallback |
 | `draft_` | `Ids.Draft()`, a validated-but-unapplied patch |
 

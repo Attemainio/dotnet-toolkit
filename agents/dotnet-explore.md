@@ -162,8 +162,9 @@ Rules for it:
 
 - **`symbolId`s verbatim, always.** They are the whole point — the caller pastes them straight
   into `get_symbol` or `validate_patch`. Never paraphrase one, never truncate one, never invent
-  one. A `symidx_`/`symfb_` prefix is provisional (syntax tier) and unusable for editing: say so
-  on the row rather than presenting it as equivalent to a `sym_` id.
+  one. A `symidx_` prefix is provisional (syntax tier) and a `symfb_` one is not a fetch target at
+  all (a local function, a lambda, a symbol with no doc-comment id); neither is usable for editing,
+  so say so on the row rather than presenting it as equivalent to a `sym_` id.
 - **`relation`** is one of `caller`, `implementation`, `override`, `type-use`.
 - **Every `file:line` comes from `get_symbol`'s `declarationSites`** — which *includes* a leading
   `///` doc comment. `search_index`'s `line`/`endLine` mark the signature line only and **exclude**

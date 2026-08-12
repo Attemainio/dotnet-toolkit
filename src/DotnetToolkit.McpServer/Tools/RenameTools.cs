@@ -36,8 +36,10 @@ public static class RenameTools
         + "INSTEAD OF a search-and-replace or a pile of validate_patch calls, which miss "
         + "interface/virtual/delegate dispatch and silently rewrite unrelated text that happens to share the "
         + "name. Resolves the symbol, applies Roslyn's rename to an in-memory fork, runs the same validation "
-        + "ladder validate_patch runs (so a rename that collides with an existing name is reported as a compile"
-        + " failure and NOTHING reaches disk), and on apply writes the same development-log entry a patch "
+        + "ladder validate_patch runs (so a rename onto a name whose SIGNATURE also collides is reported as a "
+        + "compile failure and NOTHING reaches disk; one whose signature differs is legal C# and succeeds, "
+        + "producing an overload set rather than a rename -- nameAlreadyExists says so when it happens), and on "
+        + "apply writes the same development-log entry a patch "
         + "would. baseVersion is a SINGLE version string here, not validate_patch's symbolId->version map, "
         + "because only one symbol is named and the rest is derived; get it from a get_symbol on that symbol. "
         + "It is required, so a rename built on stale context is rejected; intent is required to apply. Unlike "
@@ -219,6 +221,7 @@ public static class RenameTools
 
             var ladder = await ValidationLadder.RunAsync(
                 forked, changedDocs, required,
+                original: solution,
                 testRunner: ct => targetedTests.RunAsync(affectedTests, ct),
                 cancellationToken: cancellationToken);
             var isSufficient = ladder.Succeeded && (int)ladder.Completed >= (int)required;
@@ -269,7 +272,11 @@ public static class RenameTools
                     // Same reason newSymbol above is gated on ladder.Succeeded: on a failed rename this id
                     // can alias a different, pre-existing symbol rather than identify the one just renamed.
                     symbolId = ladder.Succeeded ? c.SymbolId : null,
-                    previousSymbolId = c.OldSymbolId == c.SymbolId ? null : c.OldSymbolId,
+                    // Dropped only when it would duplicate symbolId. On a FAILED rename symbolId is withheld
+                    // for the reason above, so dropping this one too left entries carrying neither -- a bare
+                    // changeKinds:[removed] with no declarationSites and nothing to fetch. The pre-rename id is
+                    // resolvable either way, since a failed rename wrote nothing to disk.
+                    previousSymbolId = ladder.Succeeded && c.OldSymbolId == c.SymbolId ? null : c.OldSymbolId,
                     changeKinds = c.Kinds.Select(k => k.Wire()).ToList(),
                     apiImpact = c.ApiImpact,
                     declarationSites = c.NewSymbol is null ? null : ContextTools.DeclarationSites(c.NewSymbol, locator),
@@ -306,6 +313,7 @@ public static class RenameTools
                 // to say what that success covered, and which checks never ran.
                 checks = CheckReport.Build(ladder, locator),
                 fileRenameHint = FileRenameHint(target, oldName, bare, locator),
+                nameAlreadyExists = NameAlreadyExists(target, bare, ladder.Succeeded),
                 // Same reason validate_patch emits it: a rename derived from a degraded workspace's own
                 // reference graph can miss call sites entirely, which is a wrong answer, not a thin one.
                 limitedBy = workspace.IsDegraded ? "degraded" : null,
@@ -472,8 +480,50 @@ public static class RenameTools
     }
 
     /// <summary>
+    /// A note naming what already carried <paramref name="newName"/> in the renamed symbol's own container, or
+    /// null when the name was free.
+    /// </summary>
+    /// <remarks>
+    /// It fires on both outcomes, and says something different about each. A SAME-signature collision does not
+    /// compile, and this names the clash the distilled CS0102/CS0229 is reporting. A DIFFERENT-signature one
+    /// compiles perfectly and reports succeeded:true, because C# has simply gained an overload -- so the caller
+    /// asked for a rename, got an overload set, and nothing in the response said the name was taken. That case
+    /// is a note rather than a failure because the resulting code is legal and may well be what was wanted.
+    /// </remarks>
+    /// <param name="target">The symbol being renamed, resolved against the pre-rename solution.</param>
+    /// <param name="newName">The bare identifier it is being renamed to.</param>
+    /// <param name="succeeded">Whether the ladder passed, which decides what the clash MEANS.</param>
+    /// <returns>A one-sentence note, or null when nothing else declares the name.</returns>
+    private static string? NameAlreadyExists(ISymbol target, string newName, bool succeeded)
+    {
+        // Locals, parameters and type parameters are excluded: shadowing an outer name is ordinary C# and
+        // reporting it would be noise, not a finding.
+        if (target.Kind is not (SymbolKind.NamedType or SymbolKind.Method or SymbolKind.Property
+            or SymbolKind.Field or SymbolKind.Event))
+            return null;
+
+        INamespaceOrTypeSymbol? container = target is INamedTypeSymbol { ContainingType: null } topLevel
+            ? topLevel.ContainingNamespace
+            : target.ContainingType;
+        var existing = container?.GetMembers(newName)
+            .Where(m => !SymbolEqualityComparer.Default.Equals(m, target))
+            .ToList();
+        if (existing is null || existing.Count == 0)
+            return null;
+
+        var kinds = string.Join(", ", existing.Take(3).Select(m => SymbolKey.KindOf(m).ToLowerInvariant()).Distinct());
+        var clash = $"{container!.ToDisplayString()} already declares {existing.Count} member(s) named {newName} "
+            + $"({kinds}). ";
+        return succeeded
+            ? clash + "The rename still succeeded, because the signatures differ -- so what you have now is an "
+                + "overload set rather than a rename."
+            : clash + "That is almost certainly the collision the diagnostics report: pick a different name, or "
+                + "resolve the clash with validate_patch first, then retry.";
+    }
+
+    /// <summary>
     /// The one thing this tool deliberately does not do. A type whose file is named after it leaves that
-    /// file misnamed after the rename, and moving it is a git operation plus a reload — not a text edit.
+    /// file misnamed after the rename, and moving it is a git operation plus a reload -- not a text edit.
     /// </summary>
     private static string? FileRenameHint(ISymbol target, string oldName, string newName, SolutionLocator locator)
     {

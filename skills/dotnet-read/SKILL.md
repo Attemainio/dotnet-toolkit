@@ -121,8 +121,17 @@ page. Read its zeroes and its silences precisely:
 
 **Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
 costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
-include to pass instead: `mem`, `out`, `code` or `all`, legend stated once per response. Absent means
-the default fetch is already right, which is why the column costs nothing on an ordinary result.
+include to pass instead: `mem`, `out` or `code`, legend stated once per response. Absent means the
+default fetch is already right.
+
+**The column is cheap, not free** — the distinction matters when you are judging whether to ask for
+it. When *no* hit is labelled it costs nothing at all: the column and its legend are dropped
+entirely. Once *any* row carries advice the tabular form gains the column for all of them, and the
+silent rows each pay an empty cell. Measured on a 50-hit page: 75 tokens for the whole column, of
+which ~32 were the 46 empty cells. It repays that many times over — following one `read: mem` label
+measured 274 tokens against 1,995 for `source: "full"` on the same type, so a single followed label
+covers the page's column cost ~23×.
+
 Pass **`intent: "edit" | "logic" | "surface"`** to aim it at what you are about to do; your intent is
 a fact the hit's shape cannot contain, and stating it beats re-deriving it per row.
 
@@ -357,10 +366,11 @@ committed before the note that prevents it was ever read.
 | `search_index`, then `get_references` (or `get_symbol`) only to learn whether anything uses it | Nothing — the `refs` column is already there by default. `R0` is the dead-code answer, `I`/`V` the dispatch one. Measured: that route took 3 calls where a single `grep` took 1. The one case still worth a second call is a symbol reached *only* through an interface, which reads `R0` — `get_symbol(include: "referenceCounts")` is dispatch-aware |
 | `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(include: "shape,read,refs,modifiers,summary:full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
 | `get_symbol` on a hit just to learn whether it is public, static, or overridable | The `modifiers` column, already on the hit — it comes from the index the search already read, so it costs nothing extra |
+| `get_symbol(include: "all")` on a member purely to obtain the body lease a patch needs | `include: "bodyOutline"` — the same `body:` layer for a fraction of the tokens (measured on a 117-line method: 2,133 vs **192**). `all` is the widest include, not the required one; the `read` column under `intent: "edit"` names the cheap one directly |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
 | Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |
-| `get_references` for a caller list you only need as names | `get_call_hierarchy(maxDepth: 1)` — measured ~1/3 the tokens at 8 callers; reach for `get_references` when you need the `{file, line, snippet}` sites, and pay for it deliberately |
+| `get_references` for a caller list you only need as names | `get_call_hierarchy(maxDepth: 1)` — measured ~1/3 the tokens at 8 callers, ~1/6 at 25 (395 vs 2,255), ~1/8 at 105: the gap widens with fan-in because `get_references` pays per *site* and the hierarchy pays per *caller*. Reach for `get_references` when you need the `{file, line, snippet}` sites, and pay for it deliberately |
 | `get_references` for an open-ended multi-level tree on a high-fan-in symbol | `get_call_hierarchy(maxDepth: 1)` — at 105 callers it measured ~1/8 the tokens |
 | Repeated `get_references` walking outward to see whether X reaches Y | `get_call_slice(from: "X", to: "Y")` |
 | Chaining `get_references` by hand three levels up | `get_call_hierarchy` |

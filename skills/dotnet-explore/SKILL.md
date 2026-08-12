@@ -69,8 +69,9 @@ Fixed sections: **Target**, **Entry points**, **Blast radius**, **Affected files
 to change**, **Suggested next calls**, **Not covered**.
 
 - **`symbolId`s are the payload** — paste them straight into `get_symbol` or `validate_patch`. A
-  `symidx_`/`symfb_` prefix is provisional (syntax tier) and unusable for editing; the report flags
-  those on the row.
+  `symidx_` prefix is provisional (syntax tier) and a `symfb_` one is not a fetch target at all (a
+  local function, a lambda, a symbol with no doc-comment id); neither is usable for editing, and the
+  report flags those on the row.
 - **Read `Not covered` first, not last.** It is mandatory and carries `limitedBy` verbatim, budget
   stops, non-C# files the answer touches, and any ambiguity it resolved on your behalf. A map that
   says where it ends is useful; one that looks complete is dangerous.

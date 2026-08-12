@@ -49,17 +49,35 @@ The same fields on an applied run mean the same thing, with `applied: true`.
 
 Done means all of `succeeded: true`, `isSufficient: true`, `applied: true` (or a deliberate dry run).
 `succeeded: false` means the rename does not compile — almost always the new name already exists in the
-same scope. `diagnostics.rootCauses` has the same distilled shape `validate_patch` returns; fix the
-collision with `validate_patch` first, then retry the rename. Nothing reached disk either way.
+same scope **with the same signature**. `diagnostics.rootCauses` has the same distilled shape
+`validate_patch` returns; fix the collision with `validate_patch` first, then retry the rename. Nothing
+reached disk either way.
+
+**A name clash whose signature *differs* does not fail.** It is legal C#: the two members simply become
+an overload set, so the ladder is clean and `succeeded: true` — which means you asked for a rename and
+got an overload. **`nameAlreadyExists`** is the field that says so, naming the container and how many
+members already carried the name. It is a note, not an error, because the result compiles and may well
+be what you meant; decide, don't skim past it.
+
+The same field appears on a **failed** rename too, saying the opposite thing: there it names the clash
+the distilled CS0102/CS0229 is reporting, so the cause is stated in words rather than left to be
+inferred from the diagnostics. Read which sentence you got — "the rename still succeeded" and "that is
+almost certainly the collision the diagnostics report" call for very different next moves.
 
 **On failure, `rename.newSymbolId` and every `detectedChanges[].symbolId` are omitted**, not just
 absent from the example above. A symbol id is a hash of its fully-qualified name, so a rename that
 collided with an existing name would otherwise mint an id that is already taken — exposing it would
 silently point a caller at the wrong (pre-existing) symbol rather than the one just renamed.
+**`previousSymbolId` is emitted on every entry in that case**, including the ones where it equals the
+withheld id, so a failed rename still leaves each entry with something resolvable to fetch — nothing
+was written, so the pre-rename id is still live.
 
 The response also carries the same **`checks`** block `validate_patch` returns — which rungs ran and over
 what, the analyzer pass's findings by severity, and what went unassessed. See
 `docs/tools/validate_patch.md` for the shape and for how `.editorconfig` severity decides what blocks.
+That includes the suggestion filter, which matters most here: a rename touches whole files it barely
+changes, so `suggestions` is limited to the rewritten lines and the withheld count is stated in
+`notAssessed`.
 
 One failure mode is specific to renaming: the new name can trip a **naming or documentation analyzer**
 the old one satisfied. If that rule's effective severity is `error`, the rename is blocked even though

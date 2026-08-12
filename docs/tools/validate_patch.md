@@ -9,7 +9,7 @@ actually needs — writes to disk only when it does, and only when you ask it to
 
 | Arg | Meaning |
 |---|---|
-| `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. A **body**-changing edit additionally needs a version that carries the `body` layer, which only an include serving `source`/`bodyOutline`/`mechanicalFacts` hands out; the declaration-only token from a default fetch is `error: "unleased_body"`. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own no-doc-comment-id fallback) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
+| `baseVersions` | Required, **except with `draftId`** (a draft carries its own, and anything you send is merged into it). `{symbolId: contentVersion}` for every symbol you're changing, from a `get_symbol` you actually hold. A version that disagrees is `error: "stale_base"` — refetch and rebuild. A symbol with no entry at all is `error: "unheld_symbol"`, which keeps your text as a draft. A **body**-changing edit additionally needs a version that carries the `body` layer, which only an include serving `source`/`bodyOutline`/`mechanicalFacts` hands out; the declaration-only token from a default fetch is `error: "unleased_body"`. Any id not starting with `sym_` — `symidx_` (from `get_symbol`'s `index_only` fallback) or `symfb_` (`SymbolKey.IdOf`'s own fallback, for a symbol with no doc-comment id *or* one whose id does not identify it uniquely — a local function or lambda) — is rejected outright as `error: "stale_index_only_id"` — neither was ever the live tier's id for that symbol; re-fetch via `get_symbol` once the workspace has finished loading. |
 | `edits` | Each entry is **either** a line-range edit `{file, lines, newText[, symbolId]}` **or** a symbol-scoped find/replace `{symbolId, find, replace[, replaceAll]}` — never both shapes on one entry. `lines` is `"N-M"` (or a bare `"N"`), 1-based inclusive, straight from `get_symbol`'s `declarationSites`. With `draftId`, line-range spans address the **draft's** proposed text instead, and the array may be empty. See "Two edit shapes" below. |
 | `requestedLevel` | Optional floor: `parse` \| `semantic_bind` \| `project_compile` \| `dependent_compile` \| `targeted_tests` \| `solution_validate`. Raises, never lowers, the level the ladder runs to. An unrecognized value is silently **not** honored — the ladder still runs at the mechanically computed level, but `ladder.requestedLevelHint` says so and names what it probably was, so an explicit escalation typo doesn't read as a successful one. |
 | `runAnalyzers` | Whether to run the analyzer pass once the compile rungs are clean (default `true`). Set `false` when only compile/semantic correctness matters — `checks.analyzers` then reports `{"ran": false, "skipReason": "the caller disabled the analyzer pass"}` instead of a verdict, and `notAssessed` states the consequence. Saves the pass's own cost (typically hundreds of ms over the analyzer set); does not change which compile levels run. |
@@ -117,6 +117,13 @@ ran at all — so a clean result has to state its own scope.
   verdict covers: `analyzerCount`, `documentCount`, `durationMs`. And when the pass never ran, the block
   is just `{"ran": false, "skipReason": "…"}` — every other field would be a constant by construction,
   and `notAssessed` states the consequence in words.
+
+  **`suggestions` is filtered to the lines the patch actually rewrote; `errorCount` and `warnings` are
+  not.** Suggestions scale with the size of the changed *file* rather than of the change — a one-method
+  rename reported five findings from lines it never touched, and the caller had to decide, per finding,
+  whether it was theirs. Errors and warnings stay unfiltered because those are consequences worth
+  hearing about wherever they land. Nothing is hidden silently: how many were withheld is stated in
+  `notAssessed`, so an empty `suggestions` never has to be read as "the file is clean".
 - **`notAssessed`** — the gaps `levels`/`analyzers` don't already say in structured form. Which rungs
   above `completedLevel` didn't run is NOT restated here — the fixed rung order
   (parse→semantic_bind→project_compile→dependent_compile→targeted_tests→solution_validate) plus
@@ -158,7 +165,11 @@ the real error under cascade findings. A run that fails a rung reports `analyzer
 
 ## Amending instead of resubmitting
 
-Every response that was **not applied** also carries a `draft`:
+Almost every response that was **not applied** also carries a `draft`. The exceptions are listed with
+the error codes below and share one reason: a draft is only worth keeping when the proposed *text* is
+still good. `stale_base` is the one to know — the content moved under the patch, so its line
+coordinates address text that no longer exists, and it must be rebuilt from a fresh `get_symbol`
+rather than amended.
 
 ```json
 "draft":{"draftId":"draft_01KYH…","expiresAt":"2026-07-27T14:31:07+00:00",

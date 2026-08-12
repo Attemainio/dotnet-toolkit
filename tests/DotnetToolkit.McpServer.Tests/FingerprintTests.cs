@@ -69,6 +69,38 @@ public sealed class FingerprintTests
         Assert.Equal(before.Decl, after.Decl); // member set is the api layer's concern (Phase 3), not decl
     }
 
+    /// <summary>
+    /// A positional record declared with a semicolon has no open brace, and the absent token reports
+    /// SpanStart 0 — so hashing "everything before the open brace" hashed the EMPTY STRING, and every such
+    /// record in the solution shared one decl layer. A stale record declaration was then undetectable:
+    /// validate_patch accepted a baseVersion belonging to an entirely different record.
+    /// </summary>
+    [Fact]
+    public void EveryPositionalRecordHasItsOwnDeclLayer()
+    {
+        var one = SyntaxFingerprint.Compute(Type("public sealed record TypeEntry(int Id, string Name);"));
+        var another = SyntaxFingerprint.Compute(Type("public sealed record CallSlice(int Depth);"));
+        var sameNameDifferentParameters = SyntaxFingerprint.Compute(Type("public sealed record TypeEntry(int Id);"));
+
+        Assert.NotEqual(one.Decl, another.Decl);
+        Assert.NotEqual(one.Decl, sameNameDifferentParameters.Decl);
+        Assert.NotEmpty(one.Decl);
+        Assert.Null(one.Body);
+
+        // The empty-string hash the bug produced, pinned by value so a regression cannot pass quietly.
+        Assert.NotEqual("e3b0c44298fc", one.Decl);
+    }
+
+    /// <summary>A record body's members are excluded from decl, exactly as a class's are.</summary>
+    [Fact]
+    public void ARecordBodysMembersDoNotMoveItsDeclLayer()
+    {
+        var before = SyntaxFingerprint.Compute(Type("public record R(int A) { void M() {} }"));
+        var after = SyntaxFingerprint.Compute(Type("public record R(int A) { void M() {} void N() {} }"));
+
+        Assert.Equal(before.Decl, after.Decl);
+    }
+
     // Tokens from different tiers carry different layer sets: the agent holds decl|body|refs|api from
     // get_symbol, while the patch classifier computes only the syntax layers. Comparison must be per
     // shared layer — string equality would reject every validly-based patch as stale.

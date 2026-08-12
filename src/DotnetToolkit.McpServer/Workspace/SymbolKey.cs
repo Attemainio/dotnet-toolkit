@@ -13,6 +13,19 @@ public static class SymbolKey
     public static string IdOf(ISymbol symbol)
     {
         var assembly = symbol.ContainingAssembly?.Name ?? "";
+
+        // Local functions and lambdas are routed to the fallback deliberately, even though Roslyn does mint a
+        // doc-comment id for them: that id is built as though the symbol were a member of the containing TYPE,
+        // because the container walk skips the enclosing method. Four same-signature `Fail` helpers in four
+        // different methods of one class therefore minted ONE id -- simultaneously ambiguous and dead, since a
+        // local function is not in the symbol index and get_symbol answers symbol_not_found for it. Qualifying
+        // by the enclosing symbol makes them distinct, and the fallback prefix says "not a fetch target" out loud.
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction })
+            return Ids.FallbackSymbolId(
+                symbol.ContainingSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+                    + "/" + symbol.ToDisplayString(),
+                assembly);
+
         if (symbol.GetDocumentationCommentId() is { } docId)
             return Ids.SymbolId(docId, assembly);
 

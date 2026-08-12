@@ -58,13 +58,14 @@ public static class ValidationLadder
     /// <param name="forked">The forked in-memory solution to validate.</param>
     /// <param name="changedDocs">Documents touched by the patch.</param>
     /// <param name="target">The highest level the caller wants run.</param>
+    /// <param name="original">The solution the fork was taken from, forwarded to the analyzer pass so it can tell the patch's own suggestions from the ones already in the file.</param>
     /// <param name="testRunner">Runs tests referencing the changed symbols; required to reach <see cref="ValidationLevel.TargetedTests"/> or higher.</param>
     /// <param name="runAnalyzers">Whether to run the analyzer pass once the compile rungs are clean.</param>
     /// <param name="cancellationToken">Cancels the run; observed by every level, including compiles and test runs.</param>
     /// <returns>The highest level completed, whether it succeeded, and everything checked or left unchecked.</returns>
     public static async Task<LadderResult> RunAsync(
         Solution forked, IReadOnlyList<DocumentId> changedDocs, ValidationLevel target,
-        TargetedTestRunner? testRunner = null, bool runAnalyzers = true,
+        Solution? original = null, TargetedTestRunner? testRunner = null, bool runAnalyzers = true,
         CancellationToken cancellationToken = default)
     {
         // Level 5 needs a runner; without one the ladder cannot honestly claim to have run tests, so it
@@ -105,7 +106,7 @@ public static class ValidationLadder
         // promoting a warning), while warnings and suggestions are reported without blocking. Analyzing code
         // that does not bind would bury the real compile error under cascades of downstream findings.
         var analyzers = runAnalyzers
-            ? await AnalyzerRunner.RunAsync(forked, changedDocs, cancellationToken)
+            ? await AnalyzerRunner.RunAsync(forked, changedDocs, original, cancellationToken)
             : AnalyzerRunner.AnalyzerOutcome.Skipped("the caller disabled the analyzer pass");
 
         return analyzers.Errors.Count > 0

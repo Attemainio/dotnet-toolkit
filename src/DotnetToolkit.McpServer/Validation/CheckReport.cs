@@ -55,6 +55,14 @@ public static class CheckReport
         else
         {
             notAssessed.Add($"analyzers covered {analyzers.Scope}");
+            // Withheld, not hidden. Suggestions are filtered to the lines the patch rewrote, so saying nothing
+            // here would leave a caller believing the file is clean where it merely was not this patch's
+            // business -- the same silence-read-as-zero mistake limitedBy exists to prevent elsewhere.
+            if (analyzers.PreexistingSuggestions > 0)
+            {
+                notAssessed.Add($"{analyzers.PreexistingSuggestions} analyzer suggestion(s) sit on lines this patch "
+                    + "did not change and are not reported; they are pre-existing, not consequences of it");
+            }
             foreach (var failed in analyzers.FailedAnalyzers)
                 notAssessed.Add($"analyzer {failed} threw and was dropped; its rules are unassessed");
         }

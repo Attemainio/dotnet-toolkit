@@ -432,6 +432,27 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// A bare type name is a suffix of the type's own display name AND of its constructor's
+    /// (<c>Sample.Lib.TracedAttribute.TracedAttribute</c>), so expanding a type hit into its constructors made
+    /// every class that declares one report ambiguous against itself — two calls where one answers, on most
+    /// non-static classes. The constructor is still reachable by naming it, which is the half that must not
+    /// regress while fixing the other.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_BareTypeName_ResolvesToTheTypeNotItsOwnConstructor()
+    {
+        var type = Root(await GetSymbol("TracedAttribute"));
+
+        Assert.False(type.TryGetProperty("error", out _));
+        Assert.Equal("Type", type.GetProperty("content").GetProperty("kind").GetString());
+
+        var constructor = Root(await GetSymbol("TracedAttribute.TracedAttribute"));
+
+        Assert.False(constructor.TryGetProperty("error", out _));
+        Assert.Equal("Method", constructor.GetProperty("content").GetProperty("kind").GetString());
+    }
+
+    /// <summary>
     /// didYouMean reached only get_references' resolver, so the same miss through get_symbol — the far more
     /// common one — came back with nothing to act on.
     /// </summary>

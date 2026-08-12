@@ -44,6 +44,23 @@ public static partial class SymbolResolver
             .DistinctBy(s => s.ToDisplayString())
             .ToList();
 
+        // A bare "SymbolStore" is a suffix of the type's own display name AND of its constructor's
+        // ("Ns.SymbolStore.SymbolStore"), so the expansion above made every class that declares a constructor
+        // report ambiguous_symbol against itself -- two calls where one answers, on most non-static classes.
+        // A spec naming no parameter list is asking for the type, so drop the constructors that type already
+        // contains. "SymbolStore.SymbolStore" still resolves to the constructor, since the type's own display
+        // name does not end in that suffix; a spec WITH a parameter list never matches the type at all.
+        if (specParams is null && matches.Count > 1)
+        {
+            var matchedTypes = matches.Where(s => s is INamedTypeSymbol)
+                .Select(s => s.ToDisplayString())
+                .ToHashSet(StringComparer.Ordinal);
+            matches = matches
+                .Where(s => s is not IMethodSymbol { MethodKind: MethodKind.Constructor } ctor
+                    || !matchedTypes.Contains(ctor.ContainingType.ToDisplayString()))
+                .ToList();
+        }
+
         return new Resolution(matches.Count == 1 ? matches[0] : null, matches);
     }
 

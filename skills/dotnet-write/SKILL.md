@@ -136,8 +136,20 @@ you haven't. The write-specific rules are in the loop below.
 
 ## The loop
 
-1. **Hold current content.** Fetch what you are about to change with `get_symbol` (`include: "all"`)
-   and keep its `contentVersion`.
+1. **Hold current content.** Fetch what you are about to change with `get_symbol`, using the
+   *cheapest* include that serves what this edit actually needs, and keep its `contentVersion`:
+
+   | The edit is | Fetch |
+   |---|---|
+   | A find/replace whose exact text you already know | `include: "bodyOutline"` — no source at all, and it leases the `body:` layer a body edit needs. Measured on a 117-line method: **192** tokens |
+   | A rewrite of a body you need to read first | `source: "code"` (1,785 on that same member), or `source: "full-exact@N-M"` for one region |
+   | A signature, doc comment or attribute only | The default include — those are `decl`, and no body lease is required |
+   | Adding a member to a type | The type with `include: "members"`, to see where it belongs |
+   | You genuinely want `usings`, `mechanicalFacts` *and* `referenceCounts` too | `include: "all"` (2,133) |
+
+   **Every body-serving include leases the identical `body:` layer**, so `all` buys nothing a patch
+   needs that `bodyOutline` does not — it is the widest include, never the required one. Reaching for
+   it reflexively is the single most expensive habit on this path.
 
    **On a 500+ line declaration that fetch is guarded**, and comes back with `members`/`bodyOutline`
    and a `guard: large_source` block instead of the source. That is not an obstacle to route around
@@ -194,7 +206,8 @@ you haven't. The write-specific rules are in the loop below.
 | Search-and-replace over the tree to rename something | `rename_symbol` |
 | One edit spanning lines 20–65 to change 20–25 and 60–65 | Two hunks — `newText` replaces its span verbatim, so the other 34 lines are resent for nothing |
 | Hand-computing a line span for a "replace this exact text" change | Find/replace mode: `{symbolId, find, replace}` — no line arithmetic to get wrong |
-| Patching a member's body from a `contentVersion` taken from `include: "members"` or the default | Fetch that member itself with `include: "all"` — those leases carry `decl` only and a body edit against them is rejected |
+| Patching a member's body from a `contentVersion` taken from `include: "members"` or the default | Fetch that member itself with an include that actually **serves the body** — those leases carry `decl` only, and a body edit against them is rejected as `unleased_body` |
+| Reaching for `include: "all"` purely to obtain a body lease | Any body-serving include leases the identical `body:` layer, and `all` is the most expensive one. Measured on a 117-line method: `all` 2,133 tokens, `source: "code"` 1,785, `include: "bodyOutline"` **192** — same `body:` hash, and a find/replace patch built on the 192-token fetch validated clean. Take `bodyOutline` when you already know the text to change (find/replace mode needs no source at all), `source: "code"` when you need to read the body, and `all` only when you genuinely also want `usings`, `mechanicalFacts` and `referenceCounts` |
 | Editing a new `.cs` file straight after `Write` | `reload_workspace(scope: "all")` first — it isn't in the compilation yet |
 | `get_symbol` to refetch a symbol you just successfully patched | The applied response already returns its `newVersion` and refreshed `declarationSites` |
 | A `pragma` suppression to get past an analyzer rule | Fix the code, or raise lowering that rule's `.editorconfig` severity **with the user** — never suppress silently |
@@ -206,7 +219,8 @@ you haven't. The write-specific rules are in the loop below.
 
   **A body edit needs a version that carries the body layer.** `get_symbol` narrows `contentVersion`
   to the layers it served, so the *default* include leases the declaration only and a body rewrite
-  against it is rejected. Step 1's `include: "all"` is what avoids this. Two shapes catch people out:
+  against it is rejected. Step 1's table is what avoids this — any of `bodyOutline`, `source` or
+  `mechanicalFacts` serves the layer, and they are not equally priced. Two shapes catch people out:
   **a comment-only edit inside a body still counts as a body edit**, and **a member row from
   `include: "members"` leases `decl` only** — patch a member's body from a `get_symbol` on that
   member, not from its row.
@@ -270,7 +284,9 @@ Report status with the fields, not a vibe: *"compiles at project level; dependen
 required because the public signature changed"* — never just "it builds". The same honesty applies to
 the **`checks`** block, returned on every `validate_patch` and `rename_symbol` call: it names which
 rungs ran, the `scope` each ran over, and an explicit `notAssessed` list. **Report the scope it
-names** — "no analyzer warnings" means *in the changed documents*, never repo-wide.
+names** — "no analyzer warnings" means *in the changed documents*, never repo-wide, and analyzer
+**suggestions** are narrower still: only those on lines the patch actually rewrote, with the number
+withheld as pre-existing stated in `notAssessed`. An empty `suggestions` is never "the file is clean".
 
 Signature, accessibility, inheritance, interface, attribute, generic-constraint and public nullability
 changes must show `requiredLevel` of at least `dependent_compile`. If you see less, escalate

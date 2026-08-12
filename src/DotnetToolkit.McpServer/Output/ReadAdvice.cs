@@ -35,9 +35,11 @@ public static class ReadAdvice
     /// "read:" inside the value rendered as <c>read: "read: mem=…"</c> — the restatement analysis 3b
     /// exists to catch, shipped in the one field whose whole job is to be read once and understood.
     /// </remarks>
+    // "all" is deliberately not listed: no path returns it any more (see For), and a legend entry for a
+    // value that cannot occur is exactly the restatement analysis 3b exists to catch.
     public const string Legend =
-        "mem=include:members out=include:bodyOutline then source:code@from-to code=source:code "
-        + "all=include:all; absent=default fetch is right";
+        "mem=include:members out=include:bodyOutline (maps a long body to slice; also the cheapest body "
+        + "lease for an edit) code=source:code; absent=default fetch is right";
 
     /// <summary>
     /// Lines past which a whole-declaration fetch is worth redirecting when the caller stated no
@@ -56,14 +58,17 @@ public static class ReadAdvice
     /// <param name="intent">What the caller is about to do: <c>"edit"</c>, <c>"logic"</c>,
     /// <c>"surface"</c>, or null/unrecognized to derive the answer from the facts alone.</param>
     /// <param name="facts">The same counted facts <see cref="SymbolShape"/> renders.</param>
-    /// <returns>One of <c>mem</c>, <c>out</c>, <c>code</c>, <c>all</c>, or null.</returns>
+    /// <returns>One of <c>mem</c>, <c>out</c>, <c>code</c>, or null.</returns>
     public static string? For(string? intent, in ShapeFacts facts)
     {
-        // A body patch needs the body-carrying contentVersion whatever the symbol looks like, so this
-        // answer is not derived from the facts at all — which is also why stating the intent beats
-        // reading the shape here.
+        // A body patch needs a body-carrying contentVersion whatever the symbol looks like — but EVERY
+        // body-serving include leases the identical body layer, and "all" is the widest and most expensive
+        // of them: measured on a 117-line method, include:"all" 2,133 tokens against include:"bodyOutline"
+        // 192, for the same body: hash. Answering "all" on every row also made this a constant column, which
+        // carries no information and is not hoisted the way a legend is. A type has no body layer to lease at
+        // all, so what an edit to one actually wants is its surface.
         if (intent is "edit")
-            return "all";
+            return facts.MemberCount is null ? "out" : "mem";
 
         // "What is its API" is a member-list question on a type and a signature question on everything
         // else — and the signature is what the default fetch already leads with.
@@ -76,7 +81,17 @@ public static class ReadAdvice
         // returns docs and reference counts and no code at all, so "small enough to fetch whole" is
         // not the question being asked.
         if (intent is "logic")
-            return Route(facts, mapBody: facts.LandmarkCount is > 0 && lines >= LargeDeclaration);
+        {
+            var route = Route(facts, mapBody: facts.LandmarkCount is > 0 && lines >= LargeDeclaration);
+            // "code" is source:"code" — the declaration minus its leading doc comment. With no doc lines to
+            // drop it is byte-identical to source:"full", so the label names a saving that does not exist
+            // while every silent row pays a cell for the column it keeps alive. Measured under this intent,
+            // 4 of 6 hits labelled "code" carried no doc lines at all. Defer to what the no-intent path would
+            // have said, which correctly stayed silent on every one of them.
+            if (route is "code" && facts.DocLines == 0)
+                return lines < LargeDeclaration ? null : route;
+            return route;
+        }
 
         return lines < LargeDeclaration ? null : Route(facts, mapBody: facts.LandmarkCount is > 0);
     }

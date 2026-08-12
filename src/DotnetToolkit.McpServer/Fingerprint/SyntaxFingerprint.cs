@@ -23,7 +23,12 @@ public static class SyntaxFingerprint
         switch (declaration)
         {
             case TypeDeclarationSyntax t:
-                return (Hash(TokensBefore(t, t.OpenBraceToken)), null);
+                // Excluding the members rather than stopping at the open brace, because a positional record
+                // declared with a semicolon (`record TypeEntry(int X);`) has no open brace at all: that
+                // default SyntaxToken reports SpanStart 0, so TokensBefore stopped before the very first
+                // token and hashed the empty string. Every such record then shared one decl layer, which made
+                // a stale record declaration undetectable.
+                return (Hash(TokensExcludingMany(t, [.. t.Members])), null);
             case EnumDeclarationSyntax e:
                 return (Hash(TokensBefore(e, e.OpenBraceToken)), null);
             case BaseMethodDeclarationSyntax m:

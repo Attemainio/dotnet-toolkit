@@ -34,7 +34,11 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs",
 ```
 
 `origin` separates what the type itself declares from what it inherits — usually the first
-thing you want to know. Both `origin` and `definedIn` carry nothing on a row the `receiverType` header
+thing you want to know. **It is emitted only when you passed a `receiver`**: without one it is a
+mechanical restatement of each row's own `kind` (`Local`→`local`, `Parameter`→`parameter`, a named
+type→`type`, everything else→`member`), and `extension` cannot occur at all, since reduced extension
+methods are only looked up against a receiver. Both `origin` and `definedIn` carry nothing on a row the
+`receiverType` header
 already accounts for; `definedIn` likewise on a local or parameter (which has no declaring type), and it
 carries the *namespace* on a type-kind row. "Nothing" reads as an **empty cell** rather than an absent
 field whenever other rows in the same table do carry the column — see "Rendering" below. Within one origin, symbols this
@@ -82,7 +86,10 @@ get_scope(file: "src/DotnetToolkit.McpServer/Tools/PatchTools.cs", line: 182,
 from the header. `origin` separates what the type itself declares from what it inherits, which is
 usually the first thing you want to know. **Both `origin` and `definedIn` are omitted when the
 `receiverType` header already implies them** — `definedIn == receiverType` makes `origin: "member"`
-derivable, and restating the header on every row cost 39% of a measured response. `definedIn` is also
+derivable, and restating the header on every row cost 39% of a measured response. **`origin` is
+omitted entirely when no `receiver` was given**, where it is derivable from each row's `kind` instead
+(see above), so the column and its cells disappear from that shape rather than restating a field
+already on the row. `definedIn` is also
 omitted on a **local or parameter**, which has no declaring type for the field to describe, and on a
 **type-kind** row it carries that type's namespace (or its outer type, when nested) — that row's own
 home, rather than the empty field it used to be.

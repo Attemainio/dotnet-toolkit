@@ -110,9 +110,12 @@ same way `shape`'s is.
 |---|---|
 | `mem` | `get_symbol(include: "members")` — navigate by member list, not a full-type read |
 | `out` | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@from-to"` for the region |
-| `code` | `get_symbol(source: "code")` — one linear block, docs stripped |
-| `all` | `get_symbol(include: "all")` — the body-carrying `contentVersion` a patch needs |
+| `code` | `get_symbol(source: "code")` — one linear block, docs stripped. Only ever recommended on a hit that actually *has* doc lines to strip: with no `D` in its `shape`, `source: "code"` and `source: "full"` are byte-identical, so the label would name a saving that does not exist |
 | *absent* | the default fetch is already the right call |
+
+There is no `all`. Every body-serving include leases the identical `body:` layer, and `include: "all"`
+is the widest and most expensive of them — measured on a 117-line method, `all` 2,133 tokens against
+`bodyOutline`'s 192 for the same `body:` hash — so recommending it would be advice to overpay.
 
 **Absent is an assertion here, not a blank.** It is the second deliberate exception to "absent
 carries no information" (`shape`'s letters are the first), and it is what keeps the column
@@ -143,8 +146,8 @@ cannot contain:
 
 | `intent` | Effect |
 |---|---|
-| `edit` | every hit reads `all` — a body patch needs the body-carrying lease whatever the symbol looks like |
-| `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body |
+| `edit` | the cheapest include that carries what the patch needs: `out` on a member (`bodyOutline` leases the `body:` layer for a fraction of `all`), `mem` on a type (which has no body layer to lease, so its surface is what an edit to it actually wants). It used to answer `all` on every row — a column with one value carries no information, and it named the most expensive lease available |
+| `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body. Silent where `code` would save nothing (no `D` in the hit's `shape`), falling through to the no-intent answer |
 | `surface` | the API shape: `mem` on a type, silent on everything else (the default fetch already leads with the signature) |
 
 An unrecognized value is treated as omitted, and the response carries `intentHint` naming what it

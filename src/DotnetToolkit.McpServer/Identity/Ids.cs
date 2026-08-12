@@ -69,12 +69,13 @@ public static class Ids
     }
 
     /// <summary>
-    /// <c>symfb_{sha256[:16]}</c> for a symbol Roslyn could not mint a documentation-comment id for at
-    /// all (some symbol kinds structurally lack one, or a symbol was bound against a transiently
-    /// incomplete compilation) -- disjoint from both <see cref="SymbolId"/> and
-    /// <see cref="IndexOnlySymbolId"/> so this fallback can never be silently confused with either. A
-    /// symbol that resolves cleanly one moment and hits this fallback the next would otherwise mint two
-    /// different sym_ ids for the same logical symbol -- the exact divergence class
+    /// <c>symfb_{sha256[:16]}</c> for a symbol that is not a <c>get_symbol</c> fetch target: one Roslyn could
+    /// not mint a documentation-comment id for at all (some symbol kinds structurally lack one, or a symbol was
+    /// bound against a transiently incomplete compilation), or one whose minted id does not identify it
+    /// uniquely (a local function or lambda, whose id is built as though it were a member of the containing
+    /// type). Disjoint from both <see cref="SymbolId"/> and <see cref="IndexOnlySymbolId"/> so this can never be
+    /// silently confused with either. A symbol that resolves cleanly one moment and hits this fallback the next
+    /// would otherwise mint two different sym_ ids for the same logical symbol -- the exact divergence class
     /// <see cref="IndexOnlySymbolId"/> exists to make visible instead of silent.
     /// </summary>
     /// <param name="displayName">The symbol's fully-qualified display string.</param>
