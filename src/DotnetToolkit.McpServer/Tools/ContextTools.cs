@@ -723,10 +723,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "this search down to it. Each hit carries shape (what fetching it costs) and read (which include "
         + "to pass next, absent when the default fetch is already right), both legends stated once per "
         + "response. intent (edit|logic|surface) aims read at what you are about to do. refs:\"counts\" adds a "
-        + "callers count per hit (0 included), answering \"is this used at all\" in one call. "
-        + "An unrecognized value on kinds, modifiers, origin, summary, refs, groupBy or intent is named in a "
-            + "<param>Hint response field rather than erroring. "
-            + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, refs, groupBy, origin. Full grammar, "
+        + "callers count to each MEMBER hit (0 = measured and unused); named types carry none. "
+        + "An unrecognized value on kinds, modifiers, origin, summary, refs, groupBy "
+        + "or intent is named in a <param>Hint response field rather than erroring. "
+        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, refs, groupBy, origin. Full grammar, "
         + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
@@ -790,12 +790,14 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
             + "\"source\", and the response's originHint names it.")] string? origin = null,
         [Description("Add reference counts per hit, answering \"does anything actually use this\" without a "
-            + "follow-up call. \"counts\": adds callers (ALWAYS, including 0 — that zero is the dead-code answer "
-            + "and is the reason to ask) and tests (only when above 0). Costs one batched index lookup for the "
-            + "whole page, not one per hit. Counts come from the same call edges get_references resolves, so "
-            + "interface and virtual dispatch are included where a text search would miss them. Absent counts "
-            + "mean they could not be computed, NEVER zero, and refsHint says so when that happens. An "
-            + "unrecognized value is treated as omitted, and refsHint names it.")] string? refs = null,
+            + "follow-up call. \"counts\": adds callers to every MEMBER hit (including 0 — that zero is the "
+            + "dead-code answer and is the reason to ask) and tests (only when above 0). A named type gets NO "
+            + "count: call edges bind to members, so a type's would be a structural 0, not a measured one. "
+            + "Costs one batched index lookup for the whole page, not one per hit. Counts cover calls written "
+            + "against the symbol itself; one made through an interface is recorded against the interface "
+            + "member, so ask get_references when dispatch matters. Absent counts mean they could not be "
+            + "computed, NEVER zero, and refsHint says so when that happens. An unrecognized value is treated "
+            + "as omitted, and refsHint names it.")] string? refs = null,
         [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
             + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
             + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
@@ -895,14 +897,36 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
 
+        // Call edges are recorded against MEMBERS, never against named types -- CollectCallEdges binds the
+        // target of an expression, and a type name is not called. A type's caller count is therefore
+        // structurally 0 rather than measured, which is why get_symbol omits the field for a type; emitting it
+        // here would contradict that and, on the commonest kind of hit, read as "dead code" for a type used
+        // everywhere. These are SymbolKey.KindOf's words, which is what a hit carries by the time it reaches
+        // this envelope -- NOT the single-letter codes SymbolHit uses inside the syntax index.
+        static bool IsNamedType(string kind) =>
+            kind is "Type" or "Interface" or "Struct" or "Enum" or "Delegate" or "Record";
+        var countableIds = limited.Where(r => !IsNamedType(r.Hit.Kind)).Select(r => r.Hit.SymbolId).ToList();
+
         // One batched lookup for the whole page rather than one per row (SymbolStore.ReferenceCountsFor). A
         // null result means there was no reference index to answer from, which is reported as a hint instead
         // of as a page of zeroes: "nothing calls this" and "nothing counted this" are opposite answers, and
         // conflating them is exactly how a live symbol gets deleted as dead code.
-        var refCounts = refsMode is null ? null : symbolStore.ReferenceCountsFor([.. limited.Select(r => r.Hit.SymbolId)]);
-        var refsHint = refsMode is not null && refCounts is null
-            ? "refs:\"counts\" was requested but no reference index was available, so no counts are reported. "
-                + "Absent counts are not zero -- call workspace_status before reading this as unused."
+        var refCounts = refsMode is null || countableIds.Count == 0
+            ? null
+            : symbolStore.ReferenceCountsFor(countableIds);
+        var refsHint =
+            refsMode is null ? refsVocabHint
+            : countableIds.Count == 0
+                ? "refs:\"counts\" counts call edges, which are recorded against members -- every hit on this "
+                    + "page is a named type, so no count applies to any of them. Add kinds:\"method\" for "
+                    + "countable hits, or ask get_references about the type itself."
+            : refCounts is null
+                ? "refs:\"counts\" was requested but no reference index was available, so no counts are reported. "
+                    + "Absent counts are not zero -- call workspace_status before reading this as unused."
+            : countableIds.Any(id => !refCounts.ContainsKey(id))
+                ? "Some hits carry no callers count: their project contributed no reference edges, so nothing "
+                    + "was measured for them. An absent count is not zero -- call workspace_status before "
+                    + "reading it as unused."
             : refsVocabHint;
 
         // A ranked OR spends `limit` globally, so a term whose name-matches are far rarer than its
@@ -975,9 +999,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // cannot disagree about when the column appears.
         (int? Callers, int? Tests) RefsOf(string symbolId)
         {
-            if (refCounts is null)
+            // Absent means NOT MEASURED -- an uncovered project, or a named type that cannot carry callers at
+            // all. Only a present entry is a fact, and its 0 is the dead-code answer refs:"counts" exists for.
+            if (refCounts is null || !refCounts.TryGetValue(symbolId, out var counts))
                 return (null, null);
-            var counts = refCounts.GetValueOrDefault(symbolId);
             return (counts.Callers, counts.Tests > 0 ? counts.Tests : null);
         }
 

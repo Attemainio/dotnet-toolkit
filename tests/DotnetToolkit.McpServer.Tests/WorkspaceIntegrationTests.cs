@@ -2433,6 +2433,47 @@ public sealed class WorkspaceIntegrationTests
         Assert.False(withoutRefs.ContainsKey("callers"));
     }
 
+    /// <summary>
+    /// A named type must carry NO callers count, the same omission get_symbol makes for one. Call edges bind
+    /// to members, so a type's count would be a structural 0 rather than a measured one — and a structural 0
+    /// on the commonest kind of search hit reads as "nothing uses this" for a type used everywhere. The
+    /// member-only test above cannot see this case, which is how it shipped reporting 0 for every type.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_RefsCounts_OmitsCallersForNamedTypes()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", refs: "counts", groupBy: "none"));
+        var rows = TableRows(root.GetProperty("items"));
+
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.False(r.ContainsKey("callers"), "a named type must not claim a caller count"));
+
+        // And the caller is told why the column is missing, rather than left to read absence as zero.
+        Assert.Contains("members", root.GetProperty("refsHint").GetString()!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The batched count path must omit an id whose project the edge cache never covered, exactly as the
+    /// single-symbol path does through HasEdgeCoverageFor. A project that fails to load in MSBuild contributes
+    /// no edges, and reporting that absence as "0 callers" states something the store cannot know.
+    /// </summary>
+    [Fact]
+    public async Task ReferenceCountsFor_OmitsIdsWithNoEdgeCoverage()
+    {
+        // An id belonging to no indexed project at all: coverage cannot be established for it.
+        Assert.Null(_f.Symbols.ReferenceCountsFor(["sym_not_a_real_symbol"]));
+
+        // A real member's project does have edges, so it comes back measured — present, carrying its count.
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: "Method", groupBy: "none"));
+        var id = TableRows(root.GetProperty("items")).First()["symbolId"].GetString()!;
+
+        var counts = _f.Symbols.ReferenceCountsFor([id]);
+        Assert.NotNull(counts);
+        Assert.True(counts!.ContainsKey(id), "a covered id must be present, carrying 0 when it has no callers");
+    }
+
     [Fact]
     public async Task GetTypeHierarchy_Class_ReportsBaseChainAndDerived()
     {

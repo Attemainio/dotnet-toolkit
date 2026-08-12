@@ -82,9 +82,11 @@ public sealed partial class SymbolStore
     /// <summary>callers / tests reference counts for many symbols at once, keyed by symbol id.</summary>
     /// <param name="symbolIds">The symbols to count references for.</param>
     /// <returns>
-    /// One entry per id carrying at least one recorded call edge, or <c>null</c> when no knowledge store is
-    /// available. An id missing from a non-null result has zero callers; a <c>null</c> result means the counts
-    /// were not computed at all, which is a different answer and must never be reported as zero.
+    /// One entry per id whose project the edge cache actually covers, carrying 0 where that symbol has no
+    /// recorded caller; or <c>null</c> when no knowledge store is available or the cache covers none of them.
+    /// An id ABSENT from a non-null result was not measured, which is a different answer from zero and must
+    /// never be reported as one -- present-means-measured is what keeps this in step with
+    /// <see cref="HasEdgeCoverageFor"/>, which the single-symbol path applies for the same reason.
     /// </returns>
     /// <remarks>
     /// search_index's refs column needs one count per hit, and asking <see cref="ReferenceCounts(string)"/>
@@ -98,26 +100,54 @@ public sealed partial class SymbolStore
         if (!_store.Available || symbolIds.Count == 0)
             return null;
         using var connection = _store.Connect();
-        using var cmd = connection.CreateCommand();
-        var names = symbolIds.Select((_, i) => "$s" + i).ToList();
-        var list = string.Join(',', names);
-        cmd.CommandText = $"""
-            SELECT e.to_symbol,
-                   COUNT(DISTINCT e.from_symbol),
-                   COUNT(DISTINCT CASE WHEN f.is_test = 1 THEN e.from_symbol END)
-              FROM reference_edges e
-              LEFT JOIN symbols f ON f.symbol_id = e.from_symbol
-             WHERE e.to_symbol IN ({list}) AND e.edge_kind = 'call'
-             GROUP BY e.to_symbol;
-            """;
-        var i = 0;
-        foreach (var id in symbolIds)
-            cmd.Parameters.AddWithValue("$s" + i++, id);
-        using var reader = cmd.ExecuteReader();
+        var list = string.Join(',', symbolIds.Select((_, i) => "$s" + i));
+
+        // Which of these ids sit in a project the edge cache covers at all -- HasEdgeCoverageFor's check,
+        // computed once for the whole page instead of once per row. A project that failed to load in MSBuild
+        // contributes no edges, and without this every symbol in it reads as a confident "0 callers".
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        using (var coverage = connection.CreateCommand())
+        {
+            coverage.CommandText = $"""
+                SELECT s.symbol_id
+                  FROM symbols s
+                 WHERE s.symbol_id IN ({list})
+                   AND s.project IN (SELECT DISTINCT f.project
+                                       FROM reference_edges e
+                                       JOIN symbols f ON f.symbol_id = e.from_symbol);
+                """;
+            var n = 0;
+            foreach (var id in symbolIds)
+                coverage.Parameters.AddWithValue("$s" + n++, id);
+            using var reader = coverage.ExecuteReader();
+            while (reader.Read())
+                covered.Add(reader.GetString(0));
+        }
+        if (covered.Count == 0)
+            return null;
+
         var counts = new Dictionary<string, (int Callers, int Tests)>(StringComparer.Ordinal);
-        while (reader.Read())
-            counts[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2));
-        return counts;
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT e.to_symbol,
+                       COUNT(DISTINCT e.from_symbol),
+                       COUNT(DISTINCT CASE WHEN f.is_test = 1 THEN e.from_symbol END)
+                  FROM reference_edges e
+                  LEFT JOIN symbols f ON f.symbol_id = e.from_symbol
+                 WHERE e.to_symbol IN ({list}) AND e.edge_kind = 'call'
+                 GROUP BY e.to_symbol;
+                """;
+            var n = 0;
+            foreach (var id in symbolIds)
+                cmd.Parameters.AddWithValue("$s" + n++, id);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                counts[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2));
+        }
+
+        // A covered id with no edge row genuinely has zero callers; an uncovered one is omitted entirely.
+        return covered.ToDictionary(id => id, id => counts.GetValueOrDefault(id), StringComparer.Ordinal);
     }
 
     /// <summary>

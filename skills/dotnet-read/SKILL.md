@@ -83,12 +83,24 @@ call — both are plain Markdown, not `.cs`, so this skill's tools don't apply t
 A hit's `line`/`endLine` mark the **signature line only** and exclude a leading `///` doc comment.
 They are a navigation aid, never an edit span.
 
-**`refs: "counts"` answers "is this used anywhere" in the same call.** Every hit gains `callers` —
-**including `0`**, which is the whole point — and `tests` when above zero. The counts come from the
-same call edges `get_references` resolves, so interface and virtual dispatch are counted where a text
-search would miss them. It costs one batched index lookup for the page, not one per hit. **Absent
-counts mean they could not be computed, never zero**; `refsHint` says so when that happens, and
-reading an absence as "unused" is how live code gets deleted.
+**`refs: "counts"` answers "is this used anywhere" in the same call.** Every **member** hit gains
+`callers` — **including `0`**, which is the whole point — and `tests` when above zero. It costs one
+batched index lookup for the page, not one per hit.
+
+Three limits, all of them the same rule — **an absent count is "not measured", never "zero"**:
+
+- **A named type never carries one.** Call edges bind to members, so a type's count would be a
+  structural `0` rather than a measured one — which reads as "nothing uses this" for a type used
+  everywhere. `get_symbol`'s `referenceCounts` omits it for types for exactly this reason.
+- **A project the edge cache doesn't cover is omitted, not zeroed.** A project that failed to load in
+  MSBuild contributes no edges; reporting that as `0 callers` once hid a method that had 5.
+- **The count is of calls written against the symbol itself.** A call made through an interface is
+  recorded against the *interface* member, so a method reached only by dispatch can read `0` here.
+  When dispatch is the question, ask `get_references` or `get_symbol`'s `referenceCounts`, which
+  expand to the interface members a symbol implements.
+
+`refsHint` names whichever of these applied. Reading an absence as "unused" is how live code gets
+deleted.
 
 **Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
 costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
@@ -312,7 +324,7 @@ committed before the note that prevents it was ever read.
 | Anti-pattern (route taken) | Cheap route |
 |---|---|
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
-| `search_index` to find a symbol, then `get_references` (or `get_symbol`) only to learn whether anything uses it | `search_index(refs: "counts")` — one call, `callers` on every hit including `0`, and it counts dispatch where a grep counts text. Measured: this route took 3 calls where a single `grep` took 1 |
+| `search_index` to find a **member**, then `get_references` (or `get_symbol`) only to learn whether anything uses it | `search_index(refs: "counts")` — one call, `callers` on every member hit including `0`. Measured: this route took 3 calls where a single `grep` took 1. Narrow with `kinds` first: a page of types carries no counts, and a symbol reached only through an interface reads `0` — for those, `get_symbol(include: "referenceCounts")` is the dispatch-aware answer |
 | `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(summary: "full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |

@@ -210,19 +210,28 @@ see that error, you omitted `query`.
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
 | `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only`. An unrecognized value is treated as omitted and the response carries `summaryHint` |
-| `refs` | — | `"counts"` adds `callers` to every hit — **including `0`** — and `tests` when above zero. One batched index lookup for the whole page, not one per hit. An unrecognized value is treated as omitted and the response carries `refsHint` |
+| `refs` | — | `"counts"` adds `callers` to every **member** hit — **including `0`** — and `tests` when above zero. A named type carries none (call edges bind to members), and so does a symbol whose project the edge cache doesn't cover. One batched index lookup for the whole page, not one per hit. An unrecognized value is treated as omitted and the response carries `refsHint` |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
 
-**`refs: "counts"` is how "is this dead code?" becomes one call.** `callers` is emitted even at `0`,
-because that zero *is* the answer being asked for; suppressing it would hide the only result worth the
-argument. The counts come from the same call edges `get_references` resolves, so a symbol reached only
-through an interface or a virtual is counted — a `grep` for the name would miss those and report a live
-symbol as unused.
+**`refs: "counts"` is how "is this dead code?" becomes one call — for a member.** `callers` is emitted
+even at `0`, because that zero *is* the answer being asked for; suppressing it would hide the only
+result worth the argument.
 
-**An absent `callers` is not zero.** When no reference index is available the counts are omitted
-entirely and `refsHint` says so. Reading that silence as "nothing uses it" is how live code gets
-deleted, which is why the two cases are distinguishable rather than both rendering as `0`.
+**An absent `callers` is never a zero**, and there are three ways to get one. All three are the same
+distinction — *measured* versus *not measured* — and the response's `refsHint` names whichever applied:
+
+| Absent because | Why | What to ask instead |
+|---|---|---|
+| The hit is a named type | Call edges are recorded against members; `SymbolIndexBuilder.CollectCallEdges` binds the target of an expression, and a type name is not called. A type's count would be a *structural* `0`, not a measured one — and on the commonest kind of hit that reads as "dead code" for a type used everywhere. `get_symbol`'s `referenceCounts` omits it for types for the same reason | `get_references` on the type, which returns the members that *reference* it |
+| No reference index is available at all | Nothing was counted | `workspace_status`, then retry |
+| The symbol's project contributed no edges | A project that failed to load in MSBuild yields none. Observed live: `0 callers` reported for a method that had 5. `HasEdgeCoverageFor` is the check, applied per page here and per symbol on the `get_symbol` path | `workspace_status` — fix the failing project, then `reload_workspace` |
+
+**The count covers calls written against the symbol itself.** A call made through an interface is
+recorded against the *interface* member, so a method reached only by dispatch can legitimately read
+`0` here. `get_symbol`'s `referenceCounts` and `get_references` both expand to the interface members a
+symbol implements and so do see it; this argument trades that for a single batched lookup. When
+dispatch is what you are actually asking about, spend the extra call.
 
 **`summary: "has"` is usually redundant against `shape`'s `D` count**, which is already present on
 every hit: measured, `hasSummary` agreed with `D > 0` on every hit checked. `D` counts doc *lines*
