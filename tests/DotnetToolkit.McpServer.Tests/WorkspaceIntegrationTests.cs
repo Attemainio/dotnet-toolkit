@@ -157,13 +157,13 @@ public sealed class WorkspaceIntegrationTests
 
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
-    private Task<string> GetSymbol(string symbol, string? include = null) =>
+    private Task<string> GetSymbol(string symbol, string? include = null, string? source = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, include);
+            symbol, include, source);
 
-    private Task<string> GetSymbols(string[] symbols, string? include = null) =>
+    private Task<string> GetSymbols(string[] symbols, string? include = null, string? source = null) =>
         ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol: null, include, symbols: symbols);
+            symbol: null, include, source, symbols: symbols);
 
     private Task<string> GetReferences(string symbol, string direction) =>
         ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction);
@@ -468,8 +468,8 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_XmlDoc_SuppressedOnlyWhenSourceActuallyCarriesTheDocComment()
     {
-        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code-exact,xmlDoc")).GetProperty("content");
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact,xmlDoc")).GetProperty("content");
+        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "code-exact", include: "xmlDoc")).GetProperty("content");
+        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact", include: "xmlDoc")).GetProperty("content");
 
         Assert.DoesNotContain(
             code.GetProperty("source").EnumerateArray(),
@@ -486,7 +486,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_XmlDoc_SuppressedWhenTheSliceItselfCarriesTheWholeDocComment()
     {
-        var whole = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact")).GetProperty("content");
+        var whole = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact")).GetProperty("content");
         var docLines = whole.GetProperty("source").EnumerateArray()
             .Where(l => l.GetProperty("text").GetString()!.TrimStart().StartsWith("///"))
             .Select(l => l.GetProperty("line").GetInt32())
@@ -495,12 +495,12 @@ public sealed class WorkspaceIntegrationTests
 
         var covering = Root(await GetSymbol(
             "Sample.Lib.Widget.Spin",
-            $"source:full-exact@{docLines[0]}-{docLines[^1]},xmlDoc")).GetProperty("content");
+            source: $"full-exact@{docLines[0]}-{docLines[^1]}", include: "xmlDoc")).GetProperty("content");
         Assert.False(covering.TryGetProperty("xmlDoc", out _));
 
         var past = Root(await GetSymbol(
             "Sample.Lib.Widget.Spin",
-            $"source:full-exact@{docLines[^1] + 1},xmlDoc")).GetProperty("content");
+            source: $"full-exact@{docLines[^1] + 1}", include: "xmlDoc")).GetProperty("content");
         Assert.False(string.IsNullOrWhiteSpace(past.GetProperty("xmlDoc").GetProperty("summary").GetString()));
     }
 
@@ -794,7 +794,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_DisjointLineRanges_ReportRunsNotTheEnvelope()
         {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-exact@9-10;12-13"))
+            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@9-10;12-13"))
                 .GetProperty("content");
 
             Assert.Equal(new[] { 9, 10, 12, 13 }, SourceLineNumbers(content));
@@ -968,7 +968,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_PartialClass_SourceCarriesEveryPartTaggedByFile()
     {
-        var content = Root(await GetSymbol("Sample.Lib.Gadget", "source:full")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", source: "full")).GetProperty("content");
         var runs = content.GetProperty("source").EnumerateArray().ToList();
 
         var spans = runs.Select(r => r.GetProperty("lines").GetString()!).ToList();
@@ -988,7 +988,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_PartialClass_ForcesSpansOverAnExplicitExact()
     {
-        var content = Root(await GetSymbol("Sample.Lib.Gadget", "source:full-exact")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", source: "full-exact")).GetProperty("content");
 
         Assert.Equal("compact", content.GetProperty("sourceLineFormat").GetString());
         Assert.All(content.GetProperty("source").EnumerateArray(), r => Assert.True(r.TryGetProperty("lines", out _)));
@@ -1002,7 +1002,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_DeclarationSpanIncludesTheLeadingDocComment()
         {
-            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact"));
+            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact"));
             var content = root.GetProperty("content");
             var site = content.GetProperty("declarationSites")[0];
 
@@ -1027,8 +1027,8 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceCode_ExcludesLeadingDocComment()
         {
-            var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:full-exact"));
-            var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", "source:code-exact"));
+            var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact"));
+            var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "code-exact"));
 
             var fullFirstLine = full.GetProperty("content").GetProperty("source")[0];
             var codeSource = code.GetProperty("content").GetProperty("source");
@@ -1052,9 +1052,9 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_Source_FirstLineKeepsItsIndentation()
         {
-            foreach (var include in new[] { "source:full-exact", "source:code-exact" })
-            {
-                var lines = Root(await GetSymbol("Sample.Lib.Widget.Spin", include))
+        foreach (var spec in new[] { "full-exact", "code-exact" })
+        {
+            var lines = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: spec))
                     .GetProperty("content").GetProperty("source");
 
                 var first = lines[0].GetProperty("text").GetString()!;
@@ -1069,8 +1069,8 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceCode_ExcludesMemberLevelDocCommentsToo()
         {
-            var full = Root(await GetSymbol("Sample.Lib.Widget", "source:full-exact"));
-            var code = Root(await GetSymbol("Sample.Lib.Widget", "source:code-exact"));
+            var full = Root(await GetSymbol("Sample.Lib.Widget", source: "full-exact"));
+            var code = Root(await GetSymbol("Sample.Lib.Widget", source: "code-exact"));
 
             var fullSource = full.GetProperty("content").GetProperty("source");
             var codeSource = code.GetProperty("content").GetProperty("source");
@@ -1091,7 +1091,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceFullMinusRemarks_KeepsReturnsDropsRemarks()
     {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", "source:full-remarks"));
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "full-remarks"));
         var lines = root.GetProperty("content").GetProperty("source");
 
         Assert.Contains(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("Always zero"));
@@ -1106,7 +1106,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceFullMinusAttributes_DropsWholeLineButKeepsInlineAttribute()
         {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-exact"));
+            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-attributes-exact"));
             var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
             Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
@@ -1119,7 +1119,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceCodeMinusAttributes_DropsAttributesInCodeModeToo()
     {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", "source:code-attributes"));
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", source: "code-attributes"));
         var lines = root.GetProperty("content").GetProperty("source");
 
         Assert.DoesNotContain(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
@@ -1133,7 +1133,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceFullMinusComments_DropsStandaloneButKeepsTrailingComment()
         {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-comments-exact"));
+            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-comments-exact"));
             var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
             Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
@@ -1148,7 +1148,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceFullMinusAttributesMinusComments_InlineContentSurvivesBoth()
         {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-attributes-comments-exact"));
+            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-attributes-comments-exact"));
             var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
 
             Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
@@ -1160,7 +1160,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceCodeMinusRemarks_IsInvalidComponent()
     {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", include: "source:code-remarks"));
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "code-remarks"));
 
         Assert.Equal("invalid_component", root.GetProperty("error").GetString());
         Assert.Contains("source:code-remarks", root.GetProperty("detail").GetString());
@@ -1170,7 +1170,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceFullBogusModifier_IsInvalidComponent()
     {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", include: "source:full-bogus"));
+        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "full-bogus"));
 
         Assert.Equal("invalid_component", root.GetProperty("error").GetString());
         Assert.Contains("source:full-bogus", root.GetProperty("detail").GetString());
@@ -1180,7 +1180,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceBadSuffix_IsInvalidComponent()
     {
-        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", include: "source:bogus"));
+        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "bogus"));
 
         Assert.Equal("invalid_component", root.GetProperty("error").GetString());
         Assert.Contains("source:bogus", root.GetProperty("detail").GetString());
@@ -1193,7 +1193,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceLineRange_ReturnsOnlyThoseLines()
         {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-exact@9-10")).GetProperty("content");
+            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@9-10")).GetProperty("content");
 
             Assert.Equal(new[] { 9, 10 }, SourceLineNumbers(content));
             Assert.Equal("9-10/5-13", content.GetProperty("sourceLines").GetString());
@@ -1207,7 +1207,7 @@ public sealed class WorkspaceIntegrationTests
     public async Task GetSymbol_SlicedSource_RestoresDisplayStringAndModifiers()
     {
         var whole = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source")).GetProperty("content");
-        var sliced = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@9-10")).GetProperty("content");
+        var sliced = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@9-10")).GetProperty("content");
 
         Assert.True(IsAbsentOrNull(whole, "displayString"));
         Assert.True(IsAbsentOrNull(whole, "modifiers"));
@@ -1222,7 +1222,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_LineRange_ComposesWithModifierExclusions()
         {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code-exact@5-13")).GetProperty("content");
+            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "code-exact@5-13")).GetProperty("content");
 
             // Line 5 is the type's doc comment, which source:code already removed.
             Assert.DoesNotContain(5, SourceLineNumbers(content));
@@ -1236,7 +1236,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SourceCodeMinusLineNumbers_ReturnsOneSpanOfBareText()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:code-lineNumbers")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "code-lineNumbers")).GetProperty("content");
         var spans = content.GetProperty("source").EnumerateArray().ToArray();
 
         var span = Assert.Single(spans);
@@ -1268,8 +1268,8 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceLineFormat_AbsentWhenExplicitlyForced()
         {
-            var compact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-lineNumbers")).GetProperty("content");
-            var exact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-exact")).GetProperty("content");
+            var compact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-lineNumbers")).GetProperty("content");
+            var exact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact")).GetProperty("content");
 
             Assert.False(compact.TryGetProperty("sourceLineFormat", out _));
             Assert.False(exact.TryGetProperty("sourceLineFormat", out _));
@@ -1279,7 +1279,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceMinusExact_ForcesTheNumberedGutterEvenWhenCompactIsShorter()
         {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source:full-exact")).GetProperty("content");
+            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact")).GetProperty("content");
 
             Assert.All(content.GetProperty("source").EnumerateArray(), l => Assert.True(l.TryGetProperty("line", out _)));
         }
@@ -1288,7 +1288,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_SourceMinusExactMinusCompact_IsInvalidComponent()
         {
-            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", include: "source:full-exact-compact"));
+            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact-compact"));
 
             Assert.Equal("invalid_component", root.GetProperty("error").GetString());
             Assert.Contains("source:full-exact-compact", root.GetProperty("detail").GetString());
@@ -1301,7 +1301,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_MinusCommentsMinusLineNumbers_SplitsRunsAtTheDroppedLine()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-comments-lineNumbers")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-comments-lineNumbers")).GetProperty("content");
         var spans = content.GetProperty("source").EnumerateArray().ToArray();
 
         Assert.Equal(["5-7", "9-13"], spans.Select(s => s.GetProperty("lines").GetString()));
@@ -1319,7 +1319,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_SeveralLineRanges_AreSemicolonSeparated()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-exact@6;9-10")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@6;9-10")).GetProperty("content");
 
         Assert.Equal(new[] { 6, 9, 10 }, SourceLineNumbers(content));
     }
@@ -1328,7 +1328,7 @@ public sealed class WorkspaceIntegrationTests
         [Fact]
         public async Task GetSymbol_OpenEndedLineRange_ClampsToTheDeclaration()
         {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source:full-exact@10-")).GetProperty("content");
+            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@10-")).GetProperty("content");
 
             Assert.Equal(new[] { 10, 11, 12, 13 }, SourceLineNumbers(content));
             Assert.Equal("10-13/5-13", content.GetProperty("sourceLines").GetString());
@@ -1341,7 +1341,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_LineRangeOutsideDeclaration_ReturnsNoLinesAndNamesTheRealSpan()
     {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@900-910")).GetProperty("content");
+        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@900-910")).GetProperty("content");
 
         Assert.Empty(content.GetProperty("source").EnumerateArray());
         Assert.Equal("none/5-13", content.GetProperty("sourceLines").GetString());
@@ -1360,10 +1360,10 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_MalformedLineRange_IsInvalidComponent()
     {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source@nope"));
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@nope"));
 
         Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-        Assert.Contains("source@nope", root.GetProperty("detail").GetString());
+        Assert.Contains("source:@nope", root.GetProperty("detail").GetString());
     }
 
     /// <summary>
@@ -1373,7 +1373,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public async Task GetSymbol_LineRangeWithBatch_IsRejected()
     {
-        var root = Root(await GetSymbols(["Sample.Lib.Widget.Spin", "Sample.Lib.SourceQueryFixture"], include: "source@9-10"));
+        var root = Root(await GetSymbols(["Sample.Lib.Widget.Spin", "Sample.Lib.SourceQueryFixture"], source: "@9-10"));
 
         Assert.Equal("lines_with_batch", root.GetProperty("error").GetString());
     }

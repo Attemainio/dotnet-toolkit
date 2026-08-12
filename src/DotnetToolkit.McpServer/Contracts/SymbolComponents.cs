@@ -107,63 +107,81 @@ public readonly record struct SymbolComponents
     public static readonly IReadOnlyList<string> Standard = [XmlDoc, ReferenceCounts, RecentLog];
 
     /// <summary>
-    /// Resolves <c>include</c> into an exact component set — <c>"standard"</c> (default, same as
-    /// <c>null</c>/empty) for <see cref="Standard"/>, <c>"all"</c> for every component, or a comma list
-    /// naming the set precisely. A comma list REPLACES the default rather than adding to it: it is a
-    /// literal query of exactly the columns wanted, not a delta. <see cref="Source"/> alone may carry a
-    /// suffix parsed by <see cref="Contracts.SourceQuery.Parse"/> (<c>"source:full-remarks-attributes"</c>,
-    /// <c>"source:code-comments"</c>, <c>"source@46-76"</c>, ...); a bare <c>"source"</c> is
-    /// <see cref="Contracts.SourceQuery.Full"/>. Returns null and sets <paramref name="invalid"/> when a
-    /// name is not a component, or a <c>source</c> suffix does not parse — a typo silently ignored would
-    /// leave the caller believing it dropped a field, or got a query, it did not actually get.
+    /// Resolves <c>include</c> and <c>source</c> into an exact component set. <c>include</c> is a plain
+    /// comma list of component names — <c>"standard"</c> (default, same as <c>null</c>/empty), <c>"all"</c>,
+    /// or a literal list — and it REPLACES the default rather than adding to it. <c>source</c> is the
+    /// separate source query (<c>"full-remarks-attributes"</c>, <c>"code-comments"</c>,
+    /// <c>"full-exact@46-76"</c>, ...), parsed by <see cref="Contracts.SourceQuery.Parse"/>.
     /// </summary>
-    public static SymbolComponents? Resolve(string? include, out string? invalid)
+    /// <remarks>
+    /// The two used to share one string, which meant one argument carrying two grammars: an ADDITIVE list of
+    /// component names with a SUBTRACTIVE source spec nested inside it. <c>comments</c> as a list entry would
+    /// have added while <c>-comments</c> inside the source spec removed — the same word meaning opposite
+    /// things one comma apart. Split in two, each argument has exactly one grammar, and <c>-</c> only ever
+    /// subtracts here and in every other tool's filters.
+    ///
+    /// <para>
+    /// A <c>source</c> with no <c>include</c> is a complete request on its own: it replaces the default set
+    /// the same way a list does, so "give me the code" does not also drag back members, attributes and
+    /// interfaces. Passing both unions them, which is how to ask for the code plus a named field or two.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// Null, with <paramref name="invalid"/> set, when a name is not a component or the source query does not
+    /// parse. A typo silently ignored would leave the caller believing it dropped a field, or got a query,
+    /// that it did not actually get.
+    /// </returns>
+    public static SymbolComponents? Resolve(string? include, string? source, out string? invalid)
     {
         invalid = null;
+
+        SourceQuery? sourceQuery = null;
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            sourceQuery = SourceQuery.Parse(source.Trim());
+            if (sourceQuery is null)
+            {
+                invalid = source;
+                return null;
+            }
+        }
+
         var trimmed = include?.Trim();
 
         if (string.IsNullOrEmpty(trimmed) || string.Equals(trimmed, "standard", StringComparison.OrdinalIgnoreCase))
-            return new SymbolComponents(new HashSet<string>(Standard, StringComparer.Ordinal));
+        {
+            return sourceQuery is not null
+                ? new SymbolComponents(new HashSet<string>([Source], StringComparer.Ordinal), sourceQuery)
+                : new SymbolComponents(new HashSet<string>(Standard, StringComparer.Ordinal));
+        }
 
         if (string.Equals(trimmed, "all", StringComparison.OrdinalIgnoreCase))
-            return new SymbolComponents(new HashSet<string>(All, StringComparer.Ordinal), isAll: true);
-
+            return new SymbolComponents(new HashSet<string>(All, StringComparer.Ordinal), sourceQuery, isAll: true);
 
         var set = new HashSet<string>(StringComparer.Ordinal);
-        SourceQuery? sourceQuery = null;
         foreach (var raw in trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            // ':' introduces a source mode and '@' a mode-less line selection; either one ends the
-            // component name, so the split point is whichever appears first.
-            var separator = raw.IndexOfAny([':', '@']);
-            var name = separator < 0 ? raw : raw[..separator];
-            var match = All.FirstOrDefault(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase));
+            // No ':' or '@' or '-' in here any more -- that grammar moved to the source argument, so include
+            // is a plain list of names. A caller writing the old combined form is told so, rather than
+            // silently losing the query it believed it had asked for.
+            if (raw.IndexOfAny([':', '@', '-']) >= 0)
+            {
+                invalid = raw;
+                return null;
+            }
+
+            var match = All.FirstOrDefault(c => string.Equals(c, raw, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
                 invalid = raw;
                 return null;
             }
             set.Add(match);
-
-            if (separator < 0)
-                continue;
-
-            if (match != Source)
-            {
-                invalid = raw;
-                return null;
-            }
-            // ':' is consumed as the mode separator; '@' is kept, since SourceQuery.Parse reads a
-            // leading '@' as "no mode written, so full".
-            var suffix = raw[separator] == ':' ? raw[(separator + 1)..] : raw[separator..];
-            var parsed = SourceQuery.Parse(suffix);
-            if (parsed is null)
-            {
-                invalid = raw;
-                return null;
-            }
-            sourceQuery = parsed;
         }
+
+        if (sourceQuery is not null)
+            set.Add(Source);
+
         return new SymbolComponents(set, sourceQuery);
     }
 }

@@ -77,13 +77,21 @@ public static class ContextTools
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
         [Description("The class, interface, struct, record, enum, method, property, field or event to look up: its fully-qualified name (append a parameter list to pick an overload), a unique suffix of it, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
-        [Description("\"standard\" (default, omit this) | \"all\" | a comma-separated list of component "
-            + "names that replaces the default set exactly: source (optionally source:code, either mode "
-            + "with -tag/-attributes/-comments/-lineNumbers subtracted, and/or an @ line selection returning only those "
-            + "absolute file lines, e.g. source:code@46-76;79-83), xmlDoc, mechanicalFacts, bodyOutline, "
-            + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings. See "
-            + "docs/tools/get_symbol.md for what each returns, the full @ grammar, and why source "
-            + "suppresses several of these.")] string? include = null,
+        [Description("\"standard\" (default, omit this) | \"all\" | a plain comma-separated list of component "
+            + "names that REPLACES the default set exactly: xmlDoc, mechanicalFacts, bodyOutline, "
+            + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings, source. No ':' "
+            + "or '-' here -- the source grammar lives in the source argument, so this list only ever adds. "
+            + "Pass both to union them. What each component returns, and why source suppresses several of "
+            + "them: docs/tools/get_symbol.md.")] string? include = null,
+
+        [Description("The source query, kept separate from include so each argument has ONE grammar and '-' "
+            + "only ever subtracts. \"full\" (default: includes the leading /// doc comment) or \"code\" "
+            + "(drops it, and for a TYPE its members' too -- a reading mode). Subtract further with "
+            + "-attributes, -comments, -exact/-compact, or a doc tag under full (-summary, -remarks, "
+            + "-returns, ...). Select lines with @46-76;79-83 -- absolute file numbers, and a slice still "
+            + "leases the body layer a patch needs. Given alone it replaces the default set, so \"give me the "
+            + "code\" does not drag back members and interfaces. NEVER build an edit span from a fetch whose "
+            + "subtractions dropped lines inside it. Full grammar: docs/tools/get_symbol.md.")] string? source = null,
 
         [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
             + "every entry, and each entry is a full, independent fetch. A source @line selection is rejected here, "
@@ -103,7 +111,7 @@ public static class ContextTools
         // A line selection names a span in one specific file, so applying the same include unchanged to
         // every entry would slice each symbol by another one's line numbers. Rejected rather than
         // silently returning fragments that look like real answers.
-        if (symbols is { Length: > 0 } && SymbolComponents.Resolve(include, out _) is { HasSlicedSource: true })
+        if (symbols is { Length: > 0 } && SymbolComponents.Resolve(include, source, out _) is { HasSlicedSource: true })
         {
             return Formats.Render(new
             {
@@ -115,7 +123,7 @@ public static class ContextTools
         if (targets is [var only] && symbols is null)
         {
             var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                toolCallId, sessionId, attributedTask, only, include);
+                toolCallId, sessionId, attributedTask, only, include, source);
             var rendered = Formats.Render(JsonSerializer.Deserialize<JsonElement>(one.Json));
             return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", only, one.SymbolId,
                 include ?? "standard", one.ContentVersion, 1,
@@ -132,7 +140,7 @@ public static class ContextTools
         foreach (var target in targets)
         {
             var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                toolCallId, sessionId, attributedTask, target, include);
+                toolCallId, sessionId, attributedTask, target, include, source);
             results.Add(JsonSerializer.Deserialize<JsonElement>(one.Json));
             firstErrorKind ??= one.ErrorKind;
             firstLimitedBy ??= one.LimitedBy;
@@ -240,7 +248,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
         FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include)
+        string symbol, string? include, string? source)
     {
         // Every return in this method is PLAIN JSON, regardless of Formats.Current — its result is
         // always re-parsed and re-rendered by its caller (GetSymbol, for both the single-symbol and
@@ -259,7 +267,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             {
                 // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
                 await index.EnsureFreshAsync();
-                var fallback = IndexSymbol(index, locator, symbol, include);
+                var fallback = IndexSymbol(index, locator, symbol, include, source);
                 if (fallback is { } fb)
                 {
                     var indexEnvelope = new
@@ -282,13 +290,21 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         var symbolId = SymbolKey.IdOf(sym);
 
-        var components = SymbolComponents.Resolve(include, out var invalidComponent);
+        var components = SymbolComponents.Resolve(include, source, out var invalidComponent);
         if (components is not { } parts)
         {
             var badComponent = Formats.ToJson(new
             {
                 error = "invalid_component",
-                detail = InvalidComponentDetail(invalidComponent ?? include ?? ""),
+                // A failed SOURCE query and an unknown COMPONENT name are different mistakes now that they
+                // arrive on different arguments, so they get different advice: listing the component names
+                // tells a caller nothing when what they actually mistyped was a source modifier.
+                detail = invalidComponent is not null && invalidComponent == source
+                    ? $"source:{source} is not a valid source query. Modes: full (default, keeps the /// doc "
+                        + "comment) or code. Subtract -attributes, -comments, -exact/-compact, or a doc tag "
+                        + "under full (-summary, -remarks, -returns, ...). Select lines with @46-76;79-83. "
+                        + "Full grammar: docs/tools/get_symbol.md."
+                    : InvalidComponentDetail(invalidComponent ?? include ?? ""),
             });
             return new SymbolFetchResult(badComponent, symbolId, null, "live", "invalid_component");
         }
@@ -315,7 +331,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 // Carries the caller's original include:"all" intent through the substitution: without this,
                 // a member row served here never had a leaseable contentVersion even when "all" was explicitly
                 // requested, because "members" alone resolves with IsAll false (self-eval follow-up, 2026-08-11).
-                var guardParts = SymbolComponents.Resolve(instead, out _)!.Value;
+                var guardParts = SymbolComponents.Resolve(instead, null, out _)!.Value;
                 if (parts.IsAll)
                     guardParts = guardParts with { IsAll = true };
 
@@ -2410,7 +2426,7 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     /// declarations. referenceCounts is null here — counts require the edge cache.
     /// </summary>
 private static (object Content, string Version, string SymbolId)? IndexSymbol(
-        ProjectIndex index, SolutionLocator locator, string symbol, string? include)
+        ProjectIndex index, SolutionLocator locator, string symbol, string? include, string? sourceSpec)
     {
         var namePart = symbol;
         var paren = namePart.IndexOf('(');
@@ -2446,7 +2462,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 var normalized = NormalizeDeclNode(node);
                 var (decl, body) = SyntaxFingerprint.Compute(normalized);
                 version = ContentVersion.Of(decl, body).ToString();
-                if (SymbolComponents.Resolve(include, out _) is { } parts && parts.Has(SymbolComponents.Source))
+                if (SymbolComponents.Resolve(include, sourceSpec, out _) is { } parts && parts.Has(SymbolComponents.Source))
                 {
                     source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery), parts.SourceQuery, out var resolvedLineFormat);
                     sourceLineFormat = resolvedLineFormat switch
