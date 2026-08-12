@@ -6,7 +6,7 @@ namespace DotnetToolkit.McpServer.Tests;
 public class SymbolGroupingTests
 {
     private static SymbolGrouping.Row Row(string name, string? shape) =>
-        new($"sym_{name}", "Method", name, "Lib/Widget.cs", "Sample.Lib", 1, 2, null, null, shape);
+        new($"sym_{name}", "Method", name, "Lib/Widget.cs", "Sample.Lib", "@1-2", null, null, shape);
 
     private static List<Dictionary<string, object?>> SymbolsOf(Dictionary<string, object?> grouped) =>
         Assert.IsType<List<Dictionary<string, object?>>>(grouped["symbols"]);
@@ -15,7 +15,7 @@ public class SymbolGroupingTests
     public void ShapeLegendIsStatedOnceAtTheTopWhenAnyRowCarriesAShape()
     {
         var grouped = SymbolGrouping.Build(
-            [Row("Small", null), Row("Big", "L1822 M64")], primaryIsNamespace: true);
+            [Row("Small", null), Row("Big", "L1822-M64")], primaryIsNamespace: true);
 
         Assert.Equal(SymbolShape.Legend, grouped["shape"]);
     }
@@ -32,11 +32,11 @@ public class SymbolGroupingTests
     [Fact]
     public void ARowsShapeRidesAlongsideItsLineSpan()
     {
-        var grouped = SymbolGrouping.Build([Row("Big", "L1822 M64")], primaryIsNamespace: true);
+        var grouped = SymbolGrouping.Build([Row("Big", "L1822-M64")], primaryIsNamespace: true);
 
         var only = Assert.Single(SymbolsOf(grouped));
-        Assert.Equal("L1822 M64", only["shape"]);
-        Assert.Equal(1, only["line"]);
+        Assert.Equal("L1822-M64", only["shape"]);
+        Assert.Equal("@1-2", only["lines"]);
     }
 
     /// <summary>
@@ -48,9 +48,9 @@ public class SymbolGroupingTests
     public void ShapeLegendSurvivesTheNestedGroupedShape()
     {
         var other = new SymbolGrouping.Row(
-            "sym_Other", "Method", "Other", "Other/File.cs", "Other.Ns", 1, 2, null, null, null);
+            "sym_Other", "Method", "Other", "Other/File.cs", "Other.Ns", "@1-2", null, null, null);
 
-        var grouped = SymbolGrouping.Build([Row("Big", "L1822 M64"), other], primaryIsNamespace: true);
+        var grouped = SymbolGrouping.Build([Row("Big", "L1822-M64"), other], primaryIsNamespace: true);
 
         Assert.Equal(SymbolShape.Legend, grouped["shape"]);
         Assert.Equal("namespace", grouped["groupedBy"]);

@@ -26,7 +26,22 @@ internal static class Schema
         new(13, "symbol_namespace_column", SymbolNamespaceColumn),
         new(14, "drop_attribution", DropAttribution),
         new(15, "generated_flag_on_symbol", GeneratedFlagOnSymbol),
+        new(16, "dispatch_edges", DispatchEdges),
     ];
+
+    /// <remarks>
+    /// No ALTER: edge_kind is a VALUE in reference_edges, not a column, so the overrides and member-level
+    /// implements edges SymbolIndexBuilder.CollectDispatchEdges now writes need no shape change -- only a
+    /// re-index, because change detection is mtime-based and an unchanged file would otherwise never be
+    /// revisited to gain them. Emptying the derived tables is how every earlier migration that changed what
+    /// gets indexed forced that; see generated_flag_on_symbol and test_flag_on_symbol.
+    /// </remarks>
+    private const string DispatchEdges = """
+        DELETE FROM mechanical_facts;
+        DELETE FROM reference_edges;
+        DELETE FROM symbols_fts;
+        DELETE FROM symbols;
+        """;
 
     // A rename/arity change gives the same logical member a new symbolId (SymbolKey.IdOf hashes the
     // fully-qualified name), so a log entry recorded under the pre-rename id was orphaned: nothing

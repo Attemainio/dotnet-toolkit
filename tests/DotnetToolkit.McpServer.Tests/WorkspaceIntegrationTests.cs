@@ -1856,8 +1856,8 @@ public sealed class WorkspaceIntegrationTests
     /// A search hit carries where it was found, so "search, then go there" is one call rather than two.
     /// The line is checked against the file's actual content, not just asserted non-null — a location
     /// that points at the wrong line is worse than none, since a caller has no reason to doubt it.
-    /// endLine is the same fetch-strategy signal get_symbol's declarationSites gives, cheap enough to
-    /// check here too: a declaration's end can never come before its start.
+    /// The span is the @from-to read selector, so the same string pastes into get_symbol's source include;
+    /// its end can never come before its start, which is cheap enough to check here too.
     /// </summary>
     [Fact]
     public async Task SearchIndex_HitCarriesTheFileAndLineItWasFoundAt()
@@ -1866,8 +1866,9 @@ public sealed class WorkspaceIntegrationTests
             _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "SpinTwice", groupBy: "none")).GetProperty("items")).First();
 
         var file = hit["file"].GetString()!;
-        var line = hit["line"].GetInt32();
-        var endLine = hit["endLine"].GetInt32();
+        var span = hit["lines"].GetString()!.TrimStart('@').Split('-');
+        var line = int.Parse(span[0]);
+        var endLine = int.Parse(span[^1]);
 
         var text = await File.ReadAllLinesAsync(_f.Locator.AbsPath(file));
         Assert.Contains("SpinTwice", text[line - 1]);
@@ -1912,7 +1913,7 @@ public sealed class WorkspaceIntegrationTests
     public async Task SearchIndex_SummaryHas_ReportsPresenceWithoutText()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "has", groupBy: "none")).GetProperty("items"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", include: "summary", groupBy: "none")).GetProperty("items"))
             .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
 
         Assert.True(hit["hasSummary"].GetBoolean());
@@ -1927,7 +1928,7 @@ public sealed class WorkspaceIntegrationTests
     public async Task SearchIndex_SummaryFull_ReturnsExtractedText()
     {
         var hit = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", summary: "full", groupBy: "none")).GetProperty("items"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", include: "summary:full", groupBy: "none")).GetProperty("items"))
             .First(h => !h["name"].GetString()!.Contains("Turbo") && !h["name"].GetString()!.Contains("SpinTwice"));
 
         Assert.Equal("Spins the widget.", hit["summary"].GetString());
@@ -1989,8 +1990,8 @@ public sealed class WorkspaceIntegrationTests
             .ToList();
 
         Assert.Equal(2, overloads.Count);
-        Assert.All(overloads, hit => Assert.True(hit.ContainsKey("file") && hit.ContainsKey("line")));
-        Assert.Equal(2, overloads.Select(hit => hit["line"].GetInt32()).Distinct().Count());
+        Assert.All(overloads, hit => Assert.True(hit.ContainsKey("file") && hit.ContainsKey("lines")));
+        Assert.Equal(2, overloads.Select(hit => hit["lines"].GetString()).Distinct().Count());
     }
 
     /// <summary>
@@ -2412,45 +2413,42 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// refs:"counts" answers "is anything using this" inside the search call. A zero MUST be emitted rather
-    /// than dropped as an empty value: that zero is the dead-code answer the argument exists to give, and a
-    /// caller who cannot tell it from an absent field has to spend a second call to find out.
+    /// include:"refs" answers "is anything using this" inside the search call. A zero MUST survive into the
+    /// code as R0 rather than being dropped: that zero is the dead-code answer the column exists to give, and
+    /// a caller who cannot tell it from an absent column has to spend a second call to find out.
     /// </summary>
     [Fact]
     public async Task SearchIndex_RefsCounts_EmitsCallersIncludingZero()
     {
         var uncalled = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", refs: "counts", groupBy: "none"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", include: "refs", groupBy: "none"))
             .GetProperty("items")).First();
 
-        Assert.Equal(0, uncalled["callers"].GetInt32());
-        Assert.False(uncalled.ContainsKey("tests"));
+        Assert.Equal("R0", uncalled["refs"].GetString());
 
         var withoutRefs = TableRows(Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", groupBy: "none"))
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", include: "shape", groupBy: "none"))
             .GetProperty("items")).First();
 
-        Assert.False(withoutRefs.ContainsKey("callers"));
+        Assert.False(withoutRefs.ContainsKey("refs"));
     }
 
     /// <summary>
-    /// A named type must carry NO callers count, the same omission get_symbol makes for one. Call edges bind
-    /// to members, so a type's count would be a structural 0 rather than a measured one — and a structural 0
-    /// on the commonest kind of search hit reads as "nothing uses this" for a type used everywhere. The
-    /// member-only test above cannot see this case, which is how it shipped reporting 0 for every type.
+    /// A named type reports IMPLEMENTATIONS, never callers. Call edges bind to members, so a type's caller
+    /// count would be a structural 0 rather than a measured one, and on the commonest kind of search hit that
+    /// reads as "nothing uses this" for a type used everywhere. RefCode picks the letter set from the kind,
+    /// which is the rule the member-only test above cannot see.
     /// </summary>
     [Fact]
-    public async Task SearchIndex_RefsCounts_OmitsCallersForNamedTypes()
+    public async Task SearchIndex_Refs_ReportsImplementationsForNamedTypesNotCallers()
     {
         var root = Root(await ContextTools.SearchIndex(
-            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", refs: "counts", groupBy: "none"));
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", kinds: "class", include: "refs", groupBy: "none"));
         var rows = TableRows(root.GetProperty("items"));
 
         Assert.NotEmpty(rows);
-        Assert.All(rows, r => Assert.False(r.ContainsKey("callers"), "a named type must not claim a caller count"));
-
-        // And the caller is told why the column is missing, rather than left to read absence as zero.
-        Assert.Contains("members", root.GetProperty("refsHint").GetString()!, StringComparison.Ordinal);
+        Assert.All(rows, r => Assert.StartsWith("I", r["refs"].GetString()!, StringComparison.Ordinal));
+        Assert.All(rows, r => Assert.DoesNotContain("R", r["refs"].GetString()!, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -2845,19 +2843,19 @@ public sealed class WorkspaceIntegrationTests
         public async Task SearchIndex_SummaryTypo_ReturnsCorrectiveHint()
         {
             var root = Root(await ContextTools.SearchIndex(
-                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", summary: "hass", groupBy: "none"));
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", include: "shapes", groupBy: "none"));
 
-            var hint = root.GetProperty("summaryHint").GetString();
-            Assert.Contains("has", hint, StringComparison.Ordinal);
+            var hint = root.GetProperty("includeHint").GetString();
+            Assert.Contains("shape", hint, StringComparison.Ordinal);
         }
 
         [Fact]
         public async Task SearchIndex_SummaryValid_CarriesNoHint()
         {
             var root = Root(await ContextTools.SearchIndex(
-                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", summary: "has", groupBy: "none"));
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", include: "summary", groupBy: "none"));
 
-            Assert.False(root.TryGetProperty("summaryHint", out _));
+            Assert.False(root.TryGetProperty("includeHint", out _));
         }
 
         [Fact]
@@ -3024,9 +3022,9 @@ public sealed class WorkspaceIntegrationTests
             _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Pick", kinds: "method", groupBy: "none")).GetProperty("items"));
 
         var generic = Assert.Single(rows, row => row["name"].GetString()!.Contains("Pick<T>", StringComparison.Ordinal));
-        Assert.True(generic.ContainsKey("file") && generic.ContainsKey("line"), "a generic method must carry its location");
+        Assert.True(generic.ContainsKey("file") && generic.ContainsKey("lines"), "a generic method must carry its location");
         Assert.EndsWith("GenericSample.cs", generic["file"].GetString()!, StringComparison.Ordinal);
-        Assert.Equal(11, generic["line"].GetInt32());
+        Assert.StartsWith("@11", generic["lines"].GetString()!, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -3287,7 +3285,7 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains(names, name => name.EndsWith("Transform", StringComparison.Ordinal));
         Assert.Contains(names, name => name.Contains("Projector<TInput, TResult>", StringComparison.Ordinal));
         Assert.Contains(names, name => name.Contains("DelegateSample.Progress", StringComparison.Ordinal));
-        Assert.All(rows, row => Assert.True(row.ContainsKey("file") && row.ContainsKey("line"),
+        Assert.All(rows, row => Assert.True(row.ContainsKey("file") && row.ContainsKey("lines"),
             "a delegate hit must carry its location"));
     }
 

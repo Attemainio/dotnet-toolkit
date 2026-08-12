@@ -19,7 +19,7 @@ public class SymbolShapeTests
             ParameterCount: 5, MemberCount: 64, NestedCount: 2, LineCount: 1822, LandmarkCount: 11,
             DocLines: 6, CommentLines: 214, AttributeCount: 3);
 
-        Assert.Equal("P5 M64 N2 L1822 O11 D6 C214 A3", SymbolShape.For(facts));
+        Assert.Equal("P5-M64-N2-L1822-O11-D6-C214-A3", SymbolShape.For(facts));
     }
 
     // The point of removing the thresholds: a one-line, one-member, one-comment symbol reports exactly
@@ -76,7 +76,7 @@ public class SymbolShapeTests
             ParameterCount: 1, MemberCount: 1, NestedCount: 1, LineCount: 1, LandmarkCount: 1,
             DocLines: 1, CommentLines: 1, AttributeCount: 1))!;
 
-        var rendered = emitted.Split(' ').Select(part => part[0]);
+        var rendered = emitted.Split('-').Select(part => part[0]);
         var declared = SymbolShape.Legend.Split(';')[0].Split(' ').Select(part => part[0]);
 
         Assert.Equal(rendered, declared);

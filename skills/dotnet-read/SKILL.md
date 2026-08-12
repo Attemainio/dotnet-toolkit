@@ -80,27 +80,44 @@ it off `shape`'s `N` count. If you don't yet know a real identifier or domain no
 this project's `README.md` (or `CLAUDE.md` if there is no `README.md`) before the first `search_index`
 call — both are plain Markdown, not `.cs`, so this skill's tools don't apply to them.
 
-A hit's `line`/`endLine` mark the **signature line only** and exclude a leading `///` doc comment.
-They are a navigation aid, never an edit span.
+A hit's `lines` is an `@from-to` selector — the same one `get_symbol`'s `source` include takes, so it
+pastes straight into the next call. It marks the **signature span only** and excludes a leading `///`
+doc comment. The `@` is what says "read slice": `validate_patch` takes a bare `"N-M"`, and an edit
+anchored here would silently drop the doc comment. Use `get_symbol`'s `declarationSites` for that.
 
-**`refs: "counts"` answers "is this used anywhere" in the same call.** Every **member** hit gains
-`callers` — **including `0`**, which is the whole point — and `tests` when above zero. It costs one
-batched index lookup for the page, not one per hit.
+**`include` picks each hit's columns**, comma-separated, and **replaces** the default set exactly as
+`get_symbol`'s `include` does. Default: `shape,read,refs,modifiers`. Also available: `summary`
+(a `hasSummary` bool) and `summary:full` (the text, capped at 160 chars).
 
-Three limits, all of them the same rule — **an absent count is "not measured", never "zero"**:
+Commas, never hyphens — `-` already means *subtract* in that grammar, so `"shape-refs"` reads as
+"shape without refs".
 
-- **A named type never carries one.** Call edges bind to members, so a type's count would be a
-  structural `0` rather than a measured one — which reads as "nothing uses this" for a type used
-  everywhere. `get_symbol`'s `referenceCounts` omits it for types for exactly this reason.
-- **A project the edge cache doesn't cover is omitted, not zeroed.** A project that failed to load in
-  MSBuild contributes no edges; reporting that as `0 callers` once hid a method that had 5.
-- **The count is of calls written against the symbol itself.** A call made through an interface is
-  recorded against the *interface* member, so a method reached only by dispatch can read `0` here.
-  When dispatch is the question, ask `get_references` or `get_symbol`'s `referenceCounts`, which
+Three of the four columns are terse codes, each with its legend stated once per response:
+
+| Column | Reads | Letters |
+|---|---|---|
+| `shape` | what fetching it costs | `P`arams `M`embers `N`ested `L`ines `O`utline `D`oclines `C`ommentlines `A`ttributes |
+| `refs` | what already uses it | `R`callers `E`callees `I`mplementations `V`overrides `T`ests |
+| `modifiers` | what it is | lowercase: `p`=public `i`=internal `t`=protected `x`=private `s`=static `a`=abstract `v`=virtual `o`=override `y`=async … |
+
+Uppercase-with-digits is `shape`/`refs`; lowercase-without is `modifiers`, so the columns never blur
+together even though both reuse letters.
+
+**`refs` answers "is this used anywhere" without a second call**, in one batched lookup for the whole
+page. Read its zeroes and its silences precisely:
+
+- **A digit is a measured fact.** `R0` means *nothing calls this* — the dead-code answer the column
+  exists to give. A named type gets `I` instead of `R`, because call edges bind to members.
+- **A missing letter** means that fact cannot apply to this symbol's kind, or is zero and not worth
+  three bytes. Only `R` (on a member) and `I` (on a type) are emitted at zero.
+- **A missing whole column is "not measured", never "zero".** The project's edges were never indexed
+  — typically because it failed to load in MSBuild, which once hid a method that had 5 callers.
+  `refsHint` says so when it happens, and reading that silence as "unused" is how live code gets
+  deleted.
+- **`R` counts calls written against the symbol itself.** One made through an interface is recorded
+  against the *interface* member, so a method reached only by dispatch can legitimately read `R0`.
+  When dispatch is the question, ask `get_references` or `get_symbol`'s `referenceCounts` — both
   expand to the interface members a symbol implements.
-
-`refsHint` names whichever of these applied. Reading an absence as "unused" is how live code gets
-deleted.
 
 **Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
 costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
@@ -324,8 +341,9 @@ committed before the note that prevents it was ever read.
 | Anti-pattern (route taken) | Cheap route |
 |---|---|
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
-| `search_index` to find a **member**, then `get_references` (or `get_symbol`) only to learn whether anything uses it | `search_index(refs: "counts")` — one call, `callers` on every member hit including `0`. Measured: this route took 3 calls where a single `grep` took 1. Narrow with `kinds` first: a page of types carries no counts, and a symbol reached only through an interface reads `0` — for those, `get_symbol(include: "referenceCounts")` is the dispatch-aware answer |
-| `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(summary: "full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
+| `search_index`, then `get_references` (or `get_symbol`) only to learn whether anything uses it | Nothing — the `refs` column is already there by default. `R0` is the dead-code answer, `I`/`V` the dispatch one. Measured: that route took 3 calls where a single `grep` took 1. The one case still worth a second call is a symbol reached *only* through an interface, which reads `R0` — `get_symbol(include: "referenceCounts")` is dispatch-aware |
+| `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(include: "shape,read,refs,modifiers,summary:full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
+| `get_symbol` on a hit just to learn whether it is public, static, or overridable | The `modifiers` column, already on the hit — it comes from the index the search already read, so it costs nothing extra |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
 | Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |

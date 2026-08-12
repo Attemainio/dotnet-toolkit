@@ -17,15 +17,16 @@ public static class SymbolGrouping
     /// <paramref name="Read"/> is <see cref="ReadAdvice"/>'s answer to what that shape implies — the
     /// include to pass next — and is null under the same condition, for the same reason.
     /// <paramref name="Generated"/> says the declaration is source-generator output, which is the reason
-    /// its file and lines are unresolved rather than an indexing failure. <paramref name="Callers"/> and
-    /// <paramref name="Tests"/> are present only when the caller asked for them with refs; a zero there is a
-    /// real zero, which is the whole reason for asking.
+    /// its file and lines are unresolved rather than an indexing failure. <paramref name="Lines"/> is the
+    /// <c>@from-to</c> read selector, not a patch span. <paramref name="Refs"/> and
+    /// <paramref name="Modifiers"/> are <see cref="RefCode"/>'s and <see cref="ModifierCode"/>'s codes, each
+    /// null when the caller left that column out of include -- and, for Refs, also when nothing was measured.
     /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
-        int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null,
+        string? Lines, bool? HasSummary, string? Summary, string? Shape = null,
         DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null,
-        int? Callers = null, int? Tests = null);
+        string? Refs = null, string? Modifiers = null);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
@@ -39,6 +40,8 @@ public static class SymbolGrouping
     {
         var shapeLegend = rows.Any(r => r.Shape is not null) ? SymbolShape.Legend : null;
         var readLegend = rows.Any(r => r.Read is not null) ? ReadAdvice.Legend : null;
+        var refsLegend = rows.Any(r => r.Refs is not null) ? RefCode.Legend : null;
+        var modifiersLegend = rows.Any(r => r.Modifiers is not null) ? ModifierCode.Legend : null;
         var primaryGroups = GroupInOrder(rows, primaryIsNamespace ? r => r.Namespace : r => r.File);
         if (primaryGroups.Count == 1)
         {
@@ -51,6 +54,10 @@ public static class SymbolGrouping
                     flat["shape"] = shapeLegend;
                 if (readLegend is not null)
                     flat["read"] = readLegend;
+                if (refsLegend is not null)
+                    flat["refs"] = refsLegend;
+                if (modifiersLegend is not null)
+                    flat["modifiers"] = modifiersLegend;
                 flat[primaryIsNamespace ? "namespace" : "file"] = primaryGroups[0].Key;
                 flat[primaryIsNamespace ? "file" : "namespace"] = onlySecondary[0].Key;
                 AddLeaf(flat, onlySecondary[0].Rows);
@@ -63,6 +70,10 @@ public static class SymbolGrouping
             top["shape"] = shapeLegend;
         if (readLegend is not null)
             top["read"] = readLegend;
+        if (refsLegend is not null)
+            top["refs"] = refsLegend;
+        if (modifiersLegend is not null)
+            top["modifiers"] = modifiersLegend;
         top["groupedBy"] = primaryIsNamespace ? "namespace" : "file";
         top[primaryIsNamespace ? "namespaces" : "files"] = primaryGroups.Select(g =>
         {
@@ -89,7 +100,7 @@ public static class SymbolGrouping
             node["kind"] = kinds[0];
         // BCL/NuGet (origin: external) hits, and any leaf whose sites are all unresolved, carry no line
         // info by definition -- omit both columns from every row instead of repeating two constant nulls.
-        var anyLine = rows.Any(r => r.Line is not null || r.EndLine is not null);
+        var anyLine = rows.Any(r => r.Lines is not null);
         node["symbols"] = rows.Select(r => RowDict(r, includeKind: !uniformKind, includeLines: anyLine)).ToList();
     }
 
@@ -106,10 +117,7 @@ public static class SymbolGrouping
         else if (r.Placement is DeclarationPlacement.OutsideRoot)
             d["outsideRoot"] = true;
         if (includeLines)
-        {
-            d["line"] = r.Line;
-            d["endLine"] = r.EndLine;
-        }
+            d["lines"] = r.Lines;
         if (r.Shape is not null)
             d["shape"] = r.Shape;
         if (r.Read is not null)
@@ -118,12 +126,12 @@ public static class SymbolGrouping
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)
             d["summary"] = r.Summary;
-        // callers is emitted even at 0 -- that zero IS the dead-code answer, so suppressing it would hide the
-        // one result the column was asked for. tests only earns a column when there is one.
-        if (r.Callers is not null)
-            d["callers"] = r.Callers;
-        if (r.Tests is > 0)
-            d["tests"] = r.Tests;
+        // RefCode already decided which letters this row can carry, including the zeroes worth stating; a null
+        // here means the column was not asked for, or nothing was measured for this symbol.
+        if (r.Refs is not null)
+            d["refs"] = r.Refs;
+        if (r.Modifiers is not null)
+            d["modifiers"] = r.Modifiers;
         return d;
     }
 

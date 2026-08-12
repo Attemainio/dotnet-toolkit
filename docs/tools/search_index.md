@@ -34,12 +34,19 @@ term is itself a kind/modifier keyword, which `hint` covers instead (below).
 
 ### Hit shape
 
-Every hit: `symbolId, name, kind, file, line, endLine`, plus `shape` and — when the default fetch
-is not the right next call — `read`. `file`/`line` are resolved live at
-response time (swept for staleness), not read from a cache. An overload set is separated by
-**parameter count**, then by **parameter type**, so each member reports its own location — a hit
-that stays ambiguous (types that reduce to different text, e.g. `Int32` vs `int`) omits `file`/
-`line` entirely rather than guessing; it still resolves through `get_symbol`.
+Every hit: `symbolId, name, kind, file, lines`, plus whichever of `shape`, `read`, `refs` and
+`modifiers` the `include` argument asked for (all four by default).
+
+`lines` is an **`@from-to` read selector** — `@190-197`, or `@15` when a declaration is one line —
+the same syntax `get_symbol`'s `source` include takes, so a hit's location pastes straight into the
+next call. The `@` is load-bearing: it marks a *read* slice, where `validate_patch` takes a bare
+`"N-M"`. These lines are the signature span and exclude a leading `///` doc comment, so anchoring an
+edit here silently drops it — `get_symbol`'s `declarationSites` is the edit span.
+
+`file`/`lines` are resolved live at response time (swept for staleness), not read from a cache. An
+overload set is separated by **parameter count**, then by **parameter type**, so each member reports
+its own location — a hit that stays ambiguous (types that reduce to different text, e.g. `Int32` vs
+`int`) omits `file`/`lines` entirely rather than guessing; it still resolves through `get_symbol`.
 
 Two other reasons a hit carries no location, both named explicitly when they apply, never
 together:
@@ -116,16 +123,16 @@ The column is cheap rather than free, though. Once *any* hit carries advice, the
 the column for every row, and the silent ones render an empty cell:
 
 ```
-items[3]{symbolId,name,line,endLine,shape,read}:
-  sym_5b5c…,ContextTools,25,2480,M83 N4 L2456 D434,mem
-  sym_8aca…,ReadAdvice.Legend,33,35,L3 D6,""
+items[3]{symbolId,name,lines,shape,read,refs,modifiers}:
+  sym_5b5c…,ContextTools,@25-2480,M83-N4-L2456-D434,mem,I0,ps
+  sym_8aca…,ReadAdvice.Legend,@33-35,L3-D6,"","",psc
 ```
 
 So the real cost is one legend plus one cell per hit on a mixed result, and nothing at all on a
 result where the default fetch is right throughout.
 
 `read` is deliberately redundant with `shape` — it carries no fact `shape` does not already carry.
-It exists because a derivation nobody performs is not information: `L2342 M87` reliably reads as a
+It exists because a derivation nobody performs is not information: `L2342-M87` reliably reads as a
 description rather than as "fetch the member list", and the whole 2342-line type gets fetched anyway.
 
 ### `intent` — aiming the recommendation
@@ -208,41 +215,62 @@ see that error, you omitted `query`.
 | `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); unresolvable name → empty result, not error |
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
-| `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
-| `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only`. An unrecognized value is treated as omitted and the response carries `summaryHint` |
-| `refs` | — | `"counts"` adds `callers` to every **member** hit — **including `0`** — and `tests` when above zero. A named type carries none (call edges bind to members), and so does a symbol whose project the edge cache doesn't cover. One batched index lookup for the whole page, not one per hit. An unrecognized value is treated as omitted and the response carries `refsHint` |
+| `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`lines`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
+| `include` | comma-separated; **replaces** the default set | `shape,read,refs,modifiers` (the default) plus `summary` (a `hasSummary` bool) or `summary:full` (the text, capped 160 chars, read from the syntax index — free even at `index_only`). **Commas, never hyphens**: `-` already means *subtract* in `get_symbol`'s include grammar, so `"shape-refs"` would read there as "shape without refs". An unrecognized column is named in `includeHint` and ignored |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
 
-**`refs: "counts"` is how "is this dead code?" becomes one call — for a member.** `callers` is emitted
-even at `0`, because that zero *is* the answer being asked for; suppressing it would hide the only
-result worth the argument.
+### The three code columns
 
-**An absent `callers` is never a zero**, and there are three ways to get one. All three are the same
-distinction — *measured* versus *not measured* — and the response's `refsHint` names whichever applied:
+`shape`, `refs` and `modifiers` are hyphen-joined letter codes, each with its legend stated once per
+response rather than repeated per row. Hyphens and not spaces because the column sits inside a
+comma-delimited row, where a space let the parts read as separate fields — identical character count,
+so the legibility is free.
 
-| Absent because | Why | What to ask instead |
+| Column | Example | Letters |
 |---|---|---|
-| The hit is a named type | Call edges are recorded against members; `SymbolIndexBuilder.CollectCallEdges` binds the target of an expression, and a type name is not called. A type's count would be a *structural* `0`, not a measured one — and on the commonest kind of hit that reads as "dead code" for a type used everywhere. `get_symbol`'s `referenceCounts` omits it for types for the same reason | `get_references` on the type, which returns the members that *reference* it |
-| No reference index is available at all | Nothing was counted | `workspace_status`, then retry |
-| The symbol's project contributed no edges | A project that failed to load in MSBuild yields none. Observed live: `0 callers` reported for a method that had 5. `HasEdgeCoverageFor` is the check, applied per page here and per symbol on the `get_symbol` path | `workspace_status` — fix the failing project, then `reload_workspace` |
+| `shape` — what fetching it costs | `P5-M64-L1822-D6` | `P` params, `M` members, `N` nested, `L` lines, `O` outline landmarks, `D` doc lines, `C` comment lines, `A` attributes |
+| `refs` — what already uses it | `R7-E3-V1` | `R` callers, `E` callees, `I` implementations, `V` overrides, `T` tests |
+| `modifiers` — what it is | `ps` | `p` public, `i` internal, `t` protected, `x` private, `s` static, `a` abstract, `v` virtual, `o` override, `y` async, `l` sealed, `g` partial, `c` const, `d` readonly, `e` extension |
 
-**The count covers calls written against the symbol itself.** A call made through an interface is
-recorded against the *interface* member, so a method reached only by dispatch can legitimately read
-`0` here. `get_symbol`'s `referenceCounts` and `get_references` both expand to the interface members a
-symbol implements and so do see it; this argument trades that for a single batched lookup. When
-dispatch is what you are actually asking about, spend the extra call.
+`shape` and `refs` are uppercase and carry digits; `modifiers` is lowercase and carries none. That
+case split is deliberate — it lets each column keep the natural first-letter mnemonic for its own
+vocabulary instead of surrendering it to whichever column claimed the letter first. `p` in
+`modifiers` is public; `P` in `shape` is a parameter count, and the digit tells them apart.
 
-**`summary: "has"` is usually redundant against `shape`'s `D` count**, which is already present on
+### Reading `refs`, and its three silences
+
+**`refs` is how "is this dead code?" becomes one call.** Only the two counts whose *zero* is itself an
+answer are emitted at zero — `R0` on a member ("nothing calls this") and `I0` on a named type
+("nothing implements this"). `E`, `V` and `T` appear only above zero, because `E0`/`V0`/`T0` restate
+what the kind already said and would cost three bytes on every row to do it.
+
+Absence therefore means one of two very different things, and the difference matters:
+
+| What is absent | Means | What to do |
+|---|---|---|
+| A single **letter** inside a present code | That fact cannot apply to this kind, or is zero and not worth the bytes. A named type has no `R`: call edges bind to members (`SymbolIndexBuilder.CollectCallEdges` binds the target of an expression, and a type name is not called), so a type's caller count would be a *structural* `0` rather than a measured one — which on the commonest kind of hit reads as "dead code" for a type used everywhere | Nothing. For a type's users, `get_references` returns the members that *reference* it |
+| The **whole column** | Nothing was measured — either no reference index at all, or the symbol's project contributed no edges. A project that failed to load in MSBuild yields none; observed live, `0 callers` was reported for a method that had 5, which is why `HasEdgeCoverageFor` now gates the whole page | `workspace_status`, fix the failing project, `reload_workspace`. `refsHint` says which case fired |
+
+**`R` counts calls written against the symbol itself.** One made through an interface is recorded
+against the *interface* member, so a method reached only by dispatch can legitimately read `R0`.
+`get_symbol`'s `referenceCounts` and `get_references` both expand to the interface members a symbol
+implements and so do see it; this column trades that for a single batched lookup over the whole page.
+When dispatch is what you are actually asking about, spend the extra call.
+
+`I` and `V` come from `implements`/`inherits`/`overrides` edges written at index time, so they cost
+the same batched lookup rather than the solution-wide `SymbolFinder` walk `get_symbol` pays for.
+
+**`include: "…,summary"` is usually redundant against `shape`'s `D` count**, which is already present on
 every hit: measured, `hasSummary` agreed with `D > 0` on every hit checked. `D` counts doc *lines*
 though, so a symbol carrying only `<remarks>` and no `<summary>` could in principle break the
-equivalence — pass `"has"` only if you've actually seen that happen. `"full"` is the one that earns
+equivalence — pass `summary` only if you've actually seen that happen. `summary:full` is the one that earns
 its own call: the summary *text* isn't in `shape` at all.
 
 `hint` is a response field, not an argument: present only when `query` is built entirely from
 kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
 same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
-`summaryHint`, `refsHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
+`includeHint`, `refsHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
 argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each
 names the value that wasn't recognized, what it was silently treated as, and a `didYouMean`-style
 suggestion when exactly one vocabulary token is a close-enough match. All six are additive: the call
@@ -257,9 +285,9 @@ search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
 ```json
 {"items":[
    {"symbolId":"sym_dd78...","name":"DotnetToolkit.McpServer.Tools.PatchTools.ValidatePatch(...)",
-    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":29,"endLine":151},
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","lines":"@29-151"},
    {"symbolId":"sym_fc34...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore",
-    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","line":10,"endLine":260}]}
+    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","lines":"@10-260"}]}
 ```
 
 `name` is directly usable as `get_symbol`'s `symbol` argument — parameter types are shortened but

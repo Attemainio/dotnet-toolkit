@@ -717,16 +717,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "limit, but that floor is shallow — any term the result never covered is named under termsWithNoHits,"
         + " so raise limit (cap 200) or re-ask that term alone. Never read an absent term as an absent symbol. "
         + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. This locates a name; get_symbol then "
-        + "reads what is in it. A hit's line/endLine mark the signature line only, EXCLUDING any leading /// "
-        + "doc comment — anchor a validate_patch edit on get_symbol's declarationSites span, not this one. "
+        + "reads what is in it. A hit's lines is an @from-to READ selector (paste it into get_symbol's source "
+        + "include) marking the signature span only, EXCLUDING any leading /// doc comment — anchor a patch on "
+        + "get_symbol's declarationSites instead. "
         + "Already know which file? Ask get_symbol for that type with include:\"members\" rather than narrowing "
-        + "this search down to it. Each hit carries shape (what fetching it costs) and read (which include "
-        + "to pass next, absent when the default fetch is already right), both legends stated once per "
-        + "response. intent (edit|logic|surface) aims read at what you are about to do. refs:\"counts\" adds a "
-        + "callers count to each MEMBER hit (0 = measured and unused); named types carry none. "
-        + "An unrecognized value on kinds, modifiers, origin, summary, refs, groupBy "
-        + "or intent is named in a <param>Hint response field rather than erroring. "
-        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, refs, groupBy, origin. Full grammar, "
+        + "this search down to it. include picks each hit's columns -- shape,read,refs,modifiers by default, "
+        + "plus summary or summary:full -- and every column's legend is stated once per response. intent "
+        + "(edit|logic|surface) aims read at what you are about to do. "
+        + "An unrecognized value on kinds, modifiers, origin, include, groupBy or intent is named in a "
+        + "<param>Hint response field rather than erroring. "
+        + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, groupBy, origin. Full grammar, "
         + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
@@ -768,10 +768,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "over the whole index before scoping, so a query with far more hits outside the prefix can "
             + "return fewer than limit — narrow the query text itself if that happens. See "
             + "docs/tools/search_index.md. Omit to search the whole index.")] string? pathPrefix = null,
-        [Description("Include XML doc <summary> info per hit without a follow-up get_symbol call. \"has\": "
-            + "adds hasSummary (bool). \"full\": adds summary (text, capped at 160 chars — get_symbol's "
-            + "xmlDoc.summary for the untruncated version). An unrecognized value is treated as omitted, and the "
-                + "response's summaryHint names it.")] string? summary = null,
+        [Description("Which columns each hit carries, comma-separated. REPLACES the default set, exactly as "
+            + "get_symbol's include does -- commas, never hyphens, since '-' already means SUBTRACT in that "
+            + "grammar. Default: \"shape,read,refs,modifiers\". Columns: shape (what fetching it costs), read "
+            + "(which include to pass next), refs (R=callers E=callees I=implementations V=overrides T=tests, "
+            + "one batched lookup for the whole page), modifiers (p=public s=static v=virtual o=override ...), "
+            + "summary (hasSummary bool) or summary:full (the text, capped at 160 chars). An unrecognized "
+            + "column is named in includeHint rather than erroring.")] string? include = null,
         [Description("How to group results: \"namespace\" nests namespace -> file -> symbols; "
             + "\"file\" nests file -> namespace -> symbols; \"none\" returns the flat items[] list from before "
             + "grouping existed, with file/name repeated per row and no namespace field. Omit this parameter "
@@ -789,15 +792,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "implements target from this repo's source — not a general library browser, only what this "
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
             + "\"source\", and the response's originHint names it.")] string? origin = null,
-        [Description("Add reference counts per hit, answering \"does anything actually use this\" without a "
-            + "follow-up call. \"counts\": adds callers to every MEMBER hit (including 0 — that zero is the "
-            + "dead-code answer and is the reason to ask) and tests (only when above 0). A named type gets NO "
-            + "count: call edges bind to members, so a type's would be a structural 0, not a measured one. "
-            + "Costs one batched index lookup for the whole page, not one per hit. Counts cover calls written "
-            + "against the symbol itself; one made through an interface is recorded against the interface "
-            + "member, so ask get_references when dispatch matters. Absent counts mean they could not be "
-            + "computed, NEVER zero, and refsHint says so when that happens. An unrecognized value is treated "
-            + "as omitted, and refsHint names it.")] string? refs = null,
         [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
             + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
             + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
@@ -860,16 +854,32 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
-        var summaryMode = summary is "has" or "full" ? summary : null;
-            var summaryHint = summary is null or "has" or "full" ? null
-                : $"summary:'{summary}' was not recognized and was treated as omitted."
-                    + (VocabularyHint.NearestToken(summary, ["has", "full"]) is { } nearestSummary
-                        ? $" Did you mean '{nearestSummary}'?" : "");
-        var refsMode = refs is "counts" ? refs : null;
-            var refsVocabHint = refs is null or "counts" ? null
-                : $"refs:'{refs}' was not recognized and was treated as omitted."
-                    + (VocabularyHint.NearestToken(refs, ["counts"]) is { } nearestRefs
-                        ? $" Did you mean '{nearestRefs}'?" : "");
+        // One comma list replaces what summary: and refs: used to ask separately, and it REPLACES the default
+        // set exactly as get_symbol's include does -- same word, same grammar, so a caller who knows one knows
+        // the other. Commas and NOT hyphens: '-' already means subtract there (source:code-comments), so
+        // "shape-refs" would read as "shape without refs" to anyone who has used that grammar.
+        string[] includeVocabulary = ["shape", "read", "refs", "modifiers", "summary", "summary:full"];
+        var includeTokens = ParseIncludeColumns(include);
+        var badIncludeTokens = includeTokens.Where(t => !includeVocabulary.Contains(t)).ToList();
+        var includeHint = badIncludeTokens.Count == 0 ? null
+            : "include:" + string.Join(", ", badIncludeTokens.Select(t => $"'{t}'"))
+                + " is not a column and was ignored. Known columns: " + string.Join(", ", includeVocabulary) + ".";
+        var wantShape = includeTokens.Contains("shape");
+        var wantRead = includeTokens.Contains("read");
+        var wantRefs = includeTokens.Contains("refs");
+        var wantModifiers = includeTokens.Contains("modifiers");
+        var summaryMode = includeTokens.Contains("summary:full") ? "full"
+            : includeTokens.Contains("summary") ? "has"
+            : null;
+
+        // The default set is the three facts that decide the NEXT call -- what fetching this costs, what to
+        // pass when you fetch it, and what already uses it -- plus modifiers, which the index has already
+        // loaded and so costs nothing to render. summary stays opt-in because shape's D count already says
+        // whether a doc comment exists, and the text itself is the expensive half.
+        static IReadOnlyList<string> ParseIncludeColumns(string? spec) => string.IsNullOrWhiteSpace(spec)
+            ? ["shape", "read", "refs", "modifiers"]
+            : [.. spec.Split([','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => t.ToLowerInvariant())];
         var intentMode = intent is "edit" or "logic" or "surface" ? intent : null;
             var intentHint = intent is null or "edit" or "logic" or "surface" ? null
                 : $"intent:'{intent}' was not recognized and was treated as omitted."
@@ -897,37 +907,29 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
 
-        // Call edges are recorded against MEMBERS, never against named types -- CollectCallEdges binds the
-        // target of an expression, and a type name is not called. A type's caller count is therefore
-        // structurally 0 rather than measured, which is why get_symbol omits the field for a type; emitting it
-        // here would contradict that and, on the commonest kind of hit, read as "dead code" for a type used
-        // everywhere. These are SymbolKey.KindOf's words, which is what a hit carries by the time it reaches
-        // this envelope -- NOT the single-letter codes SymbolHit uses inside the syntax index.
-        static bool IsNamedType(string kind) =>
-            kind is "Type" or "Interface" or "Struct" or "Enum" or "Delegate" or "Record";
-        var countableIds = limited.Where(r => !IsNamedType(r.Hit.Kind)).Select(r => r.Hit.SymbolId).ToList();
+        // Every hit is looked up, types included. Call edges bind to MEMBERS, so a type has no caller count to
+        // report -- but it does have implementations, and RefCode picks the letter set from the kind. Filtering
+        // types out HERE instead left them with no refs column at all, which is a third way of saying nothing
+        // when the column exists precisely to say something.
+        var countableIds = limited.Select(r => r.Hit.SymbolId).ToList();
 
         // One batched lookup for the whole page rather than one per row (SymbolStore.ReferenceCountsFor). A
         // null result means there was no reference index to answer from, which is reported as a hint instead
         // of as a page of zeroes: "nothing calls this" and "nothing counted this" are opposite answers, and
         // conflating them is exactly how a live symbol gets deleted as dead code.
-        var refCounts = refsMode is null || countableIds.Count == 0
+        var refCounts = !wantRefs || countableIds.Count == 0
             ? null
             : symbolStore.ReferenceCountsFor(countableIds);
         var refsHint =
-            refsMode is null ? refsVocabHint
-            : countableIds.Count == 0
-                ? "refs:\"counts\" counts call edges, which are recorded against members -- every hit on this "
-                    + "page is a named type, so no count applies to any of them. Add kinds:\"method\" for "
-                    + "countable hits, or ask get_references about the type itself."
+            !wantRefs ? null
             : refCounts is null
-                ? "refs:\"counts\" was requested but no reference index was available, so no counts are reported. "
-                    + "Absent counts are not zero -- call workspace_status before reading this as unused."
-            : countableIds.Any(id => !refCounts.ContainsKey(id))
-                ? "Some hits carry no callers count: their project contributed no reference edges, so nothing "
-                    + "was measured for them. An absent count is not zero -- call workspace_status before "
-                    + "reading it as unused."
-            : refsVocabHint;
+                ? "include:\"refs\" was requested but no reference index was available, so no refs column is "
+                    + "reported. An absent code is not zero -- call workspace_status before reading it as unused."
+            : limited.Any(r => !refCounts.ContainsKey(r.Hit.SymbolId))
+                ? "Some hits carry no refs code: their project contributed no reference edges, so nothing was "
+                    + "measured for them. An absent code is not zero -- call workspace_status before reading "
+                    + "it as unused."
+            : null;
 
         // A ranked OR spends `limit` globally, so a term whose name-matches are far rarer than its
         // neighbours' can be squeezed out of the response altogether - and a caller told that one call
@@ -997,29 +999,39 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // rows it is handed. Either way a legend is emitted only when some hit actually carries that column.
         // Tests is folded to null at 0 here rather than at each call site, so the flat and grouped shapes
         // cannot disagree about when the column appears.
-        (int? Callers, int? Tests) RefsOf(string symbolId)
-        {
-            // Absent means NOT MEASURED -- an uncovered project, or a named type that cannot carry callers at
-            // all. Only a present entry is a fact, and its 0 is the dead-code answer refs:"counts" exists for.
-            if (refCounts is null || !refCounts.TryGetValue(symbolId, out var counts))
-                return (null, null);
-            return (counts.Callers, counts.Tests > 0 ? counts.Tests : null);
-        }
+        // Absent means NOT MEASURED -- an uncovered project, or no reference index at all. Only a present
+        // entry is a fact, and RefCode decides which of its letters this symbol's kind can actually carry.
+        string? RefCodeOf(string symbolId, string kind) =>
+            refCounts is not null && refCounts.TryGetValue(symbolId, out var counts)
+                ? RefCode.For(counts, kind)
+                : null;
 
-        var anyShape = limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
-        var anyRead = limited.Any(r => ReadAdvice.For(intentMode, ShapeOf(r.Site)) is not null);
+        // The same @from-to selector get_symbol's source include takes, so a hit's location pastes straight
+        // into the next call. Deliberately NOT a patch span: '@' means a READ slice in this grammar while
+        // validate_patch takes a bare "N-M", and these lines exclude the leading doc comment anyway.
+        static string? LinesOf(ProjectIndex.DocSite? site) =>
+            site?.Line is not { } line ? null
+            : site.EndLine is { } end && end != line ? $"@{line}-{end}"
+            : $"@{line}";
+
+        var anyShape = wantShape && limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
+        var anyRead = wantRead && limited.Any(r => ReadAdvice.For(intentMode, ShapeOf(r.Site)) is not null);
+        var anyRefs = limited.Any(r => RefCodeOf(r.Hit.SymbolId, r.Hit.Kind) is not null);
+        var anyMods = wantModifiers && limited.Any(r => ModifierCode.For(r.Hit.Modifiers) is not null);
 
         object BuildFlatEnvelope() => new
         {
             limitedBy = searchLimitedBy,
             shape = anyShape ? SymbolShape.Legend : null,
             read = anyRead ? ReadAdvice.Legend : null,
+            refs = anyRefs ? RefCode.Legend : null,
+            modifiers = anyMods ? ModifierCode.Legend : null,
             termsWithNoHits = termsWithNoHits.Count == 0 ? null : termsWithNoHits,
             hint = structuralHint,
                 kindsHint,
                 modifiersHint,
                 originHint,
-                summaryHint,
+                includeHint,
                 groupByHint,
                 intentHint,
                 refsHint,
@@ -1034,14 +1046,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 generated = r.Hit.Placement is DeclarationPlacement.Generated ? true : (bool?)null,
                 outsideRoot = r.Hit.Placement is DeclarationPlacement.OutsideRoot ? true : (bool?)null,
                 file = r.Site?.File,
-                line = r.Site?.Line,
-                endLine = r.Site?.EndLine,
-                shape = SymbolShape.For(ShapeOf(r.Site)),
-                read = ReadAdvice.For(intentMode, ShapeOf(r.Site)),
+                lines = LinesOf(r.Site),
+                shape = anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
+                read = anyRead ? ReadAdvice.For(intentMode, ShapeOf(r.Site)) : null,
+                refs = RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
+                modifiers = anyMods ? ModifierCode.For(r.Hit.Modifiers) : null,
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                 summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-                callers = RefsOf(r.Hit.SymbolId).Callers,
-                tests = RefsOf(r.Hit.SymbolId).Tests,
             }),
         };
 
@@ -1056,14 +1067,14 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     ? compact[(ns.Length + 1)..]
                     : compact;
                 return new SymbolGrouping.Row(
-                    r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, r.Site?.Line, r.Site?.EndLine,
+                    r.Hit.SymbolId, r.Hit.Kind, leafName, file, ns, LinesOf(r.Site),
                     summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
-                    SymbolShape.For(ShapeOf(r.Site)),
+                    anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
                     r.Hit.Placement,
-                    ReadAdvice.For(intentMode, ShapeOf(r.Site)),
-                    RefsOf(r.Hit.SymbolId).Callers,
-                    RefsOf(r.Hit.SymbolId).Tests);
+                    anyRead ? ReadAdvice.For(intentMode, ShapeOf(r.Site)) : null,
+                    RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
+                    anyMods ? ModifierCode.For(r.Hit.Modifiers) : null);
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -1079,8 +1090,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     withLimit["modifiersHint"] = modifiersHint;
                 if (originHint is not null)
                     withLimit["originHint"] = originHint;
-                if (summaryHint is not null)
-                    withLimit["summaryHint"] = summaryHint;
+                if (includeHint is not null)
+                    withLimit["includeHint"] = includeHint;
                 if (groupByHint is not null)
                     withLimit["groupByHint"] = groupByHint;
                 if (intentHint is not null)

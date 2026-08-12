@@ -2,7 +2,7 @@ namespace DotnetToolkit.McpServer.Output;
 
 /// <summary>
 /// Renders a symbol's retrieval shape — what its own surface is, what fetching it costs, and what that
-/// fetch would contain — into the terse <c>P5 L16 O4 D9</c> column search_index puts beside a hit and
+/// fetch would contain — into the terse <c>P5-L16-O4-D9</c> column search_index puts beside a hit and
 /// get_symbol puts on a member row.
 /// </summary>
 /// <remarks>
@@ -37,7 +37,7 @@ public static class SymbolShape
     /// either zero or inapplicable, which in practice means a hit whose location never resolved.
     /// </summary>
     /// <param name="facts">The counted facts to render; a null count is elided as inapplicable.</param>
-    /// <returns><c>"P5 L16 O4 D9"</c>, any subset of it, or null when every part was elided.</returns>
+    /// <returns><c>"P5-L16-O4-D9"</c>, any subset of it, or null when every part was elided.</returns>
     public static string? For(in ShapeFacts facts)
     {
         var parts = new List<string>(8);
@@ -50,7 +50,10 @@ public static class SymbolShape
         Add(parts, 'C', facts.CommentLines);
         Add(parts, 'A', facts.AttributeCount);
 
-        return parts.Count == 0 ? null : string.Join(' ', parts);
+        // Hyphen-joined, not space-joined: the column sits inside a comma-delimited row, where a space let
+        // the parts read as separate fields and the whole code dissolve into its neighbours. Same character
+        // count either way, so the legibility is free.
+        return parts.Count == 0 ? null : string.Join('-', parts);
 
         static void Add(List<string> parts, char letter, int? count)
         {

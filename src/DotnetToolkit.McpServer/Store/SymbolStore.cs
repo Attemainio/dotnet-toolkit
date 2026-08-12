@@ -79,28 +79,43 @@ public sealed partial class SymbolStore
         return reader.Read() ? (reader.GetInt32(0), reader.GetInt32(1)) : (0, 0);
     }
 
-    /// <summary>callers / tests reference counts for many symbols at once, keyed by symbol id.</summary>
+    /// <summary>The five reference counts a hit's refs column renders, for one symbol.</summary>
+    /// <param name="Callers">Members whose body calls this one.</param>
+    /// <param name="Callees">Distinct symbols this member's own body calls.</param>
+    /// <param name="Implementations">Types implementing this interface or deriving from this class, and members implementing this interface member.</param>
+    /// <param name="Overrides">Members overriding this virtual or abstract one.</param>
+    /// <param name="Tests">The subset of <paramref name="Callers"/> whose declaration carries a test attribute.</param>
+    public readonly record struct RefCounts(int Callers, int Callees, int Implementations, int Overrides, int Tests);
+
+    /// <summary>Reference counts for many symbols at once, keyed by symbol id.</summary>
     /// <param name="symbolIds">The symbols to count references for.</param>
     /// <returns>
-    /// One entry per id whose project the edge cache actually covers, carrying 0 where that symbol has no
-    /// recorded caller; or <c>null</c> when no knowledge store is available or the cache covers none of them.
+    /// One entry per id whose project the edge cache actually covers, carrying 0 where that symbol genuinely
+    /// has none; or <c>null</c> when no knowledge store is available or the cache covers none of them.
     /// An id ABSENT from a non-null result was not measured, which is a different answer from zero and must
     /// never be reported as one -- present-means-measured is what keeps this in step with
     /// <see cref="HasEdgeCoverageFor"/>, which the single-symbol path applies for the same reason.
     /// </returns>
     /// <remarks>
-    /// search_index's refs column needs one count per hit, and asking <see cref="ReferenceCounts(string)"/>
-    /// per row opened a connection per row -- a 200-hit page would become 200 round trips, the N+1 shape
-    /// standards/antipatterns.md names. The caller count LEFT JOINs symbols so an edge whose caller has no row
-    /// of its own still counts, which is what keeps this in agreement with
-    /// <see cref="ReferenceCounts(IReadOnlyCollection{string})"/> instead of quietly under-reporting.
+    /// A hit's refs column needs one count per hit, and asking <see cref="ReferenceCounts(string)"/> per row
+    /// opened a connection per row -- a 200-hit page would become 200 round trips, the N+1 shape
+    /// standards/antipatterns.md names. Three grouped queries answer the whole page instead, and that stays
+    /// three however many hits it holds. Counts LEFT JOIN symbols so an edge whose other end has no row of its
+    /// own still counts, which is what keeps this from quietly under-reporting.
     /// </remarks>
-    public IReadOnlyDictionary<string, (int Callers, int Tests)>? ReferenceCountsFor(IReadOnlyCollection<string> symbolIds)
+    public IReadOnlyDictionary<string, RefCounts>? ReferenceCountsFor(IReadOnlyCollection<string> symbolIds)
     {
         if (!_store.Available || symbolIds.Count == 0)
             return null;
         using var connection = _store.Connect();
         var list = string.Join(',', symbolIds.Select((_, i) => "$s" + i));
+
+        void Bind(SqliteCommand command)
+        {
+            var n = 0;
+            foreach (var id in symbolIds)
+                command.Parameters.AddWithValue("$s" + n++, id);
+        }
 
         // Which of these ids sit in a project the edge cache covers at all -- HasEdgeCoverageFor's check,
         // computed once for the whole page instead of once per row. A project that failed to load in MSBuild
@@ -116,9 +131,7 @@ public sealed partial class SymbolStore
                                        FROM reference_edges e
                                        JOIN symbols f ON f.symbol_id = e.from_symbol);
                 """;
-            var n = 0;
-            foreach (var id in symbolIds)
-                coverage.Parameters.AddWithValue("$s" + n++, id);
+            Bind(coverage);
             using var reader = coverage.ExecuteReader();
             while (reader.Read())
                 covered.Add(reader.GetString(0));
@@ -126,28 +139,55 @@ public sealed partial class SymbolStore
         if (covered.Count == 0)
             return null;
 
-        var counts = new Dictionary<string, (int Callers, int Tests)>(StringComparer.Ordinal);
+        // Everything pointing AT these symbols, in ONE grouped pass: the four counts read the same rows and
+        // differ only by edge_kind, so a query each would re-scan the same index four times. Implementations
+        // folds 'inherits' in with 'implements' so a class's derived types are counted alongside an
+        // interface's implementers, matching what get_symbol's implementations component already reports.
+        var incoming = new Dictionary<string, (int Callers, int Tests, int Implementations, int Overrides)>(StringComparer.Ordinal);
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = $"""
                 SELECT e.to_symbol,
-                       COUNT(DISTINCT e.from_symbol),
-                       COUNT(DISTINCT CASE WHEN f.is_test = 1 THEN e.from_symbol END)
+                       COUNT(DISTINCT CASE WHEN e.edge_kind = 'call' THEN e.from_symbol END),
+                       COUNT(DISTINCT CASE WHEN e.edge_kind = 'call' AND f.is_test = 1 THEN e.from_symbol END),
+                       COUNT(DISTINCT CASE WHEN e.edge_kind IN ('implements', 'inherits') THEN e.from_symbol END),
+                       COUNT(DISTINCT CASE WHEN e.edge_kind = 'overrides' THEN e.from_symbol END)
                   FROM reference_edges e
                   LEFT JOIN symbols f ON f.symbol_id = e.from_symbol
-                 WHERE e.to_symbol IN ({list}) AND e.edge_kind = 'call'
+                 WHERE e.to_symbol IN ({list})
                  GROUP BY e.to_symbol;
                 """;
-            var n = 0;
-            foreach (var id in symbolIds)
-                cmd.Parameters.AddWithValue("$s" + n++, id);
+            Bind(cmd);
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
-                counts[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2));
+                incoming[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4));
         }
 
-        // A covered id with no edge row genuinely has zero callers; an uncovered one is omitted entirely.
-        return covered.ToDictionary(id => id, id => counts.GetValueOrDefault(id), StringComparer.Ordinal);
+        // Outgoing calls are keyed the other way round, so they cannot ride along with the pass above.
+        var callees = new Dictionary<string, int>(StringComparer.Ordinal);
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT e.from_symbol, COUNT(DISTINCT e.to_symbol)
+                  FROM reference_edges e
+                 WHERE e.from_symbol IN ({list}) AND e.edge_kind = 'call'
+                 GROUP BY e.from_symbol;
+                """;
+            Bind(cmd);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                callees[reader.GetString(0)] = reader.GetInt32(1);
+        }
+
+        // A covered id with no edge row genuinely has zero of everything; an uncovered one is omitted.
+        return covered.ToDictionary(
+            id => id,
+            id =>
+            {
+                var (callers, tests, implementations, overrides) = incoming.GetValueOrDefault(id);
+                return new RefCounts(callers, callees.GetValueOrDefault(id), implementations, overrides, tests);
+            },
+            StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -284,7 +324,8 @@ public sealed partial class SymbolStore
     /// </remarks>
     public sealed record SearchHit(
         string SymbolId, string DisplayString, string Kind, string FqName, string DeclHash, int Rank,
-        string? Namespace = null, DeclarationPlacement Placement = DeclarationPlacement.InTree);
+        string? Namespace = null, DeclarationPlacement Placement = DeclarationPlacement.InTree,
+        string? Modifiers = null);
 
     /// <summary>
     /// Resolves a <c>sym_…</c> identifier back to its fully-qualified name. symbolId is a one-way hash,
@@ -424,7 +465,7 @@ public sealed partial class SymbolStore
         // rank is a constant here: these rows are ordered by edit distance below, not by the exact/prefix
         // ladder the two real search paths share this projection with.
         cmd.CommandText = """
-            SELECT symbol_id, display_string, kind, fq_name, decl_hash, 3 AS rank, namespace, generated
+            SELECT symbol_id, display_string, kind, fq_name, decl_hash, 3 AS rank, namespace, generated, modifiers
             FROM symbols
             WHERE origin = 'source' AND length(fq_name) >= $minLen;
             """;
@@ -523,7 +564,8 @@ public sealed partial class SymbolStore
                      ELSE 2
                    END AS rank,
                    s.namespace,
-                   s.generated
+                   s.generated,
+                       s.modifiers
             FROM symbols_fts f
             JOIN symbols s ON s.symbol_id = f.symbol_id
             WHERE symbols_fts MATCH $match{kindFilter}{modifierFilter}{originFilter}
@@ -563,7 +605,8 @@ public sealed partial class SymbolStore
                      ELSE 3
                    END AS rank,
                    namespace,
-                   generated
+                   generated,
+                       modifiers
             FROM symbols
             WHERE fq_name LIKE $contains{kindFilter}{modifierFilter}{originFilter}
             ORDER BY rank, length(fq_name), fq_name
@@ -692,7 +735,8 @@ public sealed partial class SymbolStore
                 symbolId, reader.GetString(1), reader.GetString(2),
                 reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.IsDBNull(7) ? DeclarationPlacement.InTree : (DeclarationPlacement)reader.GetInt32(7)));
+                reader.IsDBNull(7) ? DeclarationPlacement.InTree : (DeclarationPlacement)reader.GetInt32(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8)));
         }
         return hits;
     }

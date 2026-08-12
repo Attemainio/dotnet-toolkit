@@ -39,6 +39,17 @@ public static class SymbolKey
         _ => symbol.Kind.ToString(),
     };
 
+    /// <summary>Whether a <see cref="KindOf"/> word names a type rather than a member.</summary>
+    /// <remarks>
+    /// The distinction decides which reference counts can apply to a symbol at all: call edges bind to
+    /// members, so a named type's caller count is structurally zero rather than measured, while
+    /// implementations is the relationship a type actually has. Kept beside <see cref="KindOf"/> because it
+    /// is that method's vocabulary being tested -- a copy of the word list anywhere else silently stops
+    /// agreeing the moment a kind is added.
+    /// </remarks>
+    public static bool IsNamedTypeKind(string kind) =>
+        kind is "Type" or "Interface" or "Struct" or "Enum" or "Delegate" or "Record";
+
     /// <summary>
     /// Reduces a symbol to whatever <see cref="IdOf"/> should actually hash: the unreduced declaration
     /// behind a reduced extension-method call (<c>values.Where(...)</c> binds to a reduced form whose own

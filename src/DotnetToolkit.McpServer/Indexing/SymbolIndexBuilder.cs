@@ -159,6 +159,7 @@ public sealed class SymbolIndexBuilder
             var owner = declared[0];
             var ownerId = SymbolKey.IdOf(owner);
             CollectCallEdges(node, owner, model, ownerId, edges, symbols);
+            CollectDispatchEdges(owner, ownerId, edges, symbols);
 
             if (body is not null && MechanicalFactsExtractor.Extract(node, owner, model) is { } extracted)
                 facts.Add(new SymbolStore.FactsRow(ownerId, JsonSerializer.Serialize(extracted), body));
@@ -180,6 +181,15 @@ public sealed class SymbolIndexBuilder
                 edges.Add(new SymbolStore.EdgeRow(ownerId, ifaceId, "implements", null, null));
                 RecordExternalIfNeeded(canonical, ifaceId, symbols);
             }
+
+            // The base-class counterpart of the interface edges above, under its OWN edge_kind so that the
+            // implements filter (SymbolStore.ImplementorsOf) keeps meaning interfaces and only interfaces.
+            // The two together are what let a derived-type count be a SQL lookup instead of
+            // SymbolFinder.FindDerivedClassesAsync per hit, matching what get_symbol's implementations
+            // component already reports. object is excluded: every type inherits it, so counting it would
+            // add the same constant to every row and tell a caller nothing.
+            if (namedType.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
+                AddDispatchEdge(ownerId, baseType, "inherits", edges, symbols);
         }
     }
 
@@ -300,6 +310,59 @@ public sealed class SymbolIndexBuilder
             edges.Add(new SymbolStore.EdgeRow(fromId, toId, "call", file, line));
             RecordExternalIfNeeded(canonical, toId, symbols);
         }
+    }
+
+    /// <summary>
+    /// Records the dispatch edges a member takes part in: <c>overrides</c> to the base member it overrides,
+    /// and <c>implements</c> to each interface member it implements.
+    /// </summary>
+    /// <remarks>
+    /// Both exist so a reference count can be answered from one batched SQL lookup over reference_edges. The
+    /// alternative is SymbolFinder.FindOverridesAsync / FindImplementationsAsync per symbol -- a solution-wide
+    /// walk each, which is affordable for one get_symbol call and not for a 200-hit search page. Paying for it
+    /// here moves the cost to index time, where it happens once per declaration instead of once per query.
+    ///
+    /// The TYPE-level implements edge is written in IndexDeclaration from namedType.Interfaces; this is its
+    /// member-level counterpart, sharing an edge_kind because both answer "what implements this". Fields are
+    /// skipped because no interface can declare one, which keeps the AllInterfaces scan off the commonest
+    /// member kind.
+    /// </remarks>
+    private static void CollectDispatchEdges(
+        ISymbol member, string memberId,
+        HashSet<SymbolStore.EdgeRow> edges, Dictionary<string, SymbolStore.SymbolRow> symbols)
+    {
+        var overridden = member switch
+        {
+            IMethodSymbol m => (ISymbol?)m.OverriddenMethod,
+            IPropertySymbol p => p.OverriddenProperty,
+            IEventSymbol e => e.OverriddenEvent,
+            _ => null,
+        };
+        if (overridden is not null)
+            AddDispatchEdge(memberId, overridden, "overrides", edges, symbols);
+
+        if (member is IFieldSymbol || member.ContainingType is not { } type)
+            return;
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            foreach (var ifaceMember in iface.GetMembers())
+            {
+                if (SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(ifaceMember), member))
+                    AddDispatchEdge(memberId, ifaceMember, "implements", edges, symbols);
+            }
+        }
+    }
+
+    /// <summary>Adds one dispatch edge, canonicalizing the target the same way a call target is.</summary>
+    private static void AddDispatchEdge(
+        string fromId, ISymbol target, string kind,
+        HashSet<SymbolStore.EdgeRow> edges, Dictionary<string, SymbolStore.SymbolRow> symbols)
+    {
+        var canonical = SymbolKey.Canonicalize(target);
+        var toId = SymbolKey.IdOf(canonical);
+        edges.Add(new SymbolStore.EdgeRow(fromId, toId, kind, null, null));
+        RecordExternalIfNeeded(canonical, toId, symbols);
     }
 
     /// <summary>
