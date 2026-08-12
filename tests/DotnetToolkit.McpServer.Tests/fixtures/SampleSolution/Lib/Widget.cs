@@ -29,6 +29,15 @@ public sealed class HighGear : GearBase
     public override int Ratio() => 5;
 }
 
+/// <summary>
+/// An abstract intermediate, so GearBase's derived list mixes an abstract type with concrete leaves —
+/// the shape that makes get_type_hierarchy's isAbstract flag load-bearing rather than decorative.
+/// </summary>
+public abstract class MidGear : GearBase
+{
+    public override int Ratio() => 3;
+}
+
 /// <summary>Doc-section filter fixture for search_index's xmlDoc filter tests.</summary>
 public static class DocSectionsFixture
 {

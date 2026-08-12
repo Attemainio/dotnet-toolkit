@@ -510,7 +510,9 @@ public static class FlowTools
         + "interfaces it implements (transitive, tagged direct vs inherited), and every subclass, derived type "
         + "or implementer of it. Answers \"what classes implement this interface\", \"what inherits from or "
         + "extends this class\", \"show me the inheritance chain\", \"which subclasses exist\". One hop further than"
-        + " get_symbol/get_references give today. derived is a flat ranked list, not a nested tree — get_symbol"
+        + " get_symbol/get_references give today. A derived entry carries isAbstract/isSealed when true, so"
+            + " \"which of these are concrete\" is answered without a fetch per row. derived is a flat ranked list,"
+            + " not a nested tree — get_symbol"
         + " on any result reveals its own immediate base if you need one more level — and is omitted entirely "
         + "when symbol is not a class/interface (structs/enums/delegates cannot be derived from). A result's "
         + "symbolId is a get_symbol target, not an edit lease: changing an implementer means fetching it with "
@@ -587,6 +589,13 @@ public static class FlowTools
                     symbolId = SymbolKey.IdOf(s),
                     displayString = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                     kind = SymbolKey.KindOf(s),
+                    // FindImplementationsAsync and FindDerivedClassesAsync return abstract intermediates mixed
+                    // in with concrete leaves, and "which of these can I actually instantiate" is the question a
+                    // derived list is usually being asked. Without the flag the only way to answer is a fetch per
+                    // row, so the cheap route is to guess -- and the guess is wrong on any hierarchy that has an
+                    // abstract base. Emitted only when true, so an all-concrete hierarchy pays nothing for it.
+                    isAbstract = s.IsAbstract ? true : (bool?)null,
+                    isSealed = s.IsSealed ? true : (bool?)null,
                 })
                 .OrderBy(x => x.displayString, StringComparer.Ordinal)
                 .ToList();

@@ -210,8 +210,19 @@ see that error, you omitted `query`.
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`line`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
 | `summary` | — | `"has"` adds `hasSummary` (bool, cheap presence check) \| `"full"` adds `summary` (text, capped 160 chars). Read from the syntax index — free even at `index_only`. An unrecognized value is treated as omitted and the response carries `summaryHint` |
+| `refs` | — | `"counts"` adds `callers` to every hit — **including `0`** — and `tests` when above zero. One batched index lookup for the whole page, not one per hit. An unrecognized value is treated as omitted and the response carries `refsHint` |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
+
+**`refs: "counts"` is how "is this dead code?" becomes one call.** `callers` is emitted even at `0`,
+because that zero *is* the answer being asked for; suppressing it would hide the only result worth the
+argument. The counts come from the same call edges `get_references` resolves, so a symbol reached only
+through an interface or a virtual is counted — a `grep` for the name would miss those and report a live
+symbol as unused.
+
+**An absent `callers` is not zero.** When no reference index is available the counts are omitted
+entirely and `refsHint` says so. Reading that silence as "nothing uses it" is how live code gets
+deleted, which is why the two cases are distinguishable rather than both rendering as `0`.
 
 **`summary: "has"` is usually redundant against `shape`'s `D` count**, which is already present on
 every hit: measured, `hasSummary` agreed with `D > 0` on every hit checked. `D` counts doc *lines*
@@ -222,7 +233,7 @@ its own call: the summary *text* isn't in `shape` at all.
 `hint` is a response field, not an argument: present only when `query` is built entirely from
 kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
 same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
-`summaryHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
+`summaryHint`, `refsHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
 argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each
 names the value that wasn't recognized, what it was silently treated as, and a `didYouMean`-style
 suggestion when exactly one vocabulary token is a close-enough match. All six are additive: the call

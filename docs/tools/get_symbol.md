@@ -34,6 +34,24 @@ sealed"`) already carries it.
 That means **location never costs a second call** — the default `standard` fetch already carries
 `declarationSites`; don't reach for `include: "all"` just to find a line number.
 
+**`startLine` and `signatureLine` answer different questions, and mixing them up is the common
+mistake.** `startLine` is an *edit span*: it takes in a leading `///` doc comment so a patch anchored
+on it can rewrite the comment along with the declaration. `signatureLine` is where the declaration
+itself begins — the line a human means by "where is this declared", and the same line `search_index`
+reports as a hit's `line`.
+
+`signatureLine` is **present only when it differs from `startLine`**, which happens exactly when a doc
+comment is present. Its absence therefore means "same as `startLine`", not "not computed" — the one
+deliberate exception on this shape to the rule that an absent field carries no information.
+
+```json
+"declarationSites":[{"file":"src/…/Contract.cs","startLine":3,"endLine":24,"signatureLine":7}]
+```
+
+Anchor a `validate_patch` edit on `startLine`. Quote `signatureLine` when reporting where something
+lives — answering "declared at line 3" when the `class` keyword is on line 7 is the measured failure
+this field removes.
+
 `origin` is `"source"` for anything this repo's own solution declares, or `"external"` for a
 BCL/NuGet symbol resolved only because this repo's own code calls/constructs/implements/extends it
 (`search_index(origin: "external")` is how such a symbol is found in the first place). An external

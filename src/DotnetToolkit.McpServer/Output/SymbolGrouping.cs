@@ -17,12 +17,15 @@ public static class SymbolGrouping
     /// <paramref name="Read"/> is <see cref="ReadAdvice"/>'s answer to what that shape implies — the
     /// include to pass next — and is null under the same condition, for the same reason.
     /// <paramref name="Generated"/> says the declaration is source-generator output, which is the reason
-    /// its file and lines are unresolved rather than an indexing failure.
+    /// its file and lines are unresolved rather than an indexing failure. <paramref name="Callers"/> and
+    /// <paramref name="Tests"/> are present only when the caller asked for them with refs; a zero there is a
+    /// real zero, which is the whole reason for asking.
     /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
         int? Line, int? EndLine, bool? HasSummary, string? Summary, string? Shape = null,
-        DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null);
+        DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null,
+        int? Callers = null, int? Tests = null);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
@@ -115,6 +118,12 @@ public static class SymbolGrouping
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)
             d["summary"] = r.Summary;
+        // callers is emitted even at 0 -- that zero IS the dead-code answer, so suppressing it would hide the
+        // one result the column was asked for. tests only earns a column when there is one.
+        if (r.Callers is not null)
+            d["callers"] = r.Callers;
+        if (r.Tests is > 0)
+            d["tests"] = r.Tests;
         return d;
     }
 

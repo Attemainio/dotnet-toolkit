@@ -43,8 +43,30 @@ members returned actually invoke it. Each item carries `symbolId, displayString,
 `contentVersion` (with `fields:"contentVersion"`), `isTest` (emitted only when `true`) and `content`
 (with `includeBodies:true`) are present only when they apply — absent, not `null`, otherwise.
 `excludedTextMatches` is the count of comment/string matches a grep would have wrongly included — 1
-here, correctly excluded. `targetSymbolId` is omitted when `symbol` was already a `sym_...` id, since it
-would only restate the input.
+here, correctly excluded. `targetSymbolId` and `targetDisplayString` are omitted when `symbol` was
+already a `sym_...` id, since they would only restate the input.
+
+### Which symbol did it actually answer for
+
+`targetSymbolId` is a hash, so it confirms the binding only to a caller who looks it up.
+**`targetDisplayString` names the resolved symbol in full.** A `symbol` handle that is a bare name or a
+suffix can bind to something you never meant — a same-named member on an unrelated type, or a different
+overload — and the resulting caller list looks exactly as authoritative as a correct one. Read this
+field before trusting a surprising count; it is the cheapest check available, and the failure it
+catches is the one that makes a confident answer wrong rather than thin.
+
+### Direct calls vs. cascaded ones
+
+Roslyn's reference search **cascades**: a call written against a base or interface declaration is
+reported as a caller of every symbol that overrides or implements it, because it might dispatch there
+at runtime. Those sites carry **`indirect: true`**, and the envelope splits the totals into
+**`directItems`** and **`indirectItems`** whenever any indirect site is present (both are omitted when
+every site is direct, so the common case costs nothing).
+
+This matters most on an `override` with a common name. A large total under `dispatchKind: virtual` is
+not evidence of a large real fan-in: it may be mostly cascaded sites that only reach this symbol when
+the receiver's runtime type is this one. Read `directItems` first, and treat `indirectItems` as
+"could land here", not "does".
 
 ### Paging a high-fan-in symbol
 

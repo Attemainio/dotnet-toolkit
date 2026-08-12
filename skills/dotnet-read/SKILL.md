@@ -64,6 +64,7 @@ Answers to:
 - Which symbols have (or lack) an XML `<summary>`, `<returns>`, `<remarks>`?
 - How is the codebase laid out by namespace or by file?
 - Roughly what will fetching this symbol cost me?
+- Does anything actually use this — is it dead code?
 - Did any of my search terms find nothing at all?
 
 **One call, every term.** Terms are OR-ed and ranked together:
@@ -81,6 +82,13 @@ call — both are plain Markdown, not `.cs`, so this skill's tools don't apply t
 
 A hit's `line`/`endLine` mark the **signature line only** and exclude a leading `///` doc comment.
 They are a navigation aid, never an edit span.
+
+**`refs: "counts"` answers "is this used anywhere" in the same call.** Every hit gains `callers` —
+**including `0`**, which is the whole point — and `tests` when above zero. The counts come from the
+same call edges `get_references` resolves, so interface and virtual dispatch are counted where a text
+search would miss them. It costs one batched index lookup for the page, not one per hit. **Absent
+counts mean they could not be computed, never zero**; `refsHint` says so when that happens, and
+reading an absence as "unused" is how live code gets deleted.
 
 **Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
 costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
@@ -110,6 +118,12 @@ Answers to:
 of the file's tokens, plus `declarationSites` (file + `startLine`/`endLine`, *including* a leading
 `///` doc comment) and a `contentVersion` — exactly what the write path needs.
 
+**Report a location from `signatureLine`, not `startLine`.** `startLine` is an edit span and takes in
+the doc comment; `signatureLine` is where the declaration itself begins, and matches what
+`search_index` reports. It is present **only when the two differ**, so its absence means "same as
+`startLine`". Answering "declared at line 3" when the `class` keyword is on line 7 is the mistake it
+exists to prevent.
+
 `include` picks the components and replaces the default set: `members` for a type's surface,
 `source:code` to read source without doc comments, `source:code@120-160` for one region of a long
 member, `bodyOutline` to map a member before slicing it, `all` when about to edit.
@@ -136,6 +150,17 @@ Answers to:
 `direction` is `callers` (default) | `implementations` | `overrides`. Each item carries a
 `symbolId`, a `displayString`, and `sites` — `{file, line, snippet}`, one row per file+line. On a
 named **type** there are no call sites, so `callers` returns the members that *reference* it.
+
+**Do not read a large `dispatchKind: virtual` count as a large real fan-in.** Roslyn cascades: a call
+written against a base or interface declaration is reported as a caller of everything that overrides
+or implements it. Those sites are marked `indirect: true`, and the envelope splits `directItems` from
+`indirectItems` whenever any are present. `indirectItems` means "could land here", not "does" — check
+`directItems` first.
+
+**Check `targetDisplayString` when a count surprises you.** A bare-name or suffix `symbol` handle can
+bind to something you never meant, and the wrong answer looks exactly as authoritative as the right
+one. That field names what actually resolved; `targetSymbolId` is a hash and confirms nothing on
+sight.
 
 An item's `symbolId` is a fetch target, **not an edit lease**.
 
@@ -195,6 +220,10 @@ Answers to:
 
 One hop further than `get_symbol`'s single `containingType`/`baseType`. Don't guess a hierarchy from
 a one-hop fetch.
+
+A derived entry carries **`isAbstract`/`isSealed` when true**, so *"which of these are concrete"* is
+answered from the same call — the derived list mixes abstract intermediates in with concrete leaves,
+and reporting all of them as implementers is a measured wrong answer, not a rounding error.
 
 Manual: `<pluginRoot>/docs/tools/get_type_hierarchy.md`
 
@@ -283,6 +312,8 @@ committed before the note that prevents it was ever read.
 | Anti-pattern (route taken) | Cheap route |
 |---|---|
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
+| `search_index` to find a symbol, then `get_references` (or `get_symbol`) only to learn whether anything uses it | `search_index(refs: "counts")` — one call, `callers` on every hit including `0`, and it counts dispatch where a grep counts text. Measured: this route took 3 calls where a single `grep` took 1 |
+| `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(summary: "full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
 | Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |

@@ -2356,6 +2356,48 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains(derivedNames, d => d.Contains("TurboWidget"));
     }
 
+    /// <summary>
+    /// A derived list mixes abstract intermediates in with concrete leaves, so "which of these can I
+    /// actually instantiate" is unanswerable from the list alone unless each row says so. Flags are emitted
+    /// only when true, which is what keeps an all-concrete hierarchy from paying for them.
+    /// </summary>
+    [Fact]
+    public async Task GetTypeHierarchy_DerivedTypes_FlagAbstractAndSealed()
+    {
+        var derived = TableRows(Root(await FlowTools.GetTypeHierarchy(
+                _f.Workspace, _f.Symbols, _f.Telemetry, "Sample.Lib.GearBase"))
+            .GetProperty("derived").GetProperty("items"))
+            .ToDictionary(r => r["displayString"].GetString() ?? "");
+
+        Assert.True(derived["MidGear"]["isAbstract"].GetBoolean());
+        Assert.False(derived["MidGear"].ContainsKey("isSealed"));
+
+        Assert.True(derived["HighGear"]["isSealed"].GetBoolean());
+        Assert.False(derived["HighGear"].ContainsKey("isAbstract"));
+    }
+
+    /// <summary>
+    /// refs:"counts" answers "is anything using this" inside the search call. A zero MUST be emitted rather
+    /// than dropped as an empty value: that zero is the dead-code answer the argument exists to give, and a
+    /// caller who cannot tell it from an absent field has to spend a second call to find out.
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_RefsCounts_EmitsCallersIncludingZero()
+    {
+        var uncalled = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", refs: "counts", groupBy: "none"))
+            .GetProperty("items")).First();
+
+        Assert.Equal(0, uncalled["callers"].GetInt32());
+        Assert.False(uncalled.ContainsKey("tests"));
+
+        var withoutRefs = TableRows(Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Undocumented", groupBy: "none"))
+            .GetProperty("items")).First();
+
+        Assert.False(withoutRefs.ContainsKey("callers"));
+    }
+
     [Fact]
     public async Task GetTypeHierarchy_Class_ReportsBaseChainAndDerived()
     {

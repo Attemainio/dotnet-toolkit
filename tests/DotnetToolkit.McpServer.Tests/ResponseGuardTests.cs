@@ -84,7 +84,7 @@ public sealed class ResponseGuardTests
     public void DeclaredLineCountSumsEverySpanItIsGiven()
     {
         Assert.Equal(0, ResponseGuard.DeclaredLineCount([]));
-        Assert.Equal(1, ResponseGuard.DeclaredLineCount([("A.cs", 7, 7)]));
-        Assert.Equal(531, ResponseGuard.DeclaredLineCount([("A.cs", 8, 534), ("B.cs", 1, 4)]));
+        Assert.Equal(1, ResponseGuard.DeclaredLineCount([("A.cs", 7, 7, 7)]));
+        Assert.Equal(531, ResponseGuard.DeclaredLineCount([("A.cs", 8, 534, 9), ("B.cs", 1, 4, 1)]));
     }
 }

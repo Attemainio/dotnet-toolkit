@@ -55,9 +55,9 @@ public static class ContextTools
         + "split across partial-class files — Read gives one fragment and no signal the rest exists — for a "
         + "fraction of the file's tokens. Don't know the name yet? search_index finds it; this one reads it. "
         + "Every response carries declarationSites (file + startLine/endLine, INCLUDING a leading /// doc "
-        + "comment when present) and a contentVersion token — exactly what validate_patch needs as baseVersions"
-        + " and edit spans. search_index's line/endLine EXCLUDE the doc comment, so never anchor an edit on a "
-        + "span read off search_index without confirming it here. A patch that rewrites a BODY needs a "
+        + "comment when present, plus signatureLine) and a contentVersion token — exactly what validate_patch "
+        + "needs as baseVersions and edit spans. Never anchor an edit on search_index's line, which excludes "
+        + "the doc comment. A patch that rewrites a BODY needs a "
         + "contentVersion from an include that actually served one, so fetch with \"all\" (or "
         + "source/bodyOutline/mechanicalFacts) when about to edit — the default include leases the declaration "
         + "only. NEVER build an edit span from a fetch whose -modifiers dropped lines inside it (source:code on"
@@ -544,8 +544,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "class, where is it used, is it used anywhere at all — as callers, implementations or overrides, "
         + "resolved from the compiler's model. USE THIS INSTEAD OF GREP: grep gives wrong caller lists — it "
         + "cannot see interface, virtual or delegate dispatch, counts comment and string matches as hits, and "
-        + "silently drops sites when output is truncated. Returns every real call site, no false positives, and"
-        + " reports how many text-only matches it excluded as excludedTextMatches (callers direction only). A "
+        + "silently drops sites when output is truncated. Returns every real call site with no text-only false"
+        + " positives, and reports how many it excluded as excludedTextMatches (callers direction only). A site"
+            + " reached by cascading through a base or interface this symbol overrides is marked indirect:true and"
+        + " counted in indirectItems, so a large virtual total is never stated as certain. A "
         + "named type (class, record, interface, delegate) has no call sites of its own, so callers on one "
         + "reports the members that REFERENCE it — the field, parameter, return type or construction site. Each"
         + " item carries symbolId, displayString (a compact name/arity form — pass fields:\"signature\" for the "
@@ -554,8 +556,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "like any other comment match and reported as excludedDocMentions; pass fields:\"crefs\" to get them "
         + "back. isTest is present only when true; content (the inline body) only with includeBodies:true. "
         + "targetSymbolId confirms which overload this answered for, and is omitted when the caller already "
-        + "passed a sym_... id. totalItems is always the FULL count rather than the page's, so when it exceeds "
-        + "what came back, truncated is set and nextOffset names the offset that reaches the rest. An item's "
+        + "passed a sym_... id. An item's "
         + "symbolId is a get_symbol target, not an edit lease: updating a call site means fetching it with "
         + "get_symbol first for the contentVersion and declarationSites validate_patch needs. Full contract and"
         + " examples: docs/tools/get_references.md.")]
@@ -661,9 +662,22 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             ? DispatchKindOf(sym)
             : null;
 
+        // SymbolFinder cascades: a call written against a base or interface declaration is reported as a
+        // caller of every symbol that overrides or implements it, because it MIGHT dispatch here at runtime.
+        // Roslyn already separates the two on SymbolCallerInfo.IsDirect; folding them into one undifferentiated
+        // list is what turns "94 callers" into a number a caller cannot act on. Counted over the full result,
+        // not the page, so paging never changes what the totals mean.
+        var indirectCount = ordered.Count(i => !i.IsDirect);
+
         var envelope = new
         {
             targetSymbolId = symbol.StartsWith("sym_", StringComparison.Ordinal) ? null : SymbolKey.IdOf(sym),
+            // The id is a hash, so it confirms WHICH symbol only to a caller who looks it up. A suffix or
+            // bare-name handle can bind to a symbol the caller never meant — the failure mode that makes a
+            // confident-looking caller list answer the wrong question — and the display string is what makes
+            // that visible on sight. Omitted for a sym_ handle, which named the symbol unambiguously already.
+            targetDisplayString = symbol.StartsWith("sym_", StringComparison.Ordinal) ? null
+                : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                 directionHint,
             items = shown.Select(i => new
             {
@@ -672,10 +686,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 displayString = wantSignature ? i.DisplayString : i.CompactDisplayString,
                 sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet, kind = s.IsCref ? "cref" : null }),
                 isTest = i.IsTest ? true : (bool?)null,
+                indirect = i.IsDirect ? null : (bool?)true,
                 content = i.Body,
             }),
             dispatchKind,
             totalItems = ordered.Count,
+            directItems = indirectCount > 0 ? (int?)(ordered.Count - indirectCount) : null,
+            indirectItems = indirectCount > 0 ? (int?)indirectCount : null,
             offset = skipped > 0 ? (int?)skipped : null,
             nextOffset = truncated ? (int?)nextOffset : null,
             truncated = truncated ? true : (bool?)null,
@@ -705,10 +722,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "Already know which file? Ask get_symbol for that type with include:\"members\" rather than narrowing "
         + "this search down to it. Each hit carries shape (what fetching it costs) and read (which include "
         + "to pass next, absent when the default fetch is already right), both legends stated once per "
-        + "response. intent (edit|logic|surface) aims read at what you are about to do. "
-        + "An unrecognized value on kinds, modifiers, origin, summary, groupBy or intent is named in a "
+        + "response. intent (edit|logic|surface) aims read at what you are about to do. refs:\"counts\" adds a "
+        + "callers count per hit (0 included), answering \"is this used at all\" in one call. "
+        + "An unrecognized value on kinds, modifiers, origin, summary, refs, groupBy or intent is named in a "
             + "<param>Hint response field rather than erroring. "
-            + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, groupBy, origin. Full grammar, "
+            + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, summary, refs, groupBy, origin. Full grammar, "
         + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
 
     public static async Task<string> SearchIndex(
@@ -771,6 +789,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "implements target from this repo's source — not a general library browser, only what this "
             + "repo's own code already references. \"all\" searches both. An unrecognized value is treated as "
             + "\"source\", and the response's originHint names it.")] string? origin = null,
+        [Description("Add reference counts per hit, answering \"does anything actually use this\" without a "
+            + "follow-up call. \"counts\": adds callers (ALWAYS, including 0 — that zero is the dead-code answer "
+            + "and is the reason to ask) and tests (only when above 0). Costs one batched index lookup for the "
+            + "whole page, not one per hit. Counts come from the same call edges get_references resolves, so "
+            + "interface and virtual dispatch are included where a text search would miss them. Absent counts "
+            + "mean they could not be computed, NEVER zero, and refsHint says so when that happens. An "
+            + "unrecognized value is treated as omitted, and refsHint names it.")] string? refs = null,
         [Description("What you are about to do with these hits, which aims the read column: \"edit\" (every "
             + "hit recommends include:\"all\", the body-carrying lease a patch needs), \"logic\" (behaviour "
             + "rather than docs, so source:code — or an outline then a slice — wins at any size), \"surface\" "
@@ -838,6 +863,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 : $"summary:'{summary}' was not recognized and was treated as omitted."
                     + (VocabularyHint.NearestToken(summary, ["has", "full"]) is { } nearestSummary
                         ? $" Did you mean '{nearestSummary}'?" : "");
+        var refsMode = refs is "counts" ? refs : null;
+            var refsVocabHint = refs is null or "counts" ? null
+                : $"refs:'{refs}' was not recognized and was treated as omitted."
+                    + (VocabularyHint.NearestToken(refs, ["counts"]) is { } nearestRefs
+                        ? $" Did you mean '{nearestRefs}'?" : "");
         var intentMode = intent is "edit" or "logic" or "surface" ? intent : null;
             var intentHint = intent is null or "edit" or "logic" or "surface" ? null
                 : $"intent:'{intent}' was not recognized and was treated as omitted."
@@ -864,6 +894,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         if (includeDocs is not null || excludeDocs is not null)
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
+
+        // One batched lookup for the whole page rather than one per row (SymbolStore.ReferenceCountsFor). A
+        // null result means there was no reference index to answer from, which is reported as a hint instead
+        // of as a page of zeroes: "nothing calls this" and "nothing counted this" are opposite answers, and
+        // conflating them is exactly how a live symbol gets deleted as dead code.
+        var refCounts = refsMode is null ? null : symbolStore.ReferenceCountsFor([.. limited.Select(r => r.Hit.SymbolId)]);
+        var refsHint = refsMode is not null && refCounts is null
+            ? "refs:\"counts\" was requested but no reference index was available, so no counts are reported. "
+                + "Absent counts are not zero -- call workspace_status before reading this as unused."
+            : refsVocabHint;
 
         // A ranked OR spends `limit` globally, so a term whose name-matches are far rarer than its
         // neighbours' can be squeezed out of the response altogether - and a caller told that one call
@@ -931,6 +971,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         // Only the flat envelope needs these precomputed: the grouped one derives the same answers from the
         // rows it is handed. Either way a legend is emitted only when some hit actually carries that column.
+        // Tests is folded to null at 0 here rather than at each call site, so the flat and grouped shapes
+        // cannot disagree about when the column appears.
+        (int? Callers, int? Tests) RefsOf(string symbolId)
+        {
+            if (refCounts is null)
+                return (null, null);
+            var counts = refCounts.GetValueOrDefault(symbolId);
+            return (counts.Callers, counts.Tests > 0 ? counts.Tests : null);
+        }
+
         var anyShape = limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
         var anyRead = limited.Any(r => ReadAdvice.For(intentMode, ShapeOf(r.Site)) is not null);
 
@@ -947,6 +997,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 summaryHint,
                 groupByHint,
                 intentHint,
+                refsHint,
                 items = limited.Select(r => new
             {
                 symbolId = r.Hit.SymbolId,
@@ -964,6 +1015,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 read = ReadAdvice.For(intentMode, ShapeOf(r.Site)),
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
                 summary = summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
+                callers = RefsOf(r.Hit.SymbolId).Callers,
+                tests = RefsOf(r.Hit.SymbolId).Tests,
             }),
         };
 
@@ -983,7 +1036,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
                     SymbolShape.For(ShapeOf(r.Site)),
                     r.Hit.Placement,
-                    ReadAdvice.For(intentMode, ShapeOf(r.Site)));
+                    ReadAdvice.For(intentMode, ShapeOf(r.Site)),
+                    RefsOf(r.Hit.SymbolId).Callers,
+                    RefsOf(r.Hit.SymbolId).Tests);
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -1005,6 +1060,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     withLimit["groupByHint"] = groupByHint;
                 if (intentHint is not null)
                     withLimit["intentHint"] = intentHint;
+                if (refsHint is not null)
+                    withLimit["refsHint"] = refsHint;
                 foreach (var (key, value) in grouped)
                 withLimit[key] = value;
             return withLimit;
@@ -1411,12 +1468,16 @@ private static object? ContainingType(ISymbol sym)
         /// <summary>Flat file/startLine/endLine spans for a symbol's declarations, one per partial part.</summary>
         /// <param name="sym">The symbol whose declaration spans are wanted.</param>
         /// <param name="locator">Renders each span's path repo-relative.</param>
-        /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
+        /// <returns>
+        /// One entry per declaring syntax reference, source-generator output excluded. <c>SignatureLine</c> is
+        /// where the declaration itself begins; <c>StartLine</c> is that span widened to take in a leading doc
+        /// comment, and the two differ only when one is present.
+        /// </returns>
         /// <remarks>
         /// The typed core <see cref="DeclarationSites"/> and <c>validate_patch</c>'s edit-span validation
         /// both need the same bounds; this is the shared computation both sit on top of.
         /// </remarks>
-        internal static IReadOnlyList<(string File, int StartLine, int EndLine)> DeclarationSpans(ISymbol sym, SolutionLocator locator) =>
+        internal static IReadOnlyList<(string File, int StartLine, int EndLine, int SignatureLine)> DeclarationSpans(ISymbol sym, SolutionLocator locator) =>
             sym.DeclaringSyntaxReferences
                 // Exclude source-generator output (obj/**): it is regenerated on every build and not an
                 // editable declaration site, so surfacing it alongside the hand-written partial only offers
@@ -1430,7 +1491,11 @@ private static object? ContainingType(ISymbol sym)
                 return (
                     File: locator.RelPath(span.Path),
                     StartLine: span.StartLinePosition.Line + 1,
-                    EndLine: span.EndLinePosition.Line + 1);
+                    EndLine: span.EndLinePosition.Line + 1,
+                        // node.Span excludes leading trivia but keeps attribute lists, which is exactly what
+                        // search_index reports as a hit's line -- so the two tools agree on "where is it" while
+                        // StartLine stays the doc-comment-inclusive span an edit has to anchor on.
+                        SignatureLine: r.SyntaxTree.GetLineSpan(node.Span).StartLinePosition.Line + 1);
             }).ToArray();
 
         /// <summary>Flat file/startLine/endLine sites for a symbol's declarations, one per partial part.</summary>
@@ -1448,7 +1513,18 @@ private static object? ContainingType(ISymbol sym)
                 // Flat file/startLine/endLine — these feed straight into a validate_patch edit. Start
                 // includes a leading /// doc comment when present, so an edit targeting this span can
                 // rewrite the comment along with the declaration, not just the declaration alone.
-                .Select(s => (object)new { file = s.File, startLine = s.StartLine, endLine = s.EndLine })
+                .Select(s => (object)new
+                    {
+                        file = s.File,
+                        startLine = s.StartLine,
+                        endLine = s.EndLine,
+                        // Present ONLY when it differs from startLine, which is exactly when a leading /// doc
+                        // comment widened the edit span. startLine is what a patch must anchor on; signatureLine
+                        // is where the declaration itself starts, and is the number to quote when answering
+                        // "where does this live" -- reporting the doc block's first line there is the mistake
+                        // this field exists to remove. Absent means "same as startLine", not "not computed".
+                        signatureLine = s.SignatureLine == s.StartLine ? (int?)null : s.SignatureLine,
+                    })
                 .ToArray();
 
     /// <summary>
@@ -2032,7 +2108,7 @@ private static object? ContainingType(ISymbol sym)
 
 private sealed record RefItem(string SymbolId, string Version, string DisplayString, string CompactDisplayString,
         IReadOnlyList<(string File, int Line, string Snippet, bool IsCref)> Sites, string? DispatchKind, IReadOnlyList<SourceLine>? Body,
-        bool IsTest = false);
+        bool IsTest = false, bool IsDirect = true);
 
 
 private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
@@ -2071,7 +2147,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 sites,
                 dispatch,
                 includeBodies ? SourceOf(caller.CallingSymbol, locator) : null,
-                TestAttributes.IsTestMethod(caller.CallingSymbol)));
+                TestAttributes.IsTestMethod(caller.CallingSymbol), caller.IsDirect));
         }
         return items;
     }

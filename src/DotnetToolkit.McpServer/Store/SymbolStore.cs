@@ -79,6 +79,47 @@ public sealed partial class SymbolStore
         return reader.Read() ? (reader.GetInt32(0), reader.GetInt32(1)) : (0, 0);
     }
 
+    /// <summary>callers / tests reference counts for many symbols at once, keyed by symbol id.</summary>
+    /// <param name="symbolIds">The symbols to count references for.</param>
+    /// <returns>
+    /// One entry per id carrying at least one recorded call edge, or <c>null</c> when no knowledge store is
+    /// available. An id missing from a non-null result has zero callers; a <c>null</c> result means the counts
+    /// were not computed at all, which is a different answer and must never be reported as zero.
+    /// </returns>
+    /// <remarks>
+    /// search_index's refs column needs one count per hit, and asking <see cref="ReferenceCounts(string)"/>
+    /// per row opened a connection per row -- a 200-hit page would become 200 round trips, the N+1 shape
+    /// standards/antipatterns.md names. The caller count LEFT JOINs symbols so an edge whose caller has no row
+    /// of its own still counts, which is what keeps this in agreement with
+    /// <see cref="ReferenceCounts(IReadOnlyCollection{string})"/> instead of quietly under-reporting.
+    /// </remarks>
+    public IReadOnlyDictionary<string, (int Callers, int Tests)>? ReferenceCountsFor(IReadOnlyCollection<string> symbolIds)
+    {
+        if (!_store.Available || symbolIds.Count == 0)
+            return null;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var names = symbolIds.Select((_, i) => "$s" + i).ToList();
+        var list = string.Join(',', names);
+        cmd.CommandText = $"""
+            SELECT e.to_symbol,
+                   COUNT(DISTINCT e.from_symbol),
+                   COUNT(DISTINCT CASE WHEN f.is_test = 1 THEN e.from_symbol END)
+              FROM reference_edges e
+              LEFT JOIN symbols f ON f.symbol_id = e.from_symbol
+             WHERE e.to_symbol IN ({list}) AND e.edge_kind = 'call'
+             GROUP BY e.to_symbol;
+            """;
+        var i = 0;
+        foreach (var id in symbolIds)
+            cmd.Parameters.AddWithValue("$s" + i++, id);
+        using var reader = cmd.ExecuteReader();
+        var counts = new Dictionary<string, (int Callers, int Tests)>(StringComparer.Ordinal);
+        while (reader.Read())
+            counts[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2));
+        return counts;
+    }
+
     /// <summary>
     /// Call targets reachable in one hop. Interface members are followed through to their registered
     /// implementations, so a slice does not dead-end at an interface boundary the way a literal call
