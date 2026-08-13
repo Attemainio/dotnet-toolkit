@@ -74,6 +74,13 @@ list `.claude/rules/`. The project's own conventions take priority over anything
 - **Legacy layout**: a repo installed before the standards moved has `.claude/rules/tool-protocol.md`,
   `.claude/rules/csharp-standards.md`, and up to 13 standards files there. Handle them per the
   migration step below — left in place they auto-load and contradict `dotnet-index.md`.
+- **Unrecognized file**: any other file in `.claude/rules/` carrying no `paths:` frontmatter — so,
+  besides `dotnet-index.md` and the three named shapes above — is still an always-loaded rule, whatever
+  it's called. The recurring case is a hand-authored router a prior session wrote before this repo's
+  `.claude/rules/` layout existed under its current name; it typically routes to a skill or tool name
+  the plugin no longer has, since nothing keeps a hand-authored copy current. It cannot be matched
+  against a filename this plugin ever shipped, so it is never silently removed — handle it per the
+  "hash does not match" branch of the migration step below, same as an edited legacy file.
 - If an existing rule already covers tool usage, code search, or "how to explore this codebase", read
   it carefully — Step 2 decides whether it complements or conflicts.
 
@@ -118,15 +125,20 @@ and don't otherwise diverge the copy.
 **Legacy cleanup (hash-verified auto-clean).** If Step 1 found any of `index.md` (the pre-rename
 router), `tool-protocol.md`, `csharp-standards.md`, or the 13 standards filenames in the repo's
 `.claude/rules/`, stage their removal — left there they auto-load and contradict `dotnet-index.md`,
-and the standards keep a `paths:` trigger that can fire on any `.cs` file no project compiles. For
-each one:
+and the standards keep a `paths:` trigger that can fire on any `.cs` file no project compiles. **Also
+stage any unrecognized unfrontmattered file** Step 1 found — one whose name matches none of those
+three shapes — since it is always-loaded regardless of what it's called. For each one:
 
 - **Hash matches a version this plugin shipped** → remove it silently as part of the refresh. It was
-  never edited, so there is nothing to lose and nothing to ask about.
-- **Hash does not match** → the repo edited it. Show the diff and ask. Offer to carry the edits into
-  a file of the repo's own choosing outside `.claude/rules/`, or to discard them. The plugin no
-  longer reads a repo-local standard from anywhere, so an edited copy left in place would be dead
-  text that still auto-loads — say that when asking. Never delete an edited file without an answer.
+  never edited, so there is nothing to lose and nothing to ask about. An unrecognized file never
+  qualifies here — there is no filename to hash against, so it always falls to the next bullet.
+- **Hash does not match, or there is nothing to hash against (an unrecognized file)** → the repo
+  authored or edited it. Show its content and ask. Offer to carry it (or the edits) into a file of the
+  repo's own choosing outside `.claude/rules/`, or to discard it. The plugin no longer reads a
+  repo-local standard from anywhere, and a hand-authored router routes to whatever skill/tool names it
+  was written against — which may no longer exist — so a copy left in place would be dead text that
+  still auto-loads. Say that when asking. Never delete an edited or unrecognized file without an
+  answer.
 
 This is the same consent model the refresh path already uses for edited copies; it introduces no new
 one. Count the removals in the approval summary.

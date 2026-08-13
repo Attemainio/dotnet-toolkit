@@ -14,14 +14,17 @@ ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
 
 - Every file in `docs/install/install.md`'s "What gets written" table is present — all three of them.
 - **`.claude/rules/` contains exactly one file, `dotnet-index.md`, and it has no frontmatter.** A
-  second unfrontmattered file is a second always-loaded rule nobody costed. Three shapes of
-  **pre-migration leftover** land here, all cleaned by re-running the install path: `index.md`, this
-  same router under the name it carried before the rename — the likeliest one, since every repo
-  installed before then has it, and the worst, because it duplicates the current rule verbatim while
-  routing to skill names that no longer exist; `tool-protocol.md` or `csharp-standards.md` from
-  before the standards moved; and any standards filename, which additionally keeps a `paths:` trigger
-  that can fire on any `.cs` file no project compiles. Report which one you found rather than the
-  count — the fix is the same, but the diagnosis is not.
+  second unfrontmattered file is a second always-loaded rule nobody costed. Four shapes land here, all
+  cleaned by re-running the install path: `index.md`, this same router under the name it carried
+  before the rename — the likeliest one, since every repo installed before then has it, and the worst,
+  because it duplicates the current rule verbatim while routing to skill names that no longer exist;
+  `tool-protocol.md` or `csharp-standards.md` from before the standards moved; any standards filename,
+  which additionally keeps a `paths:` trigger that can fire on any `.cs` file no project compiles; and
+  a catch-all **unrecognized file** — any other name, most often a hand-authored router a prior
+  session wrote before this repo had `dotnet-index.md` at all, no `install.json` to track it, and
+  typically citing a skill or tool name that no longer exists. The first three are hash-verified
+  against what the plugin shipped; the fourth never can be, so it is a "show and ask" finding, not a
+  silent removal. Report which one you found rather than the count — the fix path differs by shape.
 - **No standards files are installed, and that is correct.** They are read from
   `<pluginRoot>/standards/` on demand — `workspace_status` reports `pluginRoot` — so they cannot go
   stale here. Their absence is not a
