@@ -1,5 +1,5 @@
 {
-  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), delivers the write-time checklist on the session's first validate_patch, and refreshes the workspace (via a loopback control channel, falling back to a reminder) after creating a new .cs file. Every hook is a subcommand of the published server binary, so it runs wherever the .NET runtime the plugin already requires runs - no shell, no shebang, no jq/node/python3.",
+  "description": "Keeps C# edits on the validate_patch write path, keeps C# reads on search_index/get_symbol (including via Bash), delivers the write-time checklist on the session's first validate_patch, refreshes the workspace (via a loopback control channel, falling back to a reminder) after creating a new .cs file, and meters every tool call's request and response tokens so MCP and raw-tool routes are measured on one instrument. Every hook is a subcommand of the published server binary, so it runs wherever the .NET runtime the plugin already requires runs - no shell, no shebang, no jq/node/python3. The metering hook alone matches every tool (matcher \"*\"): it is the only one whose question is about tools it does not otherwise see, and it observes without ever withholding a call.",
   "hooks": {
     "PreToolUse": [
       {
@@ -56,6 +56,16 @@
             "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook hint-reload-new-cs-file",
             "timeout": 10,
             "statusMessage": "Checking whether the workspace needs a reload..."
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook meter-tool-call",
+            "timeout": 5
           }
         ]
       }

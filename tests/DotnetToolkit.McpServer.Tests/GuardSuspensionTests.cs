@@ -153,6 +153,65 @@ public sealed class GuardSuspensionTests : IDisposable
         }
     }
 
+    [Fact]
+    public void ObserveSessionId_FromAHook_OutranksTheIdThisProcessInherited()
+    {
+        var previous = Environment.GetEnvironmentVariable(GuardSuspension.SessionVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, "ses_stale_from_launch");
+
+            Assert.False(GuardSuspension.SessionIdIsConfirmed);
+            Assert.Equal("ses_stale_from_launch", GuardSuspension.CurrentSessionId());
+
+            GuardSuspension.ObserveSessionId("  ses_live_from_hook  ");
+
+            Assert.True(GuardSuspension.SessionIdIsConfirmed);
+            Assert.Equal("ses_live_from_hook", GuardSuspension.CurrentSessionId());
+        }
+        finally
+        {
+            GuardSuspension.ForgetObservedSessionId();
+            Environment.SetEnvironmentVariable(GuardSuspension.SessionVariable, previous);
+        }
+    }
+
+    [Fact]
+    public void ObserveSessionId_IgnoresBlankReportsRatherThanLosingTheLiveId()
+    {
+        try
+        {
+            GuardSuspension.ObserveSessionId("ses_live_from_hook");
+            GuardSuspension.ObserveSessionId(null);
+            GuardSuspension.ObserveSessionId("   ");
+
+            Assert.Equal("ses_live_from_hook", GuardSuspension.CurrentSessionId());
+        }
+        finally
+        {
+            GuardSuspension.ForgetObservedSessionId();
+        }
+    }
+
+    [Fact]
+    public void SuspendUnderAHookReportedId_IsVisibleToThatSessionsGuards()
+    {
+        try
+        {
+            // What the 2026-08-13 perf run hit: the server suspends under the id it holds, and a guard hook
+            // looks the suspension up under the id IT sees. They have to be the same value or the guards stay
+            // armed while every server-side instrument reports them down.
+            GuardSuspension.ObserveSessionId("ses_live_from_hook");
+            GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(5), Now, GuardSuspension.CurrentSessionId());
+
+            Assert.True(GuardSuspension.Current(_root, Now, "ses_live_from_hook").Suspended);
+        }
+        finally
+        {
+            GuardSuspension.ForgetObservedSessionId();
+        }
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

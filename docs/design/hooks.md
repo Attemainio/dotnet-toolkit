@@ -5,7 +5,7 @@
 > page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
 > how membership is decided statically, and where enforcement has a known hole.
 
-The plugin ships five hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships six hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
 plugin removes them.
 
@@ -34,9 +34,11 @@ MSBuild discovery or host startup runs.
 ## The off-switch, and why it expires
 
 `HookCli` reads `GuardSuspension` before dispatching to any of the three **blocking** guards; when a
-suspension is in force they return allow without evaluating. The two hints are unaffected — they add
-context rather than withhold a call, so silencing them would cost the caller information without
-buying back any of the freedom a suspension is asked for.
+suspension is in force they return allow without evaluating. The two hints and the meter are
+unaffected — they add context or observe, rather than withhold a call, so silencing them would cost
+the caller information without buying back any of the freedom a suspension is asked for. The meter
+especially: `dotnet-performance` suspends the guards precisely in order to measure the *unguarded*
+route, which is not measured at all if suspending also stops the measuring.
 
 The reason this exists at all is `dotnet-performance`: the claim that these tools beat `grep`/`Read`
 cannot be *measured* without running `grep`/`Read` in the same repo, and the guards make that route
@@ -68,11 +70,28 @@ says:
   environment reads and writes the unscoped file exactly as every caller did before this existed, and
   every scoped check still falls back to that same file, so an older unscoped suspension stays honoured
   rather than going silently invisible.
+- **The server's own session id goes stale, so a hook's outranks it.** The server process reads
+  `CLAUDE_CODE_SESSION_ID` once, at launch, and holds it for life; a hook process is spawned per tool
+  call and always carries the current one. Resume or continue a session without restarting the server
+  and the two diverge — the server then writes `guards-suspended-until.<stale-id>`, no hook ever looks
+  that name up, the scoped check misses, the unscoped fallback does not exist, and the guards stay
+  armed. This is not hypothetical: it cost the 2026-08-13 performance run its entire raw route, and it
+  is the *worst* shape of failure, because `set_hook_guards` returns success and `workspace_status`
+  corroborates it. Both report the server's view of a file it wrote; neither observes a hook.
+  `GuardSuspension.ObserveSessionId` closes it — `meter-tool-call` sends the id **it** resolves
+  (`guardSessionId`, from its own environment, so the value is the one the guard hooks will look up
+  by construction rather than by assumption), `ControlServer` records it, and `CurrentSessionId()`
+  prefers it over this process's inherited value. Until some hook has reported one,
+  `SessionIdIsConfirmed` is false and `set_hook_guards` also writes the unscoped file and says so in
+  its scope sentence — a wider suspension the caller is told about beats a scoped one that silently
+  does nothing.
 
 `workspace_status` prints a `hookGuards: SUSPENDED` line with the time remaining, and nothing when the
 guards are active — checking its own session's scoped state the same way `HookCli` does. It carries
 this rather than `set_hook_guards` alone because it is the call every skill makes first, so a session
-inheriting a suspension it did not start finds out before it edits rather than after.
+inheriting a suspension it did not start finds out before it edits rather than after. **Neither line is
+evidence that a hook will honour the suspension**, for the reason above; `dotnet-performance` therefore
+proves it with an actual guarded read before it launches the raw probe, rather than trusting either.
 
 `DOTNET_TOOLKIT_DISABLE_HOOKS` remains the separate, non-expiring hatch for a harness that owns the
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
@@ -191,6 +210,41 @@ the same way every other hook here does.
 
 The JSON reply is serialized, never hand-interpolated, since `file_path` is caller-controlled text (a
 Windows path's backslashes) that has no business near manual JSON string escaping.
+
+## `hook meter-tool-call` — PostToolUse on every tool (`matcher: "*"`)
+
+The only hook whose subject is tools it otherwise never sees, and the only one that matches everything.
+It exists because **the server cannot measure the alternative it is being compared against.** A
+`retrieval_events` row is written from inside an MCP tool method, so it covers this plugin's tools and
+nothing else; a `Grep` or a `Read` never enters the server process. `dotnet-performance` was therefore
+metering one route with the server and the other by asking an agent to count its own calls — which is
+not a comparison, and which the raw probe got wrong by roughly half on consecutive runs. A
+`PostToolUse` hook fires on **harness dispatch**, independent of which tools an agent's grant contains,
+so both routes are measured by the same code on the same payload.
+
+One payload carries both directions and the attribution, which is why this is a single `PostToolUse`
+hook rather than a `Pre`/`Post` pair: `tool_input` (what the model had to generate — output tokens),
+`tool_response` (what was loaded into its context — input tokens), `tool_use_id`, and `agent_id` /
+`agent_type` when the call came from a subagent. Counting happens in the hook, using the same
+`TelemetryRecorder.EstimateTokens` the server's own telemetry uses — comparability depends on it being
+literally the same function — so the wire carries two integers rather than a whole tool response.
+
+**It reports over the control channel instead of writing to SQLite itself**, for two reasons that are
+easy to miss. A hook is a separate process with its own `Ids.AmbientSession`, so a row it wrote would
+carry a session id no read ever matches, since `get_retrieval_metrics` is scoped to the server's
+session. And routing through the channel keeps SQLite single-writer, which is what makes a hook firing
+on *every* tool call safe against a store that sets no busy timeout. `ControlServer` stamps the row
+with its own session id on arrival.
+
+Idempotent by `tool_use_id`, which is `UNIQUE` with an `INSERT OR IGNORE`, so a redelivered hook is a
+no-op rather than a doubled cost. Fails open and **silently** — a measurement must never interrupt the
+work it measures, so an unreachable server or a payload with no `tool_use_id` simply records nothing.
+The tell is the meter's call count sitting below the transcript's own `tool_uses`, a reconciliation the
+perf report already performs.
+
+This is also the one hook that costs something on calls it has no opinion about: it matches every tool,
+so it adds its ~70ms to calls the guards would have ignored. That is the price of the comparison being
+sound, and it is bounded — the rows are cleared on restart with the rest of the raw telemetry.
 
 ## `hook hint-write-checklist` — PreToolUse on the `validate_patch` MCP tool
 

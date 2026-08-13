@@ -167,12 +167,13 @@ Report each finding as: the memory or `CLAUDE.md` paragraph, its category, and t
 should carry it. Do not copy a category-(c) fact into a shipped file to close a finding —
 categorising it correctly *is* closing it.
 
-**6. Hooks and launch path.** All five hooks are `hook <name>` subcommands of the published server
+**6. Hooks and launch path.** All six hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
-`Guard*`/`ReloadHint`/`WriteChecklistHint` files carry the messages, and four more have no
-`hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard logic),
-`GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
-`set_hook_guards`) and `ControlClient.cs` (how `hint-reload-new-cs-file` reaches the running server).
+`Guard*`/`ReloadHint`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
+have no `hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard
+logic), `GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
+`set_hook_guards`) and `ControlClient.cs` (how `hint-reload-new-cs-file` and `meter-tool-call` both
+reach the running server, with the command words in `Control/ControlCommands.cs`).
 Read those with `get_symbol` (not `grep` — the `guard-cs-bash-read` hook blocks a tree grep here, as
 it should), plus `hooks/hooks.json` and `.mcp.json`:
    - Does each guard's deny/hint text still name the correct tool(s) and procedure (`validate_patch`'s
@@ -184,6 +185,13 @@ it should), plus `hooks/hooks.json` and `.mcp.json`:
      (`security.md`, `testing.md`), and it must stay once-per-session and fail-quiet — a version that
      fires on every patch, or that denies, is a finding. Matching an MCP tool name in `hooks.json` is
      verified working; don't "fix" it back to a built-in.
+   - **`meter-tool-call` is the one hook matching every tool (`"*"`), and the one exempt from
+     `GuardSuspension` on purpose.** It observes rather than withholds, and `dotnet-performance`
+     suspends the guards precisely in order to measure the unguarded route — a version that honours
+     suspension silently produces a benchmark with half its data missing, which is the finding. It
+     must also stay fail-open-and-silent and keep reporting over the control channel rather than
+     opening the store itself: a hook process has its own ambient session id, so a row it wrote
+     directly would be invisible to every read.
    - Does `hooks/hooks.json` name subcommands `HookCli` actually dispatches, with matchers
      (`Edit`/`Write`/`NotebookEdit`/`Read`/`Bash`, plus the fully-qualified `validate_patch` MCP tool
      name) matching `docs/design/hooks.md` and `docs/design/architecture.md`'s "Packaging" section?

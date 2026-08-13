@@ -1,6 +1,6 @@
 ---
 name: dotnet-performance
-description: Use when asked what dotnet-toolkit actually costs compared to doing the same work with plain tools — "is this plugin worth it", "benchmark the toolkit against grep", "how much does search_index really save over Grep/Read", "measure the MCP tools against cat/ls/find", "does this pay for itself on Windows/PowerShell". Builds one question matrix and sends it, verbatim and blind, to two dedicated subagents — dotnet-perf-mcp-probe (only the MCP tools) and dotnet-perf-raw-probe (only Grep/Glob/Read/Bash, guard hooks suspended so it can reach .cs files at all) — so neither agent's answer is informed by having seen the other's, or by the orchestrator's own prior exploration. Reports tokens and calls per route, states which numbers are exact, and reports every outcome where the raw route won or the two agents converged on the same wrong answer (a question-design finding, not a route one). Never edits .cs, and always restores the guards before it finishes.
+description: Use when asked what dotnet-toolkit actually costs compared to doing the same work with plain tools — "is this plugin worth it", "benchmark the toolkit against grep", "how much does search_index really save over Grep/Read", "measure the MCP tools against cat/ls/find", "does this pay for itself on Windows/PowerShell". Builds one question matrix and sends it, verbatim and blind, to two dedicated subagents — dotnet-perf-mcp-probe (only the MCP tools) and dotnet-perf-raw-probe (only Grep/Glob/Read/Bash, guard hooks suspended so it can reach .cs files at all) — so neither agent's answer is informed by having seen the other's, or by the orchestrator's own prior exploration. Both routes are metered by one instrument — a PostToolUse hook that fires on harness dispatch, so Grep and get_symbol are counted the same way — and reported as request tokens (what the model generated, the dear side) against response tokens (what was injected into its context), plus calls per route. States which instrument produced each number, and reports every outcome where the raw route won or the two agents converged on the same wrong answer (a question-design finding, not a route one). Never edits .cs, and always restores the guards before it finishes.
 ---
 
 # Measuring what this plugin costs against not having it
@@ -49,6 +49,12 @@ entirely — it has no gated tool in its grant regardless of whether guards are 
 still suspends for the raw probe's whole run rather than micromanaging which specific questions need
 it; that's a simplification worth the small extra exposure, not a requirement.
 
+**Suspension does not stop the metering.** `meter-tool-call` is a `PostToolUse` hook and is
+deliberately exempt from `GuardSuspension` — it observes rather than withholding, and a benchmark
+suspends the guards precisely so it can measure the *unguarded* route, which is not measured at all if
+suspending also silences the measurement. Step 3 depends on this: the meter is what makes both routes
+comparable.
+
 **A freshly created or edited agent file is not visible to the current session.** The harness
 snapshots the agent registry when the plugin loads, not per subagent spawn (`docs/design/agents.md`
 has the confirmed details). If either probe agent was just added or changed, it needs a session
@@ -65,7 +71,11 @@ setup mistake.
 2. Record the repo's size honestly: file count, type count, and the size of the largest `.cs` file.
    These are the axes the answer actually depends on, and a result reported without them is not
    transferable to any other repo.
-3. `get_retrieval_metrics` once, to fix the baseline the MCP probe's tagged calls are measured from.
+3. `get_retrieval_metrics` once, to fix the baseline both probes are measured from. **Check that the
+   `harness` block is present.** Absent means the `meter-tool-call` hook has recorded nothing, and this
+   run has no instrument that sees both routes — the two would again be measured by different means,
+   the flaw Step 3's whole design exists to remove. The usual cause is a server started before the hook
+   was registered in `hooks.json`; restart it and begin again rather than reporting the run.
 
 ## Step 1 — build the question matrix
 
@@ -121,41 +131,96 @@ output format and the "play it straight" instructions actually live; a change to
 there, in the one copy both agents read, not duplicated into this step.
 
 Give the MCP probe a `taskId` to pass on every call (`perf_mcp_<date>`), stated in its copy of the
-prompt. The raw probe has no equivalent — nothing meters `Read`/`Grep`/`Bash`.
+prompt. The raw probe still has no equivalent — a `taskId` is an MCP argument, and `Read`/`Grep`/`Bash`
+take none. That asymmetry no longer decides the comparison, though: the `taskId` now buys only the
+server-side view of the MCP responses, while the number both routes are actually compared on comes
+from the harness meter, which needs nothing from either prompt (Step 3).
 
-**Launch order:** `dotnet-perf-mcp-probe` first, needs no guard suspension. Then
-`set_hook_guards(state: "suspend", minutes: <enough for the whole raw pass>)`, launch
-`dotnet-perf-raw-probe`, then restore (Step 5). Foreground or background both calls as convenient —
-what matters is the guard window brackets only the raw probe's run.
+**Launch order:** `dotnet-perf-mcp-probe` first — it needs no guard suspension and is immune to guard
+state either way. Then suspend, launch `dotnet-perf-raw-probe`, **wait for it to return**, then
+restore (Step 6). Three rules make that window correct rather than approximately correct:
 
-## Step 3 — count, and say which numbers are exact
+- **Pass `minutes` explicitly**, sized to the whole raw pass with margin (eight to twelve outcomes has
+  taken 5–15 minutes). The default is 30 minutes and the cap is 4 hours; taking the default means the
+  report cannot honestly state the window it ran under, because nobody chose it.
+- **Join before restoring.** Restoring while the raw probe is still running re-arms the guards
+  underneath it: its next `Read` of a `.cs` file is denied, it quietly falls back to whatever it can
+  still reach, and the run ends up measuring a hobbled raw route without saying so. If the probe was
+  backgrounded, wait for its result before calling `restore` — the restore is not a fire-and-forget
+  cleanup step, and it is the one ordering mistake that silently corrupts the comparison.
+- **Never let the expiry do the restoring.** A suspension that lapses on its own leaves no record of
+  when it ended, and Step 6's confirmation is what the report's `Guards:` line quotes.
 
-This is the step where a careless run produces a confident wrong number.
+**Then prove the suspension actually reached the hooks, before launching the raw probe.** Do not
+take `set_hook_guards`' success string for it, and do not take `workspace_status`' `hookGuards:
+SUSPENDED` line for it either. Both are the *server's* view of a file it wrote; neither observes a
+hook process. On 2026-08-13 both reported a suspension that was not in force, the raw probe was
+denied on its first `.cs` read, and the run was lost.
 
-- **Both totals are now exact, not estimated.** Each `Agent` call reports the spawned agent's real
-  `subagent_tokens` and `tool_uses` in its own result — that is the true cost of that route's run,
-  bootstrap and reasoning included, for both sides equally. This replaces the old byte-per-token
-  estimate for the raw side; nothing about a raw-tool response needs guessing at anymore, because the
-  number being reported is the agent's actual usage, not a reconstruction from its output bytes.
-- **A second, finer number exists only for the MCP side:** `get_retrieval_metrics(groupBy: "task",
-  taskIds: ["perf_mcp_<date>"])` isolates the MCP tool-response bytes alone, excluding the probe
-  agent's own bootstrap/reasoning overhead. This is the number that answers "how much does the
-  *retrieval call itself* cost" — a different, narrower question than "what did this whole route cost
-  in production." Report both, and say which is which; don't let a reader assume they're the same
-  measurement.
-- **The raw side has no equivalent finer number.** `Grep`/`Read`/`Bash` aren't metered at all, so the
-  raw probe's total agent cost is the only number available for it — which is fine, since it's exact,
-  just not decomposable per question the way the MCP side's tagged calls are.
-- **Count calls too, and separately.** A route that is cheaper in tokens but takes many more round
-  trips may still be the worse one, and only the call count shows it. Each agent's own **Calls made**
-  section is the source for this, not a guess.
-- **Reconcile the self-reported total against the true one, for both agents, every run.** Each probe's
-  final `Total tool calls` line (from `performance_protocol.md`) is its own tally of its per-question
-  **Calls made** lists; the `Agent` call's own `tool_uses` is ground truth. Report both numbers for
-  both probes. A gap means calls went missing from the per-question logs above — say which questions'
-  **Calls made** lists look compressed (multiple same-tool lines collapsed into one), not just that a
-  gap exists. This has recurred across runs (the raw route undercounted itself by roughly half on
-  2026-08-11 and again on 2026-08-12) — treat a clean match as worth noting too, not just a mismatch.
+The positive control is one call: read a `.cs` file the way the raw probe would — `Bash` with
+`head -1` on any file under `src/` — and confirm it is **not** denied.
+
+- **Not denied** → the suspension is real; launch the raw probe.
+- **Denied by a `PreToolUse` guard** → the suspension did not reach the hooks. **Stop.** Do not
+  launch the raw probe, do not report numbers, and restore before doing anything else. A run whose
+  raw route is blocked produces a comparison against a route that was prevented from working,
+  which is worse than no comparison — and the denial is the only honest signal you will get, since
+  the two instruments above will keep insisting the guards are down.
+
+The known cause is a session-id mismatch between the long-lived MCP server and the live session
+(`docs/design/hooks.md`). Restarting the MCP server clears it. Verify rather than assume the fix
+holds: this check costs one call and is the only thing standing between a silent failure and a
+published wrong number.
+
+## Step 3 — count, and say which instrument produced each number
+
+This is the step where a careless run produces a confident wrong number. Three instruments are
+available, they answer three different questions, and the report must name which produced each figure.
+
+| Instrument | Covers | Answers |
+|---|---|---|
+| `get_retrieval_metrics`'s `harness` block, `byAgent` rows | **both routes**, every tool the harness dispatched | What did each route's tool calls cost, split into request and response tokens? |
+| Each `Agent` call's own `subagent_tokens` / `tool_uses` | both routes, whole run | What did the whole route cost in production, bootstrap and reasoning included? |
+| `get_retrieval_metrics(taskIds: ["perf_mcp_<date>"])` | **MCP only**, server-side | What did the MCP responses alone cost, as the server itself measured them? |
+
+- **The `harness` block is the comparison.** It is the only instrument that measures both routes with
+  the same code on the same payload: the `meter-tool-call` `PostToolUse` hook fires on harness
+  dispatch, independent of which tools an agent's grant contains, so a `Grep` is metered exactly as a
+  `get_symbol` is. Read it once after both probes return and take the `byAgent` rows —
+  `dotnet-perf-mcp-probe` and `dotnet-perf-raw-probe` appear under their own `agent_type`, so neither
+  probe has to label itself and no self-report has to be trusted. Before this existed, each route was
+  measured by a different mechanism, which is not a comparison however carefully it is presented.
+- **Report both directions; never blend them into one number.** `responseTokens` is what the call
+  loaded into the model's context (**input** tokens); `requestTokens` is what the model had to
+  generate to make the call (**output** tokens). Output runs roughly **5× dearer** — Opus 5 is $5/$25
+  per MTok and Haiku 4.5 $1/$5 — so `requestTokens × 5 + responseTokens` is the comparable unit. The
+  caller applies that weighting, not the server, which has no idea which model is running.
+- **`responseTokens` is the context-bloat number, and it deserves its own line.** The plugin's central
+  claim is about what lands in the context window, and this column is exactly that. Requests are
+  usually small — a one-line command, a short argument list — so a route with more calls but smaller
+  responses can inject far less context than a route with fewer, larger ones. A blended total hides
+  precisely that.
+- **Both token counts are approximations, and the block says so.** `tokenEstimator` names what
+  produced them: `chars4` is `(length + 3) / 4` over the serialized payload. It is applied identically
+  to both routes, so the *ratio* between them is sound while the absolute figures are not — state that
+  rather than presenting them as exact.
+- **`subagent_tokens` remains the production number.** It is exact and includes each agent's own
+  bootstrap and reasoning, which the meter never sees. A route can meter cheaply and still cost more
+  overall because it reasoned longer; report both and let neither stand in for the other.
+- **Count calls too, and separately.** A route cheaper in tokens but taking many more round trips may
+  still be the worse one. The meter's `calls` per agent is now the ground truth for this.
+- **Reconcile three ways, every run.** Each probe's self-reported `Total tool calls` line, the meter's
+  `calls` for that `agent_type`, and the `Agent` call's `tool_uses`. The meter and `tool_uses` should
+  agree closely — a gap between *them* points at a metering failure. A gap between either and the
+  self-report means calls went missing from the per-question **Calls made** lists, and you should name
+  which questions look compressed (several same-tool lines collapsed into one). **Subtract the known
+  offset before calling anything a discrepancy:** each probe's `Read` of `performance_protocol.md` is
+  setup its own protocol tells it to leave out of the log, but the harness dispatched it, so the meter
+  counts it — expect the meter to exceed each self-report by at least one on that account alone, plus
+  any `workspace_status` readiness call the probe treats the same way. A gap of one or two is that; a
+  gap of a third or a half is compression. The raw route has
+  undercounted itself on every run so far — by roughly half on 2026-08-11 and again on 2026-08-12 —
+  which is exactly why the self-report is no longer the instrument, only a cross-check on it.
 
 ## Step 4 — check correctness before cost
 
@@ -204,10 +269,12 @@ same-day runs from colliding into an append):
 # dotnet-toolkit performance — <date>
 
 Specimen: <root> · <solution> · <n> projects · <n> files, <n> types · largest .cs: <n> lines
-Cost basis: both totals are exact subagent_tokens from the Agent call; the MCP side additionally
-reports exact tool-response-only tokens via get_retrieval_metrics(taskId), which the raw side has
-no equivalent for.
-Guards: suspended <start>–<end> (scoped to this session), restored <how>
+Cost basis: both routes metered by the same PostToolUse hook and read from get_retrieval_metrics'
+harness block, as request/response tokens (<tokenEstimator> approximation, applied identically to
+both); whole-route totals are exact subagent_tokens from each Agent call; the MCP side additionally
+reports server-side response tokens via get_retrieval_metrics(taskId).
+Guards: <the scope sentence set_hook_guards returned on suspend, verbatim> · suspended <start> for
+<minutes>m · raw probe returned <time> · restored <the restore call's own response line, verbatim>
 
 ## Questions
 <the numbered question list, verbatim — byte-for-byte the same text both agents received per Step 2.
@@ -220,12 +287,27 @@ invented, undercounted, or truncated — "matched" — or "both agents converged
 answer" (a question-design finding)>
 
 ## Cost
-| Question | MCP probe (calls, total tokens, tool-only tokens) | Raw probe (calls, total tokens) | Which route won |
+
+Aggregate — both routes, one instrument (the harness meter):
+
+| Route | Calls | Request tokens (output) | Response tokens (input) | Weighted (req×5 + resp) | Whole-agent tokens |
+|---|---|---|---|---|---|
+| MCP probe | | | | | |
+| Raw probe | | | | | |
+
+**Context injected** — the response-token column — is the plugin's central claim, so state it on its
+own line: <n> vs <n> tokens, a <n>× difference in what each route loaded into the context window.
+
+Per question (self-reported call counts — the only per-question signal either route has, since the
+meter attributes per agent rather than per question):
+
+| Question | MCP probe (calls) | Raw probe (calls) | Which route won |
 |---|---|---|---|
 
-Self-reported vs. true tool_uses: MCP probe reported <N> (`Total tool calls`) against a true
-`tool_uses` of <N>; raw probe reported <N> against a true <N>. <If either gap is non-trivial, name
-which questions' **Calls made** lists look compressed, per Step 3 — don't just note the gap exists.>
+Reconciliation: MCP probe self-reported <N> calls, meter <N>, true `tool_uses` <N>; raw probe
+self-reported <N>, meter <N>, true <N>. <A meter-vs-tool_uses gap is a metering failure; a
+self-report gap means calls went missing from the per-question **Calls made** lists — name which
+questions look compressed, per Step 3, rather than just noting the gap exists.>
 
 ## Where the raw route wins
 <the honest list — if it is empty, say why you believe that rather than just asserting it>
@@ -241,10 +323,21 @@ the result — an empty section with no reasoning reads as a run that was not re
 
 ## Step 6 — restore the guards
 
-`set_hook_guards(state: "restore")`, then `workspace_status` to confirm the `hookGuards` line is gone.
-Report both in the run's `Guards:` line. If `restore` reports that `DOTNET_TOOLKIT_DISABLE_HOOKS` is
-holding them open, say so in the report — that is an environment the next session inherits, and only a
-server restart clears it.
+Only once the raw probe has actually returned (Step 2). `set_hook_guards(state: "restore")`, then
+`workspace_status` to confirm the `hookGuards` line is gone.
+
+**Quote the tool's own scope sentence verbatim in the `Guards:` line rather than paraphrasing it.**
+The report's statement about what the suspension covered is a claim about blast radius, and the only
+authority on it is the tool that took the lock — "scoped to this session", written from memory, has
+appeared in a report that never checked. Paste what `set_hook_guards` actually returned, for both the
+suspend and the restore. If `restore` reports that `DOTNET_TOOLKIT_DISABLE_HOOKS` is holding the
+guards open, say so — that is an environment the next session inherits, and only a server restart
+clears it.
+
+**Then scan the run for guard denials, as a validity check.** If the raw probe's transcript carries a
+`PreToolUse` denial on a `.cs` read, the window did not in fact cover its run: the numbers describe a
+raw route that was blocked partway through, and the run is invalid rather than publishable. Say so and
+re-run; a comparison against a route that was prevented from working is worse than no comparison.
 
 ## Boundaries
 

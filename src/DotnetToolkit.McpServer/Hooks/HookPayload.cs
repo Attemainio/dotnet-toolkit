@@ -30,6 +30,37 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
     /// </summary>
     public string? SessionId { get; init; }
 
+    /// <summary>
+    /// <c>tool_input</c> as raw JSON — the arguments the model had to generate to make this call, which
+    /// are therefore OUTPUT tokens and the dearer half of what a tool costs. Null when the payload
+    /// carried no object there.
+    /// </summary>
+    public string? ToolInputRaw { get; init; }
+
+    /// <summary>
+    /// <c>tool_response</c> as raw JSON, present on <c>PostToolUse</c> only — what the call loaded into
+    /// the model's context, and therefore INPUT tokens. Kept raw because every tool returns a different
+    /// shape and only its size is ever measured.
+    /// </summary>
+    public string? ToolResponseRaw { get; init; }
+
+    /// <summary>
+    /// <c>tool_use_id</c>, the harness's own identifier for this call. It is what lets a metered row be
+    /// reconciled against the transcript, and what makes recording idempotent when a hook is delivered
+    /// twice.
+    /// </summary>
+    public string? ToolUseId { get; init; }
+
+    /// <summary><c>agent_id</c> — present only when the call was made from inside a subagent.</summary>
+    public string? AgentId { get; init; }
+
+    /// <summary>
+    /// <c>agent_type</c>, e.g. <c>dotnet-perf-raw-probe</c>. This is what attributes a metered call to one
+    /// side of a benchmark without the probes having to label themselves — which they cannot be trusted to
+    /// do, since a self-reported call log is precisely what this measurement replaces.
+    /// </summary>
+    public string? AgentType { get; init; }
+
     /// <summary>Parses a hook stdin payload, tolerating any shape that is not the expected object.</summary>
     /// <param name="json">The raw stdin text.</param>
     /// <returns>
@@ -67,18 +98,30 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
                 return null;
             }
 
-            string? filePath = null;
-            string? command = null;
-            if (root.TryGetProperty("tool_input", out var input) && input.ValueKind == JsonValueKind.Object)
-            {
-                filePath = ReadString(input, "file_path");
-                command = ReadString(input, "command");
-            }
+                string? filePath = null;
+                string? command = null;
+                string? toolInput = null;
+                if (root.TryGetProperty("tool_input", out var input) && input.ValueKind == JsonValueKind.Object)
+                {
+                    filePath = ReadString(input, "file_path");
+                    command = ReadString(input, "command");
 
-            return new HookPayload(toolName, filePath, command)
-            {
-                SessionId = ReadString(root, "session_id"),
-            };
+                    // Raw rather than parsed: the meter needs only its size, and every tool takes a
+                    // different input shape, so there is nothing general to parse it into.
+                    toolInput = input.GetRawText();
+                }
+
+                return new HookPayload(toolName, filePath, command)
+                {
+                    SessionId = ReadString(root, "session_id"),
+                    ToolInputRaw = toolInput,
+                    ToolResponseRaw = root.TryGetProperty("tool_response", out var response)
+                        ? response.GetRawText()
+                        : null,
+                    ToolUseId = ReadString(root, "tool_use_id"),
+                    AgentId = ReadString(root, "agent_id"),
+                    AgentType = ReadString(root, "agent_type"),
+                };
         }
     }
 

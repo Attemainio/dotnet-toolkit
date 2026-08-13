@@ -85,7 +85,44 @@ public sealed class KnowledgeStore : IKnowledgeStore
             tx.Commit();
             _log.LogInformation("Applied knowledge-store migration {Version} ({Name})", migration.Version, migration.Name);
         }
+        PurgeTelemetry(connection);
     }
+
+    /// <summary>Empties the raw telemetry tables, leaving every other table untouched.</summary>
+    /// <remarks>
+    /// <c>get_retrieval_metrics</c> reports the calls of the process it runs in and nothing else, so the
+    /// tables it reads start empty on every start. Startup is the load-bearing end of that: an MCP server
+    /// is normally killed rather than stopped, and a killed process never reaches the shutdown callback in
+    /// <c>Program</c>, so rows surviving one would be exactly the stale history this removes. The
+    /// development log (<c>feature_log</c>) is deliberately outside the purge - it records why code
+    /// changed, which outlives the process that recorded it, and so is the symbol index, which caches the
+    /// code rather than recording this session's use of it.
+    /// </remarks>
+    public void PurgeTelemetry()
+    {
+        if (!Available)
+            return;
+
+        try
+        {
+            using var connection = Connect();
+            PurgeTelemetry(connection);
+        }
+        catch (Exception ex)
+        {
+            // Same posture as the constructor: telemetry housekeeping must never take the server down.
+            _log.LogWarning(ex, "Could not clear telemetry; the next start will clear it instead");
+        }
+    }
+
+    // These two tables are the whole of raw telemetry: migration 14 dropped surfaced_symbols and
+    // session_events, and naming a table that no longer exists throws here - which the constructor
+    // catches as "store unavailable", silently disabling telemetry rather than reporting the typo.
+    private static void PurgeTelemetry(SqliteConnection connection) => Execute(connection, """
+        DELETE FROM retrieval_events;
+        DELETE FROM patch_events;
+        DELETE FROM tool_call_events;
+        """);
 
     private static HashSet<int> AppliedVersions(SqliteConnection connection)
     {

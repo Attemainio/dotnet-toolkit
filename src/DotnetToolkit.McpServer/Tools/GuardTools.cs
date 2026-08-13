@@ -23,8 +23,9 @@ public static class GuardTools
         + "a dependent-compile check, and without a development-log entry, so the reasoning is gone when the "
         + "session ends. A suspension expires on its own (default 30 minutes, cap 4 hours) and cannot be made "
         + "indefinite from here, so nothing has to remember to undo it; workspace_status reports the time "
-        + "remaining while one is in force. Scoped to your own Claude Code session when one is detected in the "
-        + "environment, so a different session pointed at this repo keeps its own guards. state: suspend | restore.")]
+        + "remaining while one is in force. Scoped to your own Claude Code session once a hook has reported "
+        + "that session's id, so a different session pointed at this repo keeps its own guards; until one has, "
+        + "it covers every session on this repo rather than failing closed. state: suspend | restore.")]
     public static string SetHookGuards(
         SolutionLocator locator,
         [Description("suspend | restore")] string state,
@@ -38,11 +39,14 @@ public static class GuardTools
         }
 
         var sessionId = GuardSuspension.CurrentSessionId();
+        var confirmed = GuardSuspension.SessionIdIsConfirmed;
 
         if (normalized == "restore")
         {
-            // Resume reports false when the environment variable is what is holding the guards open, because
-            // clearing a state file it does not depend on would otherwise read as a restore that happened.
+            // Resume clears the scoped file AND the unscoped one, so a suspension taken before any hook had
+            // reported the live id is lifted by the same call. Resume reports false when the environment
+            // variable is what is holding the guards open, because clearing a state file it does not depend
+            // on would otherwise read as a restore that happened.
             return GuardSuspension.Resume(locator.Root, sessionId)
                 ? "hook guards restored"
                 : $"state file cleared, but the guards stay open: {GuardSuspension.DisableVariable} is set in "
@@ -54,9 +58,21 @@ public static class GuardTools
             : GuardSuspension.DefaultDuration;
         var now = DateTimeOffset.UtcNow;
         var until = GuardSuspension.Suspend(locator.Root, requested, now, sessionId);
-        var scope = sessionId is null
-            ? "for every session pointed at this repo (no Claude Code session id found in the environment)"
-            : "for this Claude Code session only";
+
+        // A suspension only lifts a guard if the hook process can FIND the file this wrote, and a hook looks
+        // under the session id it sees itself. That match is guaranteed only once a hook has reported one;
+        // until then this process's inherited id may be stale, and a scoped-only write fails closed and
+        // silently - the exact failure that made this tool unusable on any resumed session. Write the
+        // unscoped file hooks fall back to as well, and say so, rather than claim a scope never verified.
+        if (!confirmed)
+        {
+            GuardSuspension.Suspend(locator.Root, requested, now);
+        }
+
+        var scope = confirmed
+            ? "for this Claude Code session only"
+            : "for every session pointed at this repo (no hook has reported a live session id yet, so scoping "
+                + "to this one could not be verified)";
 
         return $"hook guards suspended for {(until - now).TotalMinutes:F0} min, until {until:u}, {scope}. "
             + "Raw .cs reads and edits now pass unchecked, and any edit made through them is absent from the "

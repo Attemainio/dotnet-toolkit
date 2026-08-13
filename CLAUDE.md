@@ -93,7 +93,7 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the five hooks, and it is
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the six hooks, and it is
   **committed to git** so a consuming machine needs no local build step. Re-publish after any server
   change, **and commit the republished `dist/` in the same commit** — a stale *committed* `dist/` is
   worse than a stale local one, since it ships to every consumer who pulls.

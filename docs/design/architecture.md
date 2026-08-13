@@ -226,9 +226,9 @@ on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs a
 `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
 `scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships five hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
-`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file`, `hook hint-write-checklist` — all
-subcommands of that same published
+`hooks/hooks.json` ships six hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
+`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file`, `hook hint-write-checklist`,
+`hook meter-tool-call` — all subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at

@@ -342,7 +342,10 @@ Answers to:
 - How many tokens has this session spent on retrieval?
 - Which tool, symbol or task cost the most?
 - What did one specific call cost? (snapshot `groupBy: "tool"` either side and subtract)
-- Which past sessions exist in a date range?
+
+**It reports this server process and nothing else**, always — the raw telemetry is cleared when the
+server starts and again when it stops, and there is no argument that reads another session. A number
+here is this session's, never a month of accumulated history.
 
 Pass a `taskId` on the calls you want to isolate — it is the only thing separating concurrent callers,
 since every agent talking to this server process shares one ambient session id.

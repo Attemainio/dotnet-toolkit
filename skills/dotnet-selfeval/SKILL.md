@@ -65,12 +65,15 @@ costs = get_retrieval_metrics(groupBy: "task", since: "2026-08-04")   // one cal
 cost  = costs.groups["p_C_rt_short_20260804"].tokensReturned
 ```
 
-**Both the date suffix and `since:` are mandatory, and they are not redundant.** The readback defaults
-to `scope: "global"`, and telemetry outlives the server process — so a probe id reused from an earlier
-run comes back as that run's rows summed with this one's, silently doubling the cost of every probe it
-collides on. The matrix below is fixed, which *guarantees* the same names recur run over run; on one
-measured run roughly a third of the ids collided, reporting `p_C_source` at 4,485 tokens against a real
-2,406. Read the `calls` column on every group as a check: any probe issued once whose row says `calls: 2`
+**A run-unique suffix on every probe id is mandatory.** The readback covers this server process and
+nothing else — the raw tables are emptied when the server starts — so ids from a run in an *earlier*
+process cannot merge into this one, and `since:` is a cheap belt-and-braces rather than the
+load-bearing guard it used to be. What that does **not** protect against is re-running the matrix
+inside one server process, which is the ordinary case here: the matrix below is fixed, which
+*guarantees* the same names recur, so
+a second run in the same session sums onto the first. A date suffix alone does not separate two runs on
+the same day — make the suffix unique per run. On one measured run roughly a third of the ids collided,
+reporting `p_C_source` at 4,485 tokens against a real 2,406. Read the `calls` column on every group as a check: any probe issued once whose row says `calls: 2`
 is a collision (or a double-recording bug), and the run's numbers are void until it is explained. The
 instrument check below cannot catch this on its own, since it uses novel ids by construction.
 

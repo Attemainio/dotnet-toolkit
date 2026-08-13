@@ -82,6 +82,13 @@ DevlogMigration.Run(
     app.Services.GetRequiredService<FeatureLogStore>(),
     app.Services.GetRequiredService<ILogger<Program>>());
 
+// Telemetry covers this process and no other, so the raw tables are cleared at both ends of its life.
+// The startup purge inside KnowledgeStore is the load-bearing one - an MCP server is usually killed
+// rather than stopped, and a killed process never reaches this callback - but clearing on a graceful
+// stop too keeps the database from holding a finished session's rows until the next start.
+app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(
+    app.Services.GetRequiredService<KnowledgeStore>().PurgeTelemetry);
+
 await app.RunAsync();
 
 // Explicit because the hook branch above returns a value, which makes the entry point int-returning.

@@ -385,6 +385,42 @@ public sealed class HookPayloadTests
         Assert.Equal("Bash", payload.ToolName);
         Assert.Null(payload.FilePath);
     }
+
+    // The meter reads five fields no guard ever needed, so a parser change that silently dropped them
+    // would leave every guard test passing and the measurement blind.
+    [Fact]
+    public void TryParse_PostToolUsePayload_ReadsBothDirectionsAndTheAgentItRanIn()
+    {
+        var payload = HookPayload.TryParse(
+            """
+            {"tool_name":"Grep","tool_use_id":"toolu_01","agent_id":"agt_7",
+             "agent_type":"dotnet-perf-raw-probe","session_id":"ses_abc",
+             "tool_input":{"pattern":"class Solver"},
+             "tool_response":{"mode":"content","numLines":3}}
+            """);
+
+        Assert.NotNull(payload);
+        Assert.Equal("toolu_01", payload.ToolUseId);
+        Assert.Equal("agt_7", payload.AgentId);
+        Assert.Equal("dotnet-perf-raw-probe", payload.AgentType);
+        Assert.Equal("ses_abc", payload.SessionId);
+        Assert.NotNull(payload.ToolInputRaw);
+        Assert.Contains("class Solver", payload.ToolInputRaw, StringComparison.Ordinal);
+        Assert.NotNull(payload.ToolResponseRaw);
+        Assert.Contains("numLines", payload.ToolResponseRaw, StringComparison.Ordinal);
+    }
+
+    // A string tool_response is as ordinary as an object one - Bash returns text - so the raw capture
+    // must handle both rather than throwing on the shape it did not expect.
+    [Fact]
+    public void TryParse_StringToolResponse_IsMeasurableToo()
+    {
+        var payload = HookPayload.TryParse(
+            """{"tool_name":"Bash","tool_use_id":"toolu_02","tool_response":"total 12"}""");
+
+        Assert.NotNull(payload);
+        Assert.Equal("\"total 12\"", payload.ToolResponseRaw);
+    }
 }
 
 public sealed class WriteChecklistHintTests

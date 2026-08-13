@@ -27,16 +27,18 @@ public sealed class ControlServer
     private readonly WorkspaceHost _workspace;
     private readonly SymbolIndexBuilder _indexBuilder;
     private readonly ILogger<ControlServer> _log;
+    private readonly Telemetry.TelemetryRecorder _telemetry;
     private Task? _runTask;
 
     public ControlServer(
         SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace,
-        SymbolIndexBuilder indexBuilder, ILogger<ControlServer> log)
+        SymbolIndexBuilder indexBuilder, Telemetry.TelemetryRecorder telemetry, ILogger<ControlServer> log)
     {
         _locator = locator;
         _index = index;
         _workspace = workspace;
         _indexBuilder = indexBuilder;
+        _telemetry = telemetry;
         _log = log;
     }
 
@@ -87,11 +89,15 @@ public sealed class ControlServer
             using var stream = client.GetStream();
             using var reader = new StreamReader(stream);
             using var writer = new StreamWriter(stream) { AutoFlush = true };
-            var command = await reader.ReadLineAsync();
-            var response = command?.Trim() switch
+            var command = (await reader.ReadLineAsync())?.Trim();
+            var response = command switch
             {
-                "rescan" => await RescanAsync(),
-                "reload" => Reload(),
+                ControlCommands.Rescan => await RescanAsync(),
+                ControlCommands.Reload => Reload(),
+                // Prefix rather than equality: this one carries a JSON payload after the command word.
+                _ when command is not null
+                    && command.StartsWith(ControlCommands.Meter + " ", StringComparison.Ordinal) =>
+                    Meter(command[(ControlCommands.Meter.Length + 1)..]),
                 _ => "err:unknown command",
             };
             await writer.WriteLineAsync(response);
@@ -113,5 +119,52 @@ public sealed class ControlServer
         _workspace.TriggerReload();
         _indexBuilder.Start();
         return "ok:reload started";
+    }
+
+    /// <summary>Records one metered tool call reported by the <c>meter-tool-call</c> hook.</summary>
+    /// <param name="json">The measurement, one line of JSON following the command word.</param>
+    /// <returns>A one-line status the hook ignores — it can do nothing useful about a failure.</returns>
+    /// <remarks>
+    /// Recording happens here rather than in the hook process so the row carries THIS server's session id.
+    /// A hook is a separate process with its own ambient id, and a row stamped with that would be
+    /// invisible to every read, since get_retrieval_metrics is scoped to the server's own session.
+    /// Routing through the channel also keeps SQLite single-writer, which is what makes a hook firing on
+    /// every tool call safe against a store that sets no busy timeout.
+    /// </remarks>
+    private string Meter(string json)
+    {
+        try
+        {
+            var measurement = System.Text.Json.Nodes.JsonNode.Parse(json);
+            if (measurement?["toolName"]?.GetValue<string>() is not { } toolName
+                || measurement["toolUseId"]?.GetValue<string>() is not { } toolUseId)
+            {
+                return "err:meter payload missing toolName or toolUseId";
+            }
+
+            // A hook runs inside the LIVE Claude Code session and reports the session id it will itself look
+            // a suspension up under. This process holds only the id it inherited at launch, which goes stale
+            // the moment the session is resumed - so the hook's value outranks it.
+            Hooks.GuardSuspension.ObserveSessionId(measurement["guardSessionId"]?.GetValue<string>());
+
+            _telemetry.RecordToolCall(new Telemetry.TelemetryRecorder.ToolCallEvent
+            {
+                ToolName = toolName,
+                ToolUseId = toolUseId,
+                RequestTokens = measurement["requestTokens"]?.GetValue<int>() ?? 0,
+                ResponseTokens = measurement["responseTokens"]?.GetValue<int>() ?? 0,
+                TokenEstimator = measurement["estimator"]?.GetValue<string>() ?? "unknown",
+                ClaudeSessionId = measurement["claudeSessionId"]?.GetValue<string>(),
+                AgentId = measurement["agentId"]?.GetValue<string>(),
+                AgentType = measurement["agentType"]?.GetValue<string>(),
+            });
+            return "ok:metered";
+        }
+        catch (Exception ex)
+        {
+            // A measurement must never break the channel the reload hint also depends on.
+            _log.LogWarning(ex, "Control channel could not record a metered tool call");
+            return "err:meter failed";
+        }
     }
 }

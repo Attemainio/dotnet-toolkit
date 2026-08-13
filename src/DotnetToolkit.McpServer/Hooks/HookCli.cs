@@ -76,9 +76,11 @@ internal static class HookCli
 
         var context = HookContext.FromEnvironment();
 
-        // Only the blocking guards honour a suspension, and only they pay the state read. The two hints
-        // stay on throughout: they add context rather than withholding a call, so silencing them would
-        // cost the caller information without buying back any of the freedom a suspension is asked for.
+        // Only the blocking guards honour a suspension, and only they pay the state read. The hints and
+        // the meter stay on throughout: they add context or observe rather than withholding a call, so
+        // silencing them would cost the caller information without buying back any of the freedom a
+        // suspension is asked for. The meter especially - a benchmark suspends the guards precisely so it
+        // can measure the unguarded route, which is not measured if suspension also stops the measuring.
         if (name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read"
             && GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow, payload.SessionId).Suspended)
         {
@@ -97,6 +99,8 @@ internal static class HookCli
                 await ReloadHint.EvaluateAsync(payload, context),
             "hint-write-checklist" when payload.ToolName.EndsWith("__validate_patch", StringComparison.Ordinal) =>
                 WriteChecklistHint.Evaluate(payload),
+            "meter-tool-call" =>
+                await ToolCallMeter.EvaluateAsync(payload, context),
             _ => HookOutcome.Allow,
         };
     }

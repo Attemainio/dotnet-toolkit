@@ -141,4 +141,73 @@ public sealed class TelemetryRecorder
         }
     }
 
+    /// <summary>One tool call as the harness dispatched it, measured by the <c>meter-tool-call</c> hook.</summary>
+    /// <remarks>
+    /// Deliberately distinct from <see cref="RetrievalEvent"/>. A retrieval event is written from inside
+    /// an MCP tool method, so it exists only for this server's own tools; this one is written for every
+    /// tool the harness runs, which is the only way a Grep-and-Read route can be measured against an MCP
+    /// route on one instrument. It also splits the two directions, which a retrieval event cannot: from
+    /// inside a tool method only the response side is visible.
+    /// </remarks>
+    public sealed record ToolCallEvent
+    {
+        public required string ToolName { get; init; }
+        public required string ToolUseId { get; init; }
+
+        /// <summary>Tokens the model had to generate to make the call — the output side.</summary>
+        public int RequestTokens { get; init; }
+
+        /// <summary>Tokens the call loaded into the model's context — the input side.</summary>
+        public int ResponseTokens { get; init; }
+
+        /// <summary>What produced the counts, so a recalibration is not silently mixed with older rows.</summary>
+        public required string TokenEstimator { get; init; }
+
+        public string? ClaudeSessionId { get; init; }
+        public string? AgentId { get; init; }
+        public string? AgentType { get; init; }
+    }
+
+    /// <summary>Appends one metered tool call, ignoring one already recorded under the same id.</summary>
+    /// <param name="e">The measurement, as reported by the hook over the control channel.</param>
+    /// <remarks>
+    /// The session id is stamped here rather than sent by the hook, and that is the whole reason this goes
+    /// through the server: a hook is a separate process with its own ambient id, so a row it wrote itself
+    /// would carry an id no read ever matches. <c>INSERT OR IGNORE</c> makes a duplicated hook delivery a
+    /// no-op rather than a double count, resting on <c>tool_use_id</c>'s UNIQUE constraint.
+    /// </remarks>
+    public void RecordToolCall(ToolCallEvent e)
+    {
+        if (!_store.Available)
+            return;
+        try
+        {
+            using var connection = _store.Connect();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR IGNORE INTO tool_call_events
+                    (event_id, session_id, claude_session_id, agent_id, agent_type, tool_use_id,
+                     tool_name, request_tokens, response_tokens, token_estimator, created_at)
+                VALUES
+                    ($event_id, $session_id, $claude_session_id, $agent_id, $agent_type, $tool_use_id,
+                     $tool_name, $request_tokens, $response_tokens, $token_estimator, $created_at);
+                """;
+            cmd.Parameters.AddWithValue("$event_id", Identity.Ids.Event());
+            cmd.Parameters.AddWithValue("$session_id", Identity.Ids.AmbientSession);
+            cmd.Parameters.AddWithValue("$claude_session_id", (object?)e.ClaudeSessionId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$agent_id", (object?)e.AgentId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$agent_type", (object?)e.AgentType ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$tool_use_id", e.ToolUseId);
+            cmd.Parameters.AddWithValue("$tool_name", e.ToolName);
+            cmd.Parameters.AddWithValue("$request_tokens", e.RequestTokens);
+            cmd.Parameters.AddWithValue("$response_tokens", e.ResponseTokens);
+            cmd.Parameters.AddWithValue("$token_estimator", e.TokenEstimator);
+            cmd.Parameters.AddWithValue("$created_at", DateTimeOffset.UtcNow.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Failed to record tool call event for {Tool}", e.ToolName);
+        }
+    }
 }

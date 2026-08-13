@@ -28,8 +28,10 @@ Anything you couldn't tell from your tools alone: <or "None">
 `Read` three times to check three files, that's three lines, not "read the relevant files." Never
 fold a retry, a false start, or a repeated call into the same line as another call just because they
 served the same step of reasoning — a wrong guess and the call that corrected it are two separate
-lines. The orchestrator cannot see your tool-call transcript, only this text; a call missing from
-this log is a call the report can never account for.
+lines. **The per-question split is the whole value of this log**: it is the only place the cost of
+answering *one* question is visible, so a line that folds three calls together silently makes that
+question look cheaper than it was, and the questions where a route actually struggled are exactly
+the ones most likely to get compressed.
 
 After your last `## Question` block, add one closing line, counted by hand from the lists above:
 

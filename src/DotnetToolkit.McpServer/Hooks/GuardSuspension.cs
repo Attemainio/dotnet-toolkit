@@ -44,6 +44,14 @@ internal sealed record GuardState(bool Suspended, DateTimeOffset? Until, string 
 /// same file, so an older unscoped suspension stays honoured rather than going silently invisible.
 /// </para>
 /// <para>
+/// <b>Which id is authoritative matters more than it looks.</b> This process inherits
+/// <see cref="SessionVariable"/> once, at launch, and keeps it for life; a hook process is spawned per
+/// tool call and always sees the current one. Resuming a session therefore leaves the server writing
+/// suspensions under an id no hook will ever look up — the tool reports success, workspace_status agrees,
+/// and the guards stay armed regardless. <see cref="ObserveSessionId"/> closes that: hooks report their
+/// own id on every metered call, and the last one observed outranks this process's environment.
+/// </para>
+/// <para>
 /// Every uncertain path reports the guards ACTIVE: an unreadable or unparseable state file leaves them
 /// on. That is the opposite of <see cref="HookCli"/>'s fail-open rule, and deliberately so — there,
 /// failing open keeps a broken guard from wedging the user's editing; here, failing open would silently
@@ -70,12 +78,45 @@ internal static class GuardSuspension
 
     private const string FileName = "guards-suspended-until";
 
+    /// <summary>The live session id a hook reported, which outranks this process's inherited one.</summary>
+    private static string? _observedSessionId;
+
+    /// <summary>Records the Claude Code session id a hook process reported over the control channel.</summary>
+    /// <param name="sessionId">The live id as the hook process sees it; null or blank values are ignored.</param>
+    /// <remarks>
+    /// This process inherits <see cref="SessionVariable"/> from the session that launched it and holds that
+    /// value for its whole life, so a resumed or continued session leaves it stale while every hook process
+    /// receives the current one. A suspension written under a stale id is invisible to the guards it was meant
+    /// to lift, and fails closed without saying so. Hooks report their own id on every metered call, so the
+    /// last one observed outranks this process's environment.
+    /// </remarks>
+    public static void ObserveSessionId(string? sessionId)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            Interlocked.Exchange(ref _observedSessionId, sessionId.Trim());
+        }
+    }
+
+    /// <summary>Whether a hook has reported its id, making <see cref="CurrentSessionId"/> authoritative.</summary>
+    /// <value>True once any hook has reported one; false while only this process's own environment is known.</value>
+    public static bool SessionIdIsConfirmed => Volatile.Read(ref _observedSessionId) is not null;
+
+    /// <summary>Forgets any hook-reported id, restoring this process's own environment as the source.</summary>
+    /// <remarks>
+    /// Nothing in production calls this — an observed id only ever becomes more current, never less. It
+    /// exists so a test that sets one can put this process-wide state back, the same way the tests around
+    /// <see cref="SessionVariable"/> restore the environment variable they set.
+    /// </remarks>
+    public static void ForgetObservedSessionId() => Interlocked.Exchange(ref _observedSessionId, null);
+
     /// <summary>The calling Claude Code session's id, or null when unset, blank, or outside Claude Code.</summary>
-    /// <returns>The trimmed value of <see cref="SessionVariable"/>, or null.</returns>
+    /// <returns>The last id a hook reported, else the trimmed <see cref="SessionVariable"/> value, or null.</returns>
     public static string? CurrentSessionId() =>
-        Environment.GetEnvironmentVariable(SessionVariable) is { } value && !string.IsNullOrWhiteSpace(value)
+        Volatile.Read(ref _observedSessionId)
+        ?? (Environment.GetEnvironmentVariable(SessionVariable) is { } value && !string.IsNullOrWhiteSpace(value)
             ? value.Trim()
-            : null;
+            : null);
 
     /// <summary>Path of the file holding the suspension expiry for a repo, optionally scoped to a session.</summary>
     /// <param name="root">The repo root the guards apply to.</param>
