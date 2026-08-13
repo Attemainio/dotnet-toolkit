@@ -19,11 +19,27 @@ Answer every question in this exact shape, one block per question, nothing befor
 ```
 ## Question N
 Answer: <the direct answer — file:line, symbol name, call-site list, whatever the question asks for>
-Calls made: <every tool call for this question, in order, each with a one-line result: N hits / not
-  found / etc.>
+Calls made: <every tool call for this question, in order, one line per call>
 Confidence: <certain | fairly sure | guessed — and why, in one line>
 Anything you couldn't tell from your tools alone: <or "None">
 ```
+
+**"Calls made" is a call log, not a summary — one line per actual tool invocation.** If you called
+`Read` three times to check three files, that's three lines, not "read the relevant files." Never
+fold a retry, a false start, or a repeated call into the same line as another call just because they
+served the same step of reasoning — a wrong guess and the call that corrected it are two separate
+lines. The orchestrator cannot see your tool-call transcript, only this text; a call missing from
+this log is a call the report can never account for.
+
+After your last `## Question` block, add one closing line, counted by hand from the lists above:
+
+```
+Total tool calls: <N>
+```
+
+`N` is the sum of every line across every question's "Calls made" list — it should equal your real
+number of tool invocations this run. If tallying reveals it doesn't, that means a line above folded
+more than one call together; go back and split it out rather than adjusting this number to match.
 
 ## How to play it
 

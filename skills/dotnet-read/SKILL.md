@@ -197,10 +197,18 @@ Answers to:
 - How many text-only matches would a grep have given me falsely?
 - Are any of these use sites tests?
 - Are there more references than came back, and how do I page to them?
+- Is a 0-caller result actually safe to treat as dead code?
 
 `direction` is `callers` (default) | `implementations` | `overrides`. Each item carries a
 `symbolId`, a `displayString`, and `sites` — `{file, line, snippet}`, one row per file+line. On a
 named **type** there are no call sites, so `callers` returns the members that *reference* it.
+
+**A 0-caller result on a `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]` method is not evidence it is
+unused.** `testInvocationHint` (present only in that exact shape) says so directly — a test runner
+invokes such a method by reflection, which leaves no call-site edge for this or any static reference
+search to find. A blind benchmark of this tool caught this exact case producing a confidently wrong
+"safe to delete" verdict before the hint existed; don't re-derive that caveat from memory when the
+field already states it.
 
 **Do not read a large `dispatchKind: virtual` count as a large real fan-in.** Roslyn cascades: a call
 written against a base or interface declaration is reported as a caller of everything that overrides

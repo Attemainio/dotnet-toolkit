@@ -46,6 +46,37 @@ members returned actually invoke it. Each item carries `symbolId, displayString,
 here, correctly excluded. `targetSymbolId` and `targetDisplayString` are omitted when `symbol` was
 already a `sym_...` id, since they would only restate the input.
 
+### `testInvocationHint` — a 0-caller test method is not evidence of dead code
+
+Present only on a `direction: "callers"` call where `totalItems` is `0` **and** the target itself
+carries a recognized test-framework attribute (`[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, and
+their NUnit/MSTest siblings — the same set `TestAttributes.IsTestMethod` uses to mark a *caller* as
+`isTest`, applied here to the *target*). A test runner discovers and invokes such a method by
+reflection, which leaves no call-site edge for any static reference search — including this one — to
+find. The zero this tool reports is real, but it answers "is there a static call site", not "is this
+used"; reading it as "safe to delete" is a confirmed failure mode, not a hypothetical one — a blind
+A/B benchmark of this tool against plain-text search on this repo (`.claude/dotnet-toolkit/perf/`)
+caught exactly this: the MCP route's `get_references` returned 0 callers for a `[Fact]` test method
+and concluded it was safe to delete, while a route that read the file's text saw the attribute and
+correctly refused to. This field closes that gap by surfacing the same caveat a human would catch from
+reading the source, without requiring a second call.
+
+```
+get_references(symbol: "WorkspaceIntegrationTests.ReferenceCounts_TestsNeverExceedCallers")
+```
+
+```
+totalItems: 0
+testInvocationHint: "0 callers, but this method carries a test-framework attribute recognized as a
+  reflection-invoked entry point ([Fact]/[Theory]/[Test]/[TestMethod] or similar). Test runners
+  discover and call it by reflection, which leaves no call-site edge for this tool to index — zero
+  references here is not evidence it is unused."
+```
+
+Absent on every other call shape: a non-`callers` direction, a target with any real caller, or a
+target that carries no recognized test attribute — an ordinary 0-caller method still reads as
+ordinary dead code, uncaveated.
+
 **A call made from inside a local function or a lambda is attributed to the member that encloses it.**
 Roslyn names the local function as the caller, but a local function is not a fetch target: it is not in
 the symbol index, so `get_symbol` answers `symbol_not_found` for the very handle this tool just handed

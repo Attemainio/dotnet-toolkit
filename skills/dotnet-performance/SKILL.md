@@ -149,6 +149,13 @@ This is the step where a careless run produces a confident wrong number.
 - **Count calls too, and separately.** A route that is cheaper in tokens but takes many more round
   trips may still be the worse one, and only the call count shows it. Each agent's own **Calls made**
   section is the source for this, not a guess.
+- **Reconcile the self-reported total against the true one, for both agents, every run.** Each probe's
+  final `Total tool calls` line (from `performance_protocol.md`) is its own tally of its per-question
+  **Calls made** lists; the `Agent` call's own `tool_uses` is ground truth. Report both numbers for
+  both probes. A gap means calls went missing from the per-question logs above — say which questions'
+  **Calls made** lists look compressed (multiple same-tool lines collapsed into one), not just that a
+  gap exists. This has recurred across runs (the raw route undercounted itself by roughly half on
+  2026-08-11 and again on 2026-08-12) — treat a clean match as worth noting too, not just a mismatch.
 
 ## Step 4 — check correctness before cost
 
@@ -172,6 +179,11 @@ score it as a wash and say so, rather than letting it inflate or deflate either 
 A route that was cheaper *and* missed hits (or undercounted, or shared a wrong answer that happens to
 look like a "win") is reported as **wrong, not cheap**. Put correctness before the cost table in the
 report, because a reader who sees the ratio first will remember the ratio.
+
+**Write the correctness verdict against the question number, not a restated question.** Step 5's
+report carries the exact question text once, verbatim, in its own section — repeating it per row in
+Correctness (as an "Outcome" column, say) is the same fact twice for no reader benefit. Reference `Q1`,
+`Q2`, etc. and spend the words on the verdict instead.
 
 ## Step 5 — report
 
@@ -197,13 +209,23 @@ reports exact tool-response-only tokens via get_retrieval_metrics(taskId), which
 no equivalent for.
 Guards: suspended <start>–<end> (scoped to this session), restored <how>
 
+## Questions
+<the numbered question list, verbatim — byte-for-byte the same text both agents received per Step 2.
+This is the one place the question text appears; Correctness and Cost below reference it by number
+rather than repeating it>
+
 ## Correctness
-<per question: what the raw agent missed, invented, undercounted, or truncated — "matched" — or
-"both agents converged on the same wrong answer" (a question-design finding)>
+<per question (by number — see Questions above, don't restate the text): what the raw agent missed,
+invented, undercounted, or truncated — "matched" — or "both agents converged on the same wrong
+answer" (a question-design finding)>
 
 ## Cost
 | Question | MCP probe (calls, total tokens, tool-only tokens) | Raw probe (calls, total tokens) | Which route won |
 |---|---|---|---|
+
+Self-reported vs. true tool_uses: MCP probe reported <N> (`Total tool calls`) against a true
+`tool_uses` of <N>; raw probe reported <N> against a true <N>. <If either gap is non-trivial, name
+which questions' **Calls made** lists look compressed, per Step 3 — don't just note the gap exists.>
 
 ## Where the raw route wins
 <the honest list — if it is empty, say why you believe that rather than just asserting it>

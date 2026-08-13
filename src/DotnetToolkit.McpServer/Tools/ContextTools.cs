@@ -685,6 +685,19 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // not the page, so paging never changes what the totals mean.
         var indirectCount = ordered.Count(i => !i.IsDirect);
 
+        // A [Fact]/[Theory]/[Test]/[TestMethod] method is invoked by its test runner's own reflection
+        // scan, which leaves no call-site edge for any static reference search to find. A genuine
+        // zero here looks identical to dead code, and a caller reading it as "safe to delete" is a
+        // real, reproducible mistake (see docs/tools/get_references.md). Scoped to totalItems == 0:
+        // once a real caller exists, the ambiguity this hint exists for is moot.
+        var testInvocationHint = normalized == "callers" && ordered.Count == 0 && TestAttributes.IsTestMethod(sym)
+            ? "0 callers, but this method carries a test-framework attribute recognized as a reflection-invoked "
+                + "entry point ([Fact]/[Theory]/[Test]/[TestMethod] or similar). Test runners discover and call "
+                + "it by reflection, which leaves no call-site edge for this tool to index — zero references "
+                + "here is not evidence it is unused."
+            : null;
+
+
         var envelope = new
         {
             targetSymbolId = symbol.StartsWith("sym_", StringComparison.Ordinal) ? null : SymbolKey.IdOf(sym),
@@ -706,6 +719,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 content = i.Body,
             }),
             dispatchKind,
+            testInvocationHint,
             totalItems = ordered.Count,
             directItems = indirectCount > 0 ? (int?)(ordered.Count - indirectCount) : null,
             indirectItems = indirectCount > 0 ? (int?)indirectCount : null,

@@ -605,6 +605,25 @@ public sealed class WorkspaceIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task GetReferences_TestInvocationHint_AppearsForZeroCallerTestMethod()
+    {
+        var root = Root(await GetReferences("Sample.Lib.OrphanTestSample.NeverCalledDirectly", "callers"));
+
+        Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
+        Assert.True(root.TryGetProperty("testInvocationHint", out var hint));
+        Assert.Contains("reflection", hint.GetString());
+    }
+
+    [Fact]
+    public async Task GetReferences_TestInvocationHint_AbsentForOrdinaryZeroCallerMethod()
+    {
+        var root = Root(await GetReferences("Sample.Lib.DocSectionsFixture.Undocumented", "callers"));
+
+        Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
+        Assert.False(root.TryGetProperty("testInvocationHint", out _));
+    }
+
     /// <summary>
     /// tests is now a subset of callers computed from the caller's own flag, so the two cannot
     /// disagree — previously they were separate edge sets written on the same pass and could.
