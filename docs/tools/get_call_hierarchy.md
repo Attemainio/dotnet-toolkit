@@ -14,10 +14,14 @@ Call it to answer "if I change this, how much does it ripple" — `includeTree: 
 only the `blastRadius` summary (unique nodes reached, per depth) for the cheapest possible
 version of that question, without paying for the full tree. `blastRadius` counts every symbol
 **reached** from the root, including the children a per-node cap left unexpanded, and reports that cap
-as `truncated`/`omittedChildren` in both shapes — so the summary-only answer is never smaller than the
-number the tree printed. It is not, however, cap-independent: an unexpanded node's *own* callers are
-never visited, so past `maxDepth: 1` a lower `maxChildrenPerNode` genuinely finds less. Compare totals
-only at equal caps.
+as `truncated`/`omittedChildren` — so the summary-only answer is never smaller than the number the
+tree printed. **With the tree included**, `blastRadius` states its own `truncated`/`omittedChildren`
+only when they would say something the tree does not already show — a single truncated node (the root
+itself, the common shallow/high-fan-in case) already carries the identical number on `tree`, so
+`blastRadius` stays quiet rather than repeating it; a total spread across several truncated nodes
+deeper in the tree still gets stated here, since no single node's own field carries the sum. It is not,
+however, cap-independent: an unexpanded node's *own* callers are never visited, so past `maxDepth: 1` a
+lower `maxChildrenPerNode` genuinely finds less. Compare totals only at equal caps.
 
 ```
 get_call_hierarchy(symbol: "FeatureLogStore.Append", direction: "callers", maxDepth: 1)
@@ -86,8 +90,10 @@ Pass `fields:"signature"` for the full parameter-list form (e.g.
 
 `blastRadius` counts reached nodes, not rendered ones: at `maxDepth: 1` on this same root,
 `maxChildrenPerNode: 1` reports the same `totalUniqueNodes` as `maxChildrenPerNode: 200` and adds
-`truncated:true, omittedChildren:6`. That holds with `includeTree:false` too — the shape whose entire
-purpose is this number is not the shape that gets a worse one.
+`truncated:true, omittedChildren:6` — under `includeTree:false`, since the shape whose entire purpose
+is this number is not the shape that gets a worse one. **With the tree included**, this same root is
+the tree's only truncated node, so `tree.truncated`/`tree.omittedChildren` already carry `true`/`6` and
+`blastRadius` omits its own copies rather than repeating them.
 
 Past depth 1 the equality stops holding, and that is a property of the graph walk rather than a
 reporting gap: a node the cap did not expand contributes itself to the count but contributes none of

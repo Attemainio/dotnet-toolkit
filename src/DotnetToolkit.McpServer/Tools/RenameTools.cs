@@ -251,7 +251,7 @@ public static class RenameTools
             // no way to compute a distinct id for it. Only resolve/expose it once the ladder actually
             // succeeded; on failure the id would silently identify the wrong symbol (self-eval, 2026-08-10).
             var newSymbol = ladder.Succeeded ? RenamedSymbolId(detected, target, oldSymbolId, bare) : null;
-
+            var nameAlreadyExists = NameAlreadyExists(target, bare, ladder.Succeeded);
 
             var response = new
             {
@@ -288,7 +288,7 @@ public static class RenameTools
                     requiredLevel = required.Wire(),
                     isSufficient,
                     reason = isSufficient ? null : Reason(ladder, required, workspace.IsDegraded),
-                    nextAction = isSufficient ? null : NextAction(ladder, required, workspace.IsDegraded),
+                    nextAction = isSufficient ? null : NextAction(ladder, required, workspace.IsDegraded, nameAlreadyExists is not null),
                         requestedLevelHint,
                 },
                 succeeded = ladder.Succeeded,
@@ -313,7 +313,7 @@ public static class RenameTools
                 // to say what that success covered, and which checks never ran.
                 checks = CheckReport.Build(ladder, locator),
                 fileRenameHint = FileRenameHint(target, oldName, bare, locator),
-                nameAlreadyExists = NameAlreadyExists(target, bare, ladder.Succeeded),
+                nameAlreadyExists,
                 // Same reason validate_patch emits it: a rename derived from a degraded workspace's own
                 // reference graph can miss call sites entirely, which is a wrong answer, not a thin one.
                 limitedBy = workspace.IsDegraded ? "degraded" : null,
@@ -558,9 +558,15 @@ public static class RenameTools
         };
 
     /// <summary>What to do about a rename that did not fully validate.</summary>
+    /// <param name="collisionExplained">
+    /// True when <c>nameAlreadyExists</c> already names the same collision this branch would otherwise
+    /// describe again in different words -- the two fields sitting side by side stating one instruction
+    /// twice, ~9% of a typical collision response for zero added information.
+    /// </param>
     /// <remarks>Internal rather than private so the degraded wording can be asserted without a fixture
     /// project that fails MSBuild on purpose.</remarks>
-    internal static string NextAction(ValidationLadder.LadderResult ladder, ValidationLevel required, bool degraded) =>
+    internal static string? NextAction(
+        ValidationLadder.LadderResult ladder, ValidationLevel required, bool degraded, bool collisionExplained = false) =>
         ladder switch
         {
             // A rename cannot introduce an analyzer error by itself; the new name tripping a naming or
@@ -573,6 +579,9 @@ public static class RenameTools
             { Succeeded: false } when degraded =>
                 "Call workspace_status first: projects that failed to load report errors this rename did not "
                   + "introduce. Fix the load failure and reload_workspace before picking a different name.",
+            // nameAlreadyExists already names the colliding member's KIND, which the CS0102/CS0229 diagnostic
+            // does not -- nothing left for this generic version to add.
+            { Succeeded: false } when collisionExplained => null,
             { Succeeded: false } =>
                 "The new name collides or breaks a call site. Inspect the suggested symbols, pick a different "
                   + "name or fix the collision with validate_patch first, then retry.",

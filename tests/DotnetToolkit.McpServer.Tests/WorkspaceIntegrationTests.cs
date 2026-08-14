@@ -412,6 +412,20 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// A type declaring more members than the cap is truncated rather than served whole: BigMemberFixture
+    /// declares 45 auto-properties, well past MembersCap, so the list stops at 40 and says so.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_Members_CapsAndReportsTruncationOnAManyMemberType()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.BigMemberFixture", include: "members")).GetProperty("content");
+
+        Assert.Equal(40, content.GetProperty("members").GetArrayLength());
+        Assert.Equal(45, content.GetProperty("totalMembers").GetInt32());
+        Assert.True(content.GetProperty("truncated").GetBoolean());
+    }
+
+    /// <summary>
     /// A caller-info parameter is filled in by the compiler from the use site, so rendering it as the
     /// attribute's arguments reported a location nobody wrote — an absolute machine path, on the shape
     /// xUnit v3's [Fact] has and therefore on the most common attribute in a test project.
@@ -1025,6 +1039,22 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// members' file:"" convention (this type's own primary declaration file) gets a legend, the same as
+    /// shape/refs/read/modifiers -- only when the table actually mixes a blank and a named file, which a
+    /// partial split across two files does (2026-08-13 self-eval finding 11).
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_PartialClass_MembersCarriesAFileLegendWhenFilesMix()
+    {
+        var content = Root(await GetSymbol("Sample.Lib.Gadget", include: "members")).GetProperty("content");
+        var members = content.GetProperty("members").EnumerateArray().ToList();
+
+        Assert.Contains(members, m => !m.TryGetProperty("file", out var f) || f.GetString() == "");
+        Assert.Contains(members, m => m.TryGetProperty("file", out var f) && f.GetString()!.EndsWith("Gadget.Extra.cs", StringComparison.Ordinal));
+        Assert.Contains("primary declaration file", content.GetProperty("fileLegend").GetString());
+    }
+
+    /// <summary>
     /// Compact is imposed on a multi-file partial even against an explicit -exact, since the per-line
     /// gutter has nowhere to put the file. sourceLineFormat is what tells the caller its request lost.
     /// </summary>
@@ -1197,7 +1227,23 @@ public sealed class WorkspaceIntegrationTests
             Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
             Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
             Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("trailing comment"));
-        }
+    }
+
+    /// <summary>
+    /// sourceSubtractionsApplied names exactly which requested subtraction removed a line: -attributes
+    /// matches the [Obsolete] here, but -remarks matches nothing since the member carries no doc comment at
+    /// all -- a silent no-op without this field (2026-08-13 self-eval finding 7).
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SourceSubtraction_NamesOnlyTheTokensThatMatchedSomething()
+    {
+        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", source: "full-attributes-remarks"));
+        var applied = root.GetProperty("content").GetProperty("sourceSubtractionsApplied")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Contains("-attributes", applied);
+        Assert.DoesNotContain("-remarks", applied);
+    }
 
     /// <summary>A doc-tag modifier under code is always redundant (code already excludes every tag) and rejected.</summary>
     [Fact]
@@ -1735,6 +1781,24 @@ public sealed class WorkspaceIntegrationTests
             Assert.False(change.TryGetProperty("symbolId", out _));
     }
 
+    /// <summary>
+    /// A rename that collides with an existing member states the remedy once, in nameAlreadyExists --
+    /// ladder.nextAction's generic "the new name collides" wording is suppressed rather than repeating it
+    /// (2026-08-13 self-eval finding 5).
+    /// </summary>
+    [Fact]
+    public async Task RenameSymbol_CollidingMemberName_StatesTheRemedyOnlyOnce()
+    {
+        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
+        var root = Root(await RenameSymbolCall(
+            sym.GetProperty("symbolId").GetString()!, "Doubled",
+            sym.GetProperty("contentVersion").GetString()!));
+
+        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.True(root.TryGetProperty("nameAlreadyExists", out var explained) && explained.GetString()!.Length > 0);
+        Assert.False(root.GetProperty("ladder").TryGetProperty("nextAction", out _));
+    }
+
 
     /// <summary>
     /// The tool's advice is to put every term in one call, so one call has to answer for each of them:
@@ -2221,6 +2285,27 @@ public sealed class WorkspaceIntegrationTests
         Assert.Empty(TableRows(root.GetProperty("items")));
     }
 
+    /// <summary>An implements: name that resolves to no interface carries implementsHint, distinct from a resolved interface with zero implementers.</summary>
+    [Fact]
+    public async Task SearchIndex_ImplementsFilter_UnresolvedName_CarriesImplementsHint()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Widget", implements: "NotARealInterfaceZzz", limit: 10, groupBy: "none"));
+
+        Assert.Empty(TableRows(root.GetProperty("items")));
+        Assert.Contains("NotARealInterfaceZzz", root.GetProperty("implementsHint").GetString());
+    }
+
+    /// <summary>A resolved implements: name never carries implementsHint, even when nothing matches the accompanying query.</summary>
+    [Fact]
+    public async Task SearchIndex_ImplementsFilter_ResolvedName_CarriesNoHint()
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            "Gear", kinds: "class", implements: "IWidget", limit: 10, groupBy: "none"));
+
+        Assert.False(root.TryGetProperty("implementsHint", out _));
+    }
+
     /// <summary>
     /// groupBy:"namespace" collapses straight to flat namespace/file header fields plus one
     /// symbols table when the whole result set shares a single namespace and a single file — no wrapper
@@ -2498,6 +2583,16 @@ public sealed class WorkspaceIntegrationTests
         Assert.All(rows, r => Assert.DoesNotContain("R", r["refs"].GetString()!, StringComparison.Ordinal));
     }
 
+    /// <summary>A zero-hit page carries no refsHint: there are no rows for the column to have annotated, and refs is on by default rather than explicitly requested.</summary>
+    [Fact]
+    public async Task SearchIndex_ZeroHits_CarriesNoRefsHint()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "ZzzNoSuchSymbolAnywhere", groupBy: "none"));
+
+        Assert.False(root.TryGetProperty("refsHint", out _));
+    }
+
     /// <summary>
     /// The batched count path must omit an id whose project the edge cache never covered, exactly as the
     /// single-symbol path does through HasEdgeCoverageFor. A project that fails to load in MSBuild contributes
@@ -2594,6 +2689,27 @@ public sealed class WorkspaceIntegrationTests
         Assert.True(capped.GetProperty("truncated").GetBoolean());
         Assert.True(capped.GetProperty("omittedChildren").GetInt32() > 0);
         Assert.False(uncapped.TryGetProperty("truncated", out _));
+    }
+
+    /// <summary>
+    /// With the tree included, a single truncated node (the root, at maxDepth 1) already states
+    /// truncated/omittedChildren -- blastRadius does not repeat the identical numbers a second time
+    /// (2026-08-13 self-eval finding 8).
+    /// </summary>
+    [Fact]
+    public async Task GetCallHierarchy_IncludeTreeTrue_SuppressesBlastRadiusDuplicateWhenRootCarriesTheWholeTotal()
+    {
+        var root = Root(await FlowTools.GetCallHierarchy(
+            _f.Workspace, _f.Symbols, _f.Index, _f.Builder, _f.Telemetry, "Sample.Lib.Widget.Spin",
+            maxDepth: 1, maxChildrenPerNode: 1, includeTree: true));
+
+        var tree = root.GetProperty("tree");
+        Assert.True(tree.GetProperty("truncated").GetBoolean());
+        Assert.True(tree.GetProperty("omittedChildren").GetInt32() > 0);
+
+        var blastRadius = root.GetProperty("blastRadius");
+        Assert.False(blastRadius.TryGetProperty("truncated", out _));
+        Assert.False(blastRadius.TryGetProperty("omittedChildren", out _));
     }
 
     /// <summary>

@@ -187,7 +187,10 @@ public static class Formats
                     var row = (JsonObject)array[i]!;
                     var rebuilt = new JsonObject();
                     foreach (var key in union)
-                        rebuilt[key] = row.TryGetPropertyValue(key, out var value) ? value?.DeepClone() : "";
+                        // null, not "" -- an empty STRING is a value (and the wrong one for a field like
+                        // "kind", which never legitimately holds one), where null is the same "nothing to
+                        // say here" absence every other column in this response already uses.
+                        rebuilt[key] = row.TryGetPropertyValue(key, out var value) ? value?.DeepClone() : null;
                     array[i] = rebuilt;
                     padded = true;
                 }

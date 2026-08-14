@@ -57,18 +57,29 @@ public static class ReadAdvice
     /// </summary>
     /// <param name="intent">What the caller is about to do: <c>"edit"</c>, <c>"logic"</c>,
     /// <c>"surface"</c>, or null/unrecognized to derive the answer from the facts alone.</param>
+    /// <param name="kind">
+    /// The symbol's kind (<c>"Field"</c>, <c>"Property"</c>, <c>"Method"</c>, <c>"Type"</c>, ...), needed
+    /// only by the "edit" branch: whether a body-carrying include has anything to lease at all is a fact of
+    /// KIND, not of the counted facts below -- a Field and an auto-property both show every ShapeFacts count
+    /// as null, yet only the Field structurally lacks a body layer for bodyOutline to lease. SymbolShape needs
+    /// no such table because it only ever prints a fact that is already there; this router has to decide
+    /// whether one exists to fetch.
+    /// </param>
     /// <param name="facts">The same counted facts <see cref="SymbolShape"/> renders.</param>
     /// <returns>One of <c>mem</c>, <c>out</c>, <c>code</c>, or null.</returns>
-    public static string? For(string? intent, in ShapeFacts facts)
+    public static string? For(string? intent, string? kind, in ShapeFacts facts)
     {
         // A body patch needs a body-carrying contentVersion whatever the symbol looks like — but EVERY
         // body-serving include leases the identical body layer, and "all" is the widest and most expensive
         // of them: measured on a 117-line method, include:"all" 2,133 tokens against include:"bodyOutline"
         // 192, for the same body: hash. Answering "all" on every row also made this a constant column, which
         // carries no information and is not hoisted the way a legend is. A type has no body layer to lease at
-        // all, so what an edit to one actually wants is its surface.
+        // all, so what an edit to one actually wants is its surface. A Field has none either -- bodyOutline
+        // refuses it outright rather than leasing an empty one, unlike an auto-property's empty accessor -- so
+        // it is excluded the same way, and the default fetch (which already carries xmlDoc and referenceCounts)
+        // is left to answer instead.
         if (intent is "edit")
-            return facts.MemberCount is null ? "out" : "mem";
+            return kind is "Field" ? null : facts.MemberCount is null ? "out" : "mem";
 
         // "What is its API" is a member-list question on a type and a signature question on everything
         // else — and the signature is what the default fetch already leads with.

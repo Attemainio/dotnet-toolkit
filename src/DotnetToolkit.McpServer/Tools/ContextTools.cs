@@ -29,6 +29,8 @@ public static class ContextTools
     private const int ReferenceCap = 200;
     private const int ScopedOverfetchCap = 500;
     private const int SummaryCap = 160;
+    /// <summary>Hard ceiling on one get_symbol response's rendered member list, whatever the type declares.</summary>
+    private const int MembersCap = 40;
 
     /// <summary>
     /// The display form behind every default reference and call-hierarchy row: containing type and member
@@ -849,12 +851,22 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var excludeDocs = excludeDocTokens.Length == 0 ? null : excludeDocTokens.Select(t => t.ToLowerInvariant()).ToArray();
 
         HashSet<string>? implementorIds = null;
+        string? implementsHint = null;
         if (!string.IsNullOrWhiteSpace(implements))
         {
-            var interfaceHit = symbolStore.Search(implements, ["Interface"], null, 1, origin: "all").FirstOrDefault();
-            implementorIds = interfaceHit is null
-                ? new HashSet<string>(StringComparer.Ordinal)
-                : new HashSet<string>(symbolStore.ImplementorsOf(interfaceHit.SymbolId), StringComparer.Ordinal);
+            var interfaceHits = symbolStore.Search(implements, ["Interface"], null, 1, origin: "all");
+            var interfaceHit = interfaceHits.Count > 0 ? interfaceHits[0] : null;
+            if (interfaceHit is null)
+            {
+                implementorIds = new HashSet<string>(StringComparer.Ordinal);
+                implementsHint = $"implements:'{implements}' did not resolve to any indexed interface, so nothing "
+                    + "was excluded by it. This zero-hit result means \"no interface by that name\", not \"found "
+                    + "it, but nothing implements it\" -- check the spelling, or drop implements: to search by name alone.";
+            }
+            else
+            {
+                implementorIds = new HashSet<string>(symbolStore.ImplementorsOf(interfaceHit.SymbolId), StringComparer.Ordinal);
+            }
         }
 
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
@@ -926,10 +938,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             ? null
             : symbolStore.ReferenceCountsFor(countableIds);
         var refsHint =
-            !wantRefs ? null
+            !wantRefs || limited.Count == 0 ? null
             : refCounts is null
-                ? "include:\"refs\" was requested but no reference index was available, so no refs column is "
-                    + "reported. An absent code is not zero -- call workspace_status before reading it as unused."
+                ? "No reference index was available, so no refs column is reported. An absent code is not zero "
+                    + "-- call workspace_status before reading it as unused."
             : limited.Any(r => !refCounts.ContainsKey(r.Hit.SymbolId))
                 ? "Some hits carry no refs code: their project contributed no reference edges, so nothing was "
                     + "measured for them. An absent code is not zero -- call workspace_status before reading "
@@ -1020,7 +1032,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             : $"@{line}";
 
         var anyShape = wantShape && limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
-        var anyRead = wantRead && limited.Any(r => ReadAdvice.For(intentMode, ShapeOf(r.Site)) is not null);
+        var anyRead = wantRead && limited.Any(r => ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) is not null);
         var anyRefs = limited.Any(r => RefCodeOf(r.Hit.SymbolId, r.Hit.Kind) is not null);
         var anyMods = wantModifiers && limited.Any(r => ModifierCode.For(r.Hit.Modifiers) is not null);
 
@@ -1040,6 +1052,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 groupByHint,
                 intentHint,
                 refsHint,
+                implementsHint,
                 items = limited.Select(r => new
             {
                 symbolId = r.Hit.SymbolId,
@@ -1053,7 +1066,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 file = r.Site?.File,
                 lines = LinesOf(r.Site),
                 shape = anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
-                read = anyRead ? ReadAdvice.For(intentMode, ShapeOf(r.Site)) : null,
+                read = anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                 refs = RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
                 modifiers = anyMods ? ModifierCode.For(r.Hit.Modifiers) : null,
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
@@ -1077,7 +1090,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
                     anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
                     r.Hit.Placement,
-                    anyRead ? ReadAdvice.For(intentMode, ShapeOf(r.Site)) : null,
+                    anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                     RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
                     anyMods ? ModifierCode.For(r.Hit.Modifiers) : null);
             }).ToList();
@@ -1103,6 +1116,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     withLimit["intentHint"] = intentHint;
                 if (refsHint is not null)
                     withLimit["refsHint"] = refsHint;
+                if (implementsHint is not null)
+                    withLimit["implementsHint"] = implementsHint;
                 foreach (var (key, value) in grouped)
                 withLimit[key] = value;
             return withLimit;
@@ -1207,9 +1222,11 @@ private static async Task<object> BuildContent(
         // location nor a shape leaves that second hop with nothing to go on. file is emitted only when it
         // differs from the type's own primary declaration file, so only a partial pays for the column.
         var primaryFile = sym.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
-        var memberRows = !hasSource && components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
+        var allMemberRows = !hasSource && components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
             ? type.GetMembers().Where(IsListable).Select(m => (Symbol: m, Site: MemberSiteOf(m))).ToArray()
             : null;
+        var membersTruncated = allMemberRows is { } allRows && allRows.Length > MembersCap;
+        var memberRows = allMemberRows?.Take(MembersCap).ToArray();
         var members = memberRows?.Select(row => (object)new
         {
             symbolId = SymbolKey.IdOf(row.Symbol),
@@ -1231,6 +1248,14 @@ private static async Task<object> BuildContent(
         var memberShapeLegend = memberRows?.Any(row => row.Site is { } s && SymbolShape.For(s.Facts) is not null) == true
             ? SymbolShape.Legend
             : null;
+        // Emitted only when the table actually mixes both: a non-partial type never shows a blank file at
+        // all (the whole column drops when every row is null), so the ambiguity with "" meaning "not
+        // applicable" elsewhere in this response only arises on a partial split across files.
+        var memberHasBlankFile = memberRows?.Any(row => row.Site is not { } site || string.Equals(site.File, primaryFile, StringComparison.Ordinal)) == true;
+        var memberHasNamedFile = memberRows?.Any(row => row.Site is { } elsewhere && !string.Equals(elsewhere.File, primaryFile, StringComparison.Ordinal)) == true;
+        var membersFileLegend = memberHasBlankFile && memberHasNamedFile
+            ? "file:\"\" is this type's own primary declaration file (declarationSites[0]); a named value marks a different partial fragment."
+            : null;
 
         // baseType/interfaces are type-only, same as members — null for anything else rather than an
         // empty array, so a member's response carries no trace of a component that cannot apply to it.
@@ -1246,9 +1271,14 @@ private static async Task<object> BuildContent(
 
         // The whole declaration first, then the caller's line selection over it: the unsliced list is
         // what the reported span is measured against, so both come from one render rather than two.
-        var declarationSource = hasSource ? SourceOf(sym, locator, components.SourceQuery) : null;
+        HashSet<string>? subtractionsApplied = null;
+        var declarationSource = hasSource
+            ? SourceOf(sym, locator, components.SourceQuery, out subtractionsApplied)
+            : null;
         var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
         var renderedSource = RenderSource(source, components.SourceQuery, out var resolvedLineFormat);
+        var requestedSubtraction = components.SourceQuery.ExcludedTags.Count > 0
+            || components.SourceQuery.ExcludeAttributes || components.SourceQuery.ExcludeComments;
 
         // xmlDoc cannot key off hasSource alone, because source does not always carry the doc comment it
         // would otherwise be duplicating: source:code exists precisely to strip it, and a line selection
@@ -1311,6 +1341,12 @@ private static async Task<object> BuildContent(
                     && declarationSource[0].File is null
                 ? $"{LineSpan(source)}/{declarationSource[0].Line}-{declarationSource[^1].Line}"
                 : null,
+            // Present only when the caller actually asked for a subtraction, naming exactly which of those
+            // requested tokens removed a line -- a token absent here (e.g. -remarks on a method with none)
+            // matched nothing, which the rendered source otherwise gives no sign of.
+            sourceSubtractionsApplied = hasSource && requestedSubtraction
+                ? subtractionsApplied?.OrderBy(t => t, StringComparer.Ordinal).ToArray() ?? []
+                : null,
             xmlDoc = !servesDocComment && components.Has(SymbolComponents.XmlDoc)
                 ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
@@ -1335,8 +1371,14 @@ private static async Task<object> BuildContent(
             bodyOutlineNote = outline?.Note,
             referenceCounts = counts,
             members,
+            // A caller who genuinely wanted the whole surface, not just where to slice, sees why the count
+            // stopped short -- the same totalCandidates/truncated convention get_references, get_scope and
+            // ambiguous_symbol already report their own caps under.
+            totalMembers = allMemberRows?.Length,
+            truncated = membersTruncated ? true : (bool?)null,
             // Stated once beside the member list rather than repeated on every row, same as search_index.
             shape = memberShapeLegend,
+            fileLegend = membersFileLegend,
             attributes = !hasSource && components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
             // Unconditional like displayString, not an opt-in include component: the literal modifier
             // phrase already subsumes accessibility ("public sealed" states both), so there is no separate
@@ -1744,6 +1786,7 @@ private static object? ContainingType(ISymbol sym)
     /// <param name="sym">The symbol whose source is wanted.</param>
     /// <param name="locator">Resolves each part's path, and excludes source-generator output.</param>
     /// <param name="query">The resolved source query, or null for <see cref="SourceQuery.Full"/>.</param>
+    /// <param name="subtractionsApplied">The union, across every part, of <see cref="SourceLinesOf"/>'s own.</param>
     /// <returns>The lines, or null when the symbol declares no editable source at all.</returns>
     /// <remarks>
     /// This served <c>DeclaringSyntaxReferences.FirstOrDefault()</c> alone until contract 3.63, so a
@@ -1753,8 +1796,10 @@ private static object? ContainingType(ISymbol sym)
     /// with its file, which is what lets <see cref="ToSpans"/> keep them apart; a single-part symbol
     /// stamps nothing, so the common case is untouched.
     /// </remarks>
-    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SolutionLocator locator, SourceQuery? query = null)
+    private static IReadOnlyList<SourceLine>? SourceOf(
+        ISymbol sym, SolutionLocator locator, SourceQuery? query, out HashSet<string> subtractionsApplied)
     {
+        subtractionsApplied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var parts = sym.DeclaringSyntaxReferences
             .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
             .ToArray();
@@ -1763,17 +1808,23 @@ private static object? ContainingType(ISymbol sym)
 
         var resolved = query ?? SourceQuery.Full;
         if (parts.Length == 1)
-            return SourceLinesOf(NormalizeDeclNode(parts[0].GetSyntax()), resolved);
+            return SourceLinesOf(NormalizeDeclNode(parts[0].GetSyntax()), resolved, out subtractionsApplied);
 
         var lines = new List<SourceLine>();
         foreach (var part in parts)
         {
             var file = locator.RelPath(part.SyntaxTree.FilePath);
-            foreach (var line in SourceLinesOf(NormalizeDeclNode(part.GetSyntax()), resolved))
+            var partLines = SourceLinesOf(NormalizeDeclNode(part.GetSyntax()), resolved, out var partApplied);
+            foreach (var line in partLines)
                 lines.Add(line with { File = file });
+            subtractionsApplied.UnionWith(partApplied);
         }
         return lines;
     }
+
+    /// <summary>Overload for the callers that never pass a custom <see cref="SourceQuery"/> and so never subtract anything.</summary>
+    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SolutionLocator locator) =>
+        SourceOf(sym, locator, null, out _);
 
     /// <summary>
     /// Control-flow landmarks for one member's body (spec §9 <c>bodyOutline</c>), plus an advisory note
@@ -1828,7 +1879,7 @@ private static object? ContainingType(ISymbol sym)
     /// under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under either, whenever they
     /// occupy a whole standalone line.
     /// </summary>
-    private static IReadOnlyList<SourceLine> SourceLinesOf(SyntaxNode node, SourceQuery query)
+    private static IReadOnlyList<SourceLine> SourceLinesOf(SyntaxNode node, SourceQuery query, out HashSet<string> subtractionsApplied)
     {
         var (start, end) = query.Mode == SourceMode.Code
             ? (node.SpanStart, node.Span.End)
@@ -1844,7 +1895,7 @@ private static object? ContainingType(ISymbol sym)
         var startLine = tree.GetLineSpan(span).StartLinePosition.Line + 1;
         var lines = SplitLines(text.ToString(span), startLine);
 
-        var excluded = ExcludedLines(node, text, query);
+        var excluded = ExcludedLines(node, text, query, out subtractionsApplied);
         return excluded.Count == 0 ? lines : lines.Where(l => !excluded.Contains(l.Line)).ToArray();
     }
 
@@ -1955,9 +2006,17 @@ private static object? ContainingType(ISymbol sym)
     /// start), specific tags under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under
     /// either — always whole standalone lines (<see cref="IsWholeLine"/>), never a line shared with code.
     /// </summary>
-    private static HashSet<int> ExcludedLines(SyntaxNode node, SourceText text, SourceQuery query)
+    /// <param name="subtractionsApplied">
+    /// Which of <paramref name="query"/>'s requested subtractions (<c>"-remarks"</c>, <c>"-attributes"</c>,
+    /// <c>"-comments"</c>, ...) actually dropped a line — a subset of what was requested when one matched
+    /// nothing, which a caller has no other way to see (a subtraction that fires on nothing is otherwise a
+    /// silent no-op, indistinguishable from one that worked).
+    /// </param>
+    private static HashSet<int> ExcludedLines(
+        SyntaxNode node, SourceText text, SourceQuery query, out HashSet<string> subtractionsApplied)
     {
         var lines = new HashSet<int>();
+        subtractionsApplied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var trivia in node.DescendantTrivia())
         {
@@ -1969,7 +2028,10 @@ private static object? ContainingType(ISymbol sym)
                 else if (query.ExcludedTags.Count > 0 && trivia.GetStructure() is DocumentationCommentTriviaSyntax doc)
                     foreach (var xmlNode in doc.Content)
                         if (TagNameOf(xmlNode) is { } tagName && query.ExcludedTags.Contains(tagName))
+                        {
                             AddSpan(lines, xmlNode.Span, text);
+                            subtractionsApplied.Add("-" + tagName);
+                        }
                 continue;
             }
 
@@ -1978,13 +2040,17 @@ private static object? ContainingType(ISymbol sym)
                 IsWholeLine(trivia.Span, text))
             {
                 AddSpan(lines, trivia.Span, text);
+                subtractionsApplied.Add("-comments");
             }
         }
 
         if (query.ExcludeAttributes)
             foreach (var attributeList in node.DescendantNodes().OfType<AttributeListSyntax>())
                 if (IsWholeLine(attributeList.Span, text))
+                {
                     AddSpan(lines, attributeList.Span, text);
+                    subtractionsApplied.Add("-attributes");
+                }
 
         return lines;
     }
@@ -2196,7 +2262,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 CompactDisplay(callingSymbol),
                 sites,
                 dispatch,
-                includeBodies ? SourceOf(callingSymbol, locator) : null,
+                includeBodies ? SourceOf(callingSymbol, locator, null, out _) : null,
                 TestAttributes.IsTestMethod(callingSymbol), caller.IsDirect));
         }
 
@@ -2267,7 +2333,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 CompactDisplay(pair.Key),
                 [.. pair.Value.DistinctBy(s => (s.File, s.Line))],
                 dispatch,
-                includeBodies ? SourceOf(pair.Key, locator) : null,
+                includeBodies ? SourceOf(pair.Key, locator, null, out _) : null,
                 TestAttributes.IsTestMethod(pair.Key)))
             .ToList();
     }
@@ -2299,7 +2365,7 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
         }).ToList();
         return new RefItem(SymbolKey.IdOf(s), VersionOf(s).ToString(),
             s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), CompactDisplay(s), sites, dispatch,
-            includeBodies ? SourceOf(s, locator) : null);
+            includeBodies ? SourceOf(s, locator, null, out _) : null);
     }
 
     // The default get_references/get_call_hierarchy displayString: name + arity (e.g.
@@ -2520,7 +2586,7 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
                 version = ContentVersion.Of(decl, body).ToString();
                 if (SymbolComponents.Resolve(include, sourceSpec, out _) is { } parts && parts.Has(SymbolComponents.Source))
                 {
-                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery), parts.SourceQuery, out var resolvedLineFormat);
+                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery, out _), parts.SourceQuery, out var resolvedLineFormat);
                     sourceLineFormat = resolvedLineFormat switch
                     {
                         SourceQuery.SourceLineFormat.Exact => "exact",

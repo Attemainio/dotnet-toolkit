@@ -22,7 +22,10 @@ validates against it (aspect `[correctness]`).
 
 - **`sealed` by default** on classes not explicitly designed for inheritance — enables JIT
   devirtualization and signals intent; an unsealed class is an implicit invitation to subclass it.
-- **`internal` by default**, `public` only when the type is genuine consumer-facing surface.
+- **`internal` by default**, `public` only when the type is genuine consumer-facing surface — a
+  narrower surface is fewer things another assembly can come to depend on, and fewer things a later
+  refactor has to keep source-compatible; widening to `public` later is free, narrowing a shipped
+  `public` type is a breaking change.
 - **Records** for immutable data carriers (DTOs, value objects, event payloads) — free
   `Equals`/`GetHashCode`/`ToString`, and immutability is stated at the declaration site. Plain classes
   for anything with real behavior or mutable state.

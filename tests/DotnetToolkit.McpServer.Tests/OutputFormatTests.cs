@@ -135,4 +135,28 @@ public sealed class OutputFormatTests : IDisposable
 
         Assert.Contains("\n  8│ {\n  9│ }", rendered);
     }
+
+    /// <summary>
+    /// Padding a row for the missing field a sibling carries fills it with null, not "": an empty STRING
+    /// is a value, and the wrong one for a field like "kind" that never legitimately holds one. Reproduces
+    /// search_index groupBy:"namespace"'s mixed-kind file group, which carries no top-level "kind" at all
+    /// while its uniform sibling hoists one (2026-08-13 self-eval finding 6).
+    /// </summary>
+    [Fact]
+    public void PaddedArrayRows_MissingFieldRendersAsAbsentNotEmptyString()
+    {
+        Formats.Current = OutputFormat.Toon;
+
+        var rendered = Formats.Render(new
+        {
+            files = new object[]
+            {
+                new { path = "A.cs", symbols = new[] { new { name = "X" } } },
+                new { path = "B.cs", kind = "Field", symbols = new[] { new { name = "Y" } } },
+            },
+        });
+
+        Assert.DoesNotContain("kind: \"\"", rendered);
+        Assert.Contains("kind: Field", rendered);
+    }
 }

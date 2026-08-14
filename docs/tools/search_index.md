@@ -146,7 +146,7 @@ cannot contain:
 
 | `intent` | Effect |
 |---|---|
-| `edit` | the cheapest include that carries what the patch needs: `out` on a member (`bodyOutline` leases the `body:` layer for a fraction of `all`), `mem` on a type (which has no body layer to lease, so its surface is what an edit to it actually wants). It used to answer `all` on every row — a column with one value carries no information, and it named the most expensive lease available |
+| `edit` | the cheapest include that carries what the patch needs: `out` on a member (`bodyOutline` leases the `body:` layer for a fraction of `all`), `mem` on a type (which has no body layer to lease, so its surface is what an edit to it actually wants). **A Field is excluded from `out`** — it has no body layer either, `bodyOutline` refuses it outright rather than leasing an empty one, and routing an edit there anyway set up the next `validate_patch` to fail `unleased_body`; the default fetch is silent there instead. It used to answer `all` on every row — a column with one value carries no information, and it named the most expensive lease available |
 | `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body. Silent where `code` would save nothing (no `D` in the hit's `shape`), falling through to the no-intent answer |
 | `surface` | the API shape: `mem` on a type, silent on everything else (the default fetch already leads with the signature) |
 
@@ -215,7 +215,7 @@ see that error, you omitted `query`.
 |---|---|---|
 | `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. An unrecognized token matches no symbol; when that leaves zero hits the response carries `kindsHint` |
 | `modifiers` | bare tokens **AND** (a symbol carries several at once) — opposite of `kinds`; `-token` excludes and combines | literal C# keywords (`public`, `static`, `readonly`, `sealed`, `override`, `async`, `partial`, …) + derived tags `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`. Same zero-hit `modifiersHint` as `kinds` |
-| `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); unresolvable name → empty result, not error |
+| `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); a name that resolves to no interface returns an empty result **plus `implementsHint`**, so that zero is never confused with "resolved, but nothing implements it" |
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`lines`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
@@ -263,6 +263,10 @@ When dispatch is what you are actually asking about, spend the extra call.
 
 `I` and `V` come from `implements`/`inherits`/`overrides` edges written at index time, so they cost
 the same batched lookup rather than the solution-wide `SymbolFinder` walk `get_symbol` pays for.
+**`I` counts direct implementers only** — the same edges the `implements` filter matches against, not
+a transitive closure. `get_references(direction:"implementations")` and `get_type_hierarchy` both walk
+the full derivation chain, so `I` can legitimately read lower than either on an interface with
+multi-level implementers; it is not a discrepancy to chase.
 
 **`include: "…,summary"` is usually redundant against `shape`'s `D` count**, which is already present on
 every hit: measured, `hasSummary` agreed with `D > 0` on every hit checked. `D` counts doc *lines*
@@ -273,12 +277,21 @@ its own call: the summary *text* isn't in `shape` at all.
 `hint` is a response field, not an argument: present only when `query` is built entirely from
 kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
 same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
-`includeHint`, `refsHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
+`includeHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
 argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each
 names the value that wasn't recognized, what it was silently treated as, and a `didYouMean`-style
-suggestion when exactly one vocabulary token is a close-enough match. All six are additive: the call
+suggestion when exactly one vocabulary token is a close-enough match. All four are additive: the call
 still succeeds and returns the same fallback behavior it always has, only now with a signal that a
 fallback happened.
+
+`implementsHint` and `refsHint` are neither of the above — both report a state the *index* is in, not
+a typo in an argument. `implementsHint` is present whenever `implements` was supplied and did not
+resolve to any indexed interface: unlike a vocabulary miss there is no fallback value to report, since
+an unresolvable name always yields zero implementers, so the hint exists purely to say *that* is why —
+a caller who sees it should suspect the spelling, not the filter. `refsHint` is gated on `items` being
+non-empty (a zero-hit page has no rows for a refs caveat to attach to) and fires when refs were wanted
+— by default, or via explicit `include:"refs"` — but the reference index had nothing to report for some
+or all hits; see "Reading `refs`, and its three silences" above for which of the two absences it names.
 
 ## Reference
 

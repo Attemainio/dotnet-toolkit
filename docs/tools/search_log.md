@@ -4,6 +4,12 @@ Replaces: guessing from the code, or re-proposing a design that was already trie
 covers changes applied through `validate_patch` — an empty result is not proof nothing relevant
 happened, just that nothing relevant went through this tool.
 
+**An empty `items` carries `totalEntries`, naming which kind of empty it is.** `search_log(query:
+"telemetry")` and a bare `search_log()` over an empty log both return `items[0]` — identical on their
+own — so `totalEntries` says whether the log has entries at all (`0`) or the query is what found
+nothing (`> 0`). Present only on a zero-hit response; a non-empty `items` carries no `totalEntries`,
+since a result that already has rows has nothing left for the field to disambiguate.
+
 | Arg | Meaning |
 |---|---|
 | `query` | Whitespace-separated terms matched against recorded intents; **every** term must appear, in any order. Omit to list the most recent entries. |

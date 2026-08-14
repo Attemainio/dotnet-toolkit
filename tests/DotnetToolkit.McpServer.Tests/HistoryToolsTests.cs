@@ -190,4 +190,43 @@ public sealed class HistoryToolsSearchLogTests : IDisposable
 
         Assert.Empty(root.GetProperty("items").EnumerateArray());
     }
+
+    /// <summary>
+    /// A zero-hit page caused by the query, not by an empty log, reports totalEntries above zero -- the
+    /// signal that distinguishes it from an empty log (2026-08-13 self-eval finding 9).
+    /// </summary>
+    [Fact]
+    public void QueryMatchingNothing_ReportsTotalEntriesAboveZero()
+    {
+        _featureLog.Append(new FeatureLogStore.LogEntry(
+            "tsk_a", null, null, "fixed decimal rounding in price calculation", [], null, []));
+
+        var root = Root(HistoryTools.SearchLog(_featureLog, _telemetry, "decimal telemetry"));
+
+        Assert.Empty(root.GetProperty("items").EnumerateArray());
+        Assert.Equal(1, root.GetProperty("totalEntries").GetInt32());
+    }
+
+    /// <summary>An empty log reports totalEntries: 0, the other half of the distinction the query-only case proves.</summary>
+    [Fact]
+    public void EmptyLog_ReportsTotalEntriesZero()
+    {
+        var root = Root(HistoryTools.SearchLog(_featureLog, _telemetry));
+
+        Assert.Empty(root.GetProperty("items").EnumerateArray());
+        Assert.Equal(0, root.GetProperty("totalEntries").GetInt32());
+    }
+
+    /// <summary>totalEntries is absent, not zero, once the query actually returns something -- it has nothing to add.</summary>
+    [Fact]
+    public void NonEmptyResult_CarriesNoTotalEntries()
+    {
+        _featureLog.Append(new FeatureLogStore.LogEntry(
+            "tsk_a", null, null, "fixed decimal rounding in price calculation", [], null, []));
+
+        var root = Root(HistoryTools.SearchLog(_featureLog, _telemetry, "decimal"));
+
+        Assert.NotEmpty(root.GetProperty("items").EnumerateArray());
+        Assert.False(root.TryGetProperty("totalEntries", out _));
+    }
 }

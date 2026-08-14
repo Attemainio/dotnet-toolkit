@@ -37,7 +37,7 @@ public static class RefCode
 {
     /// <summary>Legend for the refs column, emitted once per response rather than repeated per row.</summary>
     public const string Legend =
-        "R=callers E=callees I=implementations V=overrides T=tests; 0 shown where it is the answer, absent=not measured";
+        "R=callers E=callees I=implementations(direct only) V=overrides T=tests; 0 shown where it is the answer, absent=not measured";
 
     /// <summary>
     /// Builds the refs code for one symbol, or null when it has nothing to report.

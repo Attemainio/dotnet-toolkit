@@ -64,6 +64,11 @@ the distilled CS0102/CS0229 is reporting, so the cause is stated in words rather
 inferred from the diagnostics. Read which sentence you got — "the rename still succeeded" and "that is
 almost certainly the collision the diagnostics report" call for very different next moves.
 
+**`ladder.nextAction` is absent when `nameAlreadyExists` already explained the failure** — its own generic
+"the new name collides or breaks a call site" would only restate the same instruction in blunter words,
+naming no kind the way `nameAlreadyExists` does. `nextAction` still fires normally for every other
+failure (an analyzer error, a degraded workspace, a collision `nameAlreadyExists` did not catch).
+
 **On failure, `rename.newSymbolId` and every `detectedChanges[].symbolId` are omitted**, not just
 absent from the example above. A symbol id is a hash of its fully-qualified name, so a rename that
 collided with an existing name would otherwise mint an id that is already taken — exposing it would

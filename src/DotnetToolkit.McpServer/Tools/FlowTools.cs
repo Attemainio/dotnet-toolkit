@@ -478,6 +478,12 @@ public static class FlowTools
 
         rows.TryGetValue(rootId, out var rootRow);
         var degradedBy = workspace.IsDegraded ? "degraded" : null;
+        // True in the common shallow/high-fan-in case: the root's OWN cap is the only truncation anywhere
+        // in the tree, so its Truncated/OmittedChildren already state the whole total blastRadius would
+        // otherwise repeat verbatim. A total spread across several truncated nodes deeper in the tree does
+        // NOT hit this -- no single node's own field carries the sum then, so blastRadius stays the only
+        // place to see it.
+        var rootCarriesWholeTotal = includeTree && result.Root.Truncated && result.Root.OmittedChildren == result.OmittedChildren;
         var json = Formats.Render(new
         {
             // With a tree, its head node IS the root and already carries both of these fields. Emitting
@@ -497,9 +503,12 @@ public static class FlowTools
                 perDepth = result.PerDepth,
                 depthCapped = result.DepthCapped,
                 // Present in the summary-only shape too, which is the whole point: the caller who opted out
-                // of the tree opted out of the tree's truncated/omittedChildren markers with it.
-                truncated = result.OmittedChildren > 0 ? (bool?)true : null,
-                omittedChildren = result.OmittedChildren > 0 ? (int?)result.OmittedChildren : null,
+                // of the tree opted out of the tree's truncated/omittedChildren markers with it. Suppressed
+                // when the tree IS included and its root already states the identical number (see
+                // rootCarriesWholeTotal above) -- one of the two is enough when there is only one truncated
+                // node to report.
+                truncated = !rootCarriesWholeTotal && result.OmittedChildren > 0 ? (bool?)true : null,
+                omittedChildren = !rootCarriesWholeTotal && result.OmittedChildren > 0 ? (int?)result.OmittedChildren : null,
             },
             limitedBy = degradedBy,
         });

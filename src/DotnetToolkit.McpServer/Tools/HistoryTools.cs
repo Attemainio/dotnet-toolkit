@@ -171,7 +171,11 @@ public static class HistoryTools
             // than "no tags".
             tags = e.Tags.Count > 0 ? e.Tags : null,
         });
+        // Only worth the extra query when there is nothing else to tell "the log is empty" apart from
+        // "nothing matched this query" -- both render as items[0] otherwise, and the tool's own
+        // description leans on that distinction mattering.
+        var totalEntries = entries.Count == 0 ? featureLog.TotalEntries() : (int?)null;
         return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "search_log",
-            query ?? "(recent)", Formats.Render(new { items }), returnedSymbols: entries.Count());
+            query ?? "(recent)", Formats.Render(new { items, totalEntries }), returnedSymbols: entries.Count);
     }
 }

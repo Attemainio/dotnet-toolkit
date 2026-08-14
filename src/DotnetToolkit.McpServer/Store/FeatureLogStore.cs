@@ -248,6 +248,21 @@ public sealed class FeatureLogStore
         return rows;
     }
 
+    /// <summary>
+    /// Total entries in the log, regardless of any query -- the cheap way to tell "the log is empty" apart
+    /// from "nothing matched this query", which <see cref="SearchIntents"/>'s own empty result cannot say
+    /// on its own.
+    /// </summary>
+    public int TotalEntries()
+    {
+        if (!_store.Available)
+            return 0;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM feature_log;";
+        return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
+    }
+
     public int EntryCount()
     {
         if (!_store.Available)
