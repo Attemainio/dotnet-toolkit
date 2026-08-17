@@ -46,20 +46,24 @@ members returned actually invoke it. Each item carries `symbolId, displayString,
 here, correctly excluded. `targetSymbolId` and `targetDisplayString` are omitted when `symbol` was
 already a `sym_...` id, since they would only restate the input.
 
-### `testInvocationHint` — a 0-caller test method is not evidence of dead code
+### `entryPointHint` — a 0-caller reflection entry point is not evidence of dead code
 
-Present only on a `direction: "callers"` call where `totalItems` is `0` **and** the target itself
-carries a recognized test-framework attribute (`[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, and
-their NUnit/MSTest siblings — the same set `TestAttributes.IsTestMethod` uses to mark a *caller* as
-`isTest`, applied here to the *target*). A test runner discovers and invokes such a method by
-reflection, which leaves no call-site edge for any static reference search — including this one — to
-find. The zero this tool reports is real, but it answers "is there a static call site", not "is this
-used"; reading it as "safe to delete" is a confirmed failure mode, not a hypothetical one — a blind
-A/B benchmark of this tool against plain-text search on this repo (`.claude/dotnet-toolkit/perf/`)
-caught exactly this: the MCP route's `get_references` returned 0 callers for a `[Fact]` test method
-and concluded it was safe to delete, while a route that read the file's text saw the attribute and
-correctly refused to. This field closes that gap by surfacing the same caveat a human would catch from
-reading the source, without requiring a second call.
+Present only on a `direction: "callers"` call where `totalItems` is `0` **and** the target itself is a
+known reflection-invoked entry point: a test-framework attribute (`[Fact]`, `[Theory]`, `[Test]`,
+`[TestMethod]`, and their NUnit/MSTest siblings — the same set `TestAttributes.IsTestMethod` uses to
+mark a *caller* as `isTest`, applied here to the *target*), an MCP SDK attribute (`[McpServerTool]`,
+`[McpServerPrompt]`, `[McpServerResource]`), an ASP.NET Core routing attribute (`[HttpGet]`,
+`[HttpPost]`, `[Route]`, and their siblings), `[JsonConverter]`, `[ModuleInitializer]`, or a static
+`Main`. Each of these is discovered and invoked by its own framework's reflection scan or routing
+table, which leaves no call-site edge for any static reference search — including this one — to find.
+The zero this tool reports is real, but it answers "is there a static call site", not "is this used";
+reading it as "safe to delete" is a confirmed failure mode, not a hypothetical one — two separate blind
+A/B benchmarks of this tool against plain-text search caught it (`.claude/dotnet-toolkit/perf/`): first
+on a `[Fact]` test method on this repo, then again on an `[McpServerTool]`-attributed method on a
+different repo, in both cases with the MCP route confidently wrong and the raw-text route right because
+reading the file put the attribute on screen. This field closes that gap by surfacing the same caveat a
+human would catch from reading the source, without requiring a second call — and generalizes past tests
+on purpose, since the second case was a different framework than the first, not the same one recurring.
 
 ```
 get_references(symbol: "WorkspaceIntegrationTests.ReferenceCounts_TestsNeverExceedCallers")
@@ -67,15 +71,15 @@ get_references(symbol: "WorkspaceIntegrationTests.ReferenceCounts_TestsNeverExce
 
 ```
 totalItems: 0
-testInvocationHint: "0 callers, but this method carries a test-framework attribute recognized as a
-  reflection-invoked entry point ([Fact]/[Theory]/[Test]/[TestMethod] or similar). Test runners
-  discover and call it by reflection, which leaves no call-site edge for this tool to index — zero
-  references here is not evidence it is unused."
+entryPointHint: "0 callers, but this member is a known reflection-invoked entry point: a
+  test-framework attribute ([Fact]/[Theory]/[Test]/[TestMethod] or similar) discovered by its test
+  runner's own reflection scan. That leaves no call-site edge for this tool to index — zero references
+  here is not evidence it is unused."
 ```
 
 Absent on every other call shape: a non-`callers` direction, a target with any real caller, or a
-target that carries no recognized test attribute — an ordinary 0-caller method still reads as
-ordinary dead code, uncaveated.
+target that carries none of the recognized attributes and is not `Main` — an ordinary 0-caller method
+still reads as ordinary dead code, uncaveated.
 
 **A call made from inside a local function or a lambda is attributed to the member that encloses it.**
 Roslyn names the local function as the caller, but a local function is not a fetch target: it is not in

@@ -203,12 +203,15 @@ Answers to:
 `symbolId`, a `displayString`, and `sites` — `{file, line, snippet}`, one row per file+line. On a
 named **type** there are no call sites, so `callers` returns the members that *reference* it.
 
-**A 0-caller result on a `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]` method is not evidence it is
-unused.** `testInvocationHint` (present only in that exact shape) says so directly — a test runner
-invokes such a method by reflection, which leaves no call-site edge for this or any static reference
-search to find. A blind benchmark of this tool caught this exact case producing a confidently wrong
-"safe to delete" verdict before the hint existed; don't re-derive that caveat from memory when the
-field already states it.
+**A 0-caller result on a known reflection entry point is not evidence it is unused.** `entryPointHint`
+(present only in that exact shape) says so directly — a `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]`
+method, an `[McpServerTool]`/`[McpServerPrompt]`/`[McpServerResource]` handler, an ASP.NET routing
+attribute (`[HttpGet]`, `[Route]`, …), `[JsonConverter]`, `[ModuleInitializer]`, or a static `Main` is
+invoked by its own framework's reflection scan or routing table, which leaves no call-site edge for
+this or any static reference search to find. Two separate blind benchmarks of this tool caught this
+exact shape producing a confidently wrong "safe to delete" verdict — first on a `[Fact]` method, later
+on an `[McpServerTool]` one on an unrelated repo — before the hint generalized past tests; don't
+re-derive that caveat from memory when the field already states it.
 
 **Do not read a large `dispatchKind: virtual` count as a large real fan-in.** Roslyn cascades: a call
 written against a base or interface declaration is reported as a caller of everything that overrides

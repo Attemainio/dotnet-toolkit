@@ -620,22 +620,32 @@ public sealed class WorkspaceIntegrationTests
     }
 
     [Fact]
-    public async Task GetReferences_TestInvocationHint_AppearsForZeroCallerTestMethod()
+    public async Task GetReferences_EntryPointHint_AppearsForZeroCallerTestMethod()
     {
         var root = Root(await GetReferences("Sample.Lib.OrphanTestSample.NeverCalledDirectly", "callers"));
 
         Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
-        Assert.True(root.TryGetProperty("testInvocationHint", out var hint));
+        Assert.True(root.TryGetProperty("entryPointHint", out var hint));
         Assert.Contains("reflection", hint.GetString());
     }
 
     [Fact]
-    public async Task GetReferences_TestInvocationHint_AbsentForOrdinaryZeroCallerMethod()
+    public async Task GetReferences_EntryPointHint_AbsentForOrdinaryZeroCallerMethod()
     {
         var root = Root(await GetReferences("Sample.Lib.DocSectionsFixture.Undocumented", "callers"));
 
         Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
-        Assert.False(root.TryGetProperty("testInvocationHint", out _));
+        Assert.False(root.TryGetProperty("entryPointHint", out _));
+    }
+
+    [Fact]
+    public async Task GetReferences_EntryPointHint_AppearsForZeroCallerMcpToolMethod()
+    {
+        var root = Root(await GetReferences("Sample.Lib.OrphanToolSample.NeverCalledDirectly", "callers"));
+
+        Assert.Equal(0, root.GetProperty("totalItems").GetInt32());
+        Assert.True(root.TryGetProperty("entryPointHint", out var hint));
+        Assert.Contains("McpServerTool", hint.GetString());
     }
 
     /// <summary>
