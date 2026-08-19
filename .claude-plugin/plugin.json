@@ -1,5 +1,22 @@
 {
   "name": "dotnet-toolkit",
-  "description": "Token-efficient Roslyn symbol retrieval with content-version leases, and compiler-validated edits, for .NET repos",
-  "version": "0.1.0"
+  "description": "Compiler-aware C# code intelligence for .NET repos — Roslyn-backed symbol search, reference tracing, and edits validated against the compiler before they touch disk.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Atte Harrikari",
+    "url": "https://github.com/Attemainio"
+  },
+  "homepage": "https://github.com/Attemainio/dotnet-toolkit",
+  "repository": "https://github.com/Attemainio/dotnet-toolkit",
+  "license": "MIT",
+  "keywords": [
+    "dotnet",
+    "csharp",
+    "roslyn",
+    "code-intelligence",
+    "mcp",
+    "refactoring",
+    "code-navigation",
+    "token-efficiency"
+  ]
 }

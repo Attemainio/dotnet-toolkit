@@ -130,6 +130,18 @@ At high fan-in, weigh this against `get_call_hierarchy(maxDepth: 1)`, which retu
 without the per-site snippets — roughly an eighth of the tokens at ~105 callers. Below about a dozen
 callers it inverts: `get_references` gives you the sites for free.
 
+### `totalItems` counts symbols; `totalSites` counts call sites
+
+They are different questions, and "how many call sites does this have" is the second one. An item is a
+referencing **symbol**; its `sites` are the places inside it. Twelve items can hold nineteen sites, and
+adding those rows up by hand across a paged response is exactly the arithmetic a caller gets wrong: a
+blind benchmark transcribed 18 of 19 sites from a response that carried all 19 (2026-08-17, Q5).
+
+`totalSites` is that sum, counted over the **whole** result like `totalItems` rather than the page, and
+present **only when it differs from `totalItems`** — when every item holds one site the two are equal
+and `totalItems` already answered. Report the count from this field rather than from your own tally of
+the rows.
+
 ### What a site is, and what is not one
 
 **One row per `{file, line}`.** A line naming the symbol several times — a multi-parameter signature, a

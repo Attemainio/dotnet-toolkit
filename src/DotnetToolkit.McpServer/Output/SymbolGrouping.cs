@@ -21,12 +21,15 @@ public static class SymbolGrouping
     /// <c>@from-to</c> read selector, not a patch span. <paramref name="Refs"/> and
     /// <paramref name="Modifiers"/> are <see cref="RefCode"/>'s and <see cref="ModifierCode"/>'s codes, each
     /// null when the caller left that column out of include -- and, for Refs, also when nothing was measured.
+    /// <paramref name="Parts"/> is how many files this symbol's declaration is split across, carried only
+    /// when that is more than one: the row names one fragment's file, and this is its own signal that the
+    /// others exist.
     /// </remarks>
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
         string? Lines, bool? HasSummary, string? Summary, string? Shape = null,
         DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null,
-        string? Refs = null, string? Modifiers = null);
+        string? Refs = null, string? Modifiers = null, int? Parts = null);
 
     /// <summary>
     /// Builds the grouped envelope. <paramref name="primaryIsNamespace"/> selects namespace-first
@@ -132,6 +135,9 @@ public static class SymbolGrouping
             d["refs"] = r.Refs;
         if (r.Modifiers is not null)
             d["modifiers"] = r.Modifiers;
+        // Only ever present when it is more than one, so this row's file is knowingly one of several.
+        if (r.Parts is not null)
+            d["parts"] = r.Parts;
         return d;
     }
 

@@ -439,12 +439,19 @@ public sealed class ProjectIndex : IDisposable
     /// They are read straight off the outline the index already built, so they cost nothing to carry.
     /// On a TYPE, <paramref name="CommentLines"/> is the transitive total across its members — see
     /// <see cref="OutlineBuilder.CommentLines"/>.
+    ///
+    /// <paramref name="DeclarationFiles"/> is the one field that is not a per-declaration count: it is
+    /// how many FILES this name's declaration is split across, and is set only when that is more than
+    /// one. Partial fragments collapse to a single representative site (see <see cref="LocateWithDocs"/>),
+    /// so without it a 13-file declaration and a one-file one look identical in a search hit — the "one
+    /// fragment, no signal the rest exists" failure this server exists to remove, reproduced by the
+    /// server itself (2026-08-17 perf benchmark, Q4).
     /// </remarks>
     public sealed record DocSite(
         string File, int Line, int EndLine, string? Doc, string Namespace,
         string? DocSections = null, int? MemberCount = null, int DocLines = 0, int CommentLines = 0,
         int? NestedCount = null, int? ParameterCount = null, int? LandmarkCount = null,
-        int AttributeCount = 0);
+        int AttributeCount = 0, int? DeclarationFiles = null);
 
     /// <summary>Members a type entry declares, or null for a delegate.</summary>
     /// <param name="type">The outline entry to count.</param>
@@ -594,10 +601,17 @@ public sealed class ProjectIndex : IDisposable
 
         if (candidates.All(c => c.IsType))
         {
-            return candidates
+            var representative = candidates
                 .OrderBy(c => c.Site.File, StringComparer.Ordinal)
                 .ThenBy(c => c.Site.Line)
                 .First().Site;
+
+            // Collapsing to one representative is right — one hit per symbol — but doing it silently
+            // hands back one fragment with no signal the others exist, which is the failure a semantic
+            // index is supposed to remove rather than reproduce. Counting the files is what lets
+            // search_index say so; a single-file declaration carries no field at all.
+            var files = candidates.Select(c => c.Site.File).Distinct(StringComparer.Ordinal).Count();
+            return files > 1 ? representative with { DeclarationFiles = files } : representative;
         }
 
         var distinct = candidates.Select(c => c.Site).Distinct().ToList();

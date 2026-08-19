@@ -466,8 +466,10 @@ matching the code is not the same as the code being right:
   correctness bug; never resolved in the corpus.
 - **No build-identity stamp** (`ping`/`workspace_status` report a constant `0.1.0`) — flagged
   2026-07-30 as a process risk that had *already* caused one finding to be misdiagnosed as "not a
-  defect" when the real cause was a stale `dist/` build. No later file confirms a commit/build-time
-  stamp was added.
+  defect" when the real cause was a stale `dist/` build. **Resolved 2026-08-19**: `ping` now reads
+  the version off the running assembly (`ServerTools.PluginVersion`), stamped from the csproj's
+  `<Version>`, so a stale `dist/` is visible rather than silent. The constant had by then drifted a
+  full release behind the manifest, which is the failure the original finding predicted.
 
 ### Discovery/ranking findings in the corpus itself
 

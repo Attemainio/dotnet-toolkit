@@ -1,13 +1,15 @@
 {
-  "name": "dotnet-toolkit-local",
+  "name": "dotnet-toolkit",
+  "description": "Compiler-aware C# code intelligence for Claude Code, built on Roslyn.",
   "owner": {
-    "name": "Atte Harrikari"
+    "name": "Atte Harrikari",
+    "url": "https://github.com/Attemainio"
   },
   "plugins": [
     {
       "name": "dotnet-toolkit",
       "source": "./",
-      "description": "Token-efficient Roslyn symbol retrieval with content-version leases, and compiler-validated edits, for .NET repos"
+      "description": "Compiler-aware C# code intelligence for .NET repos — Roslyn-backed symbol search, reference tracing, and edits validated against the compiler before they touch disk."
     }
   ]
 }

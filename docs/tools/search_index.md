@@ -57,6 +57,24 @@ together:
   test SDK's synthesized entry point). `get_symbol` still resolves its path — a `../../…` one — but
   it isn't yours to edit.
 
+### `parts` — one hit, several declaration files
+
+A type declared `partial` across several files is **one symbol and therefore one hit**: its fragments
+collapse to a single representative site, ordered by file, so a page stays one row per symbol rather
+than one row per fragment. That collapse is right, and it is also invisible — `file` and `lines` name
+the fragment that happened to rank, and a caller reading them believes it has seen where the
+declaration lives.
+
+`parts: N` is that signal, present **only when N > 1**, alongside a response-level `partsHint`. Absent
+means one file, so the row's `file` is the whole answer.
+
+**A ranked hit is never an enumeration of a type's declaration sites.** `get_symbol`'s
+`declarationSites` returns all N, and is the only call that does. This is not a hypothetical: a blind
+benchmark asked which files a 13-file partial type was declared in, and the MCP route answered **5** —
+the files that surfaced across two `search_index` calls — while `grep "class ValueIndicator<"` returned
+all 13 (2026-08-17, Q4). `parts` exists so that the same page now says outright that it is not the
+enumeration being asked for.
+
 ### Already know the file? Don't `pathPrefix` down to it
 
 If `pathPrefix` is about to name one exact `.cs` file rather than a folder, stop — you already know
@@ -292,6 +310,10 @@ a caller who sees it should suspect the spelling, not the filter. `refsHint` is 
 non-empty (a zero-hit page has no rows for a refs caveat to attach to) and fires when refs were wanted
 — by default, or via explicit `include:"refs"` — but the reference index had nothing to report for some
 or all hits; see "Reading `refs`, and its three silences" above for which of the two absences it names.
+
+`partsHint` is the same kind of field: present whenever some hit on the page carries `parts` — a
+declaration split across more than one file — to state that `file`/`lines` name one fragment and that
+`get_symbol`'s `declarationSites` is what enumerates the rest. See "`parts`" above.
 
 ## Reference
 

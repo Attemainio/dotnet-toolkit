@@ -170,6 +170,10 @@ Rules for it:
   `///` doc comment. `search_index`'s `line`/`endLine` mark the signature line only and **exclude**
   it, so a span read off a search hit is the wrong span for anyone about to edit there. If you only
   have the search-hit line, say so on the row rather than presenting it as the declaration span.
+- **A partial type's files come from `declarationSites` too, never from the search hits.** One
+  `partial` type is one ranked hit naming one fragment's file (with `parts: N` when there are more),
+  so listing "the files this type lives in" off a search page under-reports silently — a benchmarked
+  route answered 5 of 13 that way. One `get_symbol` returns every fragment.
 - **These are the exact sections — do not invent another one.** You may add a labelled subsection
   under **Blast radius** when the fan-out genuinely splits (consumers of a parsed result, say, as
   distinct from callers of the parser). Any `(N)` you write must equal the number of rows beneath it, and

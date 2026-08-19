@@ -80,6 +80,12 @@ it off `shape`'s `N` count. If you don't yet know a real identifier or domain no
 this project's `README.md` (or `CLAUDE.md` if there is no `README.md`) before the first `search_index`
 call — both are plain Markdown, not `.cs`, so this skill's tools don't apply to them.
 
+**A hit is one symbol, not one declaration.** A type declared `partial` across several files collapses
+to a single ranked row, whose `file` names only the fragment that ranked. `parts: N` (with a
+`partsHint`) appears when N > 1 and says so; absent means one file. **Never read a ranked page as an
+enumeration of declaration sites** — `get_symbol`'s `declarationSites` is the call that enumerates
+them, and on a 13-file partial a benchmarked MCP route read the hits instead and answered 5.
+
 A hit's `lines` is an `@from-to` selector — the same one `get_symbol`'s `source` argument takes, so it
 pastes straight into the next call. It marks the **signature span only** and excludes a leading `///`
 doc comment. The `@` is what says "read slice": `validate_patch` takes a bare `"N-M"`, and an edit
@@ -202,6 +208,10 @@ Answers to:
 `direction` is `callers` (default) | `implementations` | `overrides`. Each item carries a
 `symbolId`, a `displayString`, and `sites` — `{file, line, snippet}`, one row per file+line. On a
 named **type** there are no call sites, so `callers` returns the members that *reference* it.
+
+**`totalItems` counts referencing symbols; `totalSites` counts the sites themselves** and is present
+only when the two differ. Asked "how many call sites", report `totalSites` — hand-tallying the rows
+across items is how a benchmarked route delivered 18 of the 19 sites its own response contained.
 
 **A 0-caller result on a known reflection entry point is not evidence it is unused.** `entryPointHint`
 (present only in that exact shape) says so directly — a `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]`
@@ -392,6 +402,8 @@ committed before the note that prevents it was ever read.
 | Guessing a base chain from `get_symbol`'s one-hop `containingType` | `get_type_hierarchy` |
 | Grepping for a helper to find out whether one already exists | `get_scope` at the line you are standing on — it includes inherited and extension methods |
 | Batch `get_symbol(symbols: [...])` used reflexively as "obviously cheaper" at any size | What decides it is whether `shared` can **hoist**, not n alone. A *homogeneous* batch (same `kind`, one `include`) hoists those fields out of every entry and is a wash-to-slight-win from about n=5 — measured 1,291 tokens against ~1,310 for the five separate fetches, so take it for the 4 saved calls. A *mixed-kind* batch hoists almost nothing and the per-entry `results[i]` nesting costs more than it saves until roughly n=8–10 |
+| `search_index` (at any `limit`) to enumerate the files a partial type is declared in, reading the returned hits as the list | `get_symbol` — its `declarationSites` returns every fragment, and is the only call that does. A partial type is **one** hit; `parts: N` on it says how many files, never which. Measured on a 13-file partial: two ranked searches reported 5 files and rated themselves "fairly sure", while one `get_symbol` had all 13 |
+| Hand-tallying `sites` rows across `get_references` items to answer "how many call sites" | `totalSites` — the tool's own count over the whole result, present whenever it differs from `totalItems`. The hand tally lost one site of 19 on a response that carried all 19 |
 | `get_symbol(include: "members")` on a very large or many-fragment partial type | Check the hit's `shape` first: `members` is **capped at 40** — a `M245` type reports the first 40 plus `totalMembers: 245, truncated: true`, not all 245 (measured 11,367 tokens for the old uncapped response on a 13-file partial). Past the cap, reach for `search_index(pathPrefix: "<the one fragment file>")` or a `source: "code@a-b"` slice off `declarationSites`. `guard: large_source` still routes a too-large `source` fetch into this same capped `members`, so that "cheaper route" is now genuinely cheap rather than a second oversized response |
 | `search_index(implements: "IFoo")` returns zero when you expected hits | Cheap and correct once `IFoo` resolves — direct implementers only, same edges `search_index`'s `I` column counts. Check `implementsHint` first: **present** means the name never resolved to an indexed interface (a spelling problem, not a filter problem); **absent** means a real zero — cross-check with `get_type_hierarchy` or `get_references(direction:"implementations")`, which count transitively and so can still show something further down the chain |
 | Fetching a whole long member to read one region | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@120-160"` for the region |

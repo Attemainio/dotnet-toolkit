@@ -896,6 +896,29 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
+    /// One item can carry several sites, so totalItems is not the call-site count and adding the rows up by
+    /// hand is what loses one. totalSites answers it, over the whole result rather than the page.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_ItemWithTwoCallSites_ReportsTotalSitesBesideTotalItems()
+    {
+        var root = Root(await GetReferences("Sample.Lib.CallSiteSample.Tick", "callers"));
+
+        Assert.Equal(1, root.GetProperty("totalItems").GetInt32());
+        Assert.Equal(2, root.GetProperty("totalSites").GetInt32());
+    }
+
+    /// <summary>One site per item leaves totalSites nothing to say that totalItems has not already said.</summary>
+    [Fact]
+    public async Task GetReferences_OneSitePerItem_OmitsTotalSites()
+    {
+        var root = Root(await GetReferences("Sample.Lib.RenameSample.Seed", "callers"));
+
+        Assert.True(root.GetProperty("totalItems").GetInt32() > 1);
+        Assert.False(root.TryGetProperty("totalSites", out _));
+    }
+
+    /// <summary>
     /// A named type has no call edges of its own, so the edge walk alone answered "how much does changing
     /// this ripple" with a blast radius of 1 however many members referenced it.
     /// </summary>
@@ -2601,6 +2624,36 @@ public sealed class WorkspaceIntegrationTests
             _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "ZzzNoSuchSymbolAnywhere", groupBy: "none"));
 
         Assert.False(root.TryGetProperty("refsHint", out _));
+    }
+
+    /// <summary>
+    /// A partial type's fragments collapse to one hit, so that hit carries parts -- how many files the
+    /// declaration is split across -- and the response names the call that enumerates them. Without it a
+    /// ranked page reads as an enumeration, which is how a 13-file partial was answered as 5 files
+    /// (2026-08-17 perf benchmark, Q4).
+    /// </summary>
+    [Fact]
+    public async Task SearchIndex_PartialType_CarriesPartsAndNamesTheEnumeratingCall()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Gadget", kinds: "class", groupBy: "none"));
+
+        var gadget = TableRows(root.GetProperty("items")).Select(MergedRow)
+            .Single(r => r["name"].GetString()!.EndsWith("Gadget", StringComparison.Ordinal));
+
+        Assert.Equal(2, gadget["parts"].GetInt32());
+        Assert.Contains("declarationSites", root.GetProperty("partsHint").GetString());
+    }
+
+    /// <summary>A one-file declaration carries neither column: the row's own file is the whole answer.</summary>
+    [Fact]
+    public async Task SearchIndex_SingleFileType_CarriesNoParts()
+    {
+        var root = Root(await ContextTools.SearchIndex(
+            _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Pipeline", kinds: "class", groupBy: "none"));
+
+        Assert.False(root.TryGetProperty("partsHint", out _));
+        Assert.All(TableRows(root.GetProperty("items")), row => Assert.False(row.ContainsKey("parts")));
     }
 
     /// <summary>

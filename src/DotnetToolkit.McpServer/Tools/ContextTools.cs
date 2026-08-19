@@ -704,6 +704,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 + "evidence it is unused."
             : null;
 
+        // "How many call sites?" is what this tool is asked, and totalItems does not answer it: an item is
+        // a referencing SYMBOL, carrying one row per {file, line}. Leaving the caller to add those rows up
+        // by hand across items is how a blind benchmark lost one of 19 sites from a response that held all
+        // 19 (2026-08-17 perf benchmark, Q5). Counted over the whole result like totalItems, so paging
+        // never changes what it means, and emitted only when it differs -- when they agree, totalItems
+        // already answered.
+        var totalSites = ordered.Sum(i => i.Sites.Count);
 
         var envelope = new
         {
@@ -728,6 +735,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             dispatchKind,
             entryPointHint,
             totalItems = ordered.Count,
+            totalSites = totalSites != ordered.Count ? (int?)totalSites : null,
             directItems = indirectCount > 0 ? (int?)(ordered.Count - indirectCount) : null,
             indirectItems = indirectCount > 0 ? (int?)indirectCount : null,
             offset = skipped > 0 ? (int?)skipped : null,
@@ -953,6 +961,17 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     + "it as unused."
             : null;
 
+        // A type's partial fragments collapse to ONE hit (ProjectIndex.Disambiguate), which is what keeps a
+        // page one row per symbol -- but a caller reading that row's file then believes it has seen where
+        // the declaration lives. Measured on a 13-file partial: the ranked hits were read as an enumeration
+        // and 5 files reported (2026-08-17 perf benchmark, Q4). parts states the split; this names the call
+        // that enumerates it, since neither fact is derivable from a hit that shows one file.
+        var partsHint = limited.Any(r => r.Site?.DeclarationFiles is > 1)
+            ? "parts:N marks a declaration split across N files; file and lines name only the fragment ranked "
+                + "here. A ranked hit is never an enumeration of a type's declaration sites -- get_symbol's "
+                + "declarationSites returns all N."
+            : null;
+
         // A ranked OR spends `limit` globally, so a term whose name-matches are far rarer than its
         // neighbours' can be squeezed out of the response altogether - and a caller told that one call
         // answers for every term reads that silence as "no such symbol". Naming the starved terms is what
@@ -1058,6 +1077,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 intentHint,
                 refsHint,
                 implementsHint,
+                partsHint,
                 items = limited.Select(r => new
             {
                 symbolId = r.Hit.SymbolId,
@@ -1070,6 +1090,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 outsideRoot = r.Hit.Placement is DeclarationPlacement.OutsideRoot ? true : (bool?)null,
                 file = r.Site?.File,
                 lines = LinesOf(r.Site),
+                // Absent means one file, so the row's file is the whole answer; present means it is not.
+                parts = r.Site?.DeclarationFiles,
                 shape = anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
                 read = anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                 refs = RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
@@ -1097,7 +1119,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     r.Hit.Placement,
                     anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                     RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
-                    anyMods ? ModifierCode.For(r.Hit.Modifiers) : null);
+                    anyMods ? ModifierCode.For(r.Hit.Modifiers) : null,
+                    r.Site?.DeclarationFiles);
             }).ToList();
             var grouped = SymbolGrouping.Build(rows, primaryIsNamespace);
             var withLimit = new Dictionary<string, object?>();
@@ -1123,6 +1146,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     withLimit["refsHint"] = refsHint;
                 if (implementsHint is not null)
                     withLimit["implementsHint"] = implementsHint;
+                if (partsHint is not null)
+                    withLimit["partsHint"] = partsHint;
                 foreach (var (key, value) in grouped)
                 withLimit[key] = value;
             return withLimit;

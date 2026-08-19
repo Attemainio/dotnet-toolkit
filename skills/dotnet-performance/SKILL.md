@@ -101,7 +101,7 @@ Pick outcomes that span the range where the answer plausibly changes sign, and s
 | Find a type by exact name | **Narrowly, or not at all** — `grep -rn "class Foo"` is one cheap call. Expect this row to be close, and report it honestly if the raw route wins. |
 | Find a symbol whose exact name you don't know | Ranked hits vs. a grep that needs several guesses; count *every* guess the raw route took, including the ones that returned nothing. |
 | Read one method out of a 2000-line file | The file read has no way to return less than the file. |
-| Read a type split across partial files | The raw route returns one fragment **and no signal the rest exists** — a correctness finding, not a cost one. |
+| Read a type split across partial files | The raw route returns one fragment **and no signal the rest exists** — a correctness finding, not a cost one. **Expect this row to be closer than it sounds**: where every part carries identical declaration text, one `grep` enumerates them all, and on 2026-08-17 it beat an MCP route that read ranked `search_index` hits as an enumeration and reported 5 of 13. Ask *which files* rather than *what is in it* if you want the enumeration failure specifically, and score the MCP route on whether it reached `declarationSites`. |
 | Find every caller of a method | The raw route cannot see interface, virtual or delegate dispatch. Verify against the MCP answer and count what text search *missed*, not just what it cost. |
 | Find implementers of an interface | Same shape as callers. |
 | Confirm a symbol is unused before deleting it | The raw route's answer is unsound here; report that rather than a token ratio. |
@@ -219,8 +219,16 @@ available, they answer three different questions, and the report must name which
   counts it — expect the meter to exceed each self-report by at least one on that account alone, plus
   any `workspace_status` readiness call the probe treats the same way. A gap of one or two is that; a
   gap of a third or a half is compression. The raw route has
-  undercounted itself on every run so far — by roughly half on 2026-08-11 and again on 2026-08-12 —
-  which is exactly why the self-report is no longer the instrument, only a cross-check on it.
+  undercounted itself on every run so far — by roughly half on 2026-08-11, on 2026-08-12, and again on
+  2026-08-17 (26 logged lines against 53 metered calls) — which is exactly why the self-report is no
+  longer the instrument, only a cross-check on it. The protocol now tells both probes to keep the log
+  as they go rather than reconstruct it at the end; if a run still shows that gap, report it as a
+  standing property of self-reports rather than as this run's anomaly.
+- **Never compute a ratio from the per-question table.** Those counts are self-reported, and on the raw
+  side reliably too low, so a "calls per question" comparison built from them is a measurement of two
+  agents' bookkeeping. The table is a *shape* signal — which questions took several tries, where a
+  route flailed — and the report must label it as such. Every number a cost claim rests on comes from
+  the meter or from `subagent_tokens`.
 
 ## Step 4 — check correctness before cost
 
@@ -299,7 +307,9 @@ Aggregate — both routes, one instrument (the harness meter):
 own line: <n> vs <n> tokens, a <n>× difference in what each route loaded into the context window.
 
 Per question (self-reported call counts — the only per-question signal either route has, since the
-meter attributes per agent rather than per question):
+meter attributes per agent rather than per question. **A shape signal, not a cost measurement**: these
+are the probes' own tallies, the raw route's are reliably low, and no ratio in this report is derived
+from them):
 
 | Question | MCP probe (calls) | Raw probe (calls) | Which route won |
 |---|---|---|---|

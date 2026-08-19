@@ -125,7 +125,7 @@ specimen of each, and note which are **absent** (an absent feature is untested c
 
 | Feature | How to find one | Why it stresses the tools |
 | --- | --- | --- |
-| Partial class split across files | `search_index(modifiers: "partial", kinds: "class")` | `get_symbol` claims to return the whole symbol across fragments — verify `declarationSites` lists every file |
+| Partial class split across files | `search_index(modifiers: "partial", kinds: "class")` — the hit's `parts: N` names the count, never the files | `get_symbol` claims to return the whole symbol across fragments — verify `declarationSites` lists every file, and that the search page said `parts` rather than letting one fragment's `file` pass as the answer |
 | Nested type | a `.`-heavy `displayString` among type-kind hits | tests `containingType` and name resolution |
 | Overload set | `get_symbol` on a bare method name → `ambiguous_symbol` | tests the disambiguation path *and the size of its error payload* |
 | Generic type/method | `search_index` for a known generic | tests `displayString` verbosity and id stability |

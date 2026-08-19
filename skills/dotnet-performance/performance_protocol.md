@@ -33,6 +33,16 @@ answering *one* question is visible, so a line that folds three calls together s
 question look cheaper than it was, and the questions where a route actually struggled are exactly
 the ones most likely to get compressed.
 
+**Keep the log as you go; never reconstruct it at the end.** You are holding all output until your
+final message, so the temptation is to write every "Calls made" list from memory once the answers are
+in — and memory compresses exactly the questions where you struggled, which are the ones the log
+exists to capture. Instead, in each working turn, write the calls that turn made as plain lines in
+that turn's text before you move on. The orchestrator never sees those turns, but you do: the final
+message then *copies* an existing log instead of recalling one. Measured across three runs
+(2026-08-11, 2026-08-12, 2026-08-17), the raw route's reconstructed lists came back at roughly half
+its real call count — on 2026-08-17, 26 logged lines against 53 metered calls, including one logged
+call for a file that had nothing to do with the question it sat under.
+
 After your last `## Question` block, add one closing line, counted by hand from the lists above:
 
 ```

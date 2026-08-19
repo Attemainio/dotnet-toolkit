@@ -4,7 +4,9 @@ Four tools that answer about the server itself rather than the code. None record
 
 # `ping`
 
-Health check. `Ping()` → `"pong dotnet-toolkit/0.1.0"`. No arguments.
+Health check. `Ping()` → `"pong dotnet-toolkit/<version>"`, e.g. `"pong dotnet-toolkit/1.0.0"`. No
+arguments. The version is read off the running assembly, so it reports what is actually loaded — a
+mismatch against `.claude-plugin/plugin.json` means `dist/` is stale, not that the doc drifted.
 
 # `set_output_format` — change how responses are encoded
 

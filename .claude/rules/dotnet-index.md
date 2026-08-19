@@ -4,7 +4,10 @@ This repo has the dotnet-toolkit plugin — a Roslyn-powered MCP server whose to
 path for C#, not Grep, Glob, `find`, `ls`, `cat`, bare `Read`, or `Edit`/`Write`. Text search gives
 **wrong answers** on C#, not merely slower ones: it cannot see interface, virtual, or delegate
 dispatch, counts comment and string matches as real hits, under-reports silently when truncated, and
-returns one fragment of a partial class with no signal the rest exists.
+returns one fragment of a partial class with no signal the rest exists. On an exact, distinctive name
+a `grep` does sometimes land the right answer cheaply — but its output looks identical either way, so
+which question you are in is knowable only after the fact, which is why the route is settled per
+session rather than per question.
 
 This file is the single always-loaded rule, and it is a **router only**. It names no tools. Each
 skill below carries its own tool set, when to reach for each one, the cheap-route table, and the
