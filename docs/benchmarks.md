@@ -5,6 +5,11 @@ How dotnet-toolkit's MCP tools compare against answering the same questions with
 
 Summary table and headline numbers are in the [README](../README.md#measured-against-raw-tools).
 
+> This page is the maintained record. The raw run files `/dotnet-performance` writes are **not
+> committed** — each measures the tools as they stood on its own date and goes stale as soon as the
+> finding it raised is fixed, so everything worth keeping from them is transcribed here instead.
+> Run the skill yourself to generate current ones against your own solution.
+
 ## Method
 
 Each run is driven by the `dotnet-performance` skill:

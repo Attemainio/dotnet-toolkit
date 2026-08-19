@@ -24,6 +24,13 @@ does the eval corpus (`.claude/dotnet-toolkit/eval/*.md` in this repo and in Pan
 repo) say has been fixed vs. still open. Findings below are either **measured directly in this
 session** or **synthesized from the 9 eval files**, kept separate so provenance is clear.
 
+> **The eval and perf corpora are local run output and are no longer committed** (`.gitignore`, from
+> 2026-08-19). Each report measures the tools as they stood on its own date, so it goes stale as soon
+> as the finding it raised is fixed — several already described behaviour that had changed. The paths
+> cited throughout this file therefore resolve only on a machine that has run `/dotnet-selfeval` or
+> `/dotnet-performance`; the conclusions that survived are carried in this file and in
+> [`docs/benchmarks.md`](../benchmarks.md), which are maintained.
+
 ## 1. How tool selection actually works here
 
 There are two independent selection mechanisms in play, and they answer different questions:
