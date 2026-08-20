@@ -1,0 +1,16 @@
+# Local run output and per-repo state written by dotnet-toolkit. These folders may exist in a clone;
+# their contents never belong in git. Each report measures the code, or the tools, as they stood on
+# its own date, so a committed one is read as current long after it stopped being true - and several
+# in this tree already described behaviour that had since changed. The conclusions that survive a
+# run are written up in maintained docs; the raw runs stay local. backups/ is one machine's
+# pre-install copies of files init was about to overwrite.
+eval/
+perf/
+review/
+backups/
+
+# Deliberately NOT ignored, and one file rather than one per folder:
+#   install.json, config.json - these describe the repo (what it installed, how it wants the tools
+#     configured), not a run against it, so they are the repo's to track.
+#   cache/ - the server writes cache/.gitignore itself when it creates the store; a second rule here
+#     would be a duplicate that can drift.

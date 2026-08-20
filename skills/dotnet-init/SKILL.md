@@ -71,7 +71,8 @@ successful apply.
 ## The staleness decision — the one piece of logic worth keeping in context
 
 `.claude/dotnet-toolkit/install.json` records the plugin version and a sha256 per copied file at
-install time. On any re-run, compare its `pluginVersion` against the installed plugin's
+install time — `dotnet-index.md` and `.claude/dotnet-toolkit/.gitignore`, the two files init copies
+verbatim. On any re-run, compare its `pluginVersion` against the installed plugin's
 `.claude-plugin/plugin.json`, then hash each file. Three states, and they need different handling:
 
 | Manifest hash vs. disk | Disk vs. current plugin | Meaning | Action |

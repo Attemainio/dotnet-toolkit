@@ -130,11 +130,12 @@ describes, and a stale severity list read as current is worse than no review. Th
 file paths and weaknesses in a codebase that is not this plugin's to publish. A file in the repo under
 review moves with that repo and goes stale visibly, next to the code it is about.
 
-`.claude/dotnet-toolkit/` is where every analysis *of* the consuming repo lands — `review/` alongside
-`eval/` and `perf/` — plus that repo's toolkit settings, caches and init backups. It is local run
-output, not documentation: **a consuming repo should carry `.claude/dotnet-toolkit/` in its
-`.gitignore`** (this plugin's own repo does). If it is not ignored there, say so once when you state
-the path rather than leaving the report to be committed by the next `git add -A`.
+`review/` sits alongside `eval/` and `perf/` under `.claude/dotnet-toolkit/`, where every analysis
+*of* a repo lands. **`dotnet-init` installs a `.gitignore` at the root of that folder that keeps all
+three out of git**, so writing a report there does not put it on a path to being committed — that is
+why the report goes here rather than into `docs/` or the repo root. If `git check-ignore` says the
+path is *not* ignored, the repo installed before that file shipped: say so in one line when you state
+the path, and point at `dotnet-init` to refresh it.
 
 ## What this agent will never do
 

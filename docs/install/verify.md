@@ -12,7 +12,12 @@ Report every check as checked-and-clean rather than omitting it. A silent check 
 ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
 ```
 
-- Every file in `docs/install/install.md`'s "What gets written" table is present — all three of them.
+- Every file in `docs/install/install.md`'s "What gets written" table is present — all four of them.
+- **`.claude/dotnet-toolkit/.gitignore` is present and hash-matches the plugin's copy.** Without it
+  the repo commits every review, eval and perf report it writes; `git check-ignore -v
+  .claude/dotnet-toolkit/review/x.md` is the direct test. If the repo instead ignores the whole
+  `.claude/dotnet-toolkit/` directory from its own root `.gitignore`, that is the repo's call and
+  not a finding — report it as covered-differently, since it also un-tracks `install.json`.
 - **`.claude/rules/` contains exactly one file, `dotnet-index.md`, and it has no frontmatter.** A
   second unfrontmattered file is a second always-loaded rule nobody costed. Four shapes land here, all
   cleaned by re-running the install path: `index.md`, this same router under the name it carried

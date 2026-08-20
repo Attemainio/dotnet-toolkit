@@ -69,6 +69,7 @@ What it adds to the repo you run it in:
 | `.claude/rules/dotnet-index.md` | **One** always-loaded rule — a pure router that names no tools, only which skill to invoke for reading, writing, exploring or reviewing C# |
 | `.claude/settings.json` | The read-only MCP tools merged into the permission allowlist, so they stop prompting on every call |
 | `.claude/dotnet-toolkit/install.json` | A record of what was installed, used to verify and refresh later |
+| `.claude/dotnet-toolkit/.gitignore` | Keeps the toolkit's run output out of your history — see below. Your own root `.gitignore` is never touched |
 
 It **never modifies your CLAUDE.md**.
 
@@ -124,13 +125,23 @@ and excluding generated code from the index. See [`design/architecture.md`](desi
 Caches live in your repo under `.claude/dotnet-toolkit/cache/`, are self-gitignored, and are
 rebuildable from source at any time. Deleting the directory is safe.
 
-### What lands in `.claude/dotnet-toolkit/`
+### What lands in `.claude/dotnet-toolkit/`, and what git sees
 
-Everything the toolkit writes *about your repo*: the install manifest, the optional `config.json`, the
-`backups/` init takes before touching a file, the rebuildable `cache/`, and the reports written by
-`dotnet-review`, `dotnet-selfeval` and `dotnet-performance` (`review/`, `eval/`, `perf/`).
+Everything the toolkit writes *about your repo* lands here, and the `.gitignore` init puts at the root
+of that folder splits it in two:
 
-That is local run output and per-machine settings, not documentation of your codebase — and a report
-measures the code as it stood on its date, so a committed one is read as current long after it stopped
-being true. **Add `.claude/dotnet-toolkit/` to your `.gitignore`.** Only `cache/` self-ignores; the
-rest does not.
+| Tracked | Ignored |
+|---|---|
+| `install.json` — what you installed | `review/`, `eval/`, `perf/` — reports from `dotnet-review`, `dotnet-selfeval`, `dotnet-performance` |
+| `config.json` — your per-repo toolkit settings | `backups/` — init's pre-overwrite copies, one machine's |
+| the `.gitignore` itself | `cache/` — self-ignored by the server, rebuildable |
+
+The split is what each file *describes*. `install.json` and `config.json` describe the repo, so they
+belong to it and travel with a clone. The rest describes one run against the repo on one machine on
+one date — and a report committed today is read as current long after the finding it raised was
+fixed, which is the failure this prevents.
+
+It is one file at the folder root, not one per folder: the same rule restated four times drifts three
+ways. **Your own root `.gitignore` is never edited.** If you would rather ignore the whole
+`.claude/dotnet-toolkit/` directory from there, that works too — it just un-tracks `install.json`
+along with it, so a fresh clone can't tell what was installed.

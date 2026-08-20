@@ -8,13 +8,14 @@ absolute — these steps stage first, write second.
 
 ## What gets written
 
-**Three items. That is the entire footprint.**
+**Four items. That is the entire footprint.**
 
 | File(s) | Content |
 | --- | --- |
 | `.claude/rules/dotnet-index.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/dotnet-index.md`: a pure router — which skill to invoke for reading, writing, exploring or reviewing C#, plus the rule that agents are launched by skills. It names **no MCP tool**; the tool tables live in the skills, which the plugin serves and never copies. **Always-loaded** — no `paths:` frontmatter, and it must be the only file in `.claude/rules/` without any |
 | `.claude/settings.json` | the **read-only** MCP tools merged additively into `permissions.allow` (Step 3) |
 | `.claude/dotnet-toolkit/install.json` | the manifest: plugin version, timestamp, and a hash per copied file |
+| `.claude/dotnet-toolkit/.gitignore` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/dotnet-toolkit/.gitignore`: keeps the contents of `review/`, `eval/`, `perf/` and `backups/` out of the repo's history. One file at the folder root rather than one per folder — the same rule restated four times drifts three ways. It deliberately does **not** ignore `install.json` or `config.json`, which describe the repo rather than a run against it, nor `cache/`, which the server self-ignores |
 
 It is copied rather than templated, so the plugin and every consuming repo run the *same* rule text.
 There is no inline template to drift out of step with the plugin's own copy — a copy step cannot
@@ -48,6 +49,7 @@ cleaning up at uninstall, is the recurring bug in this procedure.
 | the MCP server, `hooks/`, `skills/`, `agents/` | they ship *active* with the plugin — the harness discovers them from the plugin manifest, so there is nothing repo-local to install | leave with the plugin; nothing to clean up |
 | `docs/tools/*.md`, `docs/design/*.md`, `standards/*.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/...` path from the skills (a rule cannot expand that variable, so it names the skill instead). Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
 | `.claude/dotnet-toolkit/cache/` | created by the server at runtime, self-gitignored, always rebuildable | safe to leave; delete the directory for a fully clean removal |
+| the repo's own root `.gitignore` | never edited — the folder-level `.gitignore` above covers the same ground without touching a file the repo maintains | nothing to undo |
 | `CLAUDE.md` | the project's own file | never touched, so nothing to undo |
 
 ## Step 1 — Read what is already there
@@ -168,6 +170,9 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
 ## Step 4 — What the approval step must show
 
 - The full content of `.claude/rules/dotnet-index.md` and where it lands.
+- That `.claude/dotnet-toolkit/.gitignore` is part of the plan, and what it ignores. It changes what
+  the repo commits, so it is named rather than folded into "and a couple of support files" — and it
+  is the reason the repo's own root `.gitignore` needs no edit.
 - The exact `permissions.allow` entries to be added, and what `.claude/settings.json` looks like after
   the merge. This is a settings change, so it gets shown, not summarized.
 - That the coding standards are **not** copied — they are read from the plugin, so they stay current
@@ -185,7 +190,8 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
 1. For every file about to be written that already exists, copy it to
    `.claude/dotnet-toolkit/backups/<name>.<UTC timestamp>.bak` first. Keep backups after a successful
    apply. `.claude/settings.json` is included in this.
-2. Copy `dotnet-index.md` into `.claude/rules/`, and delete the approved legacy files. It's
+2. Copy `dotnet-index.md` into `.claude/rules/`, copy `.gitignore` into `.claude/dotnet-toolkit/`,
+   and delete the approved legacy files. It's
    markdown, so `Write`/`Edit` is correct — `validate_patch` is for `.cs`, and the hooks don't touch
    these files.
 3. Merge the allowlist into `.claude/settings.json`.
@@ -195,7 +201,10 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
    {
      "pluginVersion": "<version from the plugin's .claude-plugin/plugin.json>",
      "installedAt": "<UTC ISO-8601>",
-     "files": { ".claude/rules/dotnet-index.md": "<sha256>" }
+     "files": {
+       ".claude/rules/dotnet-index.md": "<sha256>",
+       ".claude/dotnet-toolkit/.gitignore": "<sha256>"
+     }
    }
    ```
 

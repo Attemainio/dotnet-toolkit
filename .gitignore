@@ -5,11 +5,8 @@ obj/
 .claude/settings.local.json
 .claude/agent-memory/
 
-# Everything the toolkit writes about this repo: review/, eval/ and perf/ run output, the local
-# config.json and install.json, init's backups/, and the rebuildable cache/.
-# These are run artefacts and per-machine settings, not documentation: each report measures the tools
-# or the code as they stood on its own date, so it goes stale the moment the finding it raised is
-# fixed - and several in the tree already described behaviour that had since changed. Shipping them
-# invites a reader to take a superseded measurement as current. The conclusions that survived are
-# written up in docs/benchmarks.md, which is maintained; the raw runs stay local.
-.claude/dotnet-toolkit/
+# dotnet-toolkit's run output - review/, eval/, perf/ and init's backups/ - is ignored one level
+# down, by .claude/dotnet-toolkit/.gitignore. That is the same file dotnet-init copies into a
+# consuming repo, so this repo ignores exactly what a consumer's does, and the rule lives next to
+# what it covers rather than being restated here. cache/ self-ignores; install.json and config.json
+# are tracked on purpose. Nothing to add here.
