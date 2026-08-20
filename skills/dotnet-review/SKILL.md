@@ -115,6 +115,27 @@ instance ran:
 - Preserve each finding's severity, aspect tag, and file:line exactly as reported; don't re-summarize
   away specifics.
 
+## Where the report goes
+
+**Write the report — merged, when several instances ran — to
+`.claude/dotnet-toolkit/review/<UTC-date>-<HHmmss>-<target>.md` in the repo being reviewed, and state
+the path.** `<target>` is a short slug for what was reviewed (`Store`, `pr-142`, `working-tree`); the
+time component keeps two reviews of the same area on the same day from overwriting each other. Create
+the directory if it is not there. Answer inline as well — the file is the durable copy, not a
+substitute for replying.
+
+**Don't publish a review as an Artifact unless the user asks for one.** A review is a claim about one
+repo's code at one moment, read against a working tree that moves; a hosted page outlives the diff it
+describes, and a stale severity list read as current is worse than no review. The findings also name
+file paths and weaknesses in a codebase that is not this plugin's to publish. A file in the repo under
+review moves with that repo and goes stale visibly, next to the code it is about.
+
+`.claude/dotnet-toolkit/` is where every analysis *of* the consuming repo lands — `review/` alongside
+`eval/` and `perf/` — plus that repo's toolkit settings, caches and init backups. It is local run
+output, not documentation: **a consuming repo should carry `.claude/dotnet-toolkit/` in its
+`.gitignore`** (this plugin's own repo does). If it is not ignored there, say so once when you state
+the path rather than leaving the report to be committed by the next `git add -A`.
+
 ## What this agent will never do
 
 `dotnet-code-review` has no `validate_patch` access — it cannot record log entries, and it is

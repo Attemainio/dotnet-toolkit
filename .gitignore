@@ -5,11 +5,11 @@ obj/
 .claude/settings.local.json
 .claude/agent-memory/
 
-# Evaluation and benchmark output, from /dotnet-selfeval and /dotnet-performance.
-# These are run artefacts, not documentation: each one measures the tools as they stood on its own
-# date, so a report goes stale the moment the finding it raised is fixed - and several in the tree
-# already described behaviour that had since changed. Shipping them invites a reader to take a
-# superseded measurement as current. The conclusions that survived are written up in
-# docs/benchmarks.md, which is maintained; the raw runs stay local.
-.claude/dotnet-toolkit/eval/
-.claude/dotnet-toolkit/perf/
+# Everything the toolkit writes about this repo: review/, eval/ and perf/ run output, the local
+# config.json and install.json, init's backups/, and the rebuildable cache/.
+# These are run artefacts and per-machine settings, not documentation: each report measures the tools
+# or the code as they stood on its own date, so it goes stale the moment the finding it raised is
+# fixed - and several in the tree already described behaviour that had since changed. Shipping them
+# invites a reader to take a superseded measurement as current. The conclusions that survived are
+# written up in docs/benchmarks.md, which is maintained; the raw runs stay local.
+.claude/dotnet-toolkit/

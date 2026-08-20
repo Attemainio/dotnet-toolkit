@@ -123,3 +123,14 @@ and excluding generated code from the index. See [`design/architecture.md`](desi
 
 Caches live in your repo under `.claude/dotnet-toolkit/cache/`, are self-gitignored, and are
 rebuildable from source at any time. Deleting the directory is safe.
+
+### What lands in `.claude/dotnet-toolkit/`
+
+Everything the toolkit writes *about your repo*: the install manifest, the optional `config.json`, the
+`backups/` init takes before touching a file, the rebuildable `cache/`, and the reports written by
+`dotnet-review`, `dotnet-selfeval` and `dotnet-performance` (`review/`, `eval/`, `perf/`).
+
+That is local run output and per-machine settings, not documentation of your codebase — and a report
+measures the code as it stood on its date, so a committed one is read as current long after it stopped
+being true. **Add `.claude/dotnet-toolkit/` to your `.gitignore`.** Only `cache/` self-ignores; the
+rest does not.
