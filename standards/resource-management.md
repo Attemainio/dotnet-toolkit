@@ -77,11 +77,25 @@ extended to cover that continuation, or be disposed only after the task is known
 disposing it on the calling method's return while the spawned task still holds a reference is a
 use-after-dispose race, not merely a leak.
 
+## Event subscriptions
+
+A `+=` event subscription is a disposable-shaped resource even though the compiler doesn't require any
+disposal syntax: the publisher's invocation list holds a reference to the subscriber's target, and that
+reference lives until an explicit `-=`. Whichever side is expected to be short-lived and isn't
+unsubscribed leaks for as long as the other side is reachable. Unsubscribe symmetrically with where the
+subscription was made — in `Dispose`/`DisposeAsync` for a subscriber whose lifetime is shorter than the
+publisher's — or use a weak-event pattern when the publisher is guaranteed to outlive many short-lived
+subscribers. A constructor that raises an event before the instance is fully constructed hands a handler
+a reference to a partially-initialized object; raise events from a method called after construction
+completes, never from the constructor itself.
+
 ## Review calibration
 
 Disposing a constructor-injected dependency, an unhandled exception path that skips a manual `Dispose()`
 call (no `using`), or a pooled buffer used after `Return` is 🔴. A missing `using`/`await using` where
 the exit paths happen to all reach `Dispose()` today, `Dispose()` blocking synchronously on I/O that
-should be `DisposeAsync`, or an unbounded in-memory buffer of caller-controlled input is 🟡. A
+should be `DisposeAsync`, an unbounded in-memory buffer of caller-controlled input, or an event
+subscription with no matching unsubscribe anywhere in the subscriber's disposal path is 🟡. A
 finalizer/full `Dispose(bool)` pattern on a `sealed` class with only managed fields (harmless but
-unnecessary) is 🔵.
+unnecessary), or an event raised from a constructor with no evidence a handler could actually observe the
+partially-constructed state, is 🔵.

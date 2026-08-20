@@ -21,7 +21,9 @@ validates against it (aspect `[correctness]`).
 ## Type declarations
 
 - **`sealed` by default** on classes not explicitly designed for inheritance — enables JIT
-  devirtualization and signals intent; an unsealed class is an implicit invitation to subclass it.
+  devirtualization and signals intent; an unsealed class is an implicit invitation to subclass it. This
+  applies to `record`/`record struct` too — a record is a class under the hood and is **not** sealed by
+  default; sealing one takes the same explicit `sealed record` as a plain class.
 - **`internal` by default**, `public` only when the type is genuine consumer-facing surface — a
   narrower surface is fewer things another assembly can come to depend on, and fewer things a later
   refactor has to keep source-compatible; widening to `public` later is free, narrowing a shipped
@@ -71,6 +73,17 @@ var customer = FindCustomer(id)
 var name = customer.Name;
 ```
 
+- **State a nullability contract the compiler can't infer with an attribute, not a comment**:
+  `[NotNullWhen(true)]` on an `out` parameter of a `Try*` method, `[MemberNotNull(nameof(_field))]` on a
+  helper that guarantees a field is non-null once it returns, `[NotNullIfNotNull(nameof(other))]` for a
+  return that mirrors an argument's nullability. Without the attribute the compiler can't see the
+  guarantee, so every caller re-earns a warning the method already resolved.
+
+```csharp
+// DO — lets a caller's `if (TryFind(id, out var order))` narrow `order` to non-null inside the branch
+public bool TryFind(OrderId id, [NotNullWhen(true)] out Order? order)
+```
+
 ## Formatting
 
 - Allman brace style (opening brace on its own line) — consistency within one file matters more than
@@ -89,6 +102,16 @@ if (x)
     DoThing();
 }
 ```
+
+## Suppressions
+
+- **`#pragma warning disable` pairs with `restore`**, scoped as tightly as possible (a handful of lines,
+  never a whole file) and targets the specific warning code, never a bare disable-all. An unpaired
+  `disable` silences that warning for every line for the rest of the file, including code added later
+  that the original author never saw.
+- **`[SuppressMessage]` carries a `Justification`** — the attribute without one records *that* something
+  was suppressed but not *why*, which is exactly the information a reviewer needs to judge whether the
+  suppression still applies.
 
 ## Documentation hooks
 

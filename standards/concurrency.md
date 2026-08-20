@@ -22,6 +22,15 @@ var order = await _repository.GetOrderAsync(id);
 
 - **No `Task.Run` around synchronous CPU work just to satisfy an `async` signature** (async-over-sync) —
   return the computed value; if a signature demands a task, `Task.FromResult` states the truth.
+- **`Task.Run(async () => ...)` and `.ContinueWith(...)` are both smells in ordinary application code.**
+  `Task.Run` wrapping already-asynchronous work schedules it onto the thread pool for no reason — it's
+  not CPU-bound, there's nothing to offload. `ContinueWith` loses the ambient `SynchronizationContext`
+  and the exception-aggregation behavior `await` gives for free. An `async` local function plus a direct
+  `await`, or `Task.WhenAll`/`WhenAny`, covers what both were reaching for.
+- **Never await a `ValueTask`/`ValueTask<T>` twice, and never call `.Result`/`.GetAwaiter().GetResult()`
+  on one that hasn't completed.** Unlike `Task`, a `ValueTask` may wrap a pooled, single-use
+  `IValueTaskSource` — a second await or a blocking call on it is undefined behavior, not merely
+  wasteful. Capture the result on first await if the value is needed again.
 - **`async void` only for actual event handlers.** Anywhere else, exceptions thrown from it bypass the
   caller and crash the process; return `Task` so failures are awaitable.
 - **Thread `CancellationToken` through**: an `async` method that calls cancellable APIs (I/O,
@@ -44,8 +53,10 @@ var order = await _repository.GetOrderAsync(id);
 ## Locks
 
 - **Lock on a dedicated private object** — `private readonly object _gate = new();` (or .NET 9+'s
-  `System.Threading.Lock`). Never `lock (this)`, never a `string` or any publicly reachable object:
-  anyone else can lock the same reference and deadlock you from outside the class.
+  `System.Threading.Lock`). Never `lock (this)`, never a `string`, never `typeof(T)`, and never any other
+  publicly reachable object: anyone else can lock the same reference and deadlock you from outside the
+  class. `typeof(T)` for a given closed generic type is one shared instance process-wide — as reachable
+  as a public static field.
 - **Keep the guarded region minimal and non-blocking**: no I/O, no `await`-shaped work, no callbacks into
   unknown code while holding a lock. The compiler already refuses `await` inside `lock` — don't smuggle
   the equivalent in via `.Result` (that's both anti-patterns at once).
@@ -93,6 +104,26 @@ Use `Wait()` on a semaphore only from genuinely synchronous code — `WaitAsync(
 sync-over-async with extra steps. A `SemaphoreSlim` with `maxCount > 1` is a throttle, not a lock — don't
 protect mutable state with one.
 
+## Channels
+
+`Channel<T>` is the async producer/consumer primitive — bounded (`Channel.CreateBounded`) unless there's
+a stated reason unbounded growth is safe (same failure shape as `antipatterns.md`'s unbounded-cache
+entry: a channel fed faster than it drains is a memory leak with extra steps). Correctness rules specific
+to it:
+
+- **The writer calls `Complete()`** when production is done — a reader awaiting `ReadAsync`/enumerating
+  `ReadAllAsync` on a channel nobody ever completes waits forever, not just until the next item.
+- **Prefer `WaitToReadAsync` + `TryRead` over a bare `ReadAsync` loop** in a hot consumer — it avoids an
+  allocated awaiter per item when items are already available.
+- **`SingleReader`/`SingleWriter` in the options are a promise, not a hint.** Setting either `true` when
+  more than one thread actually reads/writes doesn't throw — it corrupts internal state silently under
+  contention. Leave both `false` unless the single-sided access is actually guaranteed.
+- Catch `ChannelClosedException` around the specific read that can observe completion, not with a broad
+  try/catch around the whole consumer loop — a catch-all there hides a genuine producer failure the same
+  way a swallowed exception would (see `best-practices.md`).
+- A bounded channel's `BoundedChannelOptions.FullMode` drop callback runs synchronously on the writer's
+  call stack — it must stay non-blocking.
+
 ## Interlocked & volatile
 
 - **`Interlocked`** (`Increment`, `Add`, `Exchange`, `CompareExchange`, `Or`/`And`) for single-word
@@ -115,9 +146,10 @@ protect mutable state with one.
 - `ConcurrentDictionary` for concurrent keyed access — but its thread-safety is per-operation:
   `GetOrAdd`'s value factory can run more than once under contention (make it idempotent or wrap values
   in `Lazy<T>`), and iterating while mutating is safe but yields a moving snapshot.
-- `Channel<T>` for producer/consumer pipelines — bounded (`Channel.CreateBounded`) unless there's a
-  stated reason unbounded growth is safe; an unbounded channel fed faster than it drains is a memory
-  leak with extra steps.
+- `Channel<T>` for producer/consumer pipelines — see the dedicated `Channels` section above.
+- **Invoke a multicast event as `handler?.Invoke(...)`, not `if (handler != null) handler(...)`** — the
+  null-conditional form reads the delegate field into a local once, so a concurrent unsubscribe between
+  the check and the call can't turn it into a `NullReferenceException`; the two-step form can.
 
 ## Console & process streams
 
@@ -157,8 +189,10 @@ await process.WaitForExitAsync(ct);
 
 A reachable deadlock shape (lock-order inversion, sync-over-async on a context, sequential pipe
 draining, blocking inside a lock) or a demonstrated race (unsynchronized shared mutation, racy
-check-then-act) is 🔴 with the interleaving stated concretely. Missing `ConfigureAwait(false)` in
-library code, un-threaded cancellation tokens, and unbounded channels are 🟡. Anything asserting "this
-could race" without naming the two call paths that overlap is 🔵 at most — trace both paths with
+check-then-act, a `SingleReader`/`SingleWriter` promise actually violated by concurrent access) is 🔴
+with the interleaving stated concretely. Missing `ConfigureAwait(false)` in library code, un-threaded
+cancellation tokens, unbounded channels, a channel whose writer never calls `Complete()`, and a
+double-await/blocking call on a `ValueTask` reachable only on an uncommon path are 🟡. Anything asserting
+"this could race" without naming the two call paths that overlap is 🔵 at most — trace both paths with
 `get_references`/`get_call_hierarchy` before asserting, and check `search_log` for a recorded reason the
 pattern is intentional.

@@ -42,6 +42,17 @@ db.Database.ExecuteSqlRaw("DELETE FROM Orders WHERE Region = {0}", region);
 a DTO gets validation attributes/FluentValidation or an explicit check before the value reaches
 domain/persistence logic. Don't re-validate the same value at every internal layer; the boundary owns it.
 
+**A regex matched against untrusted input needs a bounded execution time** — `[GeneratedRegex]` (compiled,
+no interpreter surprises) with a pattern reviewed for nested quantifiers, or an explicit `TimeSpan`
+timeout passed to `Regex`/`Regex.Match`. An unguarded pattern with catastrophic-backtracking potential
+against attacker-controlled text is a ReDoS vector — a short adversarial input can hang a request thread
+for minutes.
+
+**A file upload is validated by allowlisted extension, an enforced size cap, and a magic-byte/content
+sniff** — never trust the client-supplied `Content-Type` header, which the caller controls. Persist the
+file under a server-generated name; writing it under the client-supplied filename is both a
+path-traversal and an overwrite risk.
+
 ## Authentication & authorization
 
 **Every controller/endpoint states its auth explicitly** — `[Authorize]` (with a policy/role where
@@ -58,11 +69,18 @@ public sealed class RefundsController : ControllerBase
 public sealed class RefundsController : ControllerBase
 ```
 
+**Rate-limit authentication endpoints** (login, password reset, token refresh) separately from general API
+throttling — `Microsoft.AspNetCore.RateLimiting` or equivalent. An unlimited login endpoint is a standing
+invitation to credential-stuffing regardless of how strong the password hash underneath it is.
+
 ## Transport & CORS
 
 - HTTPS redirection + HSTS in production startup configuration — no exceptions.
 - **Never `AllowAnyOrigin()`** (or equivalent wildcard CORS) in a production-configured code path. The
   same call behind an explicit development-only branch is fine.
+- **`SetIsOriginAllowed(_ => true)` combined with `AllowCredentials()` is the same hole as
+  `AllowAnyOrigin()`** — it just doesn't look like it at a glance. Whenever credentials (cookies, an
+  `Authorization` header passthrough) are enabled, the origin predicate must apply a real allowlist check.
 
 ## Logging & PII
 
@@ -78,6 +96,31 @@ encryption-at-rest needs and a purpose-built password hasher (PBKDF2/BCrypt/Argo
 Core Identity's) for passwords. A custom XOR "encryption" or an unsalted general-purpose hash (MD5/SHA1)
 for passwords is always wrong.
 
+**The algorithm family alone doesn't make a password hash safe — the work factor has to clear a floor
+too.** PBKDF2 needs roughly 600,000+ iterations with SHA-256 (this figure rises over time — treat it as a
+floor to check the configured value against, not a constant to hardcode). Argon2id at its library's
+default settings needs no manual iteration tuning and is the simpler choice when the platform offers it.
+
+**AES-GCM (or any AEAD cipher) needs a fresh, random nonce on every encryption call under the same key.**
+Reusing a nonce with GCM doesn't just weaken the encryption — two ciphertexts under the same key/nonce
+pair can fully recover the authentication key. Generate the nonce from a CSPRNG per call; never derive it
+from a counter that could reset or a value that could repeat.
+
+**Compare a hash, token, or MAC with `CryptographicOperations.FixedTimeEquals`, never `==` or
+`SequenceEqual`.** Both short-circuit on the first differing byte, leaking how many leading bytes matched
+through response timing — a non-constant-time comparison of a real secret is a working timing side
+channel, not a theoretical one.
+
+## Deserialization
+
+**Never use `BinaryFormatter`** on any input that could originate outside full trust — it is obsolete,
+throws by default on modern TFMs unless explicitly re-enabled, and is a well-documented remote-code-
+execution vector: deserializing it can construct and invoke arbitrary types from the payload. Treat
+`DataContractSerializer` and a reflection-based `Newtonsoft.Json` configuration the same way for anything
+crossing a process/trust boundary — prefer `System.Text.Json`, which does not invoke arbitrary
+constructors from a type name embedded in the payload. `api-design.md`'s DTO section covers the same
+choice from the design side; this is the security angle on it.
+
 ## What review of this standard can and can't verify
 
 This plugin has no static-analysis security scanner behind it — no CVE/dependency-vulnerability check, no
@@ -87,9 +130,14 @@ and does not replace a SAST tool or dependency scan — say so rather than imply
 
 ## Review calibration
 
-Credential-shaped literals, string-built raw SQL, wildcard CORS reachable in production, hand-rolled
-crypto, and logged credentials are 🔴. Unmarked endpoint auth, unvalidated boundary input (cite the
-specific field and what reaches it), missing HTTPS/HSTS configuration, and PII at `Information`+ are 🟡 —
+Credential-shaped literals, string-built raw SQL, wildcard CORS (including `SetIsOriginAllowed(_ =>
+true)` combined with `AllowCredentials()`) reachable in production, hand-rolled crypto, an
+unbounded-execution-time regex against untrusted input, an upload endpoint accepting arbitrary
+extension/content-type unchecked, a non-constant-time comparison of a real secret,
+`BinaryFormatter`/insecure deserialization of untrusted input, and logged credentials are 🔴. Unmarked
+endpoint auth, unvalidated boundary input (cite the specific field and what reaches it), missing
+HTTPS/HSTS configuration, a demonstrated AES-GCM nonce reuse, a password hasher's iteration count below
+the current floor, a missing rate limit on an authentication endpoint, and PII at `Information`+ are 🟡 —
 state what the current effective behavior actually is (check the global auth default via
 `get_references`/`get_symbol`, don't guess) before asserting severity. A bare `[Authorize]` where a
 finer-grained policy plausibly belongs is 🔵 — a question, not an assumed bug. A security finding without

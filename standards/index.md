@@ -20,12 +20,12 @@ only block `.cs` files.
 |---|---|
 | `naming.md`, `styling.md`, `best-practices.md`, `xml-documentation.md` | every C# change — the baseline set |
 | `architecture.md` | new/changed project or namespace boundaries, dependency direction, layering, a new abstraction |
-| `api-design.md` | a public or internal API surface change: new/changed method signature, nullability, collection return types, async shape, cancellation |
+| `api-design.md` | a public or internal API surface change: new/changed method signature, nullability, collection return types, async shape, cancellation; or **a DTO / serialization-contract type** — a type whose members exist only to cross a boundary (named `*Dto`/`*Request`/`*Response`, living in a `DTO/`-style folder, or returned/accepted by a controller action or hub method) |
 | `error-handling.md` | exceptions, result/error patterns, retries, timeouts, failure propagation across a boundary |
-| `resource-management.md` | `IDisposable`/`IAsyncDisposable`, streams, unmanaged resources, pooling, ownership transfer |
-| `security.md` | endpoints, auth, SQL, configuration/credentials, logging, crypto |
-| `performance.md` | hot paths: tight loops, per-request/per-tick code, buffers, SIMD, `unsafe` |
-| `concurrency.md` | anything that awaits, locks, spawns work, or shares state across threads |
+| `resource-management.md` | `IDisposable`/`IAsyncDisposable`, streams, unmanaged resources, pooling, ownership transfer, or an event subscription (`+=`/`-=`) whose lifetime crosses a `Dispose` boundary |
+| `security.md` | endpoints, auth, SQL, configuration/credentials, logging, crypto, a `Regex` against external input, or a file upload |
+| `performance.md` | hot paths: tight loops, per-request/per-tick code, buffers, SIMD, `unsafe`; or a `GC.Collect()`/`string.Intern` call, or `ArrayPool` usage, regardless of hot/cold classification |
+| `concurrency.md` | anything that awaits, locks, spawns work, shares state across threads, or uses `Channel<T>`/`ValueTask` |
 | `testing.md` | writing or modifying tests |
 | `antipatterns.md` | the shared catalog — skim once per session; cited by name everywhere else |
 

@@ -47,6 +47,9 @@ people to ignore performance review entirely.
   inside a loop (the stack frame doesn't shrink until the method returns).
 - `ArrayPool<T>.Shared` for larger temporaries that still don't escape: every `Rent` gets its `Return`
   in a `finally`, and the used slice is cleared first if it could hold sensitive data.
+- **`Rent` may return an array longer than requested** — the pool hands back the smallest bucket that
+  fits, not an exact-length array. Track the requested/used length separately (a local, a `Span` sliced
+  to it) rather than trusting `buffer.Length`, which can read past the data actually written.
 
 ```csharp
 // DO — the stackalloc-or-pool switch: stack for the common small case, pool above the cap
@@ -168,6 +171,18 @@ foreach (var order in orders)
   trace, a stated complaint) shows the recomputation actually costs something.
 - Every cache gets a bound (size, TTL, or both) — an unbounded cache keyed by unbounded input is a slow
   memory leak, not a win (see `antipatterns.md`).
+- **Never `string.Intern` an unbounded or user-supplied string** — the intern pool is never garbage
+  collected for the process's lifetime, so interning attacker- or user-controlled values is the same
+  unbounded-growth shape as an uncapped cache, just harder to spot because there's no visible
+  `Dictionary` to flag.
+
+## Garbage collector
+
+**Never call `GC.Collect()` from production code.** The generational heuristics already run more
+precisely than a manually-triggered full collection, and forcing one is almost always a slower, more
+disruptive substitute for finding the actual allocation source (see "Allocation sources" above). The one
+narrow exception — deliberately shrinking a very large, freshly-idle process — is rare enough to need its
+own stated justification in the code, not a default reach when memory usage looks high.
 
 ## Measuring: `dotnet-trace` before optimizing
 
@@ -199,4 +214,7 @@ Loop-structure, allocation-site, or data-structure changes in **hot** code witho
 in the surrounding context (a `BenchmarkDotNet` result, a trace, a stated profiling finding) get 🟡
 ("verify this actually matters") rather than asserted as a definite win — recommend and explain, and
 give a specific counter/trace/benchmark to verify with. Never assume a guess about hot-path cost is
-correct without something in the code or the request confirming the path is both hot and measured.
+correct without something in the code or the request confirming the path is both hot and measured. A
+`GC.Collect()` call with no stated justification, or `string.Intern` on unbounded/user-supplied input, is
+🟡 regardless of hot/cold classification — these are unbounded-growth-shaped correctness concerns, not
+hot-path speculation that needs a trace to back it up.

@@ -20,7 +20,7 @@ failure modes — loaded when you need it and not before.
 | **Read or navigate** `.cs` files — find a symbol, read source, trace callers, inspect a hierarchy, check project references, ask why code looks the way it does | `dotnet-read` |
 | **Write, add, edit, modify, rename, or delete** `.cs` files | `dotnet-write` |
 | **Survey an unfamiliar area** before deciding what to change, when the set of symbols the task touches is not already known | `dotnet-explore` |
-| **Review** C#/.NET code, a PR, a diff, or a subsystem | `dotnet-review` |
+| **Review** C#/.NET code, a PR, a diff, or a subsystem — or **audit whether a convention holds** across existing code ("are all DTOs records", "does everything public have XML docs") | `dotnet-review` |
 
 Rules for the table:
 

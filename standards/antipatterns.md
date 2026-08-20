@@ -8,17 +8,23 @@ every finding cites one shared vocabulary instead of divergent definitions of th
 ## Correctness & design (correctness)
 
 Design entries below are catalog names; the full standards live in `architecture.md`, `api-design.md`,
-`error-handling.md`, and `resource-management.md`.
+`error-handling.md`, `resource-management.md`, and `best-practices.md`.
 
 - **Swallowed exceptions** — `catch { }` or `catch (Exception) { /* nothing */ }` that discards the
   failure; the caller proceeds as if the operation succeeded. Logging without rethrowing is only correct
   when the caller can genuinely continue with degraded/missing state.
+- **Exception rethrow that loses the stack** — `throw ex;` instead of a bare `throw;` when rethrowing the
+  same exception. See `error-handling.md`, which also covers wrap-don't-discard on rethrow; a `throw` from
+  inside a `finally` block replacing whatever was already propagating is `best-practices.md`'s addition to
+  that.
 - **Exceptions for control flow** — throwing/catching to implement a normal, expected branch
   (`TryParse`-shaped logic done via `throw`/`catch` instead of a `bool`/`Try*` return). Expensive and
   obscures intent.
 - **God classes / god methods** — a class or method grown to own unrelated responsibilities because it
-  was the easiest place to add "just one more thing." Visible as a class with many unrelated public
-  methods, or a method whose name no longer describes what it does.
+  was the easiest place to add "just one more thing." A method past ~30 lines or 3+ levels of nesting, or
+  a class past ~500 lines or with more unrelated public methods than one responsibility explains, is
+  worth a second look — not an automatic finding, but a size past which "grown to own unrelated
+  responsibilities" gets likely rather than merely possible.
 - **Service-locator misuse** — resolving dependencies from a container/`IServiceProvider` deep inside
   business logic instead of constructor injection. Hides the real dependency graph and breaks
   testability.
