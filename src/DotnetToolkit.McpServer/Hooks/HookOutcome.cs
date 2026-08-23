@@ -1,5 +1,8 @@
 namespace DotnetToolkit.McpServer.Hooks;
 
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
 /// <summary>
 /// What a hook handler decided: the process exit code, plus any text to emit on stderr or stdout.
 /// </summary>
@@ -31,4 +34,21 @@ internal readonly record struct HookOutcome(int ExitCode, string? Stderr = null,
     /// <param name="json">A serialized Claude Code hook-output object.</param>
     /// <returns>An outcome with exit code 0 and the JSON on stdout.</returns>
     public static HookOutcome AllowWith(string json) => new(0, Stdout: json);
+
+    /// <summary>Allow a <c>PreToolUse</c> call while surfacing non-blocking advice to the agent.</summary>
+    /// <param name="reason">Why a different tool would likely serve this call better, without denying it.</param>
+    /// <returns>An outcome with exit code 0 and a <c>PreToolUse</c> advisory <c>permissionDecisionReason</c> on stdout.</returns>
+    public static HookOutcome AllowAdvising(string reason)
+    {
+        var json = new JsonObject
+        {
+            ["hookSpecificOutput"] = new JsonObject
+            {
+                ["hookEventName"] = "PreToolUse",
+                ["permissionDecision"] = "allow",
+                ["permissionDecisionReason"] = reason,
+            },
+        };
+        return new HookOutcome(0, Stdout: json.ToJsonString(JsonSerializerOptions.Default));
+    }
 }

@@ -136,13 +136,16 @@ bump is what you actually needed.
   background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by the
   `hook hint-reload-new-cs-file` subcommand through `Hooks/ControlClient.cs`. **Not a security
   boundary** — loopback-only, same trust level as the MCP session.
-- `Hooks/` — the five Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
+- `Hooks/` — the seven Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
-  `BashCommandScanner.cs` carry the logic the read guards share; `WriteChecklistHint.cs` is the one
-  matching an MCP tool rather than a built-in. `GuardSuspension.cs` holds the three blocking guards'
-  off-switch, read by `HookCli` before it dispatches to any of them and written by `set_hook_guards`;
-  its state is an expiry rather than a flag, and it inverts `HookCli`'s fail-open rule on purpose —
-  an unreadable state file leaves the guards **on**. `docs/design/hooks.md`.
+  `BashCommandScanner.cs` carry the logic the read guards (and `guard-cs-bash-write`'s write-shape
+  detection) share; `WriteChecklistHint.cs` is the one matching an MCP tool rather than a built-in.
+  `GuardSuspension.cs` holds the four blocking guards' (`guard-cs-edit`, `guard-cs-read`,
+  `guard-cs-bash-read`, `guard-cs-bash-write`) tri-state switch — `Active`/`Suspended`/`Blocked` — read
+  by `HookCli` before it dispatches to any of them and written by `set_hook_guards`; its state is an
+  expiry (plus which of the two non-default modes) rather than a flag, and it inverts `HookCli`'s
+  fail-open rule on purpose — an unreadable state file leaves the guards at their default, not
+  suspended. `docs/design/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -226,16 +229,19 @@ on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs a
 `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
 `scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships six hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
-`hook guard-cs-bash-read`, `hook hint-reload-new-cs-file`, `hook hint-write-checklist`,
-`hook meter-tool-call` — all subcommands of that same published
+`hooks/hooks.json` ships seven hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
+`hook guard-cs-bash-read`, `hook guard-cs-bash-write`, `hook hint-reload-new-cs-file`,
+`hook hint-write-checklist`, `hook meter-tool-call` — all subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
 runtime requires a shell, a shebang, or `node`/`python3`/`jq`.
 
-Guard deny messages point at `docs/tools/<tool>.md` rather than restating a tool's manual — the message
-fires often, the manual is read once.
+`guard-cs-edit`'s deny message, `guard-cs-bash-write`'s deny message (added 2026-08-21 to close the
+write-through-`Bash` gap `dotnet-guard-redteam` found — see `docs/design/hooks.md`), and
+`guard-cs-read`/`guard-cs-bash-read`'s advisory message (allow, not deny, since 2026-08-21 — see
+`docs/design/hooks.md`), all point at `docs/tools/<tool>.md` rather than restating a tool's manual —
+the message fires often, the manual is read once.
 
 ### How rules load
 
@@ -246,12 +252,13 @@ opt-out, and only the built-in Explore and Plan agents skip them — so a seven-
 pays them eight times.
 
 **Why the coding standards are not rules.** A path-scoped rule fires only when the built-in `Read`
-tool touches a matching file, and here `.cs` contact goes through the MCP tools or is blocked by the
-guards — so `paths: ["**/*.cs"]` almost never fires. Worse, it is not a reliable *suppressor* either:
-`guard-cs-read` deliberately allows `Read` on `.cs` files no project compiles (test fixtures,
-`<Compile Remove>` exclusions, nested throwaway solutions), and reading one of those would have
-matched the glob and injected all thirteen standards — roughly 80 KB — into the session and every
-subagent inheriting it. Non-deterministic and invisible.
+tool touches a matching file, and here `.cs` contact mostly goes through the MCP tools instead — so
+`paths: ["**/*.cs"]` almost never fires. Worse, it is not a reliable *suppressor* either: `guard-cs-read`
+is advisory rather than blocking (it allows every `Read`, compiled file or not, adding a note only for
+the compiled case), so a `Read` of any `.cs` file — including one no project compiles, such as a test
+fixture, a `<Compile Remove>` exclusion, or a nested throwaway solution — would have matched the glob
+and injected all thirteen standards — roughly 80 KB — into the session and every subagent inheriting
+it. Non-deterministic and invisible.
 
 So the standards live in **`standards/` at the plugin root, outside any rules directory, with no
 frontmatter at all**. They are read only by explicit path: the main agent at write time through

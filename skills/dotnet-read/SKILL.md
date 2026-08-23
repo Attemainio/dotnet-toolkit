@@ -9,7 +9,9 @@ Every question below is answered by a Roslyn-backed MCP tool that reads the comp
 `Grep`, `Glob`, `find`, `cat`, `sed` and bare `Read` on a `.cs` file are wrong here, not just
 slower — they cannot see interface, virtual or delegate dispatch, count comment and string matches as
 real hits, silently under-report when output is truncated, and hand back one fragment of a partial
-class with no signal that the rest exists. `PreToolUse` hooks block them.
+class with no signal that the rest exists. A `PreToolUse` hook adds an advisory note when `Read` or a
+shell read reaches a compiled `.cs` file, but does not block it — `Grep`/`Glob` are watched by no hook
+at all. The router below, not hook enforcement, is what actually keeps you on the right tool.
 
 Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
 

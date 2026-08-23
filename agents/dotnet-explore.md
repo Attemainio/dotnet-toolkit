@@ -41,8 +41,9 @@ go looking for more instructions.
   out of scope. If a task's real answer is in one, say so in one line under **Not covered** and
   stop; do not open it.
 - **Never `Read` a `.cs` file.** `get_symbol` serves source through its own `source` argument
-  (`source: "full"`, or a region with `source: "code@120-160"`). A `PreToolUse` hook blocks it
-  anyway.
+  (`source: "full"`, or a region with `source: "code@120-160"`). A `PreToolUse` hook used to block
+  this as a backstop; it is advisory-only now, so this instruction is the sole boundary — treat it as
+  absolute, not as guidance a hook would still catch you breaking.
 - **`Read` is for one thing only**: a `docs/tools/<tool>.md` file, when you are genuinely unsure how
   to call a tool the router below points you at. Nothing else — not `docs/design/architecture.md`,
   not `docs/design/agents.md`, not `standards/*.md`, and specifically **not**

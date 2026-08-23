@@ -70,6 +70,7 @@ What it adds to the repo you run it in:
 | `.claude/settings.json` | The read-only MCP tools merged into the permission allowlist, so they stop prompting on every call |
 | `.claude/dotnet-toolkit/install.json` | A record of what was installed, used to verify and refresh later |
 | `.claude/dotnet-toolkit/.gitignore` | Keeps the toolkit's run output out of your history — see below. Your own root `.gitignore` is never touched |
+| `.claude/dotnet-toolkit/local-install.json` | *Conditional.* Your repo's own notes on any local workaround needed beyond the plugin's own procedure — a restricted-path copy step, a locked-file update sequence. Never auto-created; `/dotnet-init` offers to write or update it when one applies |
 
 It **never modifies your CLAUDE.md**.
 
@@ -93,6 +94,38 @@ the server running in an open session is the one it started with.
 
 Re-run `/dotnet-init` afterwards to refresh the router rule if the plugin changed it.
 
+### If `git pull` fails while a Claude Code session has this plugin loaded
+
+On Windows, an open session holds `dist/DotnetToolkit.McpServer.dll` locked for as long as the server
+process runs, and a `git pull` that tries to overwrite a locked file does not queue behind it — it
+aborts partway through. **Close Claude Code entirely, then run `git pull` again from a plain terminal,
+then reopen.** Restarting a session without exiting the app does not release the lock, and running the
+command via an in-session `!` shell prefix does not either — the server process is still the same one.
+
+```powershell
+cd "path\to\dotnet-toolkit"
+git pull
+```
+
+If a previous pull was interrupted this way, `git status` shows a pile of modified/deleted files with
+`dist/` itself listed as untracked (`??`) and `HEAD` still on the pre-pull commit — that is the
+partial-checkout state, not corruption. **Re-running `git pull` does not finish it, even with the app
+closed**: git already wrote the incoming content before it hit the locked DLL, so that content now reads
+back as *local changes*, and the merge aborts before touching anything further (`Your local changes to
+the following files would be overwritten by merge`, plus `The following untracked working tree files
+would be overwritten`). None of it is your own work — it is the interrupted pull's own half-applied
+output. With the app closed, land on the target directly instead. Safe whenever
+`git rev-list --count origin/main..HEAD` is `0` (no local commits to lose):
+
+```powershell
+git fetch origin
+git reset --hard origin/main
+git clean -fd dist/      # drops any build fossil predating the reset, e.g. a stray .exe
+```
+
+Then re-run `/dotnet-init` — a plugin pull does not refresh a consuming repo's copy of
+`.claude/rules/dotnet-index.md` on its own.
+
 ## Uninstalling
 
 - **Loaded with `--plugin-dir`**: stop passing the flag. Nothing was recorded anywhere.
@@ -114,6 +147,30 @@ exactly what a clean removal touches, as a dry run.
 | Answers changed after a rebase or a big pull | `reload_workspace(scope: "all")`. |
 | More than one .NET 10 SDK installed | The server registers the newest and logs `MSBuild: ...` to stderr at startup. `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install. |
 | A tool response is hard to parse | `set_output_format(format: "compact")` for compact JSON, or `"json"` for indented. Holds for the session. |
+| The server never starts, with no named error | A restricted execution policy may be blocking the binary's path. See below. |
+| `git pull` fails partway, or leaves `dist/` untracked | An open Claude Code session held `dist/`'s DLL locked mid-pull. See [Updating](#updating). |
+
+### Restricted execution environments (AppLocker, locked-down paths)
+
+Some organizations restrict which filesystem paths a binary may execute from — Windows AppLocker path
+rules are the common case. If your clone's location isn't on the allowed list, the server never starts,
+and the failure surfaces as `--plugin-dir`/the marketplace load silently not working, with nothing
+naming AppLocker specifically.
+
+The workaround is to run the plugin from a location the policy already allows — a per-user path such as
+under `%LOCALAPPDATA%` or `%APPDATA%` is the usual choice — and copy the clone's contents there:
+
+```powershell
+robocopy "C:\path\to\dotnet-toolkit" "%LOCALAPPDATA%\dotnet-toolkit" /MIR
+```
+
+Point `--plugin-dir` (or the marketplace registration) at the copy, not the original clone.
+
+**This is not automatic, and `git pull` does not fix it for you**: pulling updates the *original* clone
+only, so the copy the marketplace actually runs from goes stale on every update unless the copy step is
+repeated afterward. If this applies to your setup, record the exact copy command in
+`.claude/dotnet-toolkit/local-install.json` (`/dotnet-init` offers to write it) so the next session —
+and the next person on your team — doesn't have to rediscover the workaround.
 
 ### Per-repo configuration
 
@@ -132,8 +189,9 @@ of that folder splits it in two:
 
 | Tracked | Ignored |
 |---|---|
-| `install.json` — what you installed | `review/`, `eval/`, `perf/` — reports from `dotnet-review`, `dotnet-selfeval`, `dotnet-performance` |
+| `install.json` — what you installed | `review/`, `eval/`, `perf/`, `redteam/` — reports from `dotnet-review`, `dotnet-selfeval`, `dotnet-performance`, `dotnet-guard-audit` |
 | `config.json` — your per-repo toolkit settings | `backups/` — init's pre-overwrite copies, one machine's |
+| `local-install.json` — your repo's own installation workarounds, if any | |
 | the `.gitignore` itself | `cache/` — self-ignored by the server, rebuildable |
 
 The split is what each file *describes*. `install.json` and `config.json` describe the repo, so they

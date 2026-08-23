@@ -14,6 +14,9 @@ public sealed class HookRepoFixture : IDisposable
         Root = Path.Combine(Path.GetTempPath(), "dotnet-toolkit-hooks-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
         File.WriteAllText(Path.Combine(Root, "App.slnx"), "<Solution />");
+        File.WriteAllText(
+            Path.Combine(Root, "App.sln"),
+            "Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"AppWithOwnSln\", \"src\\AppWithOwnSln\\AppWithOwnSln.csproj\", \"{11111111-1111-1111-1111-111111111111}\"\nEndProject\n");
 
         var project = Path.Combine(Root, "src", "App");
         Directory.CreateDirectory(project);
@@ -25,6 +28,17 @@ public sealed class HookRepoFixture : IDisposable
         var excluded = Path.Combine(project, "fixtures");
         Directory.CreateDirectory(excluded);
         File.WriteAllText(Path.Combine(excluded, "Excluded.cs"), "class Excluded;");
+
+        // A project that also ships its own per-project .sln for standalone-open convenience, while
+        // still being included in the root solution -- the PandaAI.Core.sln/PandaAI.sln shape. The
+        // nested .sln here must not exempt this project from guard enforcement.
+        var ownSln = Path.Combine(Root, "src", "AppWithOwnSln");
+        Directory.CreateDirectory(ownSln);
+        File.WriteAllText(Path.Combine(ownSln, "AppWithOwnSln.sln"), "");
+        File.WriteAllText(
+            Path.Combine(ownSln, "AppWithOwnSln.csproj"),
+            """<Project Sdk="Microsoft.NET.Sdk" />""");
+        File.WriteAllText(Path.Combine(ownSln, "Included.cs"), "class Included;");
 
         // A test fixture's own throwaway solution: its files belong to it, not to the outer repo.
         var nested = Path.Combine(Root, "tests", "SampleSolution");
@@ -61,6 +75,8 @@ public sealed class HookRepoFixture : IDisposable
     public string ExcludedFile => Path.Combine(Root, "src", "App", "fixtures", "Excluded.cs");
 
     public string NestedSolutionFile => Path.Combine(Root, "tests", "SampleSolution", "Nested.cs");
+
+    public string IncludedNestedSolutionFile => Path.Combine(Root, "src", "AppWithOwnSln", "Included.cs");
 
     public string FileWithoutProject => Path.Combine(Root, "loose", "NoProject.cs");
 
@@ -106,6 +122,16 @@ public sealed class CsFileMembershipTests : IClassFixture<HookRepoFixture>
     public void TryResolveOwningProject_NestedSolutionBetweenFileAndRoot_ReturnsFalse()
     {
         Assert.False(CsFileMembership.TryResolveOwningProject(_repo.NestedSolutionFile, _repo.Root, out _));
+    }
+
+    [Fact]
+    public void TryResolveOwningProject_NestedSolutionButProjectIsInRootSolution_ReturnsTrue()
+    {
+        var governed = CsFileMembership.TryResolveOwningProject(
+            _repo.IncludedNestedSolutionFile, _repo.Root, out var project);
+
+        Assert.True(governed);
+        Assert.Equal("src/AppWithOwnSln/AppWithOwnSln.csproj", project);
     }
 
     [Fact]
@@ -189,13 +215,13 @@ public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
     public GuardCsReadTests(HookRepoFixture repo) => _repo = repo;
 
     [Fact]
-    public void Evaluate_ReadOfCompiledFile_DeniesNamingTheProject()
+    public void Evaluate_ReadOfCompiledFile_AllowsWithAdvisoryNote()
     {
         var outcome = GuardCsRead.Evaluate(new HookPayload("Read", _repo.CompiledFile, null), _repo.Context());
 
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("src/App/App.csproj", outcome.Stderr);
-        Assert.Contains("dotnet-read", outcome.Stderr);
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Contains("src/App/App.csproj", outcome.Stdout);
+        Assert.Contains("dotnet-read", outcome.Stdout);
     }
 
     [Fact]
@@ -215,6 +241,23 @@ public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
             HookOutcome.Allow,
             GuardCsRead.Evaluate(new HookPayload("Read", missing, null), _repo.Context()));
     }
+
+    [Fact]
+    public void Evaluate_BlockedModeOnCompiledFile_Denies()
+    {
+        var outcome = GuardCsRead.Evaluate(new HookPayload("Read", _repo.CompiledFile, null), _repo.Context(), blocked: true);
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("dotnet-read", outcome.Stderr);
+    }
+
+    [Fact]
+    public void Evaluate_BlockedModeOnFileNoProjectCompiles_Allows()
+    {
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsRead.Evaluate(new HookPayload("Read", _repo.FileWithoutProject, null), _repo.Context(), blocked: true));
+    }
 }
 
 public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
@@ -224,7 +267,7 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
     public GuardCsBashReadTests(HookRepoFixture repo) => _repo = repo;
 
     [Fact]
-    public void Evaluate_MultiTermGrepOverCompiledFile_Denies()
+    public void Evaluate_MultiTermGrepOverCompiledFile_AllowsWithAdvisoryNote()
     {
         // The exact shape that bypassed the shell guard: the quoted alternation contains the same
         // character the segmenter splits on.
@@ -232,16 +275,19 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
 
         var outcome = GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
 
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("'grep'", outcome.Stderr);
+        Assert.Equal(0, outcome.ExitCode);
+        // The raw JSON text escapes the backtick to ` (System.Text.Json's default encoder), so
+            // this decodes the payload rather than substring-matching the raw bytes.
+            var reason = System.Text.Json.Nodes.JsonNode.Parse(outcome.Stdout!)!["hookSpecificOutput"]!["permissionDecisionReason"]!.GetValue<string>();
+            Assert.Contains("`grep`", reason);
     }
 
     [Fact]
-    public void Evaluate_SedOverCompiledFile_Denies()
+    public void Evaluate_SedOverCompiledFile_AllowsWithAdvisoryNote()
     {
         var command = $"sed -n '1,40p' {_repo.CompiledFile}";
 
-        Assert.Equal(2, GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()).ExitCode);
+        Assert.Equal(0, GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()).ExitCode);
     }
 
     [Theory]
@@ -292,13 +338,13 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
 
     /// <summary>The cd is honoured, not treated as a way out: one INTO this repo still guards what it reaches.</summary>
     [Fact]
-    public void Evaluate_TreeScanAfterCdWithinTheRepo_StillDenies()
+    public void Evaluate_TreeScanAfterCdWithinTheRepo_StillAdvises()
     {
         var outcome = GuardCsBashRead.Evaluate(
             new HookPayload("Bash", null, "cd src && grep -rn \"Alpha\" ."), _repo.Context());
 
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("searching", outcome.Stderr);
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Contains("searching", outcome.Stdout);
     }
 
     /// <summary>
@@ -314,12 +360,12 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
     [InlineData("grep -r \"Alpha\" src")]
     [InlineData("rg \"Alpha\" src")]
     [InlineData("grep -n \"Alpha\" src/App/*.cs")]
-    public void Evaluate_TreeOrGlobScanOverCompiledSources_Denies(string command)
+    public void Evaluate_TreeOrGlobScanOverCompiledSources_Advises(string command)
     {
         var outcome = GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
 
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("searching", outcome.Stderr);
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Contains("searching", outcome.Stdout);
     }
 
     /// <summary>
@@ -339,7 +385,103 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
             HookOutcome.Allow,
             GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
     }
+
+    [Fact]
+    public void Evaluate_BlockedModeOnCompiledFile_Denies()
+    {
+        var command = $"cat {_repo.CompiledFile}";
+
+        var outcome = GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context(), blocked: true);
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("dotnet-read", outcome.Stderr);
+    }
+
+    [Fact]
+    public void Evaluate_BlockedModeTreeScan_Denies()
+    {
+        var outcome = GuardCsBashRead.Evaluate(
+            new HookPayload("Bash", null, "grep -r \"Alpha\" src"), _repo.Context(), blocked: true);
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("dotnet-read", outcome.Stderr);
+    }
+
+    [Fact]
+    public void Evaluate_BlockedModeCommandNotOnBlocklist_Allows()
+    {
+        var command = $"git log {_repo.CompiledFile}";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context(), blocked: true));
+    }
 }
+
+public sealed class GuardCsBashWriteTests : IClassFixture<HookRepoFixture>
+{
+    private readonly HookRepoFixture _repo;
+
+    public GuardCsBashWriteTests(HookRepoFixture repo) => _repo = repo;
+
+    [Theory]
+    [InlineData("echo 'marker' >> {0}")]
+    [InlineData("sed -i 's/x/y/' {0}")]
+    [InlineData("tee {0}")]
+    public void Evaluate_WriteShapedCommandOntoCompiledFile_Denies(string template)
+    {
+        var command = string.Format(template, _repo.CompiledFile);
+
+        var outcome = GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
+
+        Assert.Equal(2, outcome.ExitCode);
+        Assert.Contains("dotnet-write", outcome.Stderr);
+    }
+
+    [Fact]
+    public void Evaluate_RedirectOntoNewCsFile_Allows()
+    {
+        // A file that does not exist yet has no symbolId for validate_patch to lease a version against -
+        // the same allowance guard-cs-edit makes for Write creating a new file.
+        var target = Path.Combine(_repo.Root, "src", "App", "BrandNew.cs");
+        var command = $"echo 'marker' >> {target}";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    [Fact]
+    public void Evaluate_RedirectOntoFileNoProjectCompiles_Allows()
+    {
+        var command = $"echo 'marker' >> {_repo.FileWithoutProject}";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    [Fact]
+    public void Evaluate_ReadOnlyCommand_Allows()
+    {
+        var command = $"cat {_repo.CompiledFile}";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+
+    [Fact]
+    public void Evaluate_RedirectAfterCdIntoAnotherRepo_Allows()
+    {
+        var command = $"cd {_repo.Sibling} && echo 'marker' >> src/Other/Elsewhere.cs";
+
+        Assert.Equal(
+            HookOutcome.Allow,
+            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+    }
+}
+
 
 public sealed class HookPayloadTests
 {

@@ -55,8 +55,9 @@ that is three round-trips per symbol for what one batched call returns.
 Reserve narrower fetches for follow-up on something the batch already pointed you at: a region of a
 long member via `source: "code@120-160"` — the source query is its own argument, separate from
 `include` — or `include: "bodyOutline"` first when the right region isn't known yet. Only `Read` a file in full when you are about to judge specific lines and no
-`get_symbol` fetch gave you them — note that a `PreToolUse` guard blocks `Read` on `.cs` files that a
-project compiles, so this path is rarely available and rarely needed.
+`get_symbol` fetch gave you them — note that a `PreToolUse` hook now only advises against `Read` on
+`.cs` files a project compiles rather than blocking it, so it will succeed if you reach for it; prefer
+`get_symbol` on efficiency and correctness grounds regardless, not because the read would fail.
 
 Trace callers, implementations, and overrides with `get_references`, never `Grep` — a text search
 misses interface and virtual dispatch and returns comment hits. Reach for `get_scope` (what is

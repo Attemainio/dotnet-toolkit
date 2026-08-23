@@ -55,5 +55,7 @@ slower one read correctly, because a misread field becomes a wrong edit rather t
 
 Shell and plain file tools, unchanged: `dotnet build` / `dotnet test` / `dotnet publish`, `git`, and
 reading or editing non-C# files (Markdown, JSON, `.cmd`, `.csproj`, skill and agent definitions).
-`PreToolUse` hooks block `Read`, `Edit`/`Write` and shell reads (`cat`/`grep`/`sed`/…) on a compiled
-`.cs` file, and point you at the skill that covers what you were trying to do.
+A `PreToolUse` hook blocks `Edit`/`Write` on a compiled `.cs` file and points at the skill that covers
+the write path. `Read` and shell reads (`cat`/`grep`/`sed`/…) on a compiled `.cs` file are **not**
+blocked — a hook allows the call but adds an advisory note that the plugin's tools would likely answer
+it more cheaply or completely, which is guidance to weigh, not a wall to route around.

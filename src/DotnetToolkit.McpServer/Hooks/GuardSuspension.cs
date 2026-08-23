@@ -2,32 +2,55 @@ using System.Globalization;
 
 namespace DotnetToolkit.McpServer.Hooks;
 
+/// <summary>Which of the three guard states is currently in force.</summary>
+internal enum GuardMode
+{
+    /// <summary>Normal enforcement: write guards deny, read guards advise.</summary>
+    Active,
+
+    /// <summary>Nothing blocks and nothing advises - every guard hook allows the call outright.</summary>
+    Suspended,
+
+    /// <summary>Read guards deny too, on top of the write guards that always did.</summary>
+    Blocked,
+}
+
 /// <summary>What the guard hooks are currently doing, and why.</summary>
-/// <param name="Suspended">Whether the C# guards are letting Read/Edit/Bash calls through.</param>
+/// <param name="Mode">Which of the three states (<see cref="GuardMode"/>) is in force.</param>
 /// <param name="Until">
-/// When a timed suspension lapses. Null when the guards are active, and null for an environment
+/// When a timed suspension or block lapses. Null when the guards are active, and null for an environment
 /// suspension, which is bounded by the process rather than by a clock.
 /// </param>
 /// <param name="Source">
 /// <c>active</c>, <c>environment</c> (<see cref="GuardSuspension.DisableVariable"/> is set), or
 /// <c>timed</c> (a state file that has not lapsed yet).
 /// </param>
-internal sealed record GuardState(bool Suspended, DateTimeOffset? Until, string Source);
+internal sealed record GuardState(GuardMode Mode, DateTimeOffset? Until, string Source)
+{
+    /// <summary>Whether nothing blocks and nothing advises - the unequipped-session simulation.</summary>
+    public bool Suspended => Mode == GuardMode.Suspended;
+
+    /// <summary>Whether the read guards are hard-denying too, on top of the write guards' usual hard deny.</summary>
+    public bool Blocked => Mode == GuardMode.Blocked;
+}
 
 /// <summary>
-/// Whether this repo's C# guard hooks are suspended, and for how much longer.
+/// Whether this repo's C# guard hooks are suspended or forced to block, and for how much longer.
 /// </summary>
 /// <remarks>
 /// The guards exist so C# work goes through the MCP tools instead of Read/Edit/grep. Turning them off
-/// is sometimes the point rather than a workaround — measuring what the tools actually save needs the
-/// unguarded baseline, in the same repo, on the same files — but a guard left off because nobody
-/// remembered to restore it is indistinguishable from one that was never installed, and it fails
-/// silently: work simply stops being recorded.
+/// (<see cref="GuardMode.Suspended"/>) is sometimes the point rather than a workaround — measuring what
+/// the tools actually save needs the unguarded baseline, in the same repo, on the same files. Forcing
+/// them harder (<see cref="GuardMode.Blocked"/>) is the opposite need: reproducing this repo's own
+/// pre-2026-08-20 read enforcement as a forced-enforcement comparison point, not a default anyone should
+/// ship. Either one left in force because nobody remembered to restore it is a real failure mode, and it
+/// fails silently in different ways: a stuck suspension stops work from being recorded; a stuck block
+/// makes an ordinary `Read` start denying with no explanation.
 /// <para>
-/// So a suspension is stored as an <b>expiry, never a flag</b>. The state file holds the instant the
-/// guards resume, every read that finds that instant in the past deletes the file, and
-/// <see cref="MaxDuration"/> bounds what a caller can ask for. There is deliberately no way to suspend
-/// indefinitely through this path, so nothing has to remember to undo it.
+/// So a suspend or a block is stored as an <b>expiry, never a flag</b>. The state file holds which mode
+/// is in force and the instant the guards resume, every read that finds that instant in the past deletes
+/// the file, and <see cref="MaxDuration"/> bounds what a caller can ask for. There is deliberately no way
+/// to suspend or block indefinitely through this path, so nothing has to remember to undo it.
 /// </para>
 /// <para>
 /// <see cref="DisableVariable"/> is the separate, non-expiring escape hatch. It is for a harness that
@@ -144,7 +167,7 @@ internal static class GuardSuspension
     {
         if (IsSet(Environment.GetEnvironmentVariable(DisableVariable)))
         {
-            return new GuardState(Suspended: true, Until: null, Source: "environment");
+            return new GuardState(GuardMode.Suspended, Until: null, Source: "environment");
         }
 
         try
@@ -164,12 +187,12 @@ internal static class GuardSuspension
     }
 
     /// <summary>
-    /// Suspends the guards for a bounded period, replacing any suspension already in force for the same
-    /// scope.
+    /// Sets a timed guard mode (<see cref="GuardMode.Suspended"/> or <see cref="GuardMode.Blocked"/>) for a
+    /// bounded period, replacing any mode already in force for the same scope.
     /// </summary>
     /// <param name="root">The repo root the guards apply to.</param>
     /// <param name="duration">
-    /// How long to suspend for. Clamped into <c>(0, <see cref="MaxDuration"/>]</c>; a non-positive value
+    /// How long the mode lasts. Clamped into <c>(0, <see cref="MaxDuration"/>]</c>; a non-positive value
     /// becomes <see cref="DefaultDuration"/> rather than an instant no-op, since a caller asking for zero
     /// meant to ask for something.
     /// </param>
@@ -178,8 +201,14 @@ internal static class GuardSuspension
     /// The caller's session id from <see cref="CurrentSessionId"/>, or null to write the unscoped,
     /// repo-wide file the way every caller did before session scoping existed.
     /// </param>
-    /// <returns>When the guards will resume.</returns>
-    public static DateTimeOffset Suspend(string root, TimeSpan duration, DateTimeOffset now, string? sessionId = null)
+    /// <param name="mode">
+    /// <see cref="GuardMode.Suspended"/> (the default) or <see cref="GuardMode.Blocked"/>.
+    /// <see cref="GuardMode.Active"/> is never a valid argument here - it is the state <see cref="Resume"/>
+    /// returns to, not one this writes a file for.
+    /// </param>
+    /// <returns>When the mode lapses.</returns>
+    public static DateTimeOffset SetMode(
+        string root, TimeSpan duration, DateTimeOffset now, string? sessionId = null, GuardMode mode = GuardMode.Suspended)
     {
         var bounded = duration <= TimeSpan.Zero ? DefaultDuration
             : duration > MaxDuration ? MaxDuration
@@ -188,7 +217,7 @@ internal static class GuardSuspension
         var until = now + bounded;
         var file = StateFile(root, sessionId);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-        File.WriteAllText(file, until.ToString("O"));
+        File.WriteAllText(file, $"{mode}\n{until:O}");
         return until;
     }
 
@@ -217,7 +246,7 @@ internal static class GuardSuspension
         return !IsSet(Environment.GetEnvironmentVariable(DisableVariable));
     }
 
-    private static GuardState Active { get; } = new(Suspended: false, Until: null, Source: "active");
+    private static GuardState Active { get; } = new(GuardMode.Active, Until: null, Source: "active");
 
     private static bool IsSet(string? value) =>
         !string.IsNullOrWhiteSpace(value)
@@ -238,14 +267,27 @@ internal static class GuardSuspension
         }
 
         var raw = File.ReadAllText(file).Trim();
-        if (!DateTimeOffset.TryParse(raw, null, DateTimeStyles.RoundtripKind, out var until) || until <= now)
+
+        // The file holds "<mode>\n<until>" since GuardMode.Blocked was added; a bare timestamp is the
+        // pre-Blocked format still on disk from a suspension written by an older build of this server -
+        // treat that as Suspended rather than fail the read.
+        var mode = GuardMode.Suspended;
+        var timestamp = raw;
+        var split = raw.IndexOf('\n');
+        if (split > 0 && Enum.TryParse<GuardMode>(raw[..split].Trim(), out var parsed) && parsed != GuardMode.Active)
+        {
+            mode = parsed;
+            timestamp = raw[(split + 1)..].Trim();
+        }
+
+        if (!DateTimeOffset.TryParse(timestamp, null, DateTimeStyles.RoundtripKind, out var until) || until <= now)
         {
             // Unreadable or expired content is not a licence to stay unguarded: drop it and re-arm.
             Delete(file);
             return false;
         }
 
-        state = new GuardState(Suspended: true, Until: until, Source: "timed");
+        state = new GuardState(mode, Until: until, Source: "timed");
         return true;
     }
 

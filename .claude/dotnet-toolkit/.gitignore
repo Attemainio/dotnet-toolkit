@@ -7,6 +7,7 @@
 eval/
 perf/
 review/
+redteam/
 backups/
 
 # Deliberately NOT ignored, and one file rather than one per folder:

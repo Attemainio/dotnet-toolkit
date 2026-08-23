@@ -22,7 +22,7 @@ repo-local. Everything else leaves with the plugin.
   — **leaving the rest of that file untouched**. It is the repo's own file; init only merged into it.
 - `.claude/dotnet-toolkit/install.json`.
 - `.claude/dotnet-toolkit/.gitignore` — but only together with the run output it covers. Deleting it
-  while `review/`, `eval/`, `perf/` or `backups/` still hold files un-ignores all of them at once,
+  while `review/`, `eval/`, `perf/`, `redteam/` or `backups/` still hold files un-ignores all of them at once,
   and the next `git add -A` commits a pile of stale reports. Delete those directories first, or
   leave the file.
 

@@ -126,8 +126,22 @@ get_retrieval_metrics()
    "byTool":[{"key":"Read","calls":12,"requestTokens":240,"responseTokens":19800},
              {"key":"Grep","calls":19,"requestTokens":610,"responseTokens":8300}],
    "byAgent":[{"key":"dotnet-perf-raw-probe","calls":31,"requestTokens":850,"responseTokens":28100},
-              {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602}]}}
+              {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602}],
+   "byAgentTool":[
+     {"key":"dotnet-perf-raw-probe","calls":31,"requestTokens":850,"responseTokens":28100,
+      "byTool":[{"key":"Grep","calls":19,"requestTokens":610,"responseTokens":8300},
+                {"key":"Read","calls":12,"requestTokens":240,"responseTokens":19800}]},
+     {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602,
+      "byTool":[{"key":"get_symbol","calls":14,"requestTokens":460,"responseTokens":3602}]}]}}
 ```
+
+**`byAgentTool` is `byTool` and `byAgent` crossed** — one row per agent, each carrying its own nested
+`byTool` breakdown, from the same `tool_call_events` rows the other two groupings read. Neither `byTool`
+nor `byAgent` alone can answer "how many `Read` calls did the raw probe make, versus `Grep`" — `byTool`
+folds every agent together per tool, `byAgent` folds every tool together per agent. This is the field to
+read for "where did *this* agent's tokens actually go, call by call" instead of inferring it from two
+separate aggregates or trusting a probe's own self-reported call log, which every measured run so far
+has undercounted (see `skills/dotnet-performance/SKILL.md`).
 
 **The two directions are priced differently, which is why they are never summed.**
 
@@ -149,11 +163,12 @@ every measured run: on 2026-08-13 a `dotnet-explore` run reported "20 calls used
 and a true `tool_uses` of 35. That is an MCP-equipped agent, not a grep one — under-reporting is an
 agent-reasoning artefact, not a property of the raw route.
 
-**`byAgent` merges parallel instances of the same agent type.** `agent_id` is recorded in
-`tool_call_events` but no grouping reads it back, so four concurrent `dotnet-code-review` instances
-appear as one row with their calls summed. Harmless when the agent types differ (`dotnet-performance`
-runs exactly two, one per route); wrong for any fan-out of one type, where the block reports the
-fleet's total and no per-instance split exists.
+**`byAgent` and `byAgentTool` both merge parallel instances of the same agent type.** `agent_id` is
+recorded in `tool_call_events` but no grouping reads it back, so four concurrent `dotnet-code-review`
+instances appear as one row (in `byAgent`) or one nested breakdown (in `byAgentTool`) with their calls
+summed. Harmless when the agent types differ (`dotnet-performance` runs exactly two, one per route);
+wrong for any fan-out of one type, where the block reports the fleet's total and no per-instance split
+exists.
 
 Five things to read correctly:
 

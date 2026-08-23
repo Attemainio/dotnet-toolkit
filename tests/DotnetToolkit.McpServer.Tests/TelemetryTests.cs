@@ -333,6 +333,29 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(10, byAgent.Single(g => g.Key == "(main thread)").ResponseTokens);
     }
 
+    [Fact]
+    public void MeteredCallsGroupByAgentAndTool()
+    {
+        _recorder.RecordToolCall(SampleToolCall("toolu_1", "Grep", 40, 900, "dotnet-perf-raw-probe"));
+        _recorder.RecordToolCall(SampleToolCall("toolu_2", "Read", 30, 400, "dotnet-perf-raw-probe"));
+        _recorder.RecordToolCall(SampleToolCall("toolu_3", "get_symbol", 50, 300, "dotnet-perf-mcp-probe"));
+        _recorder.RecordToolCall(SampleToolCall("toolu_4", "Bash", 20, 10));
+
+        var byAgentTool = _metrics.Read(null, null, "tool").Harness!.ByAgentTool;
+
+        Assert.Equal(3, byAgentTool.Count);
+        var rawProbe = byAgentTool.Single(a => a.Agent == "dotnet-perf-raw-probe");
+        Assert.Equal(2, rawProbe.Calls);
+        Assert.Equal(1300, rawProbe.ResponseTokens);
+        Assert.Equal(2, rawProbe.ByTool.Count);
+        Assert.Equal(900, rawProbe.ByTool.Single(g => g.Key == "Grep").ResponseTokens);
+        Assert.Equal(400, rawProbe.ByTool.Single(g => g.Key == "Read").ResponseTokens);
+
+        var mainThread = byAgentTool.Single(a => a.Agent == "(main thread)");
+        Assert.Equal(1, mainThread.Calls);
+        Assert.Equal(10, mainThread.ResponseTokens);
+    }
+
     // PostToolUse can be delivered more than once for one call. tool_use_id is UNIQUE and the insert
     // ignores a conflict, so a redelivery is a no-op rather than a doubled cost.
     [Fact]

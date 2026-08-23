@@ -16,6 +16,14 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// between the file and the repo root means it belongs to its own independent solution (a test
 /// fixture's throwaway sample project) rather than the one this repo's server loads.
 /// <para>
+/// A nested <c>.sln</c>/<c>.slnx</c> alone does not prove independence: an ordinary .NET layout has a
+/// project ship its own per-project solution purely for standalone-open convenience while still being
+/// listed in the root solution (e.g. a <c>PandaAI.Core.sln</c> next to <c>PandaAI.Core.csproj</c>,
+/// with both also covered by the root <c>PandaAI.sln</c>). Treating the nested file alone as proof
+/// silently disabled every guard on such a project — see <see cref="IsReferencedByRootSolution"/> for
+/// the check that distinguishes the two cases.
+/// </para>
+/// <para>
 /// One implementation shared by <see cref="GuardCsRead"/> and <see cref="GuardCsBashRead"/>: they ask
 /// the same question from two tool surfaces and must never drift on the answer.
 /// </para>
@@ -53,9 +61,15 @@ internal static partial class CsFileMembership
         {
             csproj ??= EnumerateFiles(directory, "*.csproj").FirstOrDefault();
 
-            // A nested solution root means an independent solution owns everything below it.
+            // A nested solution root can mean an independent solution owns everything below it — but
+            // only when the project next to it is not itself part of the root solution. An ordinary
+            // .NET layout ships a project's own per-project .sln purely for standalone-open convenience
+            // while the project stays listed in the root solution (e.g. PandaAI.Core.sln next to
+            // PandaAI.Core.csproj, with PandaAI.sln also covering it) — exempting on sight there
+            // silently disables every guard for that project.
             if (!PathsEqual(directory, root)
-                && (EnumerateFiles(directory, "*.slnx").Any() || EnumerateFiles(directory, "*.sln").Any()))
+                && (EnumerateFiles(directory, "*.slnx").Any() || EnumerateFiles(directory, "*.sln").Any())
+                && (csproj is null || !IsReferencedByRootSolution(csproj, root)))
             {
                 return false;
             }
@@ -86,6 +100,86 @@ internal static partial class CsFileMembership
 
         relativeCsproj = Relative(root, csproj);
         return true;
+    }
+
+    /// <summary>
+    /// Whether the root solution — the one this repo's own <c>.sln</c>/<c>.slnx</c> loads, found
+    /// directly under <paramref name="root"/> — itself references <paramref name="csprojAbsolute"/>.
+    /// </summary>
+    /// <param name="csprojAbsolute">Absolute path of the project found during the walk.</param>
+    /// <param name="root">Absolute path of the repo root.</param>
+    /// <returns>
+    /// True when a root-level <c>.slnx</c> or <c>.sln</c> lists the project, meaning a nested
+    /// <c>.sln</c> next to it is a convenience copy rather than proof of an independent solution.
+    /// </returns>
+    private static bool IsReferencedByRootSolution(string csprojAbsolute, string root)
+    {
+        foreach (var slnx in EnumerateFiles(root, "*.slnx"))
+        {
+            List<string> paths;
+            try
+            {
+                paths = SlnxParser.ProjectPaths(slnx);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+            {
+                continue;
+            }
+
+            if (paths.Any(p => PathsEqual(p, csprojAbsolute)))
+            {
+                return true;
+            }
+        }
+
+        foreach (var sln in EnumerateFiles(root, "*.sln"))
+        {
+            if (ClassicSlnProjectPaths(sln).Any(p => PathsEqual(p, csprojAbsolute)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Extracts the <c>.csproj</c> paths a classic-format <c>.sln</c> references.</summary>
+    /// <param name="slnPath">Absolute path of the <c>.sln</c> file.</param>
+    /// <returns>Absolute paths of every referenced project that exists on disk.</returns>
+    private static List<string> ClassicSlnProjectPaths(string slnPath)
+    {
+        string text;
+        try
+        {
+            text = File.ReadAllText(slnPath);
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+
+        var baseDir = Path.GetDirectoryName(Path.GetFullPath(slnPath))!;
+        var result = new List<string>();
+        foreach (Match match in SlnProjectLinePattern().Matches(text))
+        {
+            var relative = match.Groups[1].Value;
+            if (!relative.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var abs = Path.GetFullPath(Path.Combine(baseDir, relative.Replace('\\', '/')));
+            if (File.Exists(abs))
+            {
+                result.Add(abs);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Whether the project's own <c>&lt;Compile Remove&gt;</c> globs exclude the file.</summary>
@@ -212,4 +306,7 @@ internal static partial class CsFileMembership
 
     [GeneratedRegex("Compile\\s+Remove=\"([^\"]*)\"", RegexOptions.CultureInvariant)]
     private static partial Regex CompileRemovePattern();
+
+    [GeneratedRegex("Project\\(\"\\{[0-9A-Fa-f-]+\\}\"\\)\\s*=\\s*\"[^\"]*\",\\s*\"([^\"]+)\"", RegexOptions.CultureInvariant)]
+    private static partial Regex SlnProjectLinePattern();
 }

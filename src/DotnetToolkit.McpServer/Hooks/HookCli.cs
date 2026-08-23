@@ -76,25 +76,35 @@ internal static class HookCli
 
         var context = HookContext.FromEnvironment();
 
-        // Only the blocking guards honour a suspension, and only they pay the state read. The hints and
-        // the meter stay on throughout: they add context or observe rather than withholding a call, so
-        // silencing them would cost the caller information without buying back any of the freedom a
-        // suspension is asked for. The meter especially - a benchmark suspends the guards precisely so it
+        // Only the blocking guards read guard state, and only they pay the state read. The hints and the
+        // meter stay on throughout: they add context or observe rather than withholding a call, so silencing
+        // them would cost the caller information without buying back any of the freedom a suspension or a
+        // forced block is asked for. The meter especially - a benchmark suspends the guards precisely so it
         // can measure the unguarded route, which is not measured if suspension also stops the measuring.
-        if (name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read"
-            && GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow, payload.SessionId).Suspended)
+        var guardState = name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read" or "guard-cs-bash-write"
+            ? GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow, payload.SessionId)
+            : null;
+
+        if (guardState is { Suspended: true })
         {
             return HookOutcome.Allow;
         }
+
+        // Forced-block (dotnet-performance's MCP probe) only changes the read guards: guard-cs-edit and
+        // guard-cs-bash-write already hard-deny outside a suspension, so Blocked looks identical to Active
+        // for them.
+        var blocked = guardState is { Blocked: true };
 
         return name switch
         {
             "guard-cs-edit" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" =>
                 GuardCsEdit.Evaluate(payload, context),
             "guard-cs-read" when payload.ToolName == "Read" =>
-                GuardCsRead.Evaluate(payload, context),
+                GuardCsRead.Evaluate(payload, context, blocked),
             "guard-cs-bash-read" when payload.ToolName == "Bash" =>
-                GuardCsBashRead.Evaluate(payload, context),
+                GuardCsBashRead.Evaluate(payload, context, blocked),
+            "guard-cs-bash-write" when payload.ToolName == "Bash" =>
+                GuardCsBashWrite.Evaluate(payload, context),
             "hint-reload-new-cs-file" =>
                 await ReloadHint.EvaluateAsync(payload, context),
             "hint-write-checklist" when payload.ToolName.EndsWith("__validate_patch", StringComparison.Ordinal) =>

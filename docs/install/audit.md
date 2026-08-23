@@ -22,7 +22,7 @@ different one.
 
 | # | Mechanism | What it covers | Reaches the consumer by | Uninstall |
 | --- | --- | --- | --- | --- |
-| 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the five `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
+| 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the seven `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
 | 2 | **Must be copied** | `.claude/rules/dotnet-index.md` (the one always-loaded rule, copied verbatim); the MCP permission allowlist merged into `.claude/settings.json`; the `.claude/dotnet-toolkit/install.json` manifest; `.claude/dotnet-toolkit/.gitignore` (copied verbatim, keeps run output out of the repo's history). **`standards/` is deliberately *not* here** — it is mechanism 3 | `dotnet-init` writing them into the repo | **explicit deletion** — `docs/install/uninstall.md`'s "Delete these" list is the only thing that removes them |
 | 3 | **Referenced by path** | one `docs/tools/<tool>.md` per tool plus `server.md`, `docs/design/*.md`, `docs/install/*.md`, and **all 13 `standards/*.md`** | `${CLAUDE_PLUGIN_ROOT}/...` paths named **in the skills** — never in a mechanism-2 rule or an agent definition, neither of which can expand the variable. `agents/dotnet-code-review.md` is the one consumer that can't expand it either, which is why it resolves its own `pluginRoot` from its own `workspace_status` call rather than expecting a path handed to it | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |
@@ -68,8 +68,9 @@ Specific drift to look for, in the order it usually appears:
    `.claude/rules/dotnet-index.md` names no tool, so a tool no skill mentions is unreachable for a
    consumer. All **19** must be covered — retrieval and the four server/meta tools in `dotnet-read`,
    the two writers in `dotnet-write`, with `workspace_status` and `reload_workspace` legitimately in
-   both, and `set_hook_guards` deliberately in `dotnet-performance` alone (it suspends the guards, so
-   naming it in the skill every read task loads would advertise the off-switch to every session).
+   both, and `set_hook_guards` deliberately in `dotnet-performance` alone (it can suspend or force-block
+   the guards, so naming it in the skill every read task loads would advertise the off-switch to every
+   session).
    The skills are served from the plugin and never copied, so unlike the old always-loaded table this
    one cannot go stale in a consumer's tree — but it can still fall behind `Tools/*.cs`.
 3. **A tool added but not in init's permission allowlist.** The allowlist covers the read-only tools

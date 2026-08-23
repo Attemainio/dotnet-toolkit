@@ -60,7 +60,7 @@ stderr at startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install.
 | `src/DotnetToolkit.McpServer/` | The server. `Tools/` is the MCP surface and the ground truth for names, signatures and return shapes |
 | `tests/` | Unit tests plus `WorkspaceIntegrationTests`, which loads a fixture solution via `MSBuildWorkspace` |
 | `skills/` | The skills Claude invokes — see below |
-| `agents/` | `dotnet-explore` and `dotnet-code-review` definitions |
+| `agents/` | Agent definitions: `dotnet-explore`, `dotnet-code-review`, the `dotnet-perf-*-probe` pair, `dotnet-guard-redteam` |
 | `standards/` | The 13 coding standards, plus `index.md` saying which apply when. Read by explicit path, never auto-loaded |
 | `.claude/rules/` | Exactly one file: the always-loaded router `dotnet-init` copies into consuming repos |
 | `hooks/` | `hooks.json`; every hook is a subcommand of the published server binary |
@@ -81,6 +81,7 @@ stderr at startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install.
 | `dotnet-consistency` | Audits whether the docs, skills, rules and hooks still match `Tools/*.cs` |
 | `dotnet-performance` | Benchmarks the MCP tools against raw `Read`/`Grep` on a target repo |
 | `dotnet-selfeval` | Audits the plugin's own responses for redundancy and waste |
+| `dotnet-guard-audit` | Red-teams the guard hooks for bypasses, with the guards left armed |
 
 ## After changing a tool
 

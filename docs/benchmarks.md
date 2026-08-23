@@ -17,22 +17,39 @@ Each run is driven by the `dotnet-performance` skill:
 1. The orchestrator builds a question matrix from the target solution — exact-name lookups, fuzzy
    lookups, one method inside a very large file, partial-class enumeration, call-site counting on a
    common name, interface implementers, override enumeration, dead-symbol confirmation, base chains.
-2. That identical list goes **verbatim and blind** to two subagents:
+2. That identical list goes **verbatim and blind** to three subagents, run sequentially:
    - `dotnet-perf-mcp-probe` — granted **only** the dotnet-toolkit MCP tools. No `Grep`, `Glob` or
-     `Bash` exists in its grant, so there is no raw shortcut to fall back on.
+     `Bash` exists in its grant, so there is no raw shortcut to fall back on. Runs with the guards
+     forced into a hard-deny mode (`set_hook_guards(state: "block")`) as a backstop against its one
+     narrow `Read` allowance quietly contaminating the run. This is the **ceiling**.
    - `dotnet-perf-raw-probe` — granted **only** `Read`/`Grep`/`Glob`/`Bash`. No MCP tool of any kind.
-3. Neither probe sees the other's answers, or the orchestrator's own prior exploration.
-4. Both receive the same `performance_protocol.md`, so the comparison isolates the tool family rather
-   than the instructions.
-5. Guard hooks are suspended for a bounded window, because the raw probe cannot open a `.cs` file
-   otherwise. A positive control confirms the suspension actually reached the hook processes before
-   launch; a negative control confirms they re-armed afterwards.
+     Runs with the guards suspended (`set_hook_guards(state: "suspend")`), simulating a session with no
+     plugin installed at all. This is the **floor**.
+   - `dotnet-perf-full-probe` — granted **both** tool families at once, run at the guards' plugin-shipped
+     default (read guards advisory, write guards blocking, nothing suspended or forced). This is
+     **practice**: what a real, unrestricted session with this plugin installed actually does, free to
+     follow or ignore an advisory nudge per question. Added 2026-08-22; runs before either of the other
+     two, since it is the only one that needs no guard-state change.
+3. No probe sees another's answers, or the orchestrator's own prior exploration.
+4. All three receive the same `performance_protocol.md`, so the comparison isolates the tool family (and,
+   for the full probe, the guard state actually shipped) rather than the instructions.
+5. Guard hooks are moved from their default state for a bounded window around the raw and MCP probes
+   only — suspended for the raw probe, forced to block for the MCP probe — because guard state is one
+   global switch per repo, so the three probes run one at a time rather than concurrently. A positive
+   control confirms each state change actually reached the hook processes before that probe launches; a
+   negative control confirms the guards returned to default afterwards.
 6. **Ground truth for every contested answer is established independently by the orchestrator, after
-   both probes return** — never taken from a probe's self-report.
+   all three probes return** — never taken from a probe's self-report.
+
+> **The results below predate the third probe.** Both published specimens used the original two-route
+> methodology — `dotnet-perf-mcp-probe` against `dotnet-perf-raw-probe` only, with no `dotnet-perf-full-probe`
+> leg. They still show the ceiling-vs-floor comparison honestly; a re-run with the current three-probe
+> methodology would add the practice measurement rather than change these numbers, and would supersede
+> this page's specific figures without changing the pattern they show.
 
 ### The instrument
 
-Both routes are metered by **one** `PostToolUse` hook that fires on harness dispatch, so `Grep` and
+All three routes are metered by **one** `PostToolUse` hook that fires on harness dispatch, so `Grep` and
 `get_symbol` are counted the same way. That matters more than it sounds: on every run so far, the raw
 probe has under-reported its own call count by roughly half.
 
@@ -45,7 +62,7 @@ Scored on self-reports, the 2026-08-17 run would have looked like 38 calls again
 instead of the true 2.0×. **This is why the self-report is a cross-check and not the instrument.**
 
 Token counts are `chars4` approximations — `(length + 3) / 4` over the serialized payload — applied
-identically to both routes. The **ratios** are sound; the absolute figures are not exact.
+identically to every route. The **ratios** are sound; the absolute figures are not exact.
 
 ## Results
 
@@ -181,17 +198,20 @@ A route that fails loudly is cheaper to work with than one that fails at 26-vs-2
 /dotnet-performance
 ```
 
-It builds the question matrix from *your* solution, runs both probes, and writes a report to
-`.claude/dotnet-toolkit/perf/` with these same tables — including which questions the raw route won and
-which size axes the result does or does not transfer to.
+It builds the question matrix from *your* solution, runs all three probes in sequence, and writes a
+report to `.claude/dotnet-toolkit/perf/` with these same tables — including which questions a raw-tool
+route won and which size axes the result does or does not transfer to.
 
 What it does to your machine:
 
-- **It suspends the guard hooks** for a bounded window, because the raw probe cannot reach a `.cs` file
-  otherwise. They re-arm on a timer, and the skill restores them before it finishes. The report records
-  the window's start, end and restoration.
-- **It never edits `.cs`.** Both probes are read-only.
-- **It runs two subagents**, which costs real tokens. The comparison is the product.
+- **It suspends the guard hooks for the raw probe, and forces them to hard-deny for the MCP probe**,
+  each for its own bounded window — the raw probe cannot reach a `.cs` file at their default state, and
+  the forced block backstops the MCP probe's one narrow `Read` allowance. Both re-arm on a timer, and
+  the skill restores them right after each probe returns, before moving to the next. The report records
+  each window's start, end and restoration.
+- **It never edits `.cs`.** All three probes are read-only.
+- **It runs three subagents, sequentially** (guard state is one switch per repo, so they cannot run in
+  parallel), which costs real tokens. The comparison is the product.
 
 A small repo with no file over 400 lines will show a much narrower margin than the specimens above. The
 report will say so rather than hide it.

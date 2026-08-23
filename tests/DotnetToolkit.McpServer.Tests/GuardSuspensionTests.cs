@@ -33,7 +33,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_ThenCurrent_ReportsTheRemainingWindow()
     {
-        var until = GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now);
+        var until = GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now);
 
         var state = GuardSuspension.Current(_root, Now.AddMinutes(9));
 
@@ -47,7 +47,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Current_PastTheExpiry_ReArmsAndDeletesTheStateFile()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now);
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now);
 
         var state = GuardSuspension.Current(_root, Now.AddMinutes(11));
 
@@ -73,7 +73,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_BeyondTheCap_IsClampedToMaxDuration()
     {
-        var until = GuardSuspension.Suspend(_root, TimeSpan.FromDays(7), Now);
+        var until = GuardSuspension.SetMode(_root, TimeSpan.FromDays(7), Now);
 
         Assert.Equal(Now + GuardSuspension.MaxDuration, until);
     }
@@ -81,7 +81,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_WithANonPositiveDuration_UsesTheDefaultRatherThanExpiringAtOnce()
     {
-        var until = GuardSuspension.Suspend(_root, TimeSpan.Zero, Now);
+        var until = GuardSuspension.SetMode(_root, TimeSpan.Zero, Now);
 
         Assert.Equal(Now + GuardSuspension.DefaultDuration, until);
     }
@@ -89,7 +89,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Resume_ClearsAnActiveSuspension()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now);
+        GuardSuspension.SetMode(_root, TimeSpan.FromHours(1), Now);
 
         var cleared = GuardSuspension.Resume(_root);
 
@@ -202,7 +202,7 @@ public sealed class GuardSuspensionTests : IDisposable
             // looks the suspension up under the id IT sees. They have to be the same value or the guards stay
             // armed while every server-side instrument reports them down.
             GuardSuspension.ObserveSessionId("ses_live_from_hook");
-            GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(5), Now, GuardSuspension.CurrentSessionId());
+            GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(5), Now, GuardSuspension.CurrentSessionId());
 
             Assert.True(GuardSuspension.Current(_root, Now, "ses_live_from_hook").Suspended);
         }
@@ -235,7 +235,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_WithASessionId_IsInvisibleToADifferentSessionId()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
 
         Assert.True(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
         Assert.False(GuardSuspension.Current(_root, Now, sessionId: "session-b").Suspended);
@@ -244,7 +244,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_WithASessionId_IsInvisibleToACallerWithNoSessionId()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now, sessionId: "session-a");
 
         Assert.False(GuardSuspension.Current(_root, Now).Suspended);
     }
@@ -253,7 +253,7 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Suspend_WithNoSessionId_IsStillVisibleToACallerThatHasOne()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromMinutes(10), Now);
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now);
 
         Assert.True(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
     }
@@ -261,8 +261,8 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Resume_WithASessionId_ClearsOnlyThatSessionsSuspension()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now, sessionId: "session-a");
-        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now, sessionId: "session-b");
+        GuardSuspension.SetMode(_root, TimeSpan.FromHours(1), Now, sessionId: "session-a");
+        GuardSuspension.SetMode(_root, TimeSpan.FromHours(1), Now, sessionId: "session-b");
 
         GuardSuspension.Resume(_root, sessionId: "session-a");
 
@@ -287,11 +287,80 @@ public sealed class GuardSuspensionTests : IDisposable
     [Fact]
     public void Resume_WithASessionId_AlsoClearsAPreExistingUnscopedSuspension()
     {
-        GuardSuspension.Suspend(_root, TimeSpan.FromHours(1), Now);
+        GuardSuspension.SetMode(_root, TimeSpan.FromHours(1), Now);
 
         GuardSuspension.Resume(_root, sessionId: "session-a");
 
         Assert.False(GuardSuspension.Current(_root, Now).Suspended);
         Assert.False(GuardSuspension.Current(_root, Now, sessionId: "session-a").Suspended);
+    }
+
+    [Fact]
+    public void SetMode_WithBlockedMode_ThenCurrent_ReportsBlockedNotSuspended()
+    {
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now, mode: GuardMode.Blocked);
+
+        var state = GuardSuspension.Current(_root, Now.AddMinutes(9));
+
+        Assert.True(state.Blocked);
+        Assert.False(state.Suspended);
+        Assert.Equal("timed", state.Source);
+    }
+
+    [Fact]
+    public void SetMode_DefaultsToSuspendedMode()
+    {
+        GuardSuspension.SetMode(_root, TimeSpan.FromMinutes(10), Now);
+
+        var state = GuardSuspension.Current(_root, Now.AddMinutes(9));
+
+        Assert.True(state.Suspended);
+        Assert.False(state.Blocked);
+    }
+
+    [Fact]
+    public void Resume_ClearsABlockedMode()
+    {
+        GuardSuspension.SetMode(_root, TimeSpan.FromHours(1), Now, mode: GuardMode.Blocked);
+
+        var cleared = GuardSuspension.Resume(_root);
+
+        Assert.True(cleared);
+        var state = GuardSuspension.Current(_root, Now);
+        Assert.False(state.Blocked);
+        Assert.False(state.Suspended);
+    }
+
+    /// <summary>A bare timestamp is the pre-Blocked file format; it must still read as Suspended, not fail.</summary>
+    [Fact]
+    public void Current_WithLegacyBareTimestampFile_ReadsAsSuspended()
+    {
+        var file = GuardSuspension.StateFile(_root);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, Now.AddMinutes(10).ToString("O"));
+
+        var state = GuardSuspension.Current(_root, Now.AddMinutes(9));
+
+        Assert.True(state.Suspended);
+        Assert.False(state.Blocked);
+    }
+
+    [Fact]
+    public void Environment_OverridesTheStateFile_AsSuspendedNotBlocked()
+    {
+        var previous = Environment.GetEnvironmentVariable(GuardSuspension.DisableVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.DisableVariable, "1");
+
+            var state = GuardSuspension.Current(_root, Now);
+
+            Assert.True(state.Suspended);
+            Assert.False(state.Blocked);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(GuardSuspension.DisableVariable, previous);
+        }
     }
 }

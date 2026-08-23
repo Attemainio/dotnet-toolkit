@@ -68,4 +68,25 @@ public sealed class BashCommandScannerTests
     {
         Assert.Null(BashCommandScanner.FindCsArgument("cat README.md"));
     }
+
+    [Theory]
+    [InlineData("echo 'marker' >> Foo.cs", "Foo.cs")]
+    [InlineData("echo 'marker' > Foo.cs", "Foo.cs")]
+    [InlineData("sed -i 's/x/y/' Foo.cs", "Foo.cs")]
+    [InlineData("sed -i.bak 's/x/y/' Foo.cs", "Foo.cs")]
+    [InlineData("perl -i -pe 's/x/y/' Foo.cs", "Foo.cs")]
+    [InlineData("tee Foo.cs", "Foo.cs")]
+    [InlineData("cp Bar.txt Foo.cs", "Foo.cs")]
+    [InlineData("mv Bar.cs Foo.cs", "Foo.cs")]
+    [InlineData("dd if=Bar.txt of=Foo.cs", "Foo.cs")]
+    public void FindWriteTargetCsArgument_WriteShapedCommand_ReturnsTarget(string segment, string expected) =>
+        Assert.Equal(expected, BashCommandScanner.FindWriteTargetCsArgument(segment));
+
+    [Theory]
+    [InlineData("cat Foo.cs")]
+    [InlineData("sed -n '1,5p' Foo.cs")]
+    [InlineData("grep -n x Foo.cs")]
+    [InlineData("cp Foo.cs Bar.txt")]
+    public void FindWriteTargetCsArgument_ReadOnlyCommand_ReturnsNull(string segment) =>
+        Assert.Null(BashCommandScanner.FindWriteTargetCsArgument(segment));
 }

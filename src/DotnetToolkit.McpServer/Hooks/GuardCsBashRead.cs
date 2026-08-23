@@ -1,14 +1,15 @@
 namespace DotnetToolkit.McpServer.Hooks;
 
 /// <summary>
-/// <c>PreToolUse</c> guard on <c>Bash</c>: blocks a shell command that reads a compiled <c>.cs</c>
-/// file's raw bytes the way <c>Read</c> would (<c>cat</c>, <c>sed</c>, <c>head</c>, <c>grep</c>, …).
+/// <c>PreToolUse</c> guard on <c>Bash</c>: allows a shell command that reads a compiled <c>.cs</c>
+/// file's raw bytes the way <c>Read</c> would (<c>cat</c>, <c>sed</c>, <c>head</c>, <c>grep</c>, …), but
+/// surfaces the same advisory <see cref="GuardCsRead"/> carries rather than denying it.
 /// </summary>
 /// <remarks>
 /// <see cref="GuardCsRead"/> only ever sees the <c>Read</c> tool by name — its matcher is <c>Read</c>,
-/// so a shell command dumping the same file's content into the transcript is invisible to it. That is
-/// not a sanctioned escape hatch; it is a gap in which tool name the enforcement watches, and this
-/// guard closes it by matching on <c>Bash</c> and inspecting what the command is about to do. The
+/// so a shell command dumping the same file's content into the transcript is invisible to it. This guard
+/// closes that gap by matching on <c>Bash</c> and inspecting what the command is about to do, reaching
+/// the same allow-with-advice outcome <see cref="GuardCsRead"/> does, for the reasons stated there. The
 /// membership question is identical to <see cref="GuardCsRead"/>'s, so both go through
 /// <see cref="CsFileMembership"/> rather than answering it twice.
 /// <para>
@@ -18,14 +19,15 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// </remarks>
 internal static class GuardCsBashRead
 {
-    /// <summary>Decides whether a <c>Bash</c> call may proceed.</summary>
+    /// <summary>Decides whether a <c>Bash</c> call gets an advisory note.</summary>
     /// <param name="payload">The parsed hook payload.</param>
     /// <param name="context">The repo root, the blocklist, and the docs to cite.</param>
     /// <returns>
-    /// A denial naming the first blocklisted command found reading a compiled <c>.cs</c> file;
-    /// otherwise <see cref="HookOutcome.Allow"/>.
+    /// An allow outcome carrying advisory <c>permissionDecisionReason</c> text naming the first
+    /// blocklisted command found reading a compiled <c>.cs</c> file; otherwise a plain
+    /// <see cref="HookOutcome.Allow"/>.
     /// </returns>
-    public static HookOutcome Evaluate(HookPayload payload, HookContext context)
+    public static HookOutcome Evaluate(HookPayload payload, HookContext context, bool blocked = false)
     {
         var command = payload.Command;
         if (string.IsNullOrWhiteSpace(command))
@@ -54,7 +56,9 @@ internal static class GuardCsBashRead
 
             if (NamedCompiledFile(segment, context, workingDirectory) is { } named)
             {
-                return HookOutcome.Deny(FileMessage(name, named.Argument, named.Project, context));
+                return blocked
+                    ? HookOutcome.Deny(BlockedFileMessage(name, named.Argument, named.Project))
+                    : HookOutcome.AllowAdvising(FileMessage(name, named.Argument, named.Project, context));
             }
 
             // A recursive or glob-scoped search names no single file, so the check above cannot see it --
@@ -63,7 +67,9 @@ internal static class GuardCsBashRead
             // only .cs token inside an option flag, which FindCsArgument discards as a flag.
             if (ScannedProject(segment, name, context, workingDirectory) is { } scanned)
             {
-                return HookOutcome.Deny(TreeMessage(name, scanned.Target, scanned.Project, context));
+                return blocked
+                    ? HookOutcome.Deny(BlockedTreeMessage(name, scanned.Target, scanned.Project))
+                    : HookOutcome.AllowAdvising(TreeMessage(name, scanned.Target, scanned.Project, context));
             }
 
         }
@@ -152,6 +158,7 @@ internal static class GuardCsBashRead
     }
 
     /// <summary>The denial for a segment reading one named compiled file.</summary>
+    /// <summary>The advisory note for a segment reading one named compiled file.</summary>
     /// <param name="name">The blocklisted command.</param>
     /// <param name="argument">The file as the caller wrote it.</param>
     /// <param name="project">The project compiling it.</param>
@@ -159,29 +166,20 @@ internal static class GuardCsBashRead
     /// <returns>The message fed back to the agent.</returns>
     private static string FileMessage(string name, string argument, string project, HookContext context) =>
         $"""
-        Blocked Bash command '{name}' reading {argument}: it is compiled by {project}, so this repo's
-        dotnet-toolkit MCP tools answer it more cheaply and completely than raw shell text tools - no
-        truncation risk, and no irrelevant methods pulled in alongside the one you want.
+        {argument} is compiled by {project}. This repo's dotnet-toolkit MCP tools often answer this kind of
+        question more cheaply and completely than `{name}` - no truncation risk, and no irrelevant methods
+        pulled in alongside the one you want - though not on every question, so this is advice, not a denial.
 
-        This is the same rule Read is blocked under - running the same read through Bash instead of the
-        Read tool is not a sanctioned way around it.
-
-        Do this instead: invoke the dotnet-read skill.
-
-        It names the right tool for the question you were about to answer, the call shape that costs least,
-        and how to read the response. None of that is repeated in this message on purpose: a copy here would
-        drift from the skill. If you cannot invoke a skill at all, start from {context.Doc("search_index")}.
+        Consider invoking the dotnet-read skill instead. It names the right tool for the question you were
+        about to answer, the call shape that costs least, and how to read the response. If you cannot invoke
+        a skill at all, start from {context.Doc("search_index")}.
 
         One case genuinely has no MCP equivalent: a search for arbitrary text - a string literal, or an API
-        name this repo does not itself declare - rather than for a declared symbol. Say so and ask the user to
-        allow the Bash command explicitly.
-
-        If this genuinely needs raw shell access (the workspace failed to load, or the file's exact
-        formatting/byte layout is itself what you need to see), say so and ask the user to allow it explicitly
-        rather than retrying the same command.
+        name this repo does not itself declare - rather than for a declared symbol. `{name}` is the right
+        call for that.
         """;
 
-    /// <summary>The denial for a segment searching a whole tree of compiled files.</summary>
+    /// <summary>The advisory note for a segment searching a whole tree of compiled files.</summary>
     /// <param name="name">The blocklisted command.</param>
     /// <param name="target">The directory as the caller wrote it.</param>
     /// <param name="project">A project compiling something under it.</param>
@@ -189,27 +187,58 @@ internal static class GuardCsBashRead
     /// <returns>The message fed back to the agent.</returns>
     private static string TreeMessage(string name, string target, string project, HookContext context) =>
         $"""
-        Blocked Bash command '{name}' searching {target}: it reads every .cs file under it, including files
-        compiled by {project}. This repo's dotnet-toolkit MCP tools answer a symbol search over the whole
-        solution in one call, with no truncation risk and without dumping the matched files' source into the
-        transcript.
+        `{name}` would be searching {target}, reading every .cs file under it including files compiled by
+        {project}. This repo's dotnet-toolkit MCP tools can answer a symbol search over the whole solution
+        in one call, with no truncation risk and without dumping the matched files' source into the
+        transcript - though not on every question, so this is advice, not a denial.
 
-        This is the same rule Read and a single-file grep are blocked under. Searching the tree rather than
-        naming a file reads MORE, not less, so it is not a sanctioned way around it.
+        Consider invoking the dotnet-read skill instead. It names the right tool for the question you were
+        about to answer - including how to scope a search to one folder instead of walking it - and the
+        call shape that costs least. If you cannot invoke a skill at all, start from
+        {context.Doc("search_index")}.
+
+        One case genuinely has no MCP equivalent: a search for arbitrary text - a string literal, or an API
+        name this repo does not itself declare - rather than for a declared symbol. `{name}` is the right
+        call for that.
+        """;
+
+    /// <summary>The denial for a segment reading one named compiled file, in forced-block mode.</summary>
+    /// <param name="name">The blocklisted command.</param>
+    /// <param name="argument">The file as the caller wrote it.</param>
+    /// <param name="project">The project compiling it.</param>
+    /// <returns>The message fed back to the agent.</returns>
+    private static string BlockedFileMessage(string name, string argument, string project) =>
+        $"""
+        Blocked Bash command '{name}' reading {argument}: guard-cs-bash-read is running in forced-block mode
+        (set_hook_guards(state: "block")), and {argument} is compiled by {project}. This repo's
+        dotnet-toolkit MCP tools answer it more cheaply and completely than raw shell text tools - no
+        truncation risk, and no irrelevant methods pulled in alongside the one you want.
 
         Do this instead: invoke the dotnet-read skill.
 
-        It names the right tool for the question you were about to answer - including how to scope a search to
-        one folder instead of walking it - and the call shape that costs least. None of that is repeated in
-        this message on purpose: a copy here would drift from the skill. If you cannot invoke a skill at all,
-        start from {context.Doc("search_index")}.
+        Forced-block is not this plugin's shipped default - it exists for dotnet-performance's MCP probe, so
+        a raw read attempted through it fails loudly instead of silently contaminating the measurement. Call
+        set_hook_guards(state: "restore") once that run is done.
+        """;
 
-        One case genuinely has no MCP equivalent: a search for arbitrary text - a string literal, or an API
-        name this repo does not itself declare - rather than for a declared symbol. Say so and ask the user to
-        allow the Bash command explicitly.
+    /// <summary>The denial for a segment searching a whole tree of compiled files, in forced-block mode.</summary>
+    /// <param name="name">The blocklisted command.</param>
+    /// <param name="target">The directory as the caller wrote it.</param>
+    /// <param name="project">A project compiling something under it.</param>
+    /// <returns>The message fed back to the agent.</returns>
+    private static string BlockedTreeMessage(string name, string target, string project) =>
+        $"""
+        Blocked Bash command '{name}' searching {target}: guard-cs-bash-read is running in forced-block mode
+        (set_hook_guards(state: "block")), and it reads every .cs file under {target}, including files
+        compiled by {project}. This repo's dotnet-toolkit MCP tools answer a symbol search over the whole
+        solution in one call, with no truncation risk and without dumping the matched files' source into
+        the transcript.
 
-        If this genuinely needs raw shell access, say so and ask the user to allow it explicitly rather than
-        retrying the same command.
+        Do this instead: invoke the dotnet-read skill.
+
+        Forced-block is not this plugin's shipped default - it exists for dotnet-performance's MCP probe, so
+        a raw read attempted through it fails loudly instead of silently contaminating the measurement. Call
+        set_hook_guards(state: "restore") once that run is done.
         """;
 
 }

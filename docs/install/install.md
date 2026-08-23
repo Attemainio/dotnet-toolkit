@@ -15,7 +15,8 @@ absolute — these steps stage first, write second.
 | `.claude/rules/dotnet-index.md` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/rules/dotnet-index.md`: a pure router — which skill to invoke for reading, writing, exploring or reviewing C#, plus the rule that agents are launched by skills. It names **no MCP tool**; the tool tables live in the skills, which the plugin serves and never copies. **Always-loaded** — no `paths:` frontmatter, and it must be the only file in `.claude/rules/` without any |
 | `.claude/settings.json` | the **read-only** MCP tools merged additively into `permissions.allow` (Step 3) |
 | `.claude/dotnet-toolkit/install.json` | the manifest: plugin version, timestamp, and a hash per copied file |
-| `.claude/dotnet-toolkit/.gitignore` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/dotnet-toolkit/.gitignore`: keeps the contents of `review/`, `eval/`, `perf/` and `backups/` out of the repo's history. One file at the folder root rather than one per folder — the same rule restated four times drifts three ways. It deliberately does **not** ignore `install.json` or `config.json`, which describe the repo rather than a run against it, nor `cache/`, which the server self-ignores |
+| `.claude/dotnet-toolkit/.gitignore` | **verbatim copy** of `${CLAUDE_PLUGIN_ROOT}/.claude/dotnet-toolkit/.gitignore`: keeps the contents of `review/`, `eval/`, `perf/`, `redteam/` and `backups/` out of the repo's history. One file at the folder root rather than one per folder — the same rule restated four times drifts three ways. It deliberately does **not** ignore `install.json` or `config.json`, which describe the repo rather than a run against it, nor `cache/`, which the server self-ignores |
+| `.claude/dotnet-toolkit/local-install.json` | *Conditional, and never copied from anywhere* — see "The repo's own workaround notes" below |
 
 It is copied rather than templated, so the plugin and every consuming repo run the *same* rule text.
 There is no inline template to drift out of step with the plugin's own copy — a copy step cannot
@@ -85,6 +86,9 @@ list `.claude/rules/`. The project's own conventions take priority over anything
   "hash does not match" branch of the migration step below, same as an edited legacy file.
 - If an existing rule already covers tool usage, code search, or "how to explore this codebase", read
   it carefully — Step 2 decides whether it complements or conflicts.
+- Check `.claude/dotnet-toolkit/local-install.json`. If it exists, read it — it may already record a
+  path workaround (see below) that changes where the repo actually runs the plugin from, which Step 2's
+  conflict check and Step 4's summary should both take into account.
 
 ## Step 2 — Detect other plugins and existing guidance
 

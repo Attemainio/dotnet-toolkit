@@ -28,10 +28,15 @@ public sealed class MetricsReader
     /// <summary>One harness-metered breakdown row, keyed by tool name or by agent type.</summary>
     public sealed record HarnessGroup(string Key, int Calls, long RequestTokens, long ResponseTokens);
 
-    /// <summary>What the PostToolUse meter saw: every tool the harness dispatched, MCP or not.</summary>
-    /// <param name="Estimator">Names the approximation behind every count in this block.</param>
-    public sealed record Harness(
-        HarnessTotals Totals, IReadOnlyList<HarnessGroup> ByTool, IReadOnlyList<HarnessGroup> ByAgent, string Estimator);
+        /// <summary>One agent's own harness-metered breakdown, further split out by tool.</summary>
+        public sealed record HarnessAgentBreakdown(
+            string Agent, int Calls, long RequestTokens, long ResponseTokens, IReadOnlyList<HarnessGroup> ByTool);
+
+        /// <summary>What the PostToolUse meter saw: every tool the harness dispatched, MCP or not.</summary>
+        /// <param name="Estimator">Names the approximation behind every count in this block.</param>
+        public sealed record Harness(
+            HarnessTotals Totals, IReadOnlyList<HarnessGroup> ByTool, IReadOnlyList<HarnessGroup> ByAgent,
+            IReadOnlyList<HarnessAgentBreakdown> ByAgentTool, string Estimator);
 
     /// <summary>The full response shape for <c>get_retrieval_metrics</c>: totals, requested groupings, and the harness-metered view when one exists.</summary>
     public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups, Harness? Harness = null);
@@ -303,14 +308,15 @@ public sealed class MetricsReader
             }
         }
 
-        return totals is null
-            ? null
-            : new Harness(
-                totals,
-                ReadHarnessGroups(connection, where, parameters, byAgent: false),
-                ReadHarnessGroups(connection, where, parameters, byAgent: true),
-                estimator);
-    }
+            return totals is null
+                ? null
+                : new Harness(
+                    totals,
+                    ReadHarnessGroups(connection, where, parameters, byAgent: false),
+                    ReadHarnessGroups(connection, where, parameters, byAgent: true),
+                    ReadHarnessAgentTool(connection, where, parameters),
+                    estimator);
+        }
 
     private static List<HarnessGroup> ReadHarnessGroups(
         SqliteConnection connection, string where, List<(string, object)> parameters, bool byAgent)
@@ -335,5 +341,58 @@ public sealed class MetricsReader
                 reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3)));
         }
         return groups;
-    }
+        }
+
+        /// <summary>Reads the harness-metered rows grouped by BOTH agent and tool, nested per agent.</summary>
+        /// <remarks>
+        /// <c>byTool</c> and <c>byAgent</c> each answer one axis; neither can say which tools one particular
+        /// agent actually called. This groups by the pair directly, then folds the flat rows into one entry
+        /// per agent carrying its own tool breakdown, so "how many Read calls did the raw probe make" is a
+        /// single lookup rather than an inference from two separate aggregates.
+        /// </remarks>
+        private static List<HarnessAgentBreakdown> ReadHarnessAgentTool(
+            SqliteConnection connection, string where, List<(string, object)> parameters)
+        {
+            var byAgent = new List<(string Agent, List<HarnessGroup> Tools)>();
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = $"""
+                    SELECT COALESCE(agent_type, '(main thread)'), tool_name,
+                           COUNT(*), COALESCE(SUM(request_tokens),0), COALESCE(SUM(response_tokens),0)
+                    FROM tool_call_events WHERE {where}
+                    GROUP BY 1, 2 ORDER BY 1, 5 DESC;
+                    """;
+                Bind(cmd, parameters);
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var agent = reader.GetString(0);
+                    var tool = new HarnessGroup(
+                        reader.GetString(1), reader.GetInt32(2), reader.GetInt64(3), reader.GetInt64(4));
+
+                    var bucket = byAgent.Count > 0 && byAgent[^1].Agent == agent ? byAgent[^1].Tools : null;
+                    if (bucket is null)
+                    {
+                        bucket = new List<HarnessGroup>();
+                        byAgent.Add((agent, bucket));
+                    }
+                    bucket.Add(tool);
+                }
+            }
+
+            var breakdowns = new List<HarnessAgentBreakdown>();
+            foreach (var (agent, tools) in byAgent)
+            {
+                var calls = 0;
+                long requestTokens = 0, responseTokens = 0;
+                foreach (var tool in tools)
+                {
+                    calls += tool.Calls;
+                    requestTokens += tool.RequestTokens;
+                    responseTokens += tool.ResponseTokens;
+                }
+                breakdowns.Add(new HarnessAgentBreakdown(agent, calls, requestTokens, responseTokens, tools));
+            }
+            return breakdowns;
+        }
 }

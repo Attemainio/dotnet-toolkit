@@ -56,11 +56,14 @@ Now ask Claude something you would normally grep for. To find out whether it is 
 
 ## Measured against raw tools
 
-Each run sends one identical question list, blind, to two subagents: one granted **only** these MCP
-tools, one granted **only** `Read`/`Grep`/`Glob`/`Bash`. Both are metered by the same hook, and ground
-truth is established independently after both return.
+Each run sends one identical question list, blind, to three subagents, run sequentially: one granted
+**only** these MCP tools (guards forced to hard-deny a raw read, the ceiling), one granted **only**
+`Read`/`Grep`/`Glob`/`Bash` (guards suspended, the floor), and one granted **both** tool families at the
+plugin's shipped default guard state (what a real session actually does). All three are metered by the
+same hook, and ground truth is established independently after every probe returns.
 
-**21 questions across two solutions** — a private 290-file trading/ML codebase and this repository:
+**21 questions across two solutions**, from before the third probe was added — a private 290-file
+trading/ML codebase and this repository:
 
 | | With the plugin | Raw tools | Ratio |
 |---|---:|---:|---:|
@@ -139,8 +142,12 @@ flowchart LR
 3. **Claude retrieves symbols and relationships over MCP** instead of reading files.
 4. **Proposed patches compile in memory first.** Nothing reaches disk unless a real compilation holds;
    your `.editorconfig` decides what counts as broken, and the reason for the change is recorded.
-5. **Guard hooks block the fallback** — `Read`/`Edit` and shell reads on compiled `.cs` files are
-   refused with a pointer to the tool that covers what you were doing.
+5. **A guard hook blocks the write fallback** — `Edit`/`Write` on a compiled `.cs` file is refused with
+   a pointer to `validate_patch`, and so is a write-shaped shell command reaching the same file through
+   `Bash` (a redirect, `sed -i`/`perl -i`, `tee`, `cp`/`mv`, `dd`). `Read` and a shell *read* are not
+   blocked, only advised: a hook allows the call and adds a note that the plugin's tools would likely
+   answer it more cheaply or completely, since [measurement](docs/benchmarks.md) showed that isn't true
+   for every kind of question.
 
 The server and its hooks are invoked directly as `dotnet <dll>`, never through a shell, so nothing the
 plugin runs while inspecting or modifying your source can execute an arbitrary command. Responses use

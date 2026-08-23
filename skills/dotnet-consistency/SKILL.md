@@ -37,8 +37,9 @@ needs drift detection should not pay for the rest.
 
 Get the current, complete list from the source — don't trust any doc's tool list, including this
 skill's own examples; that is exactly the kind of claim being audited. **Not `grep`**: the
-`guard-cs-bash-read` hook blocks shell reads of solution `.cs` files, and rightly — this is a symbol
-query, not a text search.
+`guard-cs-bash-read` hook flags a shell read of a solution `.cs` file as advisory (allowed, not
+blocked, since 2026-08-21) rather than denying it, but `get_symbol` is still the right call regardless
+of what the hook does — this is a symbol query, not a text search.
 
 ```
 get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools", "PatchTools",
@@ -168,15 +169,16 @@ Report each finding as: the memory or `CLAUDE.md` paragraph, its category, and t
 should carry it. Do not copy a category-(c) fact into a shipped file to close a finding —
 categorising it correctly *is* closing it.
 
-**6. Hooks and launch path.** All six hooks are `hook <name>` subcommands of the published server
+**6. Hooks and launch path.** All seven hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
 `Guard*`/`ReloadHint`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
 have no `hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard
 logic), `GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
 `set_hook_guards`) and `ControlClient.cs` (how `hint-reload-new-cs-file` and `meter-tool-call` both
 reach the running server, with the command words in `Control/ControlCommands.cs`).
-Read those with `get_symbol` (not `grep` — the `guard-cs-bash-read` hook blocks a tree grep here, as
-it should), plus `hooks/hooks.json` and `.mcp.json`:
+Read those with `get_symbol` (not `grep` — a tree grep here would only earn an advisory note from
+`guard-cs-bash-read`, not a denial, but `get_symbol` is still the right call), plus `hooks/hooks.json`
+and `.mcp.json`:
    - Does each guard's deny/hint text still name the correct tool(s) and procedure (`validate_patch`'s
      current argument names, `search_index`/`get_symbol` for the read guards,
      `reload_workspace(scope: "all")` for the reload hint)? It is read at the exact moment a caller is
@@ -203,9 +205,12 @@ it should), plus `hooks/hooks.json` and `.mcp.json`:
      `dotnet-code-review`: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` —
      `memory: project` makes the harness grant them anyway, which is why Boundaries carries the
      weight; (b) its Process step 2 still goes to `search_index`/`get_symbol` first and to `Read` only
-     when a symbol lookup didn't give it the lines — a narrow fallback `guard-cs-read` still enforces,
-     not an escape hatch. For `dotnet-explore` the guard is only a backstop — its own file bans `Read`
-     on `.cs` outright, so a denial there means that file drifted.
+     when a symbol lookup didn't give it the lines — a narrow, genuinely-reachable fallback now that
+     `guard-cs-read` only advises rather than blocks, so its own text (checked in Step 5's table) must
+     say so rather than imply the read would fail. For `dotnet-explore`, whose own file bans `Read` on
+     `.cs` outright with no hook backstop behind that ban any more, a `Read` of a `.cs` file appearing
+     in its transcript is itself the drift to report — the file's own instruction, not any hook, is
+     what should have stopped it.
 
 **7. Internal drift.** Read `drift.md` and run it. This is the step that starts from *what changed*
 rather than from a file list: `get_semantic_diff` against a baseline, then `search_log` for the

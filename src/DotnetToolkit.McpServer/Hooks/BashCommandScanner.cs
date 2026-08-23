@@ -170,6 +170,83 @@ internal static class BashCommandScanner
     }
 
     /// <summary>
+    /// The <c>.cs</c> file a write-shaped segment would overwrite: output redirection (<c>&gt;</c>/
+    /// <c>&gt;&gt;</c>, optionally file-descriptor-prefixed), an in-place editor (<c>sed -i</c>,
+    /// <c>perl -i</c>), <c>tee</c>, a <c>cp</c>/<c>mv</c>/<c>install</c> destination, or <c>dd</c>'s
+    /// <c>of=</c>.
+    /// </summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>The destination path token as written, or null when the segment does not write one.</returns>
+    /// <remarks>
+    /// Not a shell parser, same posture as the rest of this scanner: a redirection operator with no space
+    /// before its target (<c>cat a.cs&gt;&gt;b.cs</c>) is one token and is not recognized, matching the
+    /// documented <see cref="Tokenize"/> limitation for quoted, spaced paths.
+    /// </remarks>
+    public static string? FindWriteTargetCsArgument(string segment)
+    {
+        var tokens = Tokenize(segment).ToList();
+        for (var i = 0; i < tokens.Count - 1; i++)
+        {
+            if (RedirectOperators.Contains(tokens[i])
+                && tokens[i + 1].EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                return tokens[i + 1];
+            }
+        }
+
+        var name = CommandName(segment);
+        if (name is null)
+        {
+            return null;
+        }
+
+        if (InPlaceEditCommands.Contains(name) && tokens.Any(IsInPlaceFlag))
+        {
+            return FindCsArgument(segment);
+        }
+
+        if (string.Equals(name, "tee", StringComparison.OrdinalIgnoreCase))
+        {
+            return FindCsArgument(segment);
+        }
+
+        if (DestinationCommands.Contains(name))
+        {
+            var destination = tokens.Skip(1).LastOrDefault(t => !t.StartsWith('-'));
+            return destination is not null && destination.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+                ? destination
+                : null;
+        }
+
+        if (string.Equals(name, "dd", StringComparison.OrdinalIgnoreCase))
+        {
+            var of = tokens.FirstOrDefault(t => t.StartsWith("of=", StringComparison.Ordinal));
+            if (of is { Length: > 3 } && of[3..].EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                return of[3..];
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsInPlaceFlag(string token) =>
+        token is "-i" or "--in-place"
+        || (token.StartsWith("-i", StringComparison.Ordinal) && !token.StartsWith("--", StringComparison.Ordinal) && token.Length > 2)
+        || token.StartsWith("--in-place=", StringComparison.Ordinal);
+
+    private static readonly HashSet<string> RedirectOperators = new(StringComparer.Ordinal)
+    {
+        ">", ">>", "1>", "1>>", "2>", "2>>", "&>", "&>>", ">|",
+    };
+
+    private static readonly HashSet<string> InPlaceEditCommands =
+        new(StringComparer.OrdinalIgnoreCase) { "sed", "perl" };
+
+    private static readonly HashSet<string> DestinationCommands =
+        new(StringComparer.OrdinalIgnoreCase) { "cp", "mv", "install" };
+
+    /// <summary>
     /// Directories a segment would search for <c>.cs</c> content <b>without naming a single file</b>.
     /// </summary>
     /// <param name="segment">One segment from <see cref="Segments"/>.</param>

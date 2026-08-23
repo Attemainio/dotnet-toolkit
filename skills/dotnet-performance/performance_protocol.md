@@ -1,9 +1,10 @@
 # dotnet-performance protocol
 
-Read this whole file before answering any question in your prompt. It applies identically to both
-probe agents in this run — `dotnet-perf-mcp-probe` and `dotnet-perf-raw-probe`. The only difference
-between you and the other agent answering the same questions right now is which tool family you
-have; everything else, including this file, is the same for both of you.
+Read this whole file before answering any question in your prompt. It applies identically to all
+three probe agents in this run — `dotnet-perf-mcp-probe`, `dotnet-perf-raw-probe`, and
+`dotnet-perf-full-probe`. The only difference between you and the other agents answering the same
+questions right now is which tool family (and, for `dotnet-perf-full-probe`, which guard state) you
+have; everything else, including this file, is the same for all three of you.
 
 ## Output format
 

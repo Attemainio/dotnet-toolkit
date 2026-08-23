@@ -5,7 +5,7 @@
 > page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
 > how membership is decided statically, and where enforcement has a known hole.
 
-The plugin ships six hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships seven hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
 plugin removes them.
 
@@ -31,32 +31,46 @@ the path that has to be reliable.
 Each hook adds roughly 70ms per matched tool call — one short-lived .NET process that returns before
 MSBuild discovery or host startup runs.
 
-## The off-switch, and why it expires
+## The off-switch, and the forced-on switch, and why both expire
 
-`HookCli` reads `GuardSuspension` before dispatching to any of the three **blocking** guards; when a
-suspension is in force they return allow without evaluating. The two hints and the meter are
-unaffected — they add context or observe, rather than withhold a call, so silencing them would cost
-the caller information without buying back any of the freedom a suspension is asked for. The meter
-especially: `dotnet-performance` suspends the guards precisely in order to measure the *unguarded*
-route, which is not measured at all if suspending also stops the measuring.
+`HookCli` reads `GuardSuspension` before dispatching to any of the four **blocking-capable** guards
+(`guard-cs-edit`, `guard-cs-read`, `guard-cs-bash-read`, `guard-cs-bash-write`) and asks which of three
+modes (`GuardMode`) is in force. **`Suspended`** short-circuits before any of them evaluate — they
+return allow without running at all, the same for all four. **`Blocked`** does not short-circuit
+anything; it is passed into `guard-cs-read`/`guard-cs-bash-read` as a parameter that flips their
+outcome from `AllowAdvising` to `Deny` when the file is governed. `guard-cs-edit` and
+`guard-cs-bash-write` never see it, because they already `Deny` outside a suspension — `Blocked` looks
+identical to the default (`Active`) for them. The two hints and the meter are unaffected by either
+mode — they add context or observe, rather than withhold a call, so silencing them would cost the
+caller information without buying back any of the freedom a suspend or a block is asked for. The meter
+especially: `dotnet-performance` suspends or blocks the guards precisely in order to measure a
+*specific* route, which is not measured at all if changing the state also stops the measuring.
 
-The reason this exists at all is `dotnet-performance`: the claim that these tools beat `grep`/`Read`
-cannot be *measured* without running `grep`/`Read` in the same repo, and the guards make that route
-unreachable by construction. A benchmark that cannot run the baseline is not a benchmark.
+The reason `Suspended` exists at all is `dotnet-performance`'s floor probe: the claim that these tools
+beat `grep`/`Read` cannot be *measured* without running `grep`/`Read` in the same repo, and the guards
+make that route unreachable by construction. A benchmark that cannot run the baseline is not a
+benchmark. `Blocked` exists for the same skill's ceiling probe, added 2026-08-22: it reproduces this
+repo's own pre-2026-08-20 read enforcement as a comparison point, and doubles as a backstop against
+`dotnet-perf-mcp-probe`'s one narrow `Read` allowance turning a protocol slip into silent contamination
+instead of a loud, reportable denial.
 
 Three properties carry the risk; the first two are deliberate inversions of what the rest of this page
 says:
 
-- **State is an expiry, not a flag.** The file under `.claude/dotnet-toolkit/cache/` holds the instant
-  the guards resume; any read past it deletes the file, and requests are capped at 4 hours. So there is
-  no way to disable the guards indefinitely through `set_hook_guards`, and nothing has to remember to
-  undo it. This matters more than it would for most switches: a guard left off does not fail loudly,
-  it just stops recording work, and the repo then looks exactly as it does when the plugin was never
-  installed.
-- **Reading the state fails *closed*.** An unreadable or unparseable state file leaves the guards on,
-  which is the opposite of the fail-open rule above. Both are the same principle applied to different
-  risks — failing open keeps a broken guard from wedging the user's editing; failing closed keeps a
-  broken state file from silently disarming a guard that works.
+- **State is an expiry, not a flag.** The file under `.claude/dotnet-toolkit/cache/` holds which mode
+  (`Suspended` or `Blocked`) is in force and the instant it lapses; any read past that instant deletes
+  the file, and requests are capped at 4 hours. So there is no way to hold either mode indefinitely
+  through `set_hook_guards`, and nothing has to remember to undo it. This matters more for `Suspended`
+  than for most switches: left on, it does not fail loudly, it just stops recording work, and the repo
+  then looks exactly as it does when the plugin was never installed. A stuck `Blocked` fails the other
+  way — loudly, as an ordinary `Read` unexpectedly denying — which is a real cost of its own (a
+  confused session) even though it is the safer of the two directions to get stuck in.
+- **Reading the state fails *closed*.** An unreadable or unparseable state file leaves the guards at
+  their default (`Active`), which is the opposite of the fail-open rule above. Both are the same
+  principle applied to different risks — failing open keeps a broken guard from wedging the user's
+  editing; failing closed keeps a broken state file from silently disarming a guard that works. A file
+  in the pre-`Blocked` format (a bare timestamp, no mode line) is not "unreadable" for this purpose —
+  `GuardSuspension.TryRead` treats it as `Suspended`, the mode every such file predates.
 - **State is scoped to the calling Claude Code session, when one is visible.** `set_hook_guards` reads
   `CLAUDE_CODE_SESSION_ID` from its own process environment and writes
   `guards-suspended-until.<sessionId>` instead of the bare `guards-suspended-until` file; `HookCli`
@@ -86,12 +100,15 @@ says:
   its scope sentence — a wider suspension the caller is told about beats a scoped one that silently
   does nothing.
 
-`workspace_status` prints a `hookGuards: SUSPENDED` line with the time remaining, and nothing when the
-guards are active — checking its own session's scoped state the same way `HookCli` does. It carries
-this rather than `set_hook_guards` alone because it is the call every skill makes first, so a session
-inheriting a suspension it did not start finds out before it edits rather than after. **Neither line is
-evidence that a hook will honour the suspension**, for the reason above; `dotnet-performance` therefore
-proves it with an actual guarded read before it launches the raw probe, rather than trusting either.
+`workspace_status` prints a `hookGuards: SUSPENDED` or `hookGuards: BLOCKED` line with the time
+remaining, and nothing when the guards are at their default — checking its own session's scoped state
+the same way `HookCli` does. It carries this rather than `set_hook_guards` alone because it is the call
+every skill makes first, so a session inheriting a suspend or a block it did not start finds out before
+it edits (or before an unexpected `Read` denial confuses it) rather than after. **Neither line is
+evidence that a hook will honour the state**, for the reason above; `dotnet-performance` therefore
+proves each transition with an actual guarded call before launching the probe that depends on it — an
+advisory-free `Read` before the raw probe, an actual denial before the MCP probe — rather than trusting
+either instrument alone.
 
 `DOTNET_TOOLKIT_DISABLE_HOOKS` remains the separate, non-expiring hatch for a harness that owns the
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
@@ -125,8 +142,26 @@ surface").
 
 ## `hook guard-cs-read` — PreToolUse on `Read`
 
-Blocks `Read` on a `.cs` file that a project actually compiles, in favor of `search_index`/`get_symbol` —
-the read-side counterpart of the edit guard.
+**Advisory by default, not blocking.** Allows `Read` on a `.cs` file that a project actually compiles,
+but returns `hookSpecificOutput.permissionDecision: "allow"` with a `permissionDecisionReason` pointing
+at `search_index`/`get_symbol` instead — the read-side counterpart of the edit guard, but not a hard
+deny. Built with `HookOutcome.AllowAdvising`, the read-side sibling of `AllowWith`.
+
+This guard was a hard deny through 2026-08-20. It moved to advisory-only after the 2026-08-21
+performance run showed the MCP route is not reliably cheaper or more correct on every question — a
+small file, a whole-repo negative, raw text search all favored the raw route, and a hard deny forced
+the more expensive tool even there. `guard-cs-edit` (below) keeps its hard deny: only `validate_patch`
+appends to the development log, so an unblocked edit is unrecoverable, not merely a less efficient
+read — a stakes difference this guard's own doc comment now states directly.
+
+**`set_hook_guards(state: "block")` forces this guard back to its pre-2026-08-20 hard deny**, added the
+same day as that migration once `dotnet-performance` needed a third probe with a real forced-enforcement
+comparison point rather than only a ceiling (MCP-only tools) and a floor (guards suspended). `HookCli`
+reads the `Blocked` half of `GuardSuspension.Current`'s tri-state result (`Active`/`Suspended`/`Blocked`)
+and passes it into `Evaluate`'s `blocked` parameter; the membership check and the file-vs-tree distinction
+are unchanged, only the outcome constructor flips from `AllowAdvising` to `Deny`. Not the plugin's shipped
+default — a session that unexpectedly finds `Read` denying a `.cs` file should check `workspace_status`'s
+`hookGuards: BLOCKED` line before assuming the file is simply ungoverned.
 
 Solution membership is decided from the filesystem alone, in `Hooks/CsFileMembership.cs` (shared with
 `guard-cs-bash-read` below, so the two can never disagree on the answer): a hook is a separate process
@@ -134,10 +169,19 @@ with no access to the MCP stdio pipe, so it cannot ask the running server's `Wor
 file belongs to the loaded solution. What it checks statically:
 
 - Walk upward from the file for the nearest `.csproj`, watching for a `*.sln`/`*.slnx` at a level
-  **strictly between** the file and the repo root — finding one there means the file belongs to its own
-  independent, nested solution (a test fixture's throwaway sample project, for example), so the read is
-  **allowed**. Reaching the repo root itself (where this repo's own top-level `.slnx` lives) is the
-  ordinary case and is not treated as nested.
+  **strictly between** the file and the repo root. Finding one there means the file *may* belong to its
+  own independent, nested solution (a test fixture's throwaway sample project, for example) — but only
+  when the project the nested solution sits next to is **not itself referenced by the root
+  `.sln`/`.slnx`**. An ordinary .NET layout has a project ship its own per-project solution purely for
+  standalone-open convenience while still being listed in the root solution (a `PandaAI.Core.sln` next
+  to `PandaAI.Core.csproj`, with both also covered by the root `PandaAI.sln`) — a plain "any nested `.sln`
+  exists" check silently exempted every guard on such a project until this cross-check was added
+  (`Hooks/CsFileMembership.cs`'s `IsReferencedByRootSolution`, which text-scans the root solution's
+  project list — a `.slnx` via `Workspace/SlnxParser.cs`, a classic `.sln` via a regex over its
+  `Project(...)` lines — rather than requiring an MSBuild evaluation). Only when the project is absent
+  from that list is the read genuinely **allowed** as independently-solutioned. Reaching the repo root
+  itself (where this repo's own top-level `.slnx` lives) is the ordinary case and is not treated as
+  nested.
 - If a governing `.csproj` is found, its `<Compile Remove>` globs are checked too — a file excluded from
   compilation (the way `DotnetToolkit.McpServer.Tests.csproj` excludes `fixtures/**`) is **allowed**.
 - A file that is not under the project root at all is **allowed** without walking, so the climb can
@@ -153,11 +197,14 @@ way to observe.
 
 ## `hook guard-cs-bash-read` — PreToolUse on `Bash`
 
-Closes the gap `guard-cs-read` structurally cannot: its matcher is the `Read` tool by name, so a shell
-command that dumps the same file's bytes into the transcript via `Bash` (`cat`, `sed`, `head`, `tail`,
-`grep`/`egrep`/`fgrep`/`rg`/`ag`, `awk`/`gawk`, `nl`, `tac`, `bat`, or `less`/`more`) is invisible to it —
-a different tool name, same underlying read. This hook watches `Bash` instead and applies the identical
-membership question via the same shared `Hooks/CsFileMembership.cs`.
+**Advisory by default, not blocking**, for the same reason and since the same run: allows the call and
+returns the same `AllowAdvising` shape `guard-cs-read` does. Closes the gap `guard-cs-read` structurally
+cannot:
+its matcher is the `Read` tool by name, so a shell command that dumps the same file's bytes into the
+transcript via `Bash` (`cat`, `sed`, `head`, `tail`, `grep`/`egrep`/`fgrep`/`rg`/`ag`, `awk`/`gawk`,
+`nl`, `tac`, `bat`, or `less`/`more`) is invisible to it — a different tool name, same underlying read.
+This hook watches `Bash` instead and applies the identical membership question via the same shared
+`Hooks/CsFileMembership.cs`.
 
 It is not a shell parser: `Hooks/BashCommandScanner.cs` splits the command on pipeline/statement
 separators (`| ; & && ||`), takes each segment's first word as the invoked command — with any directory
@@ -175,16 +222,72 @@ under-detection is deliberate (same fail-open posture as the other guards), not 
 to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are never touched, so
 `git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
 
+**This under-detection is total, not narrow, on any repo whose path contains a space** — confirmed
+2026-08-20 against a consuming repo cloned under `...\Energy Lead Agent\`: every `.cs` path in it
+contains a space, so `Tokenize` splits every one of them mid-path and `FindCsArgument`/`CsScanRoots`
+never see a `.cs`-suffixed token, meaning the advisory note never fires there at all. Now that this
+guard allows rather than denies, the blast radius of that gap is "a missed nudge", not "an unenforced
+boundary" — the read always proceeded either way. It was a live finding while this guard still denied;
+it is stated here for the record and because the same `Tokenize` limitation is exactly what
+`dotnet-guard-redteam` (see `agents/dotnet-guard-redteam.md`) exists to keep re-discovering on other
+repos, including ones without a space in their path.
+
+**`set_hook_guards(state: "block")` forces this guard's hard deny back on**, the same way it does for
+`guard-cs-read` above — `NamedCompiledFile`/`ScannedProject` and the membership check are unchanged;
+only the outcome flips from `AllowAdvising(FileMessage(...))`/`AllowAdvising(TreeMessage(...))` to
+`Deny(BlockedFileMessage(...))`/`Deny(BlockedTreeMessage(...))`. The `Tokenize` gap above is
+under-detection either way it runs: while blocked, a spaced path that defeats the tokenizer is not
+merely a missed nudge again — it is a real unenforced read, the same stakes the gap carried before
+2026-08-20.
+
 **The built-in `Grep` tool is not covered by either read guard.** `hooks/hooks.json` matches on tool
 name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `Bash` — `Grep` and `Glob`
 are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode returns `.cs` source with
-nothing intercepting it. This is a real hole in read enforcement, not a case the membership check
-allows: `search_index` is still the right tool for finding a declared symbol, and the always-loaded
-the `dotnet-read`/`dotnet-write` skills cover it (in this repo and in every repo init wired up), but
-no hook enforces that here. It matters most for
-`dotnet-code-review`, whose `tools:` list grants `Grep` and `Glob` outright. `dotnet-explore` closes the
-hole the other way — it is granted neither, and its own instructions forbid `Read` on a `.cs` file at
-all, so for that agent the read guard is a backstop rather than the boundary.
+nothing intercepting it. Now that the read guards are advisory rather than blocking, this "hole" is the
+same shape as every other unmatched tool: no advisory note, nothing enforced either way. `search_index`
+is still the right tool for finding a declared symbol, and the `dotnet-read`/`dotnet-write` skills cover
+it; `Grep`/`Glob` simply carry no nudge toward that. It matters most for `dotnet-code-review`, whose
+`tools:` list grants `Grep` and `Glob` outright, and `dotnet-explore`, whose own instructions forbid
+`Read` on a `.cs` file regardless of what any hook does.
+
+## `hook guard-cs-bash-write` — PreToolUse on `Bash`
+
+Added 2026-08-21 after `dotnet-guard-redteam` found the gap it closes: `guard-cs-edit` matches only the
+`Edit`/`Write`/`NotebookEdit` *tool names*, so a shell command that overwrites the same bytes — `echo
+'...' >> Foo.cs`, `sed -i`, `perl -i`, `tee Foo.cs`, a `cp`/`mv` onto an existing `.cs` file — reached
+disk with no compile check and no development-log entry, the exact failure `guard-cs-edit` exists to
+prevent. Confirmed live: `echo '// marker' >> Contracts/Contract.cs` landed unblocked before this hook
+existed.
+
+**A hard deny, not advisory** — unlike `guard-cs-bash-read` above, this guard keeps the harder bar
+`guard-cs-edit` sets. Only `validate_patch` appends to the development log, so an unblocked write is
+unrecoverable, not merely a less efficient read; the read/write split in stakes is the same one
+`guard-cs-edit`'s own section states.
+
+`Hooks/BashCommandScanner.cs`'s `FindWriteTargetCsArgument` decides whether a segment is write-shaped:
+
+- Output redirection — `>`, `>>`, and the fd-prefixed forms (`1>`, `2>`, `&>`, …) — followed by a
+  `.cs`-suffixed token.
+- `sed`/`perl` carrying an in-place flag (`-i`, `-i.bak`, `--in-place`), or `tee`, whose target is found
+  the same way `FindCsArgument` finds a read target.
+- `cp`/`mv`/`install`, whose *last* non-flag operand is the destination.
+- `dd`'s `of=` argument.
+
+Same membership question as every other guard here, through the shared `Hooks/CsFileMembership.cs` —
+and the same allowance `guard-cs-edit` makes for `Write` creating a brand-new file: a target that does
+not exist yet is let through, since `validate_patch` cannot lease a `baseVersions` entry for a symbol
+that has no version yet.
+
+**Not a shell parser, same posture as `guard-cs-bash-read`.** An unspaced redirect (`cat
+a.cs>>b.cs`, no token boundary for `Tokenize` to find), a heredoc, an obscure in-place editor, or a
+quoted path with a space (the same standing `Tokenize` gap documented above) are not recognized. This
+is deliberate under-detection, not a security boundary meant to be airtight — the same fail-open stance
+the rest of this page takes — and it is exactly what `dotnet-guard-redteam` exists to keep
+re-discovering as this scanner's coverage evolves.
+
+Wired as a second hook under the `Bash` matcher in `hooks/hooks.json`, ahead of `guard-cs-bash-read`:
+both run on every `Bash` call, and a deny from this one blocks the tool regardless of what the advisory
+hook would have said about the same command.
 
 ## `hook hint-reload-new-cs-file` — PostToolUse on `Write`
 
