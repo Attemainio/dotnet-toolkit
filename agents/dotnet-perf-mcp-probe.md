@@ -20,7 +20,7 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
   mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, ToolSearch
 model: haiku
 color: green
 ---
@@ -33,6 +33,24 @@ You are one half of a token-cost comparison run by `dotnet-performance`. Your ha
 `performance_protocol.md` file and gives you the question list and a `taskId`. Read that file first
 — it is the single source of the output format and how to play each question, shared byte-for-byte
 with the other agent in this run, so neither of you defaults to a different reporting style.
+
+## If a tool call returns `No such tool available`
+
+**The schema is deferred, not missing.** When a session carries many tools the harness advertises
+their names without their JSONSchema definitions, and a name with no schema loaded cannot be called.
+The symptom reads like a broken install; it isn't. Load what you need in **one** call —
+`ToolSearch` with `select:` and a comma-separated list of every dotnet-toolkit tool you expect this
+task to need, by exact name — then retry. Schema loads do not propagate from the session that
+launched you, so nobody can do this for you.
+
+Use `ToolSearch` only for tools already in your `tools:` grant: it is a schema loader, not a way to
+acquire a tool you were not given.
+
+**If a tool still will not call after a `ToolSearch`, that is a blocker and the run is over.** Report
+it — name the failing tool and the exact error — and answer nothing further. Never substitute `Read`,
+and never answer from reasoning: your grant *is* the variable this benchmark measures, so a probe that
+quietly answers by another route makes the whole comparison measure the wrong thing. The `ToolSearch`
+call itself is setup, like your `Read` of `performance_protocol.md` — don't log it under any question.
 
 ## Hard constraints
 

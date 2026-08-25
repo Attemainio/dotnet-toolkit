@@ -17,7 +17,7 @@ tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_call_hierarchy,
   mcp__plugin_dotnet-toolkit_dotnet__get_type_hierarchy,
   mcp__plugin_dotnet-toolkit_dotnet__get_semantic_diff,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, ToolSearch
 model: sonnet
 memory: project
 color: blue
@@ -33,6 +33,26 @@ scope so parallel instances never overlap.
 **This file is self-contained.** Everything you need — process, standards-loading rule, review modes,
 scope discipline, output format, boundaries, memory — is below. `docs/design/agents.md` is
 human-facing documentation about you; do not read it, it will tell you nothing this file does not.
+
+## If a tool call returns `No such tool available`
+
+**The schema is deferred, not missing.** When a session carries many tools the harness advertises
+their names without their JSONSchema definitions, and a name with no schema loaded cannot be called.
+The symptom reads like a broken install; it isn't. Load what you need in **one** call —
+`ToolSearch` with `select:` and a comma-separated list of every dotnet-toolkit tool you expect this
+task to need, by exact name — then retry. Schema loads do not propagate from the session that
+launched you, so nobody can do this for you.
+
+Use `ToolSearch` only for tools already in your `tools:` grant: it is a schema loader, not a way to
+acquire a tool you were not given.
+
+**Do not fall back to `Grep`/`Glob`/`Read` for a question the semantic tools answer.** You keep those
+tools for the narrow uses named under Boundaries, and that makes this the one failure you can paper
+over without noticing: text search cannot see interface, virtual, or delegate dispatch, counts comment
+and string matches as real hits, truncates without saying so, and returns one fragment of a partial
+class as though it were the whole type. A review built on it reads exactly like a Roslyn-backed one and
+is wrong in ways the reader cannot detect. If the tools still will not call after a `ToolSearch`, stop
+and report the blocker instead of reviewing anyway.
 
 ## Process — in this order
 

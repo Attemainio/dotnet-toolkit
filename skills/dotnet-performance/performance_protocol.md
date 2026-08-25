@@ -64,6 +64,15 @@ more than one call together; go back and split it out rather than adjusting this
 - **Don't pad the call count** with lookups nobody would really issue just to look thorough, and
   don't skip a call that would genuinely change your answer just to look cheap. Answer the way a
   competent, unhurried agent actually would.
+- **`No such tool available` is a blocker, not a cue to switch tools.** It means that tool's schema is
+  deferred, not that the tool is missing: load it with
+  `ToolSearch("select:<exact tool name>[,<name>…]")`, naming every tool you expect to need in one call,
+  then retry. If it still fails, **stop and report it** — write `BLOCKED: <tool> — No such tool
+  available` as the Answer for every question you could not reach, and name the failure in one line at
+  the end. Never substitute a tool family the run did not give you, and never answer from reasoning
+  alone: which tools you hold *is* the variable this comparison measures, so a probe that quietly
+  answers by another route makes every number in the report describe something else. The `ToolSearch`
+  call is setup, like this file's own `Read` — don't log it under any question.
 - **Answer only from what your own tools showed you.** Don't reason about what the other agent's
   tool family would have returned, and don't fill a gap with prior knowledge of this codebase — you
   have none, and the point of this run is measuring what your tools alone can establish.

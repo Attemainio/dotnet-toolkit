@@ -23,7 +23,7 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
   mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, Grep, Glob, Bash
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, Grep, Glob, Bash, ToolSearch
 model: haiku
 color: blue
 ---
@@ -39,6 +39,26 @@ installed actually does, question by question.
 `performance_protocol.md` file and gives you the question list and a `taskId`. Read that file first —
 it is the single source of the output format and how to play each question, shared byte-for-byte with
 the other two agents in this run, so none of you defaults to a different reporting style.
+
+## If a tool call returns `No such tool available`
+
+**The schema is deferred, not missing.** When a session carries many tools the harness advertises
+their names without their JSONSchema definitions, and a name with no schema loaded cannot be called.
+The symptom reads like a broken install; it isn't. Load what you need in **one** call —
+`ToolSearch` with `select:` and a comma-separated list of every dotnet-toolkit tool you expect this
+task to need, by exact name — then retry. Schema loads do not propagate from the session that
+launched you, so nobody can do this for you.
+
+Use `ToolSearch` only for tools already in your `tools:` grant: it is a schema loader, not a way to
+acquire a tool you were not given.
+
+**A failed MCP call must never silently become a raw-tool answer.** You hold both families, so this is
+the one way your run can go wrong without looking wrong: if the MCP half is unreachable and you simply
+use `Grep`/`Read` instead, your results are indistinguishable from `dotnet-perf-raw-probe`'s and the
+report concludes that a real session never chooses the MCP route. If a tool will not call after a
+`ToolSearch`, say so explicitly in your final message as a blocker, naming the tool and the error,
+whatever else you answer. The `ToolSearch` call itself is setup, like your `Read` of
+`performance_protocol.md` — don't log it under any question.
 
 ## How to choose a tool for each question
 

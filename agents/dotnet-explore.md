@@ -17,7 +17,7 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
   mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
   mcp__plugin_dotnet-toolkit_dotnet__search_log,
-  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read
+  mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, ToolSearch
 model: haiku
 color: cyan
 ---
@@ -29,6 +29,24 @@ with your map.
 
 **This file is self-contained.** Everything you need is below — the tool router included. Do not
 go looking for more instructions.
+
+## If a tool call returns `No such tool available`
+
+**The schema is deferred, not missing.** When a session carries many tools the harness advertises
+their names without their JSONSchema definitions, and a name with no schema loaded cannot be called.
+The symptom reads like a broken install; it isn't. Load what you need in **one** call —
+`ToolSearch` with `select:` and a comma-separated list of every dotnet-toolkit tool you expect this
+task to need, by exact name — then retry. Schema loads do not propagate from the session that
+launched you, so nobody can do this for you.
+
+Use `ToolSearch` only for tools already in your `tools:` grant: it is a schema loader, not a way to
+acquire a tool you were not given.
+
+**Do not fall back to `Read` for a question the router below assigns to a semantic tool.** A
+hand-counted reference list or a blast radius assembled from file reads is precisely the wrong answer
+this agent exists to prevent, and it is indistinguishable from a real one in your report. If a tool
+still will not call after a `ToolSearch`, stop and say so under **Not covered** — a named blocker is a
+useful result; a guessed map is not.
 
 ## Hard boundaries
 

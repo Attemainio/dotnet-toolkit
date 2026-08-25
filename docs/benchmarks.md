@@ -41,6 +41,15 @@ Each run is driven by the `dotnet-performance` skill:
 6. **Ground truth for every contested answer is established independently by the orchestrator, after
    all three probes return** — never taken from a probe's self-report.
 
+Every MCP-granting probe also holds `ToolSearch` (added 2026-08-25). The harness defers tool schemas in
+sessions carrying many tools, and a subagent without `ToolSearch` cannot load one — every MCP call comes
+back `No such tool available`, so `dotnet-perf-mcp-probe` answers nothing and `dotnet-perf-full-probe`
+silently degrades into a second raw probe while still producing a report-shaped result. Step 0 of the
+skill now checks the grant before a run and `harness.byAgentTool` after it; **a run showing zero MCP rows
+for `dotnet-perf-mcp-probe` is an instrument failure, not a result.** The specimens below predate the
+grant and are unaffected — their MCP legs returned real answers, which is only possible with the schemas
+loaded.
+
 > **The results below predate the third probe.** Both published specimens used the original two-route
 > methodology — `dotnet-perf-mcp-probe` against `dotnet-perf-raw-probe` only, with no `dotnet-perf-full-probe`
 > leg. They still show the ceiling-vs-floor comparison honestly; a re-run with the current three-probe

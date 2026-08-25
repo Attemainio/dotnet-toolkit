@@ -272,6 +272,26 @@ Structural checks against `claude-docs.md`. Cheap, and each has a silent failure
   awk 'FNR==1 && /^---/ {print "FINDING: frontmatter on " FILENAME}' standards/*.md
   ```
 
+- **Every agent granting an MCP tool also grants `ToolSearch`.** An agent's `tools:` frontmatter is an
+  allowlist, and the harness defers tool schemas in sessions carrying many tools — so an agent without
+  `ToolSearch` can see the MCP tool names but never load a schema for one, and every call returns
+  `No such tool available`. Schema loads made on the main thread do not propagate into a subagent, so
+  there is no fix from outside either. `dotnet-code-review` and `dotnet-perf-full-probe` keep
+  `Grep`/`Read` and would answer confidently from text search instead, which is the silent version of
+  this failure and the reason it is a static check rather than something a run would surface.
+  Rationale in `docs/design/agents.md`. `dotnet-perf-raw-probe` and `dotnet-guard-redteam` grant no MCP
+  tool and must **not** be given `ToolSearch` — the raw probe's whole value is a grant with nothing
+  else in it.
+
+  ```bash
+  for f in agents/*.md; do
+    fm=$(awk '/^---$/{n++; next} n==1' "$f")
+    case "$fm" in *mcp__plugin_dotnet-toolkit_dotnet__*)
+      case "$fm" in *ToolSearch*) ;; *) echo "FINDING: $f grants MCP tools but not ToolSearch";; esac;;
+    esac
+  done
+  ```
+
 - **`workspace_status` still reports `pluginRoot`, and `docs/tools/server.md` still documents the
   join.** It is the only route from an always-loaded rule or a subagent to the plugin's own files;
   dropping it silently strands every standards read and every manual read. Contract 3.50.

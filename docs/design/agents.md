@@ -30,6 +30,49 @@ broad tool grant — see its own section for why):
   `guard-cs-bash-read` with the guards left armed, and reports which got through. `dotnet-guard-audit`
   is its only sanctioned launcher. See the section at the end.
 
+## Deferred tool schemas — why every MCP-granting agent also grants `ToolSearch`
+
+The harness defers tool schemas in sessions that carry many tools: names are advertised, JSONSchema
+definitions are not, and a tool cannot be invoked until `ToolSearch("select:<exact name>")` loads its
+schema. The main conversation always holds `ToolSearch`, so `dotnet-read` and `dotnet-write` can treat
+this as a one-line setup step. An agent's `tools:` frontmatter is an allowlist, though — and until
+2026-08-25 none of these agents listed `ToolSearch`. In any deferred-schema session that made every MCP
+call from every one of them fail with `No such tool available`, unfixably from inside the agent. Schema
+loads are per-agent: loading them on the main thread before spawning does **not** propagate, which was
+confirmed behaviourally, not inferred.
+
+Three of the four failed *quietly*, which is the part worth remembering. `dotnet-code-review` keeps
+`Read`/`Grep`/`Glob` and would go on reviewing C# by text search at normal confidence — the exact
+failure the always-loaded rule exists to prevent, arriving inside the plugin's own review path.
+`dotnet-perf-full-probe` keeps the same raw tools and degrades into a second `dotnet-perf-raw-probe`,
+so a `/dotnet-performance` run under this bug concludes the plugin is worthless and shows token tables
+to back it. Only `dotnet-perf-mcp-probe`, whose grant is MCP plus one `Read`, fails loudly. **Any perf
+report under `.claude/dotnet-toolkit/perf/` generated in a deferred-schema session before this fix is
+invalid.**
+
+So: the authoritative tool list is still the agent file's `tools:` frontmatter — and for any agent
+granted an `mcp__plugin_dotnet-toolkit_dotnet__*` tool, that list **must** include `ToolSearch`.
+`dotnet-perf-raw-probe` and `dotnet-guard-redteam` grant no MCP tool and are deliberately left alone;
+giving the raw probe `ToolSearch` would only muddy the baseline it exists to be. `harness-compliance.md`
+§G carries the static check that would have caught this.
+
+The grant alone is not enough, so each of the four also carries an inline section on what
+`No such tool available` means and a prohibition on falling back to raw tools — the symptom reads like a
+broken install, and the intuitive reaction to a broken install is the one that produces confident wrong
+answers. That prohibition is the load-bearing half for `dotnet-code-review` and `dotnet-perf-full-probe`,
+the two whose fallback is both available and wrong.
+
+Two consequences of the grant itself. `ToolSearch` is dispatched by the harness, so `meter-tool-call`
+counts it in a probe's `calls` and token totals — `dotnet-performance` Step 4's reconciliation offset
+accounts for that, and the probes are told not to log it per question. And it is a schema loader, not a
+capability grant: whether a `ToolSearch` load could make a *non*-granted tool callable was **not**
+tested, so each agent file is told to load only tools it already holds, and the read-only-by-grant
+guarantee below should not be assumed to survive a test that has not been run.
+
+Adding `ToolSearch` is inert where schemas are not deferred — nothing needs loading, so it is never
+called. Agent-file edits need a session restart to take effect; the registry is snapshotted at plugin
+load, not per spawn.
+
 Everything from here to the `dotnet-explore` section is about `dotnet-code-review`.
 
 It used to be a mandatory second read for the agent (~2.7k tokens on top of its own file, which the
@@ -85,7 +128,8 @@ regardless of hook state.
 
 ## Tool grant — why two tools are withheld
 
-The authoritative list is the agent file's `tools:` frontmatter; it is not restated here.
+The authoritative list is the agent file's `tools:` frontmatter; it is not restated here. It includes
+`ToolSearch`, for the reason given under **Deferred tool schemas** above.
 
 `get_project_graph` and `detect_circular_dependencies` are deliberately **not** granted: they answer
 solution-wide architecture questions (project dependency direction, reference cycles) that a single
@@ -133,6 +177,11 @@ so its resolved tool list contains no writer at all: no `Write`, `Edit`, `Notebo
 `Write`/`Edit` and turn a real boundary back into an instruction — don't, and if a future version
 genuinely needs memory, the trade has to be stated in the agent file's Hard boundaries section.
 
+One caveat on "capability boundary": it rests on the harness filtering dispatch by `tools:`, and the
+`ToolSearch` grant added on 2026-08-25 has not been tested against that assumption. If a schema load
+could make a tool outside the allowlist callable, this boundary would be instruction-grade after all —
+the agent file is written to that stricter reading, and the test is worth running.
+
 ## Tool grant
 
 Every read-side MCP tool, **including `get_project_graph` and `detect_circular_dependencies`** — the two
@@ -147,6 +196,9 @@ advisory only and no longer a backstop, so this instruction is the sole boundary
 not `validate_patch.md`/`rename_symbol.md`, which document a path it has no tools for. No `Grep`/
 `Glob`: a text search over C# is the thing this agent exists to replace, and non-C# files are out of
 scope by design.
+
+Plus `ToolSearch`, which loads a deferred tool's schema — see **Deferred tool schemas** above. Without
+it this whole grant is unreachable in any session where the harness defers schemas.
 
 ## Why it must not report a `contentVersion`
 

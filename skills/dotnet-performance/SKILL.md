@@ -121,6 +121,19 @@ next action is simply to read the result you already have and move to the next s
    means, the flaw this design exists to remove. The usual cause is a server started before the hook
    was registered in `hooks.json`; restart it and begin again rather than reporting the run.
 
+5. **Confirm the probes can actually reach the MCP tools.** Tool schemas are deferred in sessions
+   carrying many tools, and a subagent whose grant omits `ToolSearch` gets `No such tool available` on
+   every MCP call with no way to fix it from inside. Under that failure `dotnet-perf-mcp-probe` answers
+   nothing and `dotnet-perf-full-probe` silently becomes a second raw probe — a run that reads as "the
+   MCP tools cannot answer basic navigation questions" *and* "a real session never chooses the MCP
+   route", with tables backing both, every number an artifact of a broken instrument. Check that
+   `ToolSearch` is still in the `tools:` frontmatter of `dotnet-perf-mcp-probe`,
+   `dotnet-perf-full-probe`, `dotnet-explore` and `dotnet-code-review` (Step 1 launches
+   `dotnet-explore`, so it needs it too). Then close the loop after the run: `harness.byAgentTool` must
+   show real MCP rows under `agent_type: dotnet-perf-mcp-probe`. **Zero MCP rows there invalidates the
+   run** — report the instrument failure and re-run once the grant is fixed; do not publish the
+   numbers. Agent-file edits need a session restart to take effect.
+
 ## Step 1 — build the question matrix
 
 **Survey the repo for real targets before writing questions, and delegate that survey rather than
@@ -316,7 +329,10 @@ available, they answer three different questions, and the report must name which
   discrepancy**: each probe's `Read` of `performance_protocol.md` is setup its own protocol tells it to
   leave out of the log, but the harness dispatched it, so the meter counts it — expect the meter to
   exceed each self-report by at least one on that account alone, plus any `workspace_status` readiness
-  call the probe treats the same way. A gap of one or two is that and needs no mention; a gap of a third
+  call the probe treats the same way, plus, for the two MCP-capable probes, any `ToolSearch` schema
+  load, which is setup they are likewise told not to log but which the harness dispatches and the meter
+  counts. The floor is therefore two rather than one for `dotnet-perf-mcp-probe` and
+  `dotnet-perf-full-probe` whenever schemas were deferred; don't read that extra call as compression. A gap of one or two is that and needs no mention; a gap of a third
   or a half is compression, and *that* is worth one sentence in the report naming which questions look
   compressed (several same-tool lines collapsed into one) — the report already carries the meter's own
   numbers in Cost, so the reconciliation table itself (three routes × three counts) would only be
