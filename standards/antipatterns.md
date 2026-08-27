@@ -36,6 +36,13 @@ Design entries below are catalog names; the full standards live in `architecture
   type. Flag when the same raw-primitive validation repeats at multiple call sites.
 - **Optional-parameter creep** — five or more optional parameters, usually a sign the method is doing too
   many variations of one job and should be split or given an options object.
+- **Ambient clock** — `DateTime.Now`/`DateTime.UtcNow` read directly inside logic whose behavior depends
+  on it (expiry, scheduling, retry windows), instead of an injected `TimeProvider`. Untestable without
+  sleeping; `DateTime.Now` additionally bakes in the machine's local zone. See `best-practices.md`.
+- **`StrongBox<T>` as a general-purpose mutable holder** — it is expression-tree/closure infrastructure
+  with a public mutable field, not a designed API: it carries no validation, no atomicity, and no thread
+  safety, and `Value` says nothing about what it holds. A named type with one property (or a `ref`
+  parameter, or `Interlocked` on a real field) states the same thing readably.
 
 ## Concurrency (concurrency)
 
@@ -52,6 +59,9 @@ Definitions and the full standard live in `concurrency.md`; these are the catalo
 - **`async void`** — outside actual event handlers; exceptions escape the caller and crash the process.
 - **Blocking inside a lock** — I/O, `.Result`, or a long computation while holding a lock; the classic
   first half of a deadlock or a contention collapse.
+- **A `System.Threading.Lock` stored as `object`** — compiles and locks, but the lowering is picked from
+  the static type, so it silently falls back to `Monitor` and gains nothing. Same shape: assuming any
+  plain holder (`StrongBox<T>`, a field, a property) is atomic because writes to it are "small".
 - **Sequential draining of redirected process streams** — reading a child process's stdout to end before
   starting stderr (or vice versa); deadlocks when the unread pipe's buffer fills. Drain both
   concurrently.
@@ -73,6 +83,14 @@ Definitions and the full standard live in `concurrency.md`; these are the catalo
   where the context-capture overhead matters. (Correctness aspects: `concurrency.md`.)
 - **Boxing a value type in a hot path** — passing a `struct` through an `object`-typed parameter,
   non-generic collection, or interface call site inside a loop that runs per-request or per-tick.
+- **A retained view into collection storage** — a `CollectionsMarshal.AsSpan`/`GetValueRefOrAddDefault`
+  result stored in a field or held across an `Add`/`Remove`/resize. It keeps pointing at the abandoned
+  backing array, so writes through it vanish with no error. A correctness bug wearing a performance
+  optimization's clothes; see `performance.md`.
+- **Hand-rolled SIMD or `unsafe` with no benchmark** — `Vector256`/intrinsic/pointer loops written past a
+  BCL method that already vectorizes the same operation (`IndexOfAny`, `SequenceEqual`,
+  `TensorPrimitives.*`), or a `params T[]` overload kept where `params ReadOnlySpan<T>` removes the
+  per-call allocation outright.
 - **Accidental O(n²)** — `Contains`/`Any`/`IndexOf` over a list inside a loop over another list, or
   nested loops over related collections where a `HashSet`/`Dictionary` lookup or a single pre-indexed
   pass would do. See `performance.md`'s nested-loop section.

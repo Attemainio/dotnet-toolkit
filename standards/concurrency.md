@@ -49,14 +49,33 @@ var order = await _repository.GetOrderAsync(id);
   task array (or catch and check `Exception.InnerExceptions`) when individual failures matter.
 - `Parallel.ForEachAsync`/`Parallel.For` for CPU-parallel loops with a bounded degree of parallelism —
   not a `foreach` spawning an unbounded `Task.Run` per item.
+- **`Task.WhenEach` (net9.0+) when each result is processed as it arrives**, rather than a
+  `WhenAny`-plus-remove-from-the-list loop, which is O(n²) and easy to get wrong. `WhenAll` remains right
+  when nothing can proceed until every task is done. The yielded item is the *task*, not its result — it
+  is awaited again, which is where its exception surfaces:
+
+```csharp
+await foreach (Task<string> completed in Task.WhenEach(tasks))
+{
+    string page = await completed;   // rethrows this task's own failure, not an aggregate
+    Process(page);
+}
+```
 
 ## Locks
 
-- **Lock on a dedicated private object** — `private readonly object _gate = new();` (or .NET 9+'s
-  `System.Threading.Lock`). Never `lock (this)`, never a `string`, never `typeof(T)`, and never any other
+- **Lock on a dedicated private object.** On net9.0+ that object is `private readonly Lock _gate = new();`
+  (`System.Threading.Lock`, C# 13): the compiler recognizes the type and lowers `lock (_gate)` to
+  `EnterScope()`/`Dispose()` instead of `Monitor.Enter`/`Monitor.Exit` — cheaper, and the field's purpose
+  is stated in its declaration rather than inferred from use. `private readonly object _gate = new();`
+  stays correct below net9.0. Never `lock (this)`, never a `string`, never `typeof(T)`, and never any other
   publicly reachable object: anyone else can lock the same reference and deadlock you from outside the
   class. `typeof(T)` for a given closed generic type is one shared instance process-wide — as reachable
   as a public static field.
+- **A `Lock` reached through an `object`-typed reference silently reverts to `Monitor`** — the lowering is
+  picked from the *static* type, so `object _gate = new Lock();` still compiles and still locks, with the
+  gain quietly gone. Keep the field, parameter, and property typed `Lock`. Plain `lock (_gate)` stays the
+  default form; `using (_gate.EnterScope())` only where the scope must be a value you hold or return.
 - **Keep the guarded region minimal and non-blocking**: no I/O, no `await`-shaped work, no callbacks into
   unknown code while holding a lock. The compiler already refuses `await` inside `lock` — don't smuggle
   the equivalent in via `.Result` (that's both anti-patterns at once).

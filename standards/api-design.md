@@ -21,6 +21,30 @@ public Task<OrderEntity> GetOrderAsync(Guid id);
 public Task<OrderDto> GetOrderAsync(OrderId id, CancellationToken ct);
 ```
 
+## Extension members
+
+C# 14 `extension` blocks add properties, static members, and operators to a type, not just methods.
+
+```csharp
+public static class EnumerableExtensions
+{
+    extension<T>(IEnumerable<T> source)
+    {
+        public bool IsEmpty => !source.Any();     // call site: items.IsEmpty
+        public T? FirstOrNull() => source.FirstOrDefault();
+    }
+}
+```
+
+- **An extension property must be as cheap as the field access it imitates.** `items.IsEmpty` looks free
+  and reads like state; if it enumerates, queries, or allocates, make it a method (`CountItems()`) so the
+  cost is visible at the call site.
+- **Extend a type you own, or extend it for a reason the type's own author would recognize.** An
+  extension on `string`/`DateTime`/`IEnumerable<T>` is visible to every file with that `using` — keep such
+  a block `internal` unless the extension is genuinely part of this library's public surface.
+- Extensions don't participate in overriding or interface dispatch: an instance member always wins, so an
+  extension shadowed by a later framework addition changes meaning silently on an SDK bump.
+
 ## DTOs and serialization contracts
 
 A DTO — a type whose entire job is to cross a boundary as JSON/XML/protobuf — is a **value**, not an

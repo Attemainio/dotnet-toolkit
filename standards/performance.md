@@ -28,8 +28,9 @@ people to ignore performance review entirely.
 
 - String interpolation (`$"..."`), `string.Format`, `ToString()`, and `+` concatenation inside a loop —
   each allocates. `StringBuilder` for loop-accumulated strings.
-- `params T[]` call sites — each call allocates the variadic array; add an explicit-arity overload when
-  the call site is in a hot loop.
+- `params T[]` call sites — each call allocates the variadic array. On C# 13+ declare the parameter
+  `params ReadOnlySpan<T>` instead (see below); an explicit-arity overload is the older workaround for
+  the same problem.
 - `foreach` over an interface-typed (`IEnumerable<T>`) sequence may allocate/box the enumerator and
   blocks some JIT optimizations — in a proven hot path, loop over the concrete `List<T>`/array/`Span<T>`,
   or use `for`.
@@ -39,6 +40,75 @@ people to ignore performance review entirely.
   the closure. Pass captured state as an explicit argument or use a `static` lambda.
 - `Task`/`async` state-machine allocation per iteration of a hot per-item loop — batch the async work
   instead of `await`-ing per element where the workload allows.
+- A substring allocated only to look it up — `dict[input.Substring(0, 5)]`. On net9.0+ take an alternate
+  lookup once and query it with a span instead. **The slice must come from `AsSpan`** — a range indexer on
+  a `string` (`input[..5]`) still allocates the substring the lookup was meant to avoid, which is what
+  CA1831 flags. Worth it in parsers, protocol handlers, and tokenizers. It requires the dictionary's
+  comparer to implement `IAlternateEqualityComparer<,>`: `StringComparer.Ordinal`/`OrdinalIgnoreCase` do,
+  a hand-written comparer usually doesn't.
+
+```csharp
+var lookup = dict.GetAlternateLookup<ReadOnlySpan<char>>();   // once, not per call
+if (lookup.TryGetValue(input.AsSpan(0, 5), out var value)) { ... }
+```
+
+## Spans, and the methods that are already vectorized
+
+- **Slice, don't copy.** `text[..separator]` on a `ReadOnlySpan<char>` is a view onto the same memory;
+  `text.Substring(0, separator)` on a `string` is an allocation. `AsSpan()` is the bridge from
+  `string`/`T[]`, and the only correct one — a range indexer applied to a `string` still allocates
+  (CA1831).
+- **A `Span<T>` does not vectorize your loop; the BCL's span methods vectorize theirs.** Rewriting a
+  hand-written `for` loop to walk a span buys bounds-check-free access, not SIMD. The real win is handing
+  the work to `MemoryExtensions` — `IndexOf`, `IndexOfAny`, `IndexOfAnyExcept`, `SequenceEqual`,
+  `Contains`, `CopyTo`, `Reverse` — whose implementations are vectorized in ways the JIT will not derive
+  from your loop.
+- **`SearchValues<T>` (net8.0+) for a value set searched more than once** — it precomputes the search
+  strategy, beating both a `c is ',' or ';' or …` chain and a fresh `IndexOfAny(",;|")` per call.
+  **Build it once into a `static readonly` field**; constructing one per call is slower than what it
+  replaces. net9.0+ adds string sets, which makes it a real tokenizer/keyword-scanner primitive:
+
+```csharp
+private static readonly SearchValues<char> Separators = SearchValues.Create(",;|\r\n");
+private static readonly SearchValues<string> Keywords =
+    SearchValues.Create(["class", "struct", "record"], StringComparison.Ordinal);
+
+int at = text.IndexOfAny(Separators);
+```
+
+- **`params ReadOnlySpan<T>` (C# 13) over `params T[]`** on a variadic API called in a hot path — the
+  compiler passes a span over temporary storage instead of allocating an array per call site. Logging,
+  formatting, math helpers, and parser entry points are the usual candidates.
+- C# 14's first-class span conversions bind more calls to a span overload than before. That is normally
+  the faster overload, but **an SDK bump can change which method a call resolves to with no source
+  change** — worth remembering when a benchmark moves on its own.
+
+## Reaching a collection's storage
+
+`CollectionsMarshal` hands out the backing storage `List<T>` and `Dictionary<TKey, TValue>` otherwise
+keep private. It is GC-safe; it is not safe against **structural modification**.
+
+- **`CollectionsMarshal.AsSpan(list)`** to walk a `List<T>` without the indexer's per-element bounds
+  check or the enumerator's per-`MoveNext` version check, and to pass a list to a span-based API with no
+  `ToArray()` copy.
+- **`CollectionsMarshal.GetValueRefOrAddDefault(dict, key, out bool existed)`** collapses the
+  lookup–copy–modify–store round trip into one hash probe. Worth reaching for when the value is a large
+  struct or a counter updated in a tight loop, not for an occasional dictionary write.
+- **The span or `ref` is invalidated by any `Add`/`Remove`/`Clear`/capacity change**, and nothing
+  enforces it: the reference keeps pointing at the abandoned array, so writes through it are silently
+  lost. Take it, use it, and drop it inside one loop — never store it in a field, never hand it to code
+  that might mutate the collection.
+
+```csharp
+// DO — one probe, mutated in place through the ref
+ref int count = ref CollectionsMarshal.GetValueRefOrAddDefault(_counts, symbol, out _);
+count++;
+
+// DON'T — the span outlives the Add that reallocated the backing array
+Span<float> prices = CollectionsMarshal.AsSpan(_prices);
+_prices.Add(newPrice);   // may reallocate
+prices[0] = 1;           // written to the old array; silently lost
+```
 
 ## Temporary buffers & `stackalloc`
 
@@ -72,6 +142,25 @@ foreach (var msg in messages)
   (returned, stored, captured) — pooling something that outlives its allocation site is a correctness
   bug, not an optimization.
 
+## `in`, `ref readonly`, and `ref struct`
+
+- **`in`/`ref readonly` pays only above roughly three machine words (~24 bytes).** Below that the added
+  indirection costs more than the copy it avoids — passing a small struct by `in` is a pessimization
+  that looks like an optimization.
+- **`in` on a non-`readonly` struct defensive-copies on every member call**, plain getters included,
+  which is the exact opposite of the intent. Make the struct `readonly` first (`best-practices.md`).
+- **`allows ref struct` (C# 13)** lets a generic method or interface accept `Span<T>` and other
+  `ref struct`s, so an allocation-free abstraction no longer has to choose between being generic and
+  being span-based. Boxing stays impossible, which is what preserves the guarantee.
+- **`[InlineArray(N)]` (C# 12)** for a small fixed-size buffer embedded in a struct — the safe
+  replacement for an `unsafe fixed` buffer, convertible to a `Span<T>` with no allocation. One field
+  declares the whole thing:
+
+```csharp
+[InlineArray(16)]
+public struct Buffer16<T> { private T _element0; }   // the single field is the declaration
+```
+
 ## Pointers, `unsafe`, and overflow checking
 
 - **Prefer `Span<T>`/`ReadOnlySpan<T>`/`Memory<T>`/`ref struct` over raw pointers** — they carry bounds,
@@ -91,8 +180,10 @@ foreach (var msg in messages)
 ## Vectorized operations (SIMD)
 
 - **Reach for the library first**: `System.Numerics.Tensors.TensorPrimitives` (sums, dot products,
-  min/max, element-wise math over spans) and `Vector<T>` cover most numeric kernels with hand-tuned,
-  hardware-adaptive code. Hand-rolled `Vector128/256/512<T>` intrinsics come only after the library
+  min/max, distances, element-wise math over spans) and `Vector<T>` cover most numeric kernels with
+  hand-tuned, hardware-adaptive code. `TensorPrimitives` ships in the **`System.Numerics.Tensors` NuGet
+  package**, not the shared framework — a missing `PackageReference` is why the namespace won't resolve;
+  `Vector<T>` and `Vector128/256/512<T>` are built in. Hand-rolled `Vector128/256/512<T>` intrinsics come only after the library
   helper is shown insufficient by a benchmark.
 - Vectorize only loops that are **proven hot, data-parallel, and branch-free per element** — a loop with
   per-element branching or cross-element dependencies usually loses more to shuffling than SIMD gains.
@@ -171,6 +262,11 @@ foreach (var order in orders)
   trace, a stated complaint) shows the recomputation actually costs something.
 - Every cache gets a bound (size, TTL, or both) — an unbounded cache keyed by unbounded input is a slow
   memory leak, not a win (see `antipatterns.md`).
+- **A lookup table built once and read for the process's lifetime is a `FrozenDictionary`/`FrozenSet`**
+  (net8.0+) — dispatch tables, static metadata, symbol maps. Construction is deliberately expensive in
+  exchange for faster reads, so freeze at `static readonly` initialization and never inside a request:
+  a `ToFrozenDictionary()` per call is strictly slower than the `Dictionary` it replaced. Shape and
+  non-perf guidance in `best-practices.md`.
 - **Never `string.Intern` an unbounded or user-supplied string** — the intern pool is never garbage
   collected for the process's lifetime, so interning attacker- or user-controlled values is the same
   unbounded-growth shape as an uncapped cache, just harder to spot because there's no visible
@@ -185,6 +281,12 @@ narrow exception — deliberately shrinking a very large, freshly-idle process �
 own stated justification in the code, not a default reach when memory usage looks high.
 
 ## Measuring: `dotnet-trace` before optimizing
+
+**Benchmark the straightforward version before rewriting it.** Every release the JIT absorbs more of
+what hand-optimization used to buy — escape analysis that stack-allocates short-lived objects,
+devirtualization, bounds-check elimination, dynamic PGO — so a plain `foreach` over a span on a current
+target often compiles to what the hand-tuned version was reaching for. A TFM bump is itself a
+performance change: re-measure across it rather than carrying old workarounds forward.
 
 In performance-critical scenarios, don't reason from the source alone — capture a trace and let the
 profile name the cost. This is the measurement evidence the calibration section below demands, and it's
@@ -217,4 +319,7 @@ give a specific counter/trace/benchmark to verify with. Never assume a guess abo
 correct without something in the code or the request confirming the path is both hot and measured. A
 `GC.Collect()` call with no stated justification, or `string.Intern` on unbounded/user-supplied input, is
 🟡 regardless of hot/cold classification — these are unbounded-growth-shaped correctness concerns, not
-hot-path speculation that needs a trace to back it up.
+hot-path speculation that needs a trace to back it up. A `CollectionsMarshal` span or `ref` held across a
+structural modification is **🔴 and needs no benchmark** — it is a silent-data-loss bug that happens to
+live in performance-motivated code. Conversely, a `SearchValues`/`FrozenDictionary` built per call rather
+than once is 🟡 on sight: it is slower than the code it replaced, so no measurement is owed to say so.

@@ -34,6 +34,22 @@ validates against it (aspect `[correctness]`).
 - **Primary constructors** only for simple DI-holder classes where the constructor body would otherwise
   be pure field assignment. A constructor that does real work (validation, computed defaults) gets a
   conventional body.
+- **The `field` keyword** (C# 14) for a property needing validation, normalization, or change
+  notification — it removes the hand-written backing field and the getter that only returned it. A
+  property with no such logic stays a plain auto-property; one whose *getter* does real work is a method.
+  **Inside an accessor `field` now binds to the backing field**, so a variable of that name in the same
+  type must be renamed (or escaped as `@field`) before it silently means something else. A non-nullable
+  `field`-backed property whose setter does the null check still warns (CS9264) — the compiler can't see
+  the setter's guarantee — so mark it `required` or initialize it, rather than suppressing the warning.
+
+```csharp
+// DO — no _name field, no explicit getter
+public string Name
+{
+    get;
+    set => field = value?.Trim() ?? throw new ArgumentNullException(nameof(value));
+}
+```
 
 ## Expressions & control flow
 
@@ -43,6 +59,11 @@ validates against it (aspect `[correctness]`).
   there's more than one statement or a local variable is needed.
 - **Collection expressions** (`[1, 2, 3]`, `[]`) over `new List<T> { ... }`/`Array.Empty<T>()` where the
   target type is inferable.
+- **Null-conditional assignment** (C# 14) — `customer?.CurrentOrder = order;`, `cache?[key] = value;` —
+  over an `if (x is not null)` whose only body is that assignment. **The right-hand side is not evaluated
+  when the target is null**, so nothing with a side effect belongs there (`?.Count = Next()` skips
+  `Next()` entirely). Compound forms (`+=`, `??=`) work the same way; `++`/`--` do **not** compile on a
+  null-conditional target (CS1059).
 - **`var`** when the right-hand side already makes the type obvious; an explicit type when it doesn't:
 
 ```csharp

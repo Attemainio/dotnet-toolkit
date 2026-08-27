@@ -70,6 +70,11 @@ No real wall-clock dependence (`DateTime.Now`, `Task.Delay`-based timing races),
 execution order, no shared mutable fixture state without isolation. A test that fails once a week trains
 everyone to ignore the suite.
 
+**The seam for time is `TimeProvider` (net8.0+), injected** — a fake provider lets a test advance the
+clock instantly instead of sleeping, and covers `Task.Delay`, `WaitAsync`, timers, and
+`CancellationTokenSource` timeouts through the same object. A `Thread.Sleep`/`Task.Delay` in a test to
+"let it settle" is the finding; the fix is that seam, not a longer delay. See `best-practices.md`.
+
 ## Review calibration — coverage claims need evidence
 
 **A missing-test finding needs a stated `get_references` check, never a guess.** For a changed/scoped

@@ -57,12 +57,53 @@ catch (DbUpdateConcurrencyException ex)
 - Don't materialize a LINQ query multiple times: a `.Where(...)` reused across several
   `.Count()`/`.Any()`/`.ToList()` calls re-runs the whole pipeline each time. Insert one `.ToList()` when
   the source is expensive to enumerate (a database-backed `IQueryable`, a lazily-built sequence).
+- **Use the operator that names the intent instead of the `GroupBy` workaround for it** — each one below
+  says what the old shape only implied, and skips the intermediate `IGrouping` objects:
+  - `CountBy(keySelector)` / `AggregateBy(...)` (net9.0+) over `GroupBy(...).Select(g => ...Count())`.
+  - `Index()` (net9.0+) over a hand-maintained counter: `foreach ((int i, string v) in values.Index())`.
+  - `LeftJoin` / `RightJoin` (net10.0+) over `GroupJoin` + `SelectMany` + `DefaultIfEmpty`. Both
+    `Enumerable` and `Queryable` have them, and EF Core 10 translates them to real SQL outer joins.
+    **The unmatched side arrives as `null`** — the result selector's parameter is nullable, so treat it
+    that way (`customer?.Name`) rather than annotating the warning away.
+
+## Collection choice
+
+The default stays `List<T>`/`Dictionary<TKey, TValue>`. Reach past them only for the shape they can't
+state:
+
+- **`FrozenDictionary<K,V>` / `FrozenSet<T>` (net8.0+) for build-once, read-many-times lookups** —
+  handler and dispatch tables, static metadata, parsers, symbol maps, application-lifetime caches. Build
+  cost is deliberately high in exchange for faster reads, so this is only ever right for a `static
+  readonly` (or otherwise long-lived) collection that is never rebuilt per call. Pass the comparer at
+  construction, as with any dictionary.
+- **`OrderedDictionary<TKey, TValue>` (net9.0+) when both key lookup and a stable position matter** —
+  configuration, ordered columns, serialization models, an ordered pipeline. It replaces the
+  `Dictionary` + parallel `List<TKey>` pair that has to be kept in sync by hand, and adds
+  `Insert`/`GetAt`/`SetAt`. Not a substitute for `SortedDictionary` — the order is insertion order, not
+  key order.
+- Neither is thread-safe for writes. `FrozenDictionary` is safe to *read* concurrently because nothing
+  writes it after construction, which is a property of how it's used, not a concurrency guarantee.
 
 ## Dependency injection & structure
 
 - Constructor injection over service-locator resolution (see `antipatterns.md`).
 - A constructor's parameter list is the honest list of a class's dependencies — don't reach for a
   static/ambient singleton the class doesn't declare.
+- **Inject `TimeProvider` (net8.0+) instead of reading `DateTimeOffset.UtcNow` inside logic that needs
+  testing** — it is the framework's own clock abstraction, so a hand-rolled `IClock`/`IDateTimeProvider`
+  interface is one seam the platform already provides. Production passes `TimeProvider.System`; a test
+  passes a fake and advances time, deterministically and without sleeping. It also backs
+  `Task.Delay`, `Task.WaitAsync`, `CancellationTokenSource`, and timers, so delays and timeouts become
+  controllable by the same seam. Ambient `DateTime.UtcNow` is fine in code nobody asserts on (a log
+  line, a diagnostic).
+
+```csharp
+public sealed class Cache(TimeProvider timeProvider)
+{
+    public bool IsExpired(DateTimeOffset expiresAt) => timeProvider.GetUtcNow() >= expiresAt;
+}
+```
+
 - An interface earns its existence through multiple implementations, a test double, or a real seam. An
   interface with exactly one implementation and no test-double usage is an orphaned abstraction —
   question it before adding another.
