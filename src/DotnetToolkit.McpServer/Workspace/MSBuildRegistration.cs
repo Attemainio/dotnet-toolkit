@@ -34,20 +34,30 @@ internal static class MSBuildRegistration
     /// </value>
     public static string? HostPath { get; private set; }
 
-    /// <summary>Registers the newest MSBuild this machine offers, if one is not registered already.</summary>
+    /// <summary>Registers the MSBuild this repository is built with, if one is not registered already.</summary>
+    /// <param name="root">
+    /// The repository root, so a <c>global.json</c> there is honored. Null selects the newest SDK on
+    /// the machine, which is the right answer when no repository governs the choice.
+    /// </param>
     /// <returns>
-    /// A one-line description of what was registered, for the startup log — or a description of why
-    /// nothing was, since a failure here is what makes every later workspace symptom confusing.
+    /// A one-line description of what was registered, for the log — or a description of why nothing
+    /// was, since a failure here is what makes every later workspace symptom confusing.
     /// </returns>
-    public static string Register()
+    /// <remarks>
+    /// <strong>Called at the first workspace load rather than at startup, because the root is the
+    /// input.</strong> Picking the highest-versioned SDK on the machine is a machine-global answer to
+    /// a per-repository question, and it went wrong in two ways at once: a repository pinned to one
+    /// feature band had its workspace loaded by MSBuild from another, and a developer's own
+    /// <c>dotnet build</c> resolved a different SDK than this server's restore — so whichever ran last
+    /// owned the NuGet assets cache and the other reported the workspace degraded. <c>global.json</c>
+    /// is the mechanism the SDK already provides for exactly that conflict.
+    /// </remarks>
+    public static string Register(string? root = null)
     {
         if (MSBuildLocator.IsRegistered)
         {
             return "MSBuild already registered";
         }
-
-        var discovered = QueryDefaults();
-        var best = discovered.MaxBy(candidate => candidate.Version);
 
         var explicitRoot = Environment.GetEnvironmentVariable(OverrideVariable);
         var localRoot = Path.Combine(
@@ -55,33 +65,82 @@ internal static class MSBuildRegistration
             ".dotnet");
 
         // An explicit override is an instruction, not a candidate: honor it even when a newer SDK
-        // exists elsewhere, because the point of setting it is to pin a specific install.
+        // exists elsewhere, and even against a global.json, because the point of setting it is to pin
+        // a specific install.
         var pinned = string.IsNullOrWhiteSpace(explicitRoot) ? null : FindNewestSdk(explicitRoot);
         if (pinned is not null)
         {
-            MSBuildLocator.RegisterMSBuildPath(pinned.Path);
-            HostPath = HostFor(pinned.Path);
-            return $"MSBuild {pinned.Version} from {OverrideVariable} ({pinned.Path})";
+            return Use(pinned, $"MSBuild {pinned.Version} from {OverrideVariable} ({pinned.Path})");
         }
 
-        var local = FindNewestSdk(localRoot);
-        if (local is not null && (best is null || local.Version > best.Version))
+        // MSBuildLocator's own discovery runs relative to the dotnet host that started this process,
+        // so launched from a system-wide host it never sees a user-local SDK. Pooling both is what
+        // makes the choice below a choice at all.
+        var candidates = QueryDefaults();
+        candidates.AddRange(EnumerateSdks(localRoot)
+            .Where(local => !candidates.Any(known =>
+                string.Equals(known.Path.TrimEnd(Path.DirectorySeparatorChar),
+                    local.Path.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))));
+
+        var best = candidates.MaxBy(candidate => candidate.Version);
+
+        if (root is not null && GlobalJsonPolicy.Read(root) is { } policy)
         {
-            MSBuildLocator.RegisterMSBuildPath(local.Path);
-            HostPath = HostFor(local.Path);
-            return $"MSBuild {local.Version} from the user-local install ({local.Path})";
+            if (policy.Select(candidates.Select(candidate => candidate.Version)) is { } wanted
+                && candidates.FirstOrDefault(candidate => candidate.Version == wanted) is { } chosen)
+            {
+                return Use(
+                    chosen,
+                    $"MSBuild {chosen.Version} for global.json {policy.Requested} "
+                    + $"rollForward={policy.Mode} ({chosen.Path})");
+            }
+
+            // Nothing installed satisfies the pin. Loading with the newest available is still better
+            // than not loading at all -- and saying so is the whole point, because this is precisely
+            // the state whose symptoms are otherwise a silently degraded workspace.
+            if (best is not null)
+            {
+                return Use(
+                    best,
+                    $"MSBuild {best.Version} ({best.Path}); no installed SDK satisfies global.json "
+                    + $"{policy.Requested} rollForward={policy.Mode}, so the workspace may not match "
+                    + "what this repository builds with");
+            }
         }
 
         if (best is not null)
         {
-            MSBuildLocator.RegisterInstance(best.Instance!);
-            HostPath = HostFor(best.Path);
-            return $"MSBuild {best.Version} ({best.Path})";
+            return Use(best, $"MSBuild {best.Version} ({best.Path})");
         }
 
         // Nothing discoverable. RegisterDefaults throws when it finds no instance, and a throw here
         // takes the whole server down before it can report anything useful over MCP.
         return "no MSBuild instance found; project loading will be unavailable";
+    }
+
+    /// <summary>Registers one candidate and records the host that belongs to it.</summary>
+    /// <param name="candidate">The SDK to register.</param>
+    /// <param name="description">What to report about the choice.</param>
+    /// <returns><paramref name="description"/>, so a caller can return it directly.</returns>
+    /// <remarks>
+    /// A queried instance registers through <see cref="MSBuildLocator.RegisterInstance"/> and a
+    /// path-discovered one through <see cref="MSBuildLocator.RegisterMSBuildPath"/>; keeping that in
+    /// one place is what stops <see cref="HostPath"/> being set on some paths and not others, which is
+    /// the state that lets a restore run on a different SDK than the workspace.
+    /// </remarks>
+    private static string Use(SdkCandidate candidate, string description)
+    {
+        if (candidate.Instance is { } instance)
+        {
+            MSBuildLocator.RegisterInstance(instance);
+        }
+        else
+        {
+            MSBuildLocator.RegisterMSBuildPath(candidate.Path);
+        }
+
+        HostPath = HostFor(candidate.Path);
+        return description;
     }
 
     private static List<SdkCandidate> QueryDefaults()
@@ -120,15 +179,27 @@ internal static class MSBuildRegistration
     /// <summary>Finds the newest SDK under a .NET install root.</summary>
     /// <param name="dotnetRoot">An install root, i.e. the directory holding an <c>sdk</c> folder.</param>
     /// <returns>The highest-versioned SDK found, or null when the root holds none.</returns>
-    private static SdkCandidate? FindNewestSdk(string dotnetRoot)
+    private static SdkCandidate? FindNewestSdk(string dotnetRoot) =>
+        EnumerateSdks(dotnetRoot).MaxBy(static candidate => candidate.Version);
+
+    /// <summary>Every SDK installed under a .NET install root.</summary>
+    /// <param name="dotnetRoot">An install root, i.e. the directory holding an <c>sdk</c> folder.</param>
+    /// <returns>One candidate per usable SDK directory, in no particular order.</returns>
+    /// <remarks>
+    /// All of them rather than only the newest, because a <c>global.json</c> policy may name any one:
+    /// <c>rollForward: feature</c> wants the <em>nearest</em> qualifying band, not the highest
+    /// installed.
+    /// </remarks>
+    private static List<SdkCandidate> EnumerateSdks(string dotnetRoot)
     {
+        var found = new List<SdkCandidate>();
         var sdkRoot = Path.Combine(dotnetRoot, "sdk");
+
         if (!Directory.Exists(sdkRoot))
         {
-            return null;
+            return found;
         }
 
-        SdkCandidate? newest = null;
         foreach (var directory in Directory.EnumerateDirectories(sdkRoot))
         {
             // A prerelease directory is named e.g. 10.0.100-preview.5; Version cannot parse the
@@ -146,13 +217,10 @@ internal static class MSBuildRegistration
                 continue;
             }
 
-            if (newest is null || version > newest.Version)
-            {
-                newest = new SdkCandidate(version, directory, Instance: null);
-            }
+            found.Add(new SdkCandidate(version, directory, Instance: null));
         }
 
-        return newest;
+        return found;
     }
 
     private sealed record SdkCandidate(Version Version, string Path, VisualStudioInstance? Instance);

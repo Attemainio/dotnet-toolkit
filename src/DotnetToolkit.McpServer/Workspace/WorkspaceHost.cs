@@ -148,6 +148,26 @@ public sealed class WorkspaceHost : IDisposable
             return;
         }
 
+        // Register the SDK this repository is built with, BEFORE control reaches any method that
+        // names an MSBuild type. That is why the load body sits in its own non-inlined method: the
+        // JIT resolves every type a method mentions when it compiles that method, so registering and
+        // then calling MSBuildWorkspace.Create() in one body resolves MSBuild assemblies before the
+        // registration line ever runs -- which is the failure MSBuildLocator exists to prevent, and
+        // it presents as a workspace that loads with missing references rather than as an error.
+        _log.LogInformation("MSBuild: {Registration}", MSBuildRegistration.Register(_locator.Root));
+
+        await LoadCoreAsync(entry);
+    }
+
+    /// <summary>Restores, opens the workspace, and brings <see cref="State"/> to Loaded or Failed.</summary>
+    /// <param name="entry">The solution or project file to open.</param>
+    /// <remarks>
+    /// Separated from <see cref="LoadAsync"/> and never inlined so that MSBuild assembly resolution
+    /// cannot happen until after registration — see the comment at the call site.
+    /// </remarks>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private async Task LoadCoreAsync(string entry)
+    {
         lock (_gate)
             State = WorkspaceState.Loading;
         _loadWatch.Restart();

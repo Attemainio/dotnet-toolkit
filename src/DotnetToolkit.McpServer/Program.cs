@@ -18,10 +18,13 @@ if (await HookCli.TryRunAsync(args) is { } hookExitCode)
     return hookExitCode;
 }
 
-// Locate the installed .NET SDK's MSBuild before any Microsoft.CodeAnalysis.Workspaces.MSBuild
-// code runs; MSBuildWorkspace resolves MSBuild assemblies through this registration.
-var msbuildRegistration = MSBuildRegistration.Register();
-
+// MSBuild registration is NOT done here. Which SDK to load a repository with depends on that
+// repository's global.json, and the root is not known until SolutionLocator has resolved it -- so
+// WorkspaceHost registers at its first load, before anything touches an MSBuild type, and logs which
+// SDK won. Registering at startup meant picking the machine's newest SDK, which is a machine-global
+// answer to a per-repository question: it could load a workspace with MSBuild from a feature band the
+// repository never builds with, and it made this server's restore disagree with the developer's own
+// `dotnet build` over one shared NuGet assets cache.
 var builder = Host.CreateEmptyApplicationBuilder(settings: null);
 
 // stdout carries the MCP JSON-RPC protocol; every log line must go to stderr.
@@ -57,11 +60,6 @@ builder.Services
     .WithToolsFromAssembly();
 
 var app = builder.Build();
-
-// Reported at startup because a workspace loaded by the wrong SDK degrades quietly - projects load
-// with missing references instead of failing - and this is the only line that says which one won.
-app.Services.GetRequiredService<ILogger<Program>>().LogInformation(
-    "MSBuild: {Registration}", msbuildRegistration);
 
 // Start both knowledge tiers in the background so the MCP handshake completes
 // well inside Claude Code's ~5s startup timeout; tools await readiness themselves.
