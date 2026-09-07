@@ -15,7 +15,18 @@ An edit that bypasses them is a change whose reasoning is gone when the conversa
 `Edit`/`Write` are for non-C# files (`.csproj`, `.json`, `.md`, `.cmd`) and for **creating** a new
 `.cs` file — after which that file goes through `validate_patch` like any other.
 
-Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
+**Tool names carry a host-dependent prefix.** In Claude Code they are
+`mcp__plugin_dotnet-toolkit_dotnet__<tool>`, because the plugin qualifies the server it ships. Codex
+registers the same server under the bare name `dotnet` and namespaces by that instead, so the prefix
+differs there. Every fully-qualified name below is written in the Claude Code form.
+
+**Resolve the prefix once per session rather than assuming it.** Run
+`ToolSearch("select:mcp__plugin_dotnet-toolkit_dotnet__workspace_status")`; if that returns nothing,
+search for the bare tool name (`ToolSearch("workspace_status")`) and read the prefix off whatever
+comes back, then apply that same prefix to every name in this skill. One probe settles it for the
+whole session. Do not guess a prefix and do not fall back to `Grep`/`Read` because a qualified name
+missed — the tools are there under a different label, and the fallback is the failure this skill
+exists to prevent.
 
 ## Step 0 — `workspace_status` before any edit
 
@@ -41,7 +52,8 @@ takes no arguments. Three things depend on it:
 the index or the compilation until then, so `validate_patch` cannot see it, `get_symbol` cannot find
 its symbols, and a dependent compile will report it missing. `scope: "index"` re-scans files only;
 `scope: "workspace"` re-opens MSBuild and rebuilds the symbol index; **`"all"` does both, and adding
-or removing a file needs both.** A `PostToolUse` hook nudges you after a `Write` that creates a `.cs`
+or removing a file needs both.** A `PostToolUse` hook nudges you after a `Write` or `apply_patch`
+that creates a `.cs`
 file, but the nudge is a backstop — reload deliberately.
 
 ## Step 1 — load the tools by exact name

@@ -5,7 +5,7 @@ to run this and what counts as a finding; this file carries the inventory table,
 and the reachability scenarios. Read it when that step fires, not before.
 
 **Ground truth is the plugin tree** — `skills/`, `agents/`, `hooks/`, `docs/`, `standards/`, `.claude/rules/`,
-`.mcp.json`. `skills/dotnet-init/SKILL.md` is a *claim* about that tree, checked against it,
+`.claude-plugin/`, and `.codex-plugin/`. `skills/dotnet-init/SKILL.md` is a *claim* about that tree, checked against it,
 never the reverse. The failure this catches is silent in both directions: an asset ships but never
 reaches the consumer, or the uninstall instructions leave files behind that keep steering a repo that
 no longer has the plugin.
@@ -22,7 +22,7 @@ different one.
 
 | # | Mechanism | What it covers | Reaches the consumer by | Uninstall |
 | --- | --- | --- | --- | --- |
-| 1 | **Ships active** | the MCP server (`.mcp.json` → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the seven `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin — the harness discovers them from the plugin manifest | removing the plugin; **nothing repo-local** |
+| 1 | **Ships active** | the MCP server (Claude adapter or Codex user MCP registration → `dotnet dist/DotnetToolkit.McpServer.dll`), `hooks/hooks.json` + the nine `hook <name>` subcommands of that same binary, `skills/*/SKILL.md`, `agents/*.md` | installing the plugin plus the documented one-time Codex MCP registration. Claude Code discovers every asset from the plugin manifest; **Codex discovers skills and hooks only**, and reaches `agents/*.md` through the launcher skills rather than as native `.codex/agents/*.toml` — an audit that asserts "agents are discovered from the manifest" for both hosts is wrong about Codex | removing the plugin and, for Codex, `codex mcp remove dotnet`; **nothing repo-local** |
 | 2 | **Must be copied** | `.claude/rules/dotnet-index.md` (the one always-loaded rule, copied verbatim); the MCP permission allowlist merged into `.claude/settings.json`; the `.claude/dotnet-toolkit/install.json` manifest; `.claude/dotnet-toolkit/.gitignore` (copied verbatim, keeps run output out of the repo's history). **`standards/` is deliberately *not* here** — it is mechanism 3 | `dotnet-init` writing them into the repo | **explicit deletion** — `docs/install/uninstall.md`'s "Delete these" list is the only thing that removes them |
 | 3 | **Referenced by path** | one `docs/tools/<tool>.md` per tool plus `server.md`, `docs/design/*.md`, `docs/install/*.md`, and **all 13 `standards/*.md`** | `${CLAUDE_PLUGIN_ROOT}/...` paths named **in the skills** — never in a mechanism-2 rule or an agent definition, neither of which can expand the variable. `agents/dotnet-code-review.md` is the one consumer that can't expand it either, which is why it resolves its own `pluginRoot` from its own `workspace_status` call rather than expecting a path handed to it | removing the plugin; the references die with it, so **nothing repo-local** |
 | 4 | **Created at runtime** | `.claude/dotnet-toolkit/cache/` (self-gitignored), optional `.claude/dotnet-toolkit/config.json`, `.claude/dotnet-toolkit/backups/` | the server and init, at runtime | must be **named** in the uninstall section with an explicit disposition, even if that disposition is "safe to leave" |

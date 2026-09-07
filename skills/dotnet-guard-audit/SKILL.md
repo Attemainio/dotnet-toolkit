@@ -5,6 +5,13 @@ description: Use when asked to check whether this plugin's own guard hooks actua
 
 # Auditing the guard hooks for bypasses
 
+## Host adapter
+
+Claude Code can launch `dotnet-guard-redteam` directly. In Codex, launch a general worker and begin
+its brief with: "Read `<pluginRoot>/agents/dotnet-guard-redteam.md` and follow its Markdown body;
+ignore only the Claude-specific YAML frontmatter." Use the canonical file by reference; do not restate
+its test battery in the launch prompt.
+
 `dotnet-performance` measures what the plugin costs when the guards are suspended. This skill asks a
 different question: **with the guards left exactly as armed as a real session meets them, does a call
 that should be governed by one actually get caught?** The two must never run in the same window — one

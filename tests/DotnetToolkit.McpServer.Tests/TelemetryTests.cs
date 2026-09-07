@@ -356,6 +356,21 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(10, mainThread.ResponseTokens);
     }
 
+    [Fact]
+    public void MeteredCallsGroupByHarnessAndModelIncludingLocalModels()
+    {
+        _recorder.RecordToolCall(SampleToolCall(
+            "toolu_1", "apply_patch", 40, 90, harness: "codex", model: "local/qwen3-coder"));
+        _recorder.RecordToolCall(SampleToolCall(
+            "toolu_2", "Read", 30, 400, harness: "claude-code", model: "claude-sonnet"));
+
+        var harness = _metrics.Read(null, null, "tool").Harness!;
+
+        Assert.Equal(90, harness.ByHarness.Single(group => group.Key == "codex").ResponseTokens);
+        Assert.Equal(400, harness.ByHarness.Single(group => group.Key == "claude-code").ResponseTokens);
+        Assert.Equal(90, harness.ByModel.Single(group => group.Key == "local/qwen3-coder").ResponseTokens);
+    }
+
     // PostToolUse can be delivered more than once for one call. tool_use_id is UNIQUE and the insert
     // ignores a conflict, so a redelivery is a no-op rather than a doubled cost.
     [Fact]
@@ -394,7 +409,13 @@ public sealed class TelemetryTests : IDisposable
     }
 
     private static TelemetryRecorder.ToolCallEvent SampleToolCall(
-        string toolUseId, string tool, int request, int response, string? agentType = null) =>
+        string toolUseId,
+        string tool,
+        int request,
+        int response,
+        string? agentType = null,
+        string? harness = null,
+        string? model = null) =>
         new()
         {
             ToolName = tool,
@@ -403,5 +424,7 @@ public sealed class TelemetryTests : IDisposable
             ResponseTokens = response,
             TokenEstimator = "chars4",
             AgentType = agentType,
+            Harness = harness,
+            Model = model,
         };
 }

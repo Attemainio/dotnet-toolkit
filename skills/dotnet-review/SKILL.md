@@ -1,6 +1,17 @@
 ---
 name: dotnet-review
-description: Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues, assess performance or concurrency, find dead code/duplication, review XML documentation, check test coverage, or do a security review. ALSO use it for a convention or consistency audit across existing code — "are all our DTOs records", "does every public member have XML docs", "is this pattern applied consistently", "check our code follows X" — which is a review with a narrow aspect, not a navigation task: locating the symbols is `dotnet-read`'s job, but judging whether they comply is this skill's, because the verdict has to be made against the standards files rather than against the asker's phrasing of the rule. Delegates to the plugin's dotnet-code-review subagent — each instance reviews ALL quality aspects of one precisely stated scope, and large targets are partitioned into disjoint scopes reviewed by parallel instances — rather than reviewing inline, since it runs with fresh context and reads the plugin's standards files directly.
+description: >-
+  Use when the user asks to review C#/.NET code, check a PR/diff, look for naming or styling issues,
+  assess performance or concurrency, find dead code/duplication, review XML documentation, check test
+  coverage, or do a security review. ALSO use it for a convention or consistency audit across existing
+  code — "are all our DTOs records", "does every public member have XML docs", "is this pattern applied
+  consistently", "check our code follows X" — which is a review with a narrow aspect, not a navigation
+  task: locating the symbols is dotnet-read's job, but judging whether they comply is this skill's,
+  because the verdict has to be made against the standards files rather than against the asker's
+  phrasing of the rule. Delegates to the plugin's dotnet-code-review subagent — each instance reviews
+  ALL quality aspects of one precisely stated scope, and large targets are partitioned into disjoint
+  scopes reviewed by parallel instances — rather than reviewing inline, since it runs with fresh
+  context and reads the plugin's standards files directly.
 ---
 
 # Delegating to dotnet-code-review
@@ -12,6 +23,14 @@ context of the project**: it reads code and the shared standards under the plugi
 fresh, like a senior developer seeing the
 codebase for the first time, and reports findings without editing anything. Route review requests to it
 instead of reviewing inline yourself — it reads the actual standards files, which you have not loaded.
+
+## Host adapter
+
+Claude Code can launch the bundled `dotnet-code-review` custom agent directly. Codex plugins do not
+currently install custom-agent registrations. In Codex, launch the built-in read-only explorer and
+start its brief with: "Read `<pluginRoot>/agents/dotnet-code-review.md` and follow its Markdown body;
+ignore only the Claude-specific YAML frontmatter." The canonical brief stays under `agents/`; do not
+duplicate it in a Codex wrapper.
 
 ## Step 0 — check workspace readiness before launching
 

@@ -28,6 +28,7 @@ internal static class Schema
         new(15, "generated_flag_on_symbol", GeneratedFlagOnSymbol),
         new(16, "dispatch_edges", DispatchEdges),
         new(17, "tool_call_events", ToolCallEvents),
+        new(18, "host_agnostic_tool_call_events", HostAgnosticToolCallEvents),
     ];
 
     /// <remarks>
@@ -452,5 +453,18 @@ internal static class Schema
         CREATE TRIGGER trg_tce_immutable BEFORE UPDATE ON tool_call_events BEGIN
             SELECT RAISE(ABORT, 'raw telemetry is immutable');
         END;
+        """;
+
+    // Keep the original claude_session_id for compatibility with already-created databases, but name
+    // all new dimensions after what they represent. A model may be hosted by Codex, Claude Code, or a
+    // future/local harness; chars4 remains comparable without claiming any vendor tokenizer.
+    private const string HostAgnosticToolCallEvents = """
+        ALTER TABLE tool_call_events ADD COLUMN harness_session_id TEXT;
+        ALTER TABLE tool_call_events ADD COLUMN harness TEXT NOT NULL DEFAULT 'claude-code';
+        ALTER TABLE tool_call_events ADD COLUMN model TEXT;
+        ALTER TABLE tool_call_events ADD COLUMN turn_id TEXT;
+        ALTER TABLE tool_call_events ADD COLUMN transcript_path TEXT;
+        CREATE INDEX ix_tce_harness ON tool_call_events(harness, created_at);
+        CREATE INDEX ix_tce_model ON tool_call_events(model, created_at);
         """;
 }

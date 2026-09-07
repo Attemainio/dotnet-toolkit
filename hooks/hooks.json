@@ -42,7 +42,7 @@
         ]
       },
       {
-        "matcher": "mcp__plugin_dotnet-toolkit_dotnet__validate_patch",
+        "matcher": ".*__validate_patch$",
         "hooks": [
           {
             "type": "command",
@@ -55,7 +55,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write",
+        "matcher": "Write|apply_patch",
         "hooks": [
           {
             "type": "command",
@@ -71,6 +71,30 @@
           {
             "type": "command",
             "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook meter-tool-call",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook track-subagent-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet \"${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll\" hook track-subagent-stop",
             "timeout": 5
           }
         ]

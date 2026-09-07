@@ -34,8 +34,8 @@ public static class MetricsTools
         [Description("Inclusive ISO date upper bound, e.g. \"2026-08-13\" (yyyy-MM-dd only).")] string? until = null,
         [Description("tool | symbol | level | session | task | none (default tool). \"session\" reports this "
             + "session's own id and span in one row; \"task\" does the same per caller-supplied task id. It "
-            + "does not affect the harness block, which always carries all three of its own breakdowns (by "
-            + "tool, by agent, and agent-by-tool).")] string groupBy = "tool")
+            + "does not affect the harness block, which always carries its own breakdowns by tool, agent, "
+            + "agent-and-tool, harness, and model.")] string groupBy = "tool")
     {
         if (since is not null && !DateOnly.TryParseExact(since, "yyyy-MM-dd", out _))
             return Formats.Render(new { error = "invalid_date", detail = $"since must be yyyy-MM-dd, got '{since}'." });
@@ -82,6 +82,20 @@ public static class MetricsTools
                     requestTokens = g.RequestTokens,
                     responseTokens = g.ResponseTokens,
                 }),
+            }),
+            byHarness = result.Harness.ByHarness.Select(g => new
+            {
+                key = g.Key,
+                calls = g.Calls,
+                requestTokens = g.RequestTokens,
+                responseTokens = g.ResponseTokens,
+            }),
+            byModel = result.Harness.ByModel.Select(g => new
+            {
+                key = g.Key,
+                calls = g.Calls,
+                requestTokens = g.RequestTokens,
+                responseTokens = g.ResponseTokens,
             }),
         };
 

@@ -136,7 +136,19 @@ bump is what you actually needed.
   background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by the
   `hook hint-reload-new-cs-file` subcommand through `Hooks/ControlClient.cs`. **Not a security
   boundary** — loopback-only, same trust level as the MCP session.
-- `Hooks/` — the seven Claude Code hooks, as a `hook <name>` subcommand of this same binary rather than
+- `Diagnostics/` — the `doctor` and `stamp` subcommands. `Doctor.cs` verifies an installation end to
+  end and is the only check that can fail, because every configuration listing reports what is
+  *configured* and launches nothing: it classifies the executor (`HostProfile.cs`), judges each stored
+  path against the running process's own namespace (`PathNamespace.cs`), reads the agent profile
+  without writing it (`CodexProfile.cs` over the deliberate TOML subset in `TomlDocument.cs`), and
+  then launches the configured server for a real handshake (`McpHandshakeProbe.cs`). `SourceStamp.cs`
+  records which sources a publish was built from, so `doctor --no-probe` fails when the committed
+  `dist/` has fallen behind `src/` — a rebuilt binary is never byte-identical, so hashing the *inputs*
+  is what makes that comparison mean anything. `BuildIdentity.cs` is the per-compilation id `ping`
+  reports, which is what distinguishes two builds sharing one version number. Handled before host
+  startup in `Program.cs`, alongside `hook`, and these verbs write to stdout — correct here because
+  no MCP transport is started, and the same licence the `hook` verb has.
+- `Hooks/` — the Claude Code and Codex hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
   `BashCommandScanner.cs` carry the logic the read guards (and `guard-cs-bash-write`'s write-shape
   detection) share; `WriteChecklistHint.cs` is the one matching an MCP tool rather than a built-in.
@@ -220,18 +232,21 @@ the tool surface and checks each against `Tools/*.cs`.
 
 ## Packaging
 
-`.claude-plugin/plugin.json` is the manifest. `.mcp.json` registers the MCP server as
-`dotnet ${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll` — a bare command plus arguments, because
-an MCP stdio server is spawned directly rather than through a shell, so a `.sh` launcher is unrunnable
-on Windows. The only requirement is `dotnet` on `PATH`, which the plugin needs anyway.
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` are the host manifests. Claude Code's MCP
+adapter runs `dotnet <plugin-root>/dist/DotnetToolkit.McpServer.dll`. Codex registers that DLL by
+absolute path in user MCP configuration and leaves `cwd` unset, so the process inherits the active
+workspace on native Windows and Unix. This split avoids shell launchers and works around the current
+Codex plugin-MCP limitation: a bundled server cannot both locate plugin files and inherit the session
+workspace. The .NET runtime remains the only runtime requirement.
 
 **The published server in `dist/` is what actually runs — after editing anything under `src/`, re-run
 `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
 `scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships seven hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
+`hooks/hooks.json` ships nine hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
 `hook guard-cs-bash-read`, `hook guard-cs-bash-write`, `hook hint-reload-new-cs-file`,
-`hook hint-write-checklist`, `hook meter-tool-call` — all subcommands of that same published
+`hook hint-write-checklist`, `hook meter-tool-call`, `hook track-subagent-start`, and
+`hook track-subagent-stop` — all subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
 the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
 open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
@@ -301,7 +316,7 @@ left to `PATH` writes the very assets cache the registered MSBuild then cannot o
 subsystem to inflict the exact failure it exists to prevent.
 
 `Environment.ProcessPath` cannot carry that on its own: it is the `dotnet` muxer only when the process
-was launched as `dotnet <app>.dll`, which is how `.mcp.json` starts the server but *not* how an apphost
+was launched as `dotnet <app>.dll`, which is how the host MCP configuration starts the server but *not* how an apphost
 starts. The integration-test fixture is the case that found this — xUnit v3 runs the test assembly as
 its own executable, so `ProcessPath` was the test app, the restore fell back to `PATH`, and the fixture
 hung for its full three-minute load timeout with no diagnostics. For the same reason the fixture calls

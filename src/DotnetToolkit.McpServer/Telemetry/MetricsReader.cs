@@ -36,7 +36,8 @@ public sealed class MetricsReader
         /// <param name="Estimator">Names the approximation behind every count in this block.</param>
         public sealed record Harness(
             HarnessTotals Totals, IReadOnlyList<HarnessGroup> ByTool, IReadOnlyList<HarnessGroup> ByAgent,
-            IReadOnlyList<HarnessAgentBreakdown> ByAgentTool, string Estimator);
+            IReadOnlyList<HarnessAgentBreakdown> ByAgentTool, IReadOnlyList<HarnessGroup> ByHarness,
+            IReadOnlyList<HarnessGroup> ByModel, string Estimator);
 
     /// <summary>The full response shape for <c>get_retrieval_metrics</c>: totals, requested groupings, and the harness-metered view when one exists.</summary>
     public sealed record Metrics(Totals Totals, IReadOnlyList<Group> Groups, Harness? Harness = null);
@@ -315,6 +316,8 @@ public sealed class MetricsReader
                     ReadHarnessGroups(connection, where, parameters, byAgent: false),
                     ReadHarnessGroups(connection, where, parameters, byAgent: true),
                     ReadHarnessAgentTool(connection, where, parameters),
+                    ReadHarnessDimension(connection, where, parameters, "harness", "(unknown harness)"),
+                    ReadHarnessDimension(connection, where, parameters, "model", "(unknown model)"),
                     estimator);
         }
 
@@ -341,6 +344,37 @@ public sealed class MetricsReader
                 reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3)));
         }
         return groups;
+        }
+
+        private static List<HarnessGroup> ReadHarnessDimension(
+            SqliteConnection connection,
+            string where,
+            List<(string, object)> parameters,
+            string column,
+            string missingLabel)
+        {
+            // Only internal literals call this method; the allowlist keeps an accidental future caller
+            // from turning a reporting dimension into interpolated SQL.
+            if (column is not ("harness" or "model"))
+                throw new ArgumentOutOfRangeException(nameof(column));
+
+            var groups = new List<HarnessGroup>();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT COALESCE({column}, $missing), COUNT(*),
+                       COALESCE(SUM(request_tokens),0), COALESCE(SUM(response_tokens),0)
+                FROM tool_call_events WHERE {where}
+                GROUP BY COALESCE({column}, $missing) ORDER BY 4 DESC;
+                """;
+            Bind(cmd, parameters);
+            cmd.Parameters.AddWithValue("$missing", missingLabel);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                groups.Add(new HarnessGroup(
+                    reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3)));
+            }
+            return groups;
         }
 
         /// <summary>Reads the harness-metered rows grouped by BOTH agent and tool, nested per agent.</summary>

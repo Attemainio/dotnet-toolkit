@@ -33,4 +33,10 @@ if [ -d dist/runtimes ]; then
     done
 fi
 
+# Record which sources this binary was built from. Written by the freshly published binary itself, so
+# the stamp cannot be refreshed without a republish - which is the drift it exists to detect. `doctor`
+# compares it against src/ and fails when dist/ has fallen behind, making `doctor --no-probe` the
+# pre-commit gate for the rule that dist/ is committed alongside the change that required it.
+dotnet dist/DotnetToolkit.McpServer.dll stamp "$(pwd)"
+
 echo "Plugin server published to dist/. Install with: claude --plugin-dir $(pwd)"

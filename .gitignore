@@ -1,6 +1,11 @@
 bin/
 obj/
 .vs/
+
+# Built by scripts/package-plugin.sh|.cmd from files that ARE tracked, so it is a build output like
+# bin/. dist/ is committed and this is not, because dist/ is what a `git clone` consumer runs while
+# this exists only to give a LOCAL marketplace a source that is not the whole working tree.
+package/
 *.user
 .claude/settings.local.json
 .claude/agent-memory/

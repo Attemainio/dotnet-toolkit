@@ -379,8 +379,9 @@ are down proves nothing about enforcement. `dotnet-guard-audit` checks `workspac
 suspension reached the hooks — used here to prove the opposite state.
 
 **Why its battery includes write-shaped attempts through `Bash`, and why that half matters most.**
-`guard-cs-edit` matches only the `Edit`/`Write`/`NotebookEdit` tool names (`hooks/hooks.json`'s
-`PreToolUse` matcher for it, same as `docs/design/hooks.md` documents for the read guards), and through
+`guard-cs-edit` matches Claude's `Edit`/`Write`/`NotebookEdit` tools and Codex's `apply_patch`
+alias (`hooks/hooks.json`'s `PreToolUse` matcher for it, same as `docs/design/hooks.md` documents
+for the read guards), and through
 2026-08-21 nothing in the shipped hook set watched `Bash` for a *write* the way `guard-cs-bash-read`
 watches it for a *read* — `sed -i`, `perl -i -pe`, or a shell redirect into a compiled file were none
 of them intercepted by name. Item 10 of the agent's battery is what found this: a run that day

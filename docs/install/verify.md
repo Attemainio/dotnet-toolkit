@@ -1,5 +1,30 @@
 # Verifying an installed dotnet-toolkit
 
+## Start here: run the doctor
+
+Before reading anything below, run the verifier — it answers most of this page mechanically, and it
+is the only check that can actually fail:
+
+```bash
+dotnet <pluginRoot>/dist/DotnetToolkit.McpServer.dll doctor --repo <target-repo>
+```
+
+It reports the executor and topology, the effective agent profile, whether every stored path is
+openable *from this process* (with the corrected spelling when it is not), the marketplace source,
+the SDK the workspace will load with and why, `bubblewrap` availability on WSL, and then launches the
+configured server for a real handshake: process started, protocol initialized, tools discovered,
+ping, workspace root/index/projects. Each failure carries its fix, and the command exits nonzero if
+any check failed.
+
+**A configuration listing is not a verification.** `codex mcp list --json` and `/mcp` report what is
+configured; they start no process. An installation whose stored path cannot be opened by the process
+that must launch it lists as enabled and healthy while no tool is callable — that is the exact state
+this page exists to detect, and only the doctor detects it.
+
+The repo-local Claude Code wiring below (`.claude/rules/dotnet-index.md`, the allowlist, the install
+manifest) is a separate question from whether the plugin's own tools work. A Codex-only installation
+is *expected* to have none of it.
+
 The verify-and-refresh path of `dotnet-init`. The skill carries the staleness decision table —
 the part that decides what gets rewritten; this file carries the checklists it runs afterwards. Read
 it when that step fires.

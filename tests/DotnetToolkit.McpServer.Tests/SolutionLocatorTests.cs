@@ -67,6 +67,28 @@ public sealed class SolutionLocatorTests : IDisposable
     }
 
     [Fact]
+    public void SkipsUnreadableChildDirectories()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var inaccessible = Directory.CreateDirectory(Path.Combine(_root, "inaccessible"));
+        File.WriteAllText(Path.Combine(_root, "App.slnx"), "<Solution />");
+        File.SetUnixFileMode(inaccessible.FullName, UnixFileMode.None);
+        try
+        {
+            var locator = Create();
+            Assert.Equal(Path.Combine(_root, "App.slnx"), locator.WorkspaceEntry);
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                inaccessible.FullName,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void EnsureCacheDirWritesSelfGitignore()
     {
         var locator = Create();

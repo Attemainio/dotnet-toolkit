@@ -7,8 +7,8 @@ updates, uninstall and troubleshooting.
 
 - **.NET 10 SDK.** The server targets `net10.0`, and the projects it analyzes need their own SDK
   present.
-- **Claude Code.**
-- **`dotnet restore` run at least once in your repo, in the same OS you run Claude Code in.** A restore
+- **Claude Code or the Codex CLI.**
+- **`dotnet restore` run at least once in your repo, in the same OS you run the agent in.** A restore
   done on Windows does not satisfy a WSL session, and vice versa. This is the single most common cause
   of a degraded workspace.
 
@@ -21,7 +21,7 @@ updates, uninstall and troubleshooting.
 git clone https://github.com/Attemainio/dotnet-toolkit
 ```
 
-`.mcp.json` and `hooks/hooks.json` both invoke `dotnet <dll>` against `dist/`, so the same clone works
+The host-specific MCP adapters and `hooks/hooks.json` invoke `dotnet <dll>` against `dist/`, so the same clone works
 identically on Windows, Linux, macOS and WSL.
 
 Build only if you are **modifying the plugin** — see [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -48,6 +48,134 @@ Register the clone as a local marketplace once, and it loads in every future ses
 The name appears twice because the repo is both the marketplace and the one plugin in it —
 `<plugin>@<marketplace>`.
 
+### Codex
+
+Codex understands this repository's existing Claude-compatible local marketplace, so there is no
+second marketplace file to maintain:
+
+```bash
+codex plugin marketplace add /path/to/dotnet-toolkit
+codex plugin add dotnet-toolkit@dotnet-toolkit
+```
+
+Those two commands are the whole installation: skills, `hooks/hooks.json`, **and** the MCP server.
+
+> **Installing from a working clone? Package it first.** The installer snapshots the marketplace root
+> verbatim, so pointed at a development tree it copies `src/`, `tests/`, `.git/` and build output —
+> 632 MB here versus 50 MB of actual plugin — and on Windows it does not merely bloat, it **fails**:
+> Visual Studio holds `.vs/<solution>/FileContentIndex/*.vsidx` open with a deny-read lock and the
+> copy aborts with `failed to copy plugin file: Permission denied (os error 13)`. Run
+> `scripts/package-plugin.sh` (or `.cmd`) and point the marketplace at `package/` instead:
+>
+> ```bash
+> scripts/build-plugin.sh      # publish dist/ first
+> scripts/package-plugin.sh    # then assemble package/
+> codex plugin marketplace add /path/to/dotnet-toolkit/package
+> ```
+>
+> A fresh `git clone` has none of those directories, so installing from a **remote** marketplace needs
+> no packaging step. This is only for a local source that is also a working tree.
+The server needs no separate `codex mcp add`, because `.codex-plugin/plugin.json` points at
+`.codex-plugin/mcp.json`, which declares it with a path relative to the plugin:
+
+```json
+{ "mcpServers": { "dotnet": { "command": "dotnet", "args": ["dist/DotnetToolkit.McpServer.dll"] } } }
+```
+
+**That relative path is the whole portability story.** Codex resolves a plugin-declared argument
+against wherever the plugin is installed, while still launching the server in the session's own
+working directory — so one manifest is correct under native Windows, native Linux/macOS and WSL
+alike, and the server still finds the *project's* solution rather than the plugin's. It is the same
+mechanism `${CLAUDE_PLUGIN_ROOT}` provides on the Claude side.
+
+#### Do not add an absolute path to `config.toml`
+
+A `[mcp_servers.dotnet]` block in `config.toml` is an **override layer** on top of the manifest, not
+an alternative to it — Codex merges the two, and the profile wins. Writing a launch path there
+therefore replaces the portable declaration with one absolute path, which can only ever be spelled
+for one OS:
+
+```toml
+# Re-breaks the WSL case. The manifest already handles this.
+[mcp_servers.dotnet]
+command = "dotnet"
+args = ['C:\path\to\dotnet-toolkit\dist\DotnetToolkit.McpServer.dll']
+```
+
+Per-tool policy (`[mcp_servers.dotnet.tools.<name>] approval_mode = "approve"`) is a different
+matter: that genuinely is yours, belongs in the profile, and merges cleanly with the manifest.
+
+#### The marketplace source is still executor-specific
+
+**The OS you are looking at and the OS your tools run in are not the same question.** A Windows Codex
+desktop app can execute its local processes inside WSL2 while keeping its Windows-owned profile —
+`CODEX_HOME` then points at `C:\Users\you\.codex`, mounted into Linux as `/mnt/c/Users/you/.codex`,
+and a `/home/you/.codex` profile you configured separately is *not* the one in effect.
+
+A **local** marketplace source has to be an absolute path, so it is the one setting the manifest
+cannot make portable:
+
+| Where you run Codex | Profile in effect | Marketplace source |
+| --- | --- | --- |
+| Native Windows | `%USERPROFILE%\.codex` | `C:\path\to\dotnet-toolkit` |
+| Native macOS or Linux | `~/.codex` | `/path/to/dotnet-toolkit` |
+| Standalone WSL | `/home/<user>/.codex` | `/path/to/...` or `/mnt/c/...` |
+| **Windows desktop app executing in WSL** | the **Windows** `.codex`, read through `/mnt/c/...` | `/mnt/c/path/to/dotnet-toolkit` |
+
+The last row is the one that catches people, and Codex writes the wrong spelling into it by itself:
+`codex plugin marketplace add` run on the Windows side stores a `\\?\C:\...` extended-length path,
+which a WSL executor cannot resolve — reported as
+`marketplace root does not contain a supported manifest`. Run the command from a shell in the same
+place your tools will run, or rewrite the source by hand afterwards. `doctor` names both the
+mismatch and the replacement path.
+
+Codex on WSL also needs **`bubblewrap`** (`sudo apt-get install bubblewrap`) for its Linux sandbox.
+Without it, filesystem-backed operations fail before any hook or tool result appears, which reads as
+"the plugin's hooks do not fire".
+
+#### Verify it, do not assume it
+
+`codex mcp list --json` reports what your configuration *says*; it launches nothing, so it shows a
+server as enabled whether or not the command can run. Check for real:
+
+```bash
+dotnet /path/to/dotnet-toolkit/dist/DotnetToolkit.McpServer.dll doctor --repo /path/to/your/repo
+```
+
+It reports the executor and topology, which profile is in effect, whether every stored path is
+openable *from this process*, which SDK the workspace will load with and why, whether `bubblewrap` is
+present, and then launches the configured server and completes a real handshake — process started,
+protocol initialized, tools discovered, ping, workspace loaded — naming a fix for each failure. It
+exits nonzero if anything failed, so it works in CI. `--json` for machine-readable output,
+`--no-probe` to skip the launch, `--timeout <seconds>` for a cold restore.
+
+Open `/plugins` in the Codex CLI to enable or disable the plugin, and `/hooks` to review and trust
+its hooks. Plugin support is currently a Codex CLI and desktop-app feature, not an IDE-extension
+feature.
+
+The plugin and server have separate switches. Disable the plugin in `/plugins`. Disable only the MCP
+server while keeping the skills and hooks enabled with:
+
+```toml
+[mcp_servers.dotnet]
+enabled = false
+```
+
+That is the override layer doing its intended job: the manifest still declares the server, and the
+profile switches it off. Set it back to `true`, or delete the block, to load it again — there is no
+`codex mcp remove dotnet` to run, since nothing registered it in the profile. Remove the plugin with
+`codex plugin remove dotnet-toolkit@dotnet-toolkit`; remove the local catalog separately with
+`codex plugin marketplace remove dotnet-toolkit`.
+
+#### Agents in Codex
+
+The `agents/` briefs are Markdown with Claude YAML frontmatter, and that is the supported form in
+both hosts. Codex does not register them as native `.codex/agents/*.toml` custom agents; the
+launcher skills instead start a generic worker and point it at `agents/<name>.md`, treating the
+frontmatter's Claude-specific tool, model and colour fields as host configuration and the Markdown
+body as the shared role contract. One canonical brief per agent, no generated duplicates to drift —
+see the repo's `AGENTS.md`.
+
 > **Installed before 2026-08-19?** The marketplace was renamed from `dotnet-toolkit-local`. Run
 > `/plugin marketplace remove dotnet-toolkit-local` first.
 
@@ -73,6 +201,10 @@ What it adds to the repo you run it in:
 | `.claude/dotnet-toolkit/local-install.json` | *Conditional.* Your repo's own notes on any local workaround needed beyond the plugin's own procedure — a restricted-path copy step, a locked-file update sequence. Never auto-created; `/dotnet-init` offers to write or update it when one applies |
 
 It **never modifies your CLAUDE.md**.
+
+In Codex, the plugin's skill metadata provides the routing automatically. For development inside this
+repository, the checked-in `AGENTS.md` is intentionally only an adapter to the canonical
+`CLAUDE.md` and `.claude/rules/dotnet-index.md`; the instructions are not duplicated.
 
 The 13 coding standards are *not* copied. They stay in the plugin at
 `${CLAUDE_PLUGIN_ROOT}/standards/` and are read by explicit path when the writer or the reviewer needs

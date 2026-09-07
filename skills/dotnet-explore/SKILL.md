@@ -1,6 +1,11 @@
 ---
 name: dotnet-explore
-description: Use before changing C#/.NET code when the set of symbols the task touches is not already known — surveying an unfamiliar subsystem, assessing how a new feature lands in the existing codebase, or finding out what a change would break. Delegates the wide search_index/get_references sweep to the plugin's dotnet-explore subagent, which spends those responses in its own context and hands back symbolIds, file:line use sites and the blast radius. Read-only: it cannot edit.
+description: >-
+  Use before changing C#/.NET code when the set of symbols the task touches is not already known —
+  surveying an unfamiliar subsystem, assessing how a new feature lands in the existing codebase, or
+  finding out what a change would break. Delegates the wide search_index/get_references sweep to the
+  plugin's dotnet-explore subagent, which spends those responses in its own context and hands back
+  symbolIds, file:line use sites and the blast radius. Read-only: it cannot edit.
 ---
 
 # Delegating the sweep to dotnet-explore
@@ -8,6 +13,14 @@ description: Use before changing C#/.NET code when the set of symbols the task t
 This plugin ships one read-only navigator subagent, `dotnet-explore`. It turns a prose task into the
 symbols it is about: `symbolId`s, use sites, affected files, and how far a change would reach. It
 never judges code and it cannot change it — the invoking agent decides what to do with the map.
+
+## Host adapter
+
+Claude Code can launch the bundled `dotnet-explore` custom agent directly. Codex plugins do not
+currently install custom-agent registrations. In Codex, launch the built-in read-only explorer and
+start its brief with: "Read `<pluginRoot>/agents/dotnet-explore.md` and follow its Markdown body;
+ignore only the Claude-specific YAML frontmatter." The file under `agents/` remains the one role
+contract; do not copy its body into this skill or a Codex-only agent file.
 
 **Why delegate rather than fan out yourself.** A wide `search_index` plus a `get_references` per
 candidate is the single most expensive shape of read this server produces, and almost all of those

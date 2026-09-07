@@ -47,7 +47,7 @@ cleaning up at uninstall, is the recurring bug in this procedure.
 
 | Not written | Why | At uninstall |
 | --- | --- | --- |
-| the MCP server, `hooks/`, `skills/`, `agents/` | they ship *active* with the plugin — the harness discovers them from the plugin manifest, so there is nothing repo-local to install | leave with the plugin; nothing to clean up |
+| the MCP server, `hooks/`, `skills/`, `agents/` | they ship with the plugin, so there is nothing repo-local to install. Claude Code discovers all four from the plugin manifest. **Codex discovers the skills and hooks only** — its MCP server is a separate `codex mcp add` (see `docs/installation.md`), and the `agents/` briefs are reached by the launcher skills pointing a generic worker at `agents/<name>.md`, not registered as native `.codex/agents/*.toml` | leave with the plugin; nothing to clean up |
 | `docs/tools/*.md`, `docs/design/*.md`, `standards/*.md` | referenced by `${CLAUDE_PLUGIN_ROOT}/...` path from the skills (a rule cannot expand that variable, so it names the skill instead). Copies would go stale on every plugin update and would outlive the plugin as orphaned advice | leave with the plugin; the references die with it |
 | `.claude/dotnet-toolkit/cache/` | created by the server at runtime, self-gitignored, always rebuildable | safe to leave; delete the directory for a fully clean removal |
 | the repo's own root `.gitignore` | never edited — the folder-level `.gitignore` above covers the same ground without touching a file the repo maintains | nothing to undo |

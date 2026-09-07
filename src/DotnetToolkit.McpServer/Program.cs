@@ -1,5 +1,6 @@
 using DotnetToolkit.McpServer.Control;
 using DotnetToolkit.McpServer.Devlog;
+using DotnetToolkit.McpServer.Diagnostics;
 using DotnetToolkit.McpServer.Hooks;
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
@@ -16,6 +17,22 @@ using Microsoft.Extensions.Logging;
 if (await HookCli.TryRunAsync(args) is { } hookExitCode)
 {
     return hookExitCode;
+}
+
+// A `doctor` invocation verifies an installation and exits. Handled before host startup for the same
+// reason `hook` is, plus one of its own: it launches the CONFIGURED server command as a child to prove
+// that command actually runs, and a server already started here would prove nothing about it.
+if (await Doctor.TryRunAsync(args) is { } doctorExitCode)
+{
+    return doctorExitCode;
+}
+
+// A `stamp` invocation records which sources this binary was published from and exits. Run by the
+// publish scripts against the binary they just produced, so the stamp is written by the build it
+// describes rather than from a source tree that may already have moved past it.
+if (args is ["stamp", ..])
+{
+    return SourceStamp.Write(args.Length > 1 ? args[1] : Directory.GetCurrentDirectory());
 }
 
 // MSBuild registration is NOT done here. Which SDK to load a repository with depends on that

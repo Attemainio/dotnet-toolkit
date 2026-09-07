@@ -5,8 +5,8 @@ namespace DotnetToolkit.McpServer.Workspace;
 
 /// <summary>
 /// Resolves the target repository root, per-repo config, and the workspace entry point
-/// (.slnx/.sln/.csproj). The root comes from DOTNET_TOOLKIT_PROJECT_DIR, then
-/// CLAUDE_PROJECT_DIR (set by Claude Code), then the process working directory.
+/// (.slnx/.sln/.csproj). The root comes from the host-neutral DOTNET_TOOLKIT_PROJECT_DIR, then
+/// CLAUDE_PROJECT_DIR for Claude Code compatibility, then the MCP process working directory.
 /// </summary>
 public sealed class SolutionLocator
 {
@@ -107,15 +107,41 @@ public sealed class SolutionLocator
 
     private List<string> GlobDepth2(string pattern)
     {
-        var hits = new List<string>(Directory.EnumerateFiles(Root, pattern));
-        foreach (var dir in Directory.EnumerateDirectories(Root))
+        var hits = EnumerateFilesOrEmpty(Root, pattern);
+        foreach (var dir in EnumerateDirectoriesOrEmpty(Root))
         {
             if (SkipDirs.Contains(Path.GetFileName(dir), StringComparer.OrdinalIgnoreCase))
                 continue;
-            hits.AddRange(Directory.EnumerateFiles(dir, pattern));
+            hits.AddRange(EnumerateFilesOrEmpty(dir, pattern));
         }
         hits.Sort(StringComparer.Ordinal);
         return hits;
+    }
+
+    private List<string> EnumerateFilesOrEmpty(string directory, string pattern)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directory, pattern).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogDebug(ex, "Skipping unreadable directory {Directory}", directory);
+            return [];
+        }
+    }
+
+    private List<string> EnumerateDirectoriesOrEmpty(string directory)
+    {
+        try
+        {
+            return Directory.EnumerateDirectories(directory).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogDebug(ex, "Cannot enumerate directories under {Directory}", directory);
+            return [];
+        }
     }
 
     /// <summary>Creates the cache dir and drops a self-excluding .gitignore into it.</summary>

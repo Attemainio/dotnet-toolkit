@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DotnetToolkit.McpServer.Hooks;
 
@@ -24,8 +25,38 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// this is a workflow guard with a fail-open posture, not a security boundary that has to be airtight.
 /// </para>
 /// </remarks>
-internal static class BashCommandScanner
+internal static partial class BashCommandScanner
 {
+    /// <summary>Interpreters that reach a file from inside an inline program rather than through an argument.</summary>
+    /// <remarks>
+    /// These never name the file as an argument, so every argument-shaped check in this scanner misses
+    /// them entirely: <c>python3 -c "open('Foo.cs').read()"</c> tokenizes into one blob that does not end
+    /// in <c>.cs</c>. They are handled by looking inside the program text instead, which is a heuristic
+    /// and is used as one — advisory on the read side, and on the write side only alongside an explicit
+    /// write mode.
+    /// </remarks>
+    private static readonly HashSet<string> ScriptInterpreters = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "python", "python3", "py", "perl", "ruby", "node", "deno", "pwsh", "powershell", "php",
+    };
+
+    /// <summary>Text that means an inline program is opening its file for writing rather than reading.</summary>
+    /// <remarks>
+    /// Required before the write guard denies a script one-liner. Without it, a read-only
+    /// <c>python3 -c "print(open('Foo.cs').read())"</c> would be denied as a write — a false block on the
+    /// exact command the read guard is meant to merely advise on.
+    /// </remarks>
+    private static readonly string[] ScriptWriteMarkers =
+    [
+        "'w'", "\"w\"", "'a'", "\"a\"", "'w+'", "\"w+\"", "'a+'", "\"a+\"", "'wb'", "\"wb\"",
+        "write_text", "writetext", "writealltext", "writelines", "writefilesync", "set-content",
+        "out-file", "add-content",
+    ];
+
+    /// <summary>Matches a <c>.cs</c> path appearing anywhere in a segment, including inside quotes.</summary>
+    [GeneratedRegex(@"(?<path>[\w.+/\\-]+\.cs)\b", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex CsLiteral();
+
     /// <summary>Splits a command line into one candidate invocation per separator-delimited segment.</summary>
     /// <param name="command">The raw command line from <c>tool_input.command</c>.</param>
     /// <returns>The non-empty segments, in order.</returns>
@@ -169,6 +200,111 @@ internal static class BashCommandScanner
         return candidate;
     }
 
+    /// <summary>The <c>.cs</c> path an inline program names, when the segment runs one.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>
+    /// The first <c>.cs</c> path found in the program text, or null when the segment is not a script
+    /// interpreter or its program names none.
+    /// </returns>
+    /// <remarks>
+    /// Gated on the command being an interpreter rather than applied to every segment, because a bare
+    /// <c>.cs</c>-shaped substring is far too weak a signal on its own — a commit message or a grep
+    /// pattern mentioning a filename would match. Inside <c>python3 -c "..."</c> it is a strong one,
+    /// since a file path in an inline program is overwhelmingly a file the program opens.
+    /// </remarks>
+    public static string? ScriptCsLiteral(string segment)
+    {
+        if (CommandName(segment) is not { } name || !ScriptInterpreters.Contains(name))
+        {
+            return null;
+        }
+
+        var match = CsLiteral().Match(segment);
+        return match.Success ? match.Groups["path"].Value : null;
+    }
+
+    /// <summary>Whether an inline program opens its file for writing rather than reading.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>True when the program text carries an explicit write mode or a write cmdlet.</returns>
+    public static bool ScriptWritesFile(string segment) =>
+        ScriptWriteMarkers.Any(marker => segment.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The <c>.cs</c> file a segment reads, including through arguments the suffix test misses.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>The path as written, or null when the segment reads no named <c>.cs</c> file.</returns>
+    /// <remarks>
+    /// <see cref="FindCsArgument"/> answers for a bare path operand, which leaves two shapes reading a
+    /// compiled file with no advisory at all: <c>dd if=Foo.cs</c>, whose path is welded to a key, and an
+    /// interpreter one-liner, whose path is inside the program. Both dump the same bytes <c>cat</c> would.
+    /// </remarks>
+    public static string? FindReadTargetCsArgument(string segment)
+    {
+        if (string.Equals(CommandName(segment), "dd", StringComparison.OrdinalIgnoreCase))
+        {
+            var input = Tokenize(segment).FirstOrDefault(t => t.StartsWith("if=", StringComparison.Ordinal));
+            if (input is { Length: > 3 } && input[3..].EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                return input[3..];
+            }
+        }
+
+        return FindCsArgument(segment) ?? ScriptCsLiteral(segment);
+    }
+
+    /// <summary>The reader a tree-walking command runs over what it finds, and the roots it walks.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>
+    /// The utility name and the walk's roots, or null when the segment is not a walker running one.
+    /// </returns>
+    /// <remarks>
+    /// <c>find . -name '*.cs' -exec cat {} \;</c> reads every compiled file in the tree while being, by
+    /// its first word, a <c>find</c> — a command the read blocklist deliberately does not carry, since
+    /// <c>find</c> alone only lists names. The read is real and belongs to the utility <c>-exec</c> names,
+    /// so that is what this returns for the blocklist to judge.
+    /// </remarks>
+    public static (string Utility, IReadOnlyList<string> Roots)? ExecutedUtility(string segment)
+    {
+        if (CommandName(segment) is not ("find" or "fd"))
+        {
+            return null;
+        }
+
+        var tokens = Tokenize(segment).Skip(1).ToList();
+        var roots = new List<string>();
+        string? utility = null;
+        var sawFlag = false;
+
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            if (token is "-exec" or "-execdir" or "-ok" or "-okdir" or "--exec" or "-x" or "-X")
+            {
+                sawFlag = true;
+                if (i + 1 < tokens.Count)
+                {
+                    utility = CommandName(tokens[++i]);
+                }
+
+                continue;
+            }
+
+            if (token.StartsWith('-'))
+            {
+                sawFlag = true;
+                continue;
+            }
+
+            // Path operands precede the first predicate; anything after one belongs to that predicate
+            // or to the -exec template ({} and ;), never to the set of directories being walked.
+            if (!sawFlag)
+            {
+                roots.Add(token);
+            }
+        }
+
+        return utility is null ? null : (utility, roots.Count > 0 ? roots : (IReadOnlyList<string>)["."]);
+    }
+
     /// <summary>
     /// The <c>.cs</c> file a write-shaped segment would overwrite: output redirection (<c>&gt;</c>/
     /// <c>&gt;&gt;</c>, optionally file-descriptor-prefixed), an in-place editor (<c>sed -i</c>,
@@ -184,7 +320,7 @@ internal static class BashCommandScanner
     /// </remarks>
     public static string? FindWriteTargetCsArgument(string segment)
     {
-        var tokens = Tokenize(segment).ToList();
+        var tokens = SplitRedirects(TokenizeQuoteAware(segment)).ToList();
         for (var i = 0; i < tokens.Count - 1; i++)
         {
             if (RedirectOperators.Contains(tokens[i])
@@ -227,7 +363,71 @@ internal static class BashCommandScanner
             }
         }
 
+        // An inline program writing a file is a write no argument-shaped check above can see. The explicit
+        // write mode is what separates it from the read-only one-liner the read guard merely advises on.
+        if (ScriptWritesFile(segment) && ScriptCsLiteral(segment) is { } scripted)
+        {
+            return scripted;
+        }
+
         return null;
+    }
+
+    /// <summary>Separates a redirection operator welded to the words on either side of it.</summary>
+    /// <param name="tokens">The segment's tokens, as <see cref="Tokenize"/> produced them.</param>
+    /// <returns>The same tokens, with any unquoted redirection split into its own token.</returns>
+    /// <remarks>
+    /// Whitespace tokenization keeps <c>cat a.cs&gt;&gt;b.cs</c> as one token, so the operator scan that
+    /// looks for a redirect followed by a path never fires and the write goes unguarded — while the spaced
+    /// spelling of the identical command is denied. A guard whose enforcement depends on whether the user
+    /// typed a space teaches the space away.
+    /// <para>
+    /// Tokens carrying a quote character are left alone: the <c>&gt;</c> in <c>"a&gt;b.cs"</c> is part of a
+    /// filename, not an operator, and splitting it would invent a redirection the command never had.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<string> SplitRedirects(IEnumerable<(string Value, bool Quoted)> tokens)
+    {
+        foreach (var (token, quoted) in tokens)
+        {
+            if (quoted || !token.Contains('>'))
+            {
+                yield return token;
+                continue;
+            }
+
+            var start = 0;
+            for (var i = 0; i < token.Length; i++)
+            {
+                if (token[i] != '>')
+                {
+                    continue;
+                }
+
+                // A file-descriptor prefix (1>, 2>) belongs to the operator token, so the piece before it
+                // stops one character earlier; a doubled or decorated operator is consumed whole.
+                var operatorStart = i > 0 && char.IsAsciiDigit(token[i - 1]) ? i - 1 : i;
+                var operatorEnd = i;
+                while (operatorEnd + 1 < token.Length && token[operatorEnd + 1] is '>' or '|' or '&')
+                {
+                    operatorEnd++;
+                }
+
+                if (operatorStart > start)
+                {
+                    yield return token[start..operatorStart];
+                }
+
+                yield return token[operatorStart..(operatorEnd + 1)];
+                start = operatorEnd + 1;
+                i = operatorEnd;
+            }
+
+            if (start < token.Length)
+            {
+                yield return token[start..];
+            }
+        }
     }
 
     private static bool IsInPlaceFlag(string token) =>
@@ -376,19 +576,30 @@ internal static class BashCommandScanner
     /// quote characters; left on, the trailing <c>"</c> makes the <c>.cs</c> suffix test fail and the
     /// read slips through.
     /// </remarks>
-    private static IEnumerable<string> Tokenize(string segment)
+    private static IEnumerable<string> Tokenize(string segment) =>
+        TokenizeQuoteAware(segment).Select(token => token.Value);
+
+    /// <summary>Tokenizes a segment while remembering which tokens arrived quoted.</summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>Each token, unquoted, paired with whether quotes were removed from it.</returns>
+    /// <remarks>
+    /// <see cref="Tokenize"/> strips the quotes, which is right for every suffix test but destroys the one
+    /// fact <see cref="SplitRedirects"/> needs: a <c>&gt;</c> inside quotes is part of a filename, not an
+    /// operator. Splitting an already-unquoted <c>"a&gt;b.cs"</c> invented a redirection the command never
+    /// had and reported <c>b.cs</c> as a write target — a false denial, which is the expensive direction
+    /// for a guard to be wrong in.
+    /// </remarks>
+    private static IEnumerable<(string Value, bool Quoted)> TokenizeQuoteAware(string segment)
     {
         foreach (var raw in segment.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
         {
-            var token = raw;
-            if (token.Length >= 2
-                && (token[0] == '"' || token[0] == '\'')
-                && token[^1] == token[0])
+            if (raw.Length >= 2 && (raw[0] == '"' || raw[0] == '\'') && raw[^1] == raw[0])
             {
-                token = token[1..^1];
+                yield return (raw[1..^1], true);
+                continue;
             }
 
-            yield return token;
+            yield return (raw, false);
         }
     }
 

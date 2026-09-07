@@ -5,7 +5,7 @@
 > page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
 > how membership is decided statically, and where enforcement has a known hole.
 
-The plugin ships seven hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships nine hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
 plugin removes them.
 
@@ -13,7 +13,8 @@ Every hook is a subcommand of the published server binary, invoked as
 `dotnet "${CLAUDE_PLUGIN_ROOT}/dist/DotnetToolkit.McpServer.dll" hook <name>`, implemented under
 `src/DotnetToolkit.McpServer/Hooks/`. That is the whole cross-platform story: the plugin already
 requires the .NET runtime, so a hook needs no shell, no shebang, and no JSON interpreter beyond
-`System.Text.Json`.
+`System.Text.Json`. Codex sets the same `CLAUDE_PLUGIN_ROOT` compatibility variable for plugin hooks,
+so the command is shared rather than duplicated with a host-specific path.
 
 > **Why they aren't shell scripts any more.** They were, until the plugin was tested against a
 > Windows-installed Claude Code. Two failures, both structural: a `.sh` file with a shebang cannot be
@@ -114,15 +115,17 @@ either instrument alone.
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
 environment — and reports that rather than claiming a restore it did not perform.
 
-## `hook guard-cs-edit` — PreToolUse on `Edit`/`Write`/`NotebookEdit`
+## `hook guard-cs-edit` — PreToolUse on native edit tools
 
-Blocks `Edit`/`Write`/`NotebookEdit` on an **existing** `.cs` file and returns the `validate_patch`
+Blocks Claude Code's `Edit`/`Write`/`NotebookEdit` and Codex's `apply_patch` on an **existing**
+`.cs` file and returns the `validate_patch`
 procedure in the deny message instead. This enforces the write path: applying through `validate_patch`
 with an `intent` is the only thing that appends to the development log, so an edit made with `Edit` is a
 change whose reasoning is unrecoverable once the conversation ends. A blocked edit is the hook working,
 not a bug — rebuild the change as `validate_patch` calls.
 
-Creating a **new** `.cs` file with `Write` is allowed, because `validate_patch`'s `baseVersions` needs a
+Creating a **new** `.cs` file with `Write` or an `*** Add File` patch is allowed, because
+`validate_patch`'s `baseVersions` needs a
 `symbolId` that does not exist yet; change the file through `validate_patch` after creation.
 
 **A `.cs` file no project compiles is also allowed**, decided by the same `Hooks/CsFileMembership.cs`
@@ -217,10 +220,25 @@ splitting `grep -n "Alpha\|Beta" Foo.cs | head` textually pushes the `.cs` path 
 multi-term grep, the most common way to search several terms at once, read compiled C# unguarded. Fixed
 by a quote/escape-aware scan, covered by `BashCommandScannerTests`.
 
-Quoted paths with spaces, variable-expanded paths, and heredocs are still not recognized; that
-under-detection is deliberate (same fail-open posture as the other guards), not a security boundary meant
-to be airtight. `git`, `dotnet`, `find`, and anything not in the blocklist are never touched, so
-`git diff -- Foo.cs`, `git log Foo.cs`, and `find . -name '*.cs'` are all unaffected.
+**Coverage widened 2026-09-07** after a red-team pass found the advisory was a matter of which utility
+the caller happened to reach for. Now recognized: the byte dumpers (`xxd`, `od`, `hexdump`, `base64`,
+`strings`) — a hex dump puts the same source in the transcript as `cat`, only less legibly; `dd if=x.cs`,
+whose path is welded to a key rather than being a bare operand; a script interpreter's inline program
+(`python3 -c "print(open('Foo.cs').read())"`), whose path is inside the program and never an argument;
+and `find . -name '*.cs' -exec cat {} \;`, whose own first word is `find` — deliberately not on the
+blocklist, since listing names reads nothing — while the utility `-exec` names reads every match.
+
+The interpreter case is a heuristic and is used as one: the `.cs`-literal search runs **only** when the
+command is a known interpreter, because a bare `.cs`-shaped substring is far too weak a signal on its own
+— a grep pattern or a commit message mentioning a filename would match it.
+
+**Still not recognized, and one of them cannot be:** a quoted path containing a space (the standing
+`Tokenize` limitation below), and a **variable-expanded path** (`F=src/Foo.cs; cat "$F"`). The second is
+not a gap that can be closed by a better scanner — the path is not in the command text at all, and
+resolving it would mean evaluating the shell. Both stay under-detected on the same fail-open posture as
+the other guards; this is a workflow nudge, not a security boundary. `git`, `dotnet`, plain `find`, and
+anything not in the blocklist are never touched, so `git diff -- Foo.cs`, `git log Foo.cs`, and
+`find . -name '*.cs'` with no `-exec` are all unaffected.
 
 **This under-detection is total, not narrow, on any repo whose path contains a space** — confirmed
 2026-08-20 against a consuming repo cloned under `...\Energy Lead Agent\`: every `.cs` path in it
@@ -241,7 +259,8 @@ merely a missed nudge again — it is a real unenforced read, the same stakes th
 2026-08-20.
 
 **The built-in `Grep` tool is not covered by either read guard.** `hooks/hooks.json` matches on tool
-name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `Bash` — `Grep` and `Glob`
+name, and its `PreToolUse` entries are `Edit|Write|NotebookEdit`, `Read`, and `Bash` — Codex maps
+the first matcher to `apply_patch`; `Grep` and `Glob`
 are matched by none of them, so `Grep` with `-A`/`-B`/`-C` or in content mode returns `.cs` source with
 nothing intercepting it. Now that the read guards are advisory rather than blocking, this "hole" is the
 same shape as every other unmatched tool: no advisory note, nothing enforced either way. `search_index`
@@ -278,20 +297,37 @@ and the same allowance `guard-cs-edit` makes for `Write` creating a brand-new fi
 not exist yet is let through, since `validate_patch` cannot lease a `baseVersions` entry for a symbol
 that has no version yet.
 
-**Not a shell parser, same posture as `guard-cs-bash-read`.** An unspaced redirect (`cat
-a.cs>>b.cs`, no token boundary for `Tokenize` to find), a heredoc, an obscure in-place editor, or a
-quoted path with a space (the same standing `Tokenize` gap documented above) are not recognized. This
-is deliberate under-detection, not a security boundary meant to be airtight — the same fail-open stance
-the rest of this page takes — and it is exactly what `dotnet-guard-redteam` exists to keep
-re-discovering as this scanner's coverage evolves.
+**Not a shell parser, same posture as `guard-cs-bash-read`** — but two of the gaps this paragraph used
+to claim were closed on 2026-09-07 after a red-team pass, and the heredoc claim was simply wrong.
+
+- **An unspaced redirect** (`cat a.cs>>b.cs`) is now denied. It previously arrived from `Tokenize` as a
+  single token with no boundary for the operator scan to find, so the identical command was denied when
+  written with spaces and allowed without them — a guard whose enforcement depends on whether the user
+  typed a space teaches the space away. Redirects are now split out of a token, except inside quotes,
+  where `"a>b.cs"` is a filename and splitting it would invent a write target the command never had.
+- **A script interpreter writing a file** (`python3 -c "open('Foo.cs','w').write(x)"`) is now denied.
+  The `.cs` literal is found inside the program text, and an **explicit write mode** is required before
+  it counts — without that gate, the read-only `print(open('Foo.cs').read())` would be denied as a
+  write, a false block on the exact command `guard-cs-bash-read` is meant only to advise on.
+- **Heredocs were never the gap this page described.** A heredoc with a spaced redirect
+  (`cat <<'EOF' > Foo.cs`) has always been denied, because the write target is an ordinary redirect
+  token; it is the *unspaced* form that was missed, and that is now handled. Only a heredoc whose
+  target is itself quoted-with-a-space or variable-expanded remains unrecognized, which is the general
+  `Tokenize` limitation rather than anything about heredocs.
+
+What remains: an obscure in-place editor not on the list, a quoted path containing a space, and a
+variable-expanded target — the last of which cannot be closed without evaluating the shell. Deliberate
+under-detection, not a security boundary meant to be airtight, and exactly what `dotnet-guard-redteam`
+exists to keep re-discovering as this scanner's coverage evolves.
 
 Wired as a second hook under the `Bash` matcher in `hooks/hooks.json`, ahead of `guard-cs-bash-read`:
 both run on every `Bash` call, and a deny from this one blocks the tool regardless of what the advisory
 hook would have said about the same command.
 
-## `hook hint-reload-new-cs-file` — PostToolUse on `Write`
+## `hook hint-reload-new-cs-file` — PostToolUse on a new-file write
 
-Fires when a `Write` creates a brand-new `.cs` file (the one case the edit guard allows through). Both
+Fires when `Write` or an `apply_patch` add creates a brand-new `.cs` file (the one case the edit
+guard allows through). Both
 knowledge tiers are mtime-polling, not filesystem watchers, so a new file is invisible to the syntax
 index and the MSBuild workspace until a sweep and reload complete — a `validate_patch`/`get_symbol` call
 against it before then fails deterministically with `invalid_edit: file is not part of the loaded
@@ -314,6 +350,13 @@ the same way every other hook here does.
 The JSON reply is serialized, never hand-interpolated, since `file_path` is caller-controlled text (a
 Windows path's backslashes) that has no business near manual JSON string escaping.
 
+## `hook track-subagent-start` / `hook track-subagent-stop`
+
+Codex's tool hook payload does not repeat the active subagent identity. Its lifecycle payload does.
+These hooks keep a fail-open temporary correlation keyed by the hashed `session_id` plus `turn_id`
+while an agent is active, which `meter-tool-call` consults before recording a row. Claude Code's
+direct `agent_id`/`agent_type` fields still win when present.
+
 ## `hook meter-tool-call` — PostToolUse on every tool (`matcher: "*"`)
 
 The only hook whose subject is tools it otherwise never sees, and the only one that matches everything.
@@ -328,9 +371,13 @@ so both routes are measured by the same code on the same payload.
 One payload carries both directions and the attribution, which is why this is a single `PostToolUse`
 hook rather than a `Pre`/`Post` pair: `tool_input` (what the model had to generate — output tokens),
 `tool_response` (what was loaded into its context — input tokens), `tool_use_id`, and `agent_id` /
-`agent_type` when the call came from a subagent. Counting happens in the hook, using the same
+`agent_type` when the host includes them directly. Codex instead supplies those fields on
+`SubagentStart`/`SubagentStop`; `SubagentTracker` correlates them by `session_id` plus `turn_id`
+while that agent is active. Counting happens in the hook, using the same
 `TelemetryRecorder.EstimateTokens` the server's own telemetry uses — comparability depends on it being
-literally the same function — so the wire carries two integers rather than a whole tool response.
+literally the same function — so the wire carries two integers rather than a whole tool response. The
+row also retains the harness, model, turn and transcript identifiers when supplied. None changes
+tokenization: `chars4` stays a host- and model-neutral approximation, including for local LLMs.
 
 **It reports over the control channel instead of writing to SQLite itself**, for two reasons that are
 easy to miss. A hook is a separate process with its own `Ids.AmbientSession`, so a row it wrote would

@@ -20,4 +20,11 @@ if exist dist\runtimes (
     )
 )
 
+rem Record which sources this binary was built from. Written by the freshly published binary itself,
+rem so the stamp cannot be refreshed without a republish - which is the drift it exists to detect.
+rem `doctor` compares it against src\ and fails when dist\ has fallen behind, making
+rem `doctor --no-probe` the pre-commit gate for the rule that dist\ is committed alongside the change
+rem that required it. Mirror any change in build-plugin.sh.
+dotnet dist\DotnetToolkit.McpServer.dll stamp "%CD%" || exit /b 1
+
 echo Plugin server published to dist\. Install with: claude --plugin-dir %CD%

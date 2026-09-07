@@ -1,8 +1,8 @@
 namespace DotnetToolkit.McpServer.Hooks;
 
 /// <summary>
-/// <c>PreToolUse</c> guard on <c>Edit</c>/<c>Write</c>/<c>NotebookEdit</c>: keeps C# edits on the
-/// <c>validate_patch</c> write path.
+/// <c>PreToolUse</c> guard on harness-native edit tools: keeps C# edits on the
+/// <c>validate_patch</c> write path in Claude Code and Codex.
 /// </summary>
 /// <remarks>
 /// CLAUDE.md has carried this rule since the plugin existed and it is still the one broken most often,
@@ -19,7 +19,34 @@ internal static class GuardCsEdit
     /// <returns>A denial for a C# file that already exists; otherwise <see cref="HookOutcome.Allow"/>.</returns>
     public static HookOutcome Evaluate(HookPayload payload, HookContext context)
     {
+        if (payload.ToolName == "apply_patch")
+        {
+            foreach (var change in ApplyPatchCommand.Parse(payload.Command))
+            {
+                var outcome = EvaluateFile(
+                    payload.ToolName,
+                    change.Path,
+                    context,
+                    allowNewFile: change.Kind == ApplyPatchCommand.ChangeKind.Add);
+                if (outcome.ExitCode != 0)
+                {
+                    return outcome;
+                }
+            }
+
+            return HookOutcome.Allow;
+        }
+
         var file = payload.FilePath;
+        return EvaluateFile(payload.ToolName, file, context, allowNewFile: payload.ToolName == "Write");
+    }
+
+    private static HookOutcome EvaluateFile(
+        string toolName,
+        string? file,
+        HookContext context,
+        bool allowNewFile)
+    {
         if (string.IsNullOrEmpty(file) || !file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
         {
             // Everything else is explicitly the plain-tool path: csproj, json, md, sh. .csx/.cshtml/.razor
@@ -30,7 +57,8 @@ internal static class GuardCsEdit
         // Creating a new file is not a validate_patch case: it needs baseVersions keyed by a symbolId,
         // and a symbol that does not exist yet has no version to lease against. Write it, then make
         // every subsequent change through the tool.
-        if (payload.ToolName == "Write" && !File.Exists(file))
+        var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, file));
+        if (allowNewFile && !File.Exists(absolute))
         {
             return HookOutcome.Allow;
         }
@@ -41,7 +69,6 @@ internal static class GuardCsEdit
         // tests/.../fixtures/SampleSolution, deliberately excluded from the build so tests can load it
         // as a workspace of its own. GuardCsRead has always gated on membership; this guard did not, so
         // the same file was readable and uneditable. Membership, not the extension, is the real test.
-        var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, file));
         if (File.Exists(absolute)
             && !CsFileMembership.TryResolveOwningProject(absolute, context.Root, out _))
         {
@@ -49,10 +76,10 @@ internal static class GuardCsEdit
         }
 
         return HookOutcome.Deny($"""
-            Blocked {payload.ToolName} on {file}: C# edits go through validate_patch, not {payload.ToolName}.
+            Blocked {toolName} on {file}: C# edits go through validate_patch, not {toolName}.
 
             validate_patch is the write path for .cs files, not a faster dotnet build. It is also the ONLY thing
-            that appends to the development log - an edit made with {payload.ToolName} is a change whose reasoning
+            that appends to the development log - an edit made with {toolName} is a change whose reasoning
             is gone the moment this conversation ends, and search_log can never recover it.
 
             Do this instead: invoke the dotnet-write skill.
@@ -63,7 +90,7 @@ internal static class GuardCsEdit
             set. None of that is repeated in this message on purpose: a copy here would drift from the skill.
 
             A change that feels too large or too interleaved to decompose is still not a reason to fall back to
-            {payload.ToolName}; the skill covers that case too.
+            {toolName}; the skill covers that case too.
 
             If this genuinely is not a validate_patch case (the workspace failed to load, or you are reverting a
             partial write), say so and ask the user to allow it explicitly rather than retrying the same call.

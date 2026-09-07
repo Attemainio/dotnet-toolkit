@@ -169,7 +169,7 @@ Report each finding as: the memory or `CLAUDE.md` paragraph, its category, and t
 should carry it. Do not copy a category-(c) fact into a shipped file to close a finding —
 categorising it correctly *is* closing it.
 
-**6. Hooks and launch path.** All seven hooks are `hook <name>` subcommands of the published server
+**6. Hooks and launch path.** All nine hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
 `Guard*`/`ReloadHint`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
 have no `hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard
@@ -196,7 +196,8 @@ and `.mcp.json`:
      opening the store itself: a hook process has its own ambient session id, so a row it wrote
      directly would be invisible to every read.
    - Does `hooks/hooks.json` name subcommands `HookCli` actually dispatches, with matchers
-     (`Edit`/`Write`/`NotebookEdit`/`Read`/`Bash`, plus the fully-qualified `validate_patch` MCP tool
+     (`Edit`/`Write`/`NotebookEdit`/`apply_patch`/`Read`/`Bash`, plus any host-qualified
+     `validate_patch` MCP tool
      name) matching `docs/design/hooks.md` and `docs/design/architecture.md`'s "Packaging" section?
      The shell-free and output-cap invariants are `harness-compliance.md` §G. `scripts/` holds
      developer conveniences only; anything new there or in `Hooks/` unmentioned by

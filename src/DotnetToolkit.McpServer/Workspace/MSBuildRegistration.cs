@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Build.Locator;
 
 namespace DotnetToolkit.McpServer.Workspace;
@@ -34,6 +36,35 @@ internal static class MSBuildRegistration
     /// </value>
     public static string? HostPath { get; private set; }
 
+    /// <summary>The variables MSBuildLocator sets process-wide when it registers an SDK.</summary>
+    private static readonly string[] InjectedVariables =
+        ["MSBUILD_EXE_PATH", "MSBuildExtensionsPath", "MSBuildSDKsPath"];
+
+    /// <summary>Removes this process's MSBuild registration from a child process's environment.</summary>
+    /// <param name="startInfo">The child to launch.</param>
+    /// <remarks>
+    /// <para>
+    /// <strong>Call this before starting any <c>dotnet</c> child.</strong> Registering an SDK points
+    /// these variables at that one install for the lifetime of the process, and a child inherits them.
+    /// When the child's own host belongs to a different install — which is the normal case for a bare
+    /// <c>dotnet</c> resolved on <c>PATH</c> — it is told to load a foreign MSBuild and exits nonzero
+    /// having written nothing to either stream.
+    /// </para>
+    /// <para>
+    /// The silence is what makes this worth a named helper rather than three lines at each call site: a
+    /// child that fails with no output is indistinguishable from one whose pipe is being held open, so
+    /// the symptom points at process plumbing and the cause is an environment variable. It cost a whole
+    /// integration collection — 205 tests — once already.
+    /// </para>
+    /// </remarks>
+    public static void ScrubInheritedRegistration(ProcessStartInfo startInfo)
+    {
+        foreach (var injected in InjectedVariables)
+        {
+            startInfo.Environment.Remove(injected);
+        }
+    }
+
     /// <summary>Registers the MSBuild this repository is built with, if one is not registered already.</summary>
     /// <param name="root">
     /// The repository root, so a <c>global.json</c> there is honored. Null selects the newest SDK on
@@ -60,9 +91,6 @@ internal static class MSBuildRegistration
         }
 
         var explicitRoot = Environment.GetEnvironmentVariable(OverrideVariable);
-        var localRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".dotnet");
 
         // An explicit override is an instruction, not a candidate: honor it even when a newer SDK
         // exists elsewhere, and even against a global.json, because the point of setting it is to pin
@@ -73,15 +101,7 @@ internal static class MSBuildRegistration
             return Use(pinned, $"MSBuild {pinned.Version} from {OverrideVariable} ({pinned.Path})");
         }
 
-        // MSBuildLocator's own discovery runs relative to the dotnet host that started this process,
-        // so launched from a system-wide host it never sees a user-local SDK. Pooling both is what
-        // makes the choice below a choice at all.
-        var candidates = QueryDefaults();
-        candidates.AddRange(EnumerateSdks(localRoot)
-            .Where(local => !candidates.Any(known =>
-                string.Equals(known.Path.TrimEnd(Path.DirectorySeparatorChar),
-                    local.Path.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))));
-
+        var candidates = Pool();
         var best = candidates.MaxBy(candidate => candidate.Version);
 
         if (root is not null && GlobalJsonPolicy.Read(root) is { } policy)
@@ -117,6 +137,43 @@ internal static class MSBuildRegistration
         // takes the whole server down before it can report anything useful over MCP.
         return "no MSBuild instance found; project loading will be unavailable";
     }
+
+    /// <summary>Every SDK this process can discover, pooled from both discovery routes.</summary>
+    /// <returns>One candidate per usable SDK, deduplicated by directory, in no particular order.</returns>
+    /// <remarks>
+    /// <see cref="MSBuildLocator.QueryVisualStudioInstances"/> runs relative to the <c>dotnet</c> host
+    /// that started this process, so launched from a system-wide host it never sees a user-local SDK.
+    /// Pooling both routes is what makes <see cref="Register"/>'s choice a choice at all. It is factored
+    /// out of <see cref="Register"/> so <see cref="InstalledSdks"/> reports the same inventory the
+    /// selection actually ran against — an inventory assembled a second way could disagree with the
+    /// choice it is printed beside, which is the one thing that diagnostic must never do.
+    /// </remarks>
+    private static List<SdkCandidate> Pool()
+    {
+        var localRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".dotnet");
+
+        var candidates = QueryDefaults();
+        candidates.AddRange(EnumerateSdks(localRoot)
+            .Where(local => !candidates.Any(known =>
+                string.Equals(known.Path.TrimEnd(Path.DirectorySeparatorChar),
+                    local.Path.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))));
+
+        return candidates;
+    }
+
+    /// <summary>The SDKs <see cref="Register"/> chooses between, for diagnostic reporting.</summary>
+    /// <returns>Version and directory for each discoverable SDK, highest version first.</returns>
+    /// <remarks>
+    /// Registers nothing, so a caller may ask before or instead of registering. The <c>doctor</c> verb
+    /// prints this beside the line <see cref="Register"/> returns: a user told only which SDK won cannot
+    /// tell a bad choice from an absent candidate, and those two have opposite repairs.
+    /// </remarks>
+    internal static IReadOnlyList<(Version Version, string Path)> InstalledSdks() =>
+        [.. Pool()
+            .OrderByDescending(candidate => candidate.Version)
+            .Select(candidate => (candidate.Version, candidate.Path))];
 
     /// <summary>Registers one candidate and records the host that belongs to it.</summary>
     /// <param name="candidate">The SDK to register.</param>

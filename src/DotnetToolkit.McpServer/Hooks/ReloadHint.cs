@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace DotnetToolkit.McpServer.Hooks;
 
 /// <summary>
-/// <c>PostToolUse</c> hook on <c>Write</c>: brings the syntax index and MSBuild workspace up to date
+/// <c>PostToolUse</c> hook on a new-file write: brings the syntax index and MSBuild workspace up to date
 /// after a brand-new <c>.cs</c> file appears, and tells the agent what state they are in.
 /// </summary>
 /// <remarks>
@@ -30,13 +30,22 @@ internal static class ReloadHint
     /// </returns>
     public static async Task<HookOutcome> EvaluateAsync(HookPayload payload, HookContext context)
     {
-        var file = payload.FilePath;
-        if (payload.ToolName != "Write"
-            || string.IsNullOrEmpty(file)
-            || !file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        var files = payload.ToolName switch
+        {
+            "Write" when payload.FilePath is { } path => [path],
+            "apply_patch" => ApplyPatchCommand.Parse(payload.Command)
+                .Where(change => change.Kind == ApplyPatchCommand.ChangeKind.Add)
+                .Select(change => change.Path)
+                .ToArray(),
+            _ => [],
+        };
+        var csharpFiles = files.Where(file => file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (csharpFiles.Length == 0)
         {
             return HookOutcome.Allow;
         }
+
+        var file = string.Join(", ", csharpFiles);
 
         var rescan = await ControlClient.SendAsync(context.Root, "rescan");
         var reload = rescan is null ? null : await ControlClient.SendAsync(context.Root, "reload");

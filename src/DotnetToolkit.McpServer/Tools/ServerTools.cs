@@ -12,16 +12,12 @@ namespace DotnetToolkit.McpServer.Tools;
 [McpServerToolType]
 public static class ServerTools
 {
-    // Read off the assembly rather than written here, so it cannot drift from the version the build
-    // stamps in. A hardcoded literal already did: it still said 0.1.0 after the manifest reached 1.0.0.
-    private static readonly string PluginVersion =
-        typeof(ServerTools).Assembly.GetName().Version?.ToString(3) ?? "unknown";
-
     [McpServerTool(Name = "ping")]
-    [Description("Is the server alive — health check for this MCP server; returns pong and the server version. Use it "
-        + "when calls are failing, hanging or timing out and you need to know whether the server is responding "
-        + "at all before diagnosing anything else.")]
-    public static string Ping() => $"pong dotnet-toolkit/{PluginVersion}";
+    [Description("Is the server alive — health check for this MCP server; returns pong, the server version and a "
+        + "per-build identifier. Use it when calls are failing, hanging or timing out and you need to know whether "
+        + "the server is responding at all before diagnosing anything else — and when you need to prove the running "
+        + "server is the build you just published, which the version alone cannot tell you.")]
+    public static string Ping() => $"pong dotnet-toolkit/{Diagnostics.BuildIdentity.Full}";
 
     [McpServerTool(Name = "set_output_format")]
     [Description("Change how tool responses are encoded for the rest of this session — switch the output format to "

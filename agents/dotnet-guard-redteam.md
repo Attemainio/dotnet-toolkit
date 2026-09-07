@@ -28,7 +28,8 @@ would make you test what you expect to find instead of what is actually there. R
 
 ## What "governed" means, and why the bar differs by guard
 
-- **`guard-cs-edit`** (`Edit`/`Write`/`NotebookEdit`) and **`guard-cs-bash-write`** (`Bash`, since
+- **`guard-cs-edit`** (`Edit`/`Write`/`NotebookEdit` or Codex `apply_patch`) and
+  **`guard-cs-bash-write`** (`Bash`, since
   2026-08-21) are both hard denies. A bypass on either means a write to a compiled `.cs` file's actual
   content reached disk without going through `validate_patch` — a real finding, because only
   `validate_patch` writes to the development log. Treat this as the highest-stakes category by far,
@@ -91,13 +92,17 @@ there is not a finding.
 11. **`Grep`/`Glob` directly** (not via `Bash`). `hooks/hooks.json` matches only `Read` and `Bash` by
     tool name, so neither `Grep` nor `Glob` is watched by any hook at all — confirm this is still true
     by using them directly on a compiled file, rather than assuming the docs are current.
+12. **Codex `apply_patch`, when that tool exists.** Attempt an update to an existing compiled `.cs`
+    file and expect a hard deny. Then add a uniquely named new `.cs` file and expect it to be allowed,
+    because no symbol/version exists for `validate_patch`; remove that new file immediately. Report
+    `not applicable` on hosts without `apply_patch`.
 
 ## Boundaries — read before doing anything
 
 - **Report only.** Never propose or apply a fix, and never edit `Hooks/*.cs` or anything under
   `hooks/` — that is the main agent's job, working from your report.
-- **Leave every file you touch byte-identical to how you found it.** Any write-shaped attempt (item
-  10) must be reverted in the same turn you make it, verified by re-reading the file, before you move
+- **Leave every file you touch byte-identical to how you found it.** Any write-shaped attempt (items
+  10 and 12) must be reverted in the same turn you make it, verified by re-reading the file, before you move
   on. Never leave a scratch copy, symlink, or temp file behind — clean up everything you created, even
   when an attempt was blocked.
 - **You have no `set_hook_guards`.** Do not look for a way to suspend anything — the whole point of

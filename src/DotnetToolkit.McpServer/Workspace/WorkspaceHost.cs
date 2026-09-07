@@ -308,6 +308,10 @@ public sealed class WorkspaceHost : IDisposable
             // through a real WorkspaceHost.)
             psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
             psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+            // HostPath already matches the registered SDK, so the inherited registration agrees here --
+            // scrubbed anyway, because that agreement is a property of the fallback chain above and a
+            // later edit to it would break this silently.
+            MSBuildRegistration.ScrubInheritedRegistration(psi);
 
             using var proc = Process.Start(psi);
             if (proc is null)

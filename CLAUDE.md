@@ -46,18 +46,37 @@ change that required it.** A source change committed without its matching `dist/
 stale binary to every consumer who pulls, not just a locally stale session — treat it as a blocking
 error, the same as a failing test.
 
+**That rule is now enforced, not remembered.** The publish scripts stamp `dist/build-manifest.json`
+with a hash of the sources the binary was built from, and `dotnet dist/DotnetToolkit.McpServer.dll
+doctor --no-probe` fails (nonzero exit) when `src/` has moved past it. **Run it before every commit
+that touches `src/`.** A rebuilt binary is never byte-identical — the module version id changes on
+every compile — so hashing the inputs is what makes the check mean "was this binary produced from
+this source" rather than "did two builds happen to match".
+
 ## Commands
 
 ```bash
 dotnet build                        # build the solution
 dotnet test                         # unit + MSBuildWorkspace integration tests
 dotnet test --filter FullyQualifiedName~ClassName   # a single test class
-dotnet publish src/DotnetToolkit.McpServer -c Release -o dist   # required after any src/ change
+scripts/build-plugin.sh                 # required after any src/ or Hooks/ change
+scripts/package-plugin.sh               # clean package/ for a LOCAL marketplace source
+dotnet dist/DotnetToolkit.McpServer.dll doctor --no-probe   # pre-commit: is dist/ current?
 ```
 
-`scripts/build-plugin.sh|.cmd` are thin wrappers over that publish line. Nothing the plugin ships at
+`scripts/build-plugin.sh|.cmd` wrap `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`,
+then trim `dist/runtimes` and write the source stamp `doctor` checks. **Use the script, not the bare
+publish line** — a bare publish leaves the stamp describing the previous build, so the gate reports
+`dist/` stale immediately after you republished it. Nothing the plugin ships at
 runtime runs a shell: `.mcp.json` and `hooks/hooks.json` both invoke `dotnet <dll>`, so it works on
-Windows as well as WSL/Linux/macOS. `dotnet test` includes `WorkspaceIntegrationTests`, which loads a
+Windows as well as WSL/Linux/macOS.
+
+**Never point a local marketplace at this working tree** — `scripts/package-plugin.sh|.cmd` builds
+`package/` for that. A host's plugin installer snapshots the marketplace root verbatim, so the repo
+root ships 632 MB of `src/`, `tests/`, `.git/` and build output instead of 50 MB of plugin, and on
+Windows it *fails*: Visual Studio holds `.vs/<solution>/FileContentIndex/*.vsidx` under a deny-read
+lock and the copy dies with `Permission denied (os error 13)`. A fresh `git clone` has none of those
+directories, so a remote marketplace needs no packaging step; a working tree does. `dotnet test` includes `WorkspaceIntegrationTests`, which loads a
 fixture solution via `MSBuildWorkspace` — slower than the pure unit tests. `TreatWarningsAsErrors` is
 set repo-wide (`Directory.Build.props`), so a build with warnings fails. The root `.editorconfig` is
 deliberately near-empty and states why in its own header; silencing a rule there needs its reasoning
@@ -93,7 +112,7 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the seven hooks, and it is
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the nine hooks, and it is
   **committed to git** so a consuming machine needs no local build step. Re-publish after any server
   change, **and commit the republished `dist/` in the same commit** — a stale *committed* `dist/` is
   worse than a stale local one, since it ships to every consumer who pulls.
@@ -106,12 +125,21 @@ which is why they live outside `.claude/rules/` and carry none.
   silent always-loaded regression paid by every session *and* every subagent.
 - **Any new code that shells out to a child process with redirected stdout+stderr must drain both
   streams concurrently** (`Task.WhenAll`, never one fully then the other) — an unread stream's OS
-  pipe buffer fills and the child hangs forever. Shelling out to `dotnet` specifically needs two more
-  environment variables on top of that, `MSBUILDDISABLENODEREUSE=1` and
-  `DOTNET_CLI_USE_MSBUILD_SERVER=0`, because `dotnet restore`/`build` spawn persistent MSBuild worker
-  nodes that inherit the redirected pipes and outlive the direct child. `WorkspaceHost.RestoreAsync`
-  shipped this bug once (commit `71fe3fa`) and a second call site hit the MSBuild-node variant of it
-  in the same session.
+  pipe buffer fills and the child hangs forever. `WorkspaceHost.RestoreAsync` shipped that bug once
+  (commit `71fe3fa`). Shelling out to **`dotnet`** carries two more rules, both learned the hard way:
+  - **Call `MSBuildRegistration.ScrubInheritedRegistration(psi)`.** Registering an SDK points
+    `MSBUILD_EXE_PATH`/`MSBuildExtensionsPath`/`MSBuildSDKsPath` at that one install *for the whole
+    process*, and a child inherits them. When the child's host is a different install — the normal
+    case for a bare `dotnet` off `PATH` — it loads a foreign MSBuild and **exits nonzero having
+    written nothing to either stream**. That silence is the trap: it is indistinguishable from a
+    held-open pipe, so the symptom points at process plumbing while the cause is an environment
+    variable. It failed the entire integration collection (205 tests) exactly once.
+  - **Set `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0`, but never treat EOF as
+    the completion signal.** Those switches reduce surviving MSBuild worker nodes; they do not
+    eliminate them — measured, `dotnet restore` returns in under a second with both set and leaves
+    ten nodes holding the inherited pipe write-ends. **Process exit is the completion signal; a
+    stream drain is best-effort and only decorates a failure message.** Waiting on `ReadToEndAsync`
+    after exit hangs until whatever timeout bounds it.
 - **`.gitattributes` forces LF on `*.sh`/`*.cs`/`*.csproj`.** Windows-side tooling once CRLF'd
   `.cs` files, breaking raw string literals in two tests — if a new file type needs the same
   protection, add it there rather than fixing line endings reactively.

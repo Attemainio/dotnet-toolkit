@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace DotnetToolkit.McpServer.Hooks;
 
 /// <summary>
-/// The fields these hooks read out of the JSON object Claude Code writes to a hook's stdin.
+/// The fields these hooks read out of the JSON object an agent harness writes to a hook's stdin.
 /// </summary>
 /// <remarks>
 /// The shell versions shelled out to <c>node</c>, then <c>python3</c>, then <c>jq</c> to do this,
@@ -29,6 +29,18 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
     /// than as a new session.
     /// </summary>
     public string? SessionId { get; init; }
+
+    /// <summary><c>turn_id</c>, supplied by Codex and used to correlate its subagent lifecycle hooks.</summary>
+    public string? TurnId { get; init; }
+
+    /// <summary>The model identifier supplied by the harness, including local model identifiers.</summary>
+    public string? Model { get; init; }
+
+    /// <summary>The harness transcript path, when one is exposed to hooks.</summary>
+    public string? TranscriptPath { get; init; }
+
+    /// <summary>The hook event name, including lifecycle events that do not carry a tool name.</summary>
+    public string? HookEventName { get; init; }
 
     /// <summary>
     /// <c>tool_input</c> as raw JSON — the arguments the model had to generate to make this call, which
@@ -92,7 +104,8 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
                 return null;
             }
 
-            var toolName = ReadString(root, "tool_name");
+            var hookEventName = ReadString(root, "hook_event_name");
+            var toolName = ReadString(root, "tool_name") ?? hookEventName;
             if (toolName is null)
             {
                 return null;
@@ -114,6 +127,10 @@ internal sealed record HookPayload(string ToolName, string? FilePath, string? Co
                 return new HookPayload(toolName, filePath, command)
                 {
                     SessionId = ReadString(root, "session_id"),
+                    TurnId = ReadString(root, "turn_id"),
+                    Model = ReadString(root, "model"),
+                    TranscriptPath = ReadString(root, "transcript_path"),
+                    HookEventName = hookEventName,
                     ToolInputRaw = toolInput,
                     ToolResponseRaw = root.TryGetProperty("tool_response", out var response)
                         ? response.GetRawText()

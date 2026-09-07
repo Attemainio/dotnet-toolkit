@@ -196,6 +196,36 @@ public sealed class GuardCsEditTests : IClassFixture<HookRepoFixture>
         Assert.Equal(2, GuardCsEdit.Evaluate(payload, _repo.Context()).ExitCode);
     }
 
+    [Fact]
+    public void Evaluate_ApplyPatchUpdatingExistingCsFile_Denies()
+    {
+        var command = """
+            *** Begin Patch
+            *** Update File: src/App/Compiled.cs
+            @@
+            -class Compiled;
+            +class Compiled { }
+            *** End Patch
+            """;
+        var payload = new HookPayload("apply_patch", null, command);
+
+        Assert.Equal(2, GuardCsEdit.Evaluate(payload, _repo.Context()).ExitCode);
+    }
+
+    [Fact]
+    public void Evaluate_ApplyPatchAddingNewCsFile_Allows()
+    {
+        var command = """
+            *** Begin Patch
+            *** Add File: src/App/BrandNew.cs
+            +class BrandNew;
+            *** End Patch
+            """;
+        var payload = new HookPayload("apply_patch", null, command);
+
+        Assert.Equal(HookOutcome.Allow, GuardCsEdit.Evaluate(payload, _repo.Context()));
+    }
+
     [Theory]
     [InlineData("README.md")]
     [InlineData("App.csproj")]
@@ -562,6 +592,64 @@ public sealed class HookPayloadTests
 
         Assert.NotNull(payload);
         Assert.Equal("\"total 12\"", payload.ToolResponseRaw);
+    }
+
+    [Fact]
+    public void TryParse_CodexPayload_ReadsHostAndModelFields()
+    {
+        var payload = HookPayload.TryParse(
+            """
+            {"hook_event_name":"PostToolUse","tool_name":"apply_patch","tool_use_id":"call_1",
+             "session_id":"ses_1","turn_id":"turn_1","model":"local/qwen3-coder",
+             "transcript_path":"/tmp/transcript.jsonl","tool_input":{"command":"*** Begin Patch"},
+             "tool_response":"Done"}
+            """);
+
+        Assert.NotNull(payload);
+        Assert.Equal("turn_1", payload.TurnId);
+        Assert.Equal("local/qwen3-coder", payload.Model);
+        Assert.Equal("/tmp/transcript.jsonl", payload.TranscriptPath);
+        Assert.Equal("PostToolUse", payload.HookEventName);
+    }
+
+    [Fact]
+    public void TryParse_SubagentLifecyclePayload_UsesEventNameAsToolName()
+    {
+        var payload = HookPayload.TryParse(
+            """{"hook_event_name":"SubagentStart","session_id":"s","turn_id":"t","agent_id":"a","agent_type":"explorer"}""");
+
+        Assert.NotNull(payload);
+        Assert.Equal("SubagentStart", payload.ToolName);
+        Assert.Equal("explorer", payload.AgentType);
+    }
+}
+
+public sealed class SubagentTrackerTests
+{
+    [Fact]
+    public void Resolve_CorrelatesLifecycleEventWithCodexToolPayload()
+    {
+        var session = Guid.NewGuid().ToString("N");
+        var turn = Guid.NewGuid().ToString("N");
+        var lifecycle = new HookPayload("SubagentStart", null, null)
+        {
+            SessionId = session,
+            TurnId = turn,
+            AgentId = "agent-7",
+            AgentType = "explorer",
+        };
+        var tool = new HookPayload("Bash", null, "rg Foo") { SessionId = session, TurnId = turn };
+
+        try
+        {
+            SubagentTracker.Start(lifecycle);
+            Assert.Equal(("agent-7", "explorer"), SubagentTracker.Resolve(tool));
+        }
+        finally
+        {
+            var outcome = SubagentTracker.Stop(lifecycle);
+            Assert.Equal("{\"continue\":true}", outcome.Stdout);
+        }
     }
 }
 

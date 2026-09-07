@@ -49,7 +49,29 @@ internal static class GuardCsBashRead
             }
 
             var name = BashCommandScanner.CommandName(segment);
-            if (name is null || !context.ReadBlocklist.Contains(name))
+            if (name is null)
+            {
+                continue;
+            }
+
+            // `find . -name '*.cs' -exec cat {} \;` reads every compiled file the walk matches while its
+            // own first word is `find` -- a command the blocklist deliberately omits, since find alone
+            // only lists names. The read belongs to the utility -exec names, so that is what is judged.
+            if (BashCommandScanner.ExecutedUtility(segment) is { } executed
+                && context.ReadBlocklist.Contains(executed.Utility))
+            {
+                if (ProjectUnder(executed.Roots, context, workingDirectory) is { } walked)
+                {
+                    return blocked
+                        ? HookOutcome.Deny(BlockedTreeMessage(executed.Utility, walked.Target, walked.Project))
+                        : HookOutcome.AllowAdvising(
+                            TreeMessage(executed.Utility, walked.Target, walked.Project, context));
+                }
+
+                continue;
+            }
+
+            if (!context.ReadBlocklist.Contains(name))
             {
                 continue;
             }
@@ -92,7 +114,7 @@ internal static class GuardCsBashRead
     /// <returns>The argument as written and its owning project, or null when neither applies.</returns>
     private static (string Argument, string Project)? NamedCompiledFile(string segment, HookContext context, string workingDirectory)
     {
-        var argument = BashCommandScanner.FindCsArgument(segment);
+        var argument = BashCommandScanner.FindReadTargetCsArgument(segment);
         if (argument is null)
         {
             return null;
@@ -135,9 +157,31 @@ internal static class GuardCsBashRead
     /// scans no tree or the trees it scans hold nothing compiled — which is what keeps a search over
     /// docs/ or a non-project folder unaffected.
     /// </returns>
-    private static (string Target, string Project)? ScannedProject(string segment, string name, HookContext context, string workingDirectory)
+    private static (string Target, string Project)? ScannedProject(string segment, string name, HookContext context, string workingDirectory) =>
+        ProjectUnder(
+            BashCommandScanner.CsScanRoots(segment, recursesByDefault: name is "rg" or "ag"),
+            context,
+            workingDirectory);
+
+    /// <summary>The first compiled <c>.cs</c> file reachable under any of a walk's roots.</summary>
+    /// <param name="roots">The directories the walk covers, as the caller wrote them.</param>
+    /// <param name="context">The repo root the guard is scoped to.</param>
+    /// <param name="workingDirectory">The directory this segment runs in, after any earlier <c>cd</c>.</param>
+    /// <returns>
+    /// The root as written and the project compiling something under it, or null when none of the roots
+    /// lies inside this repository or holds anything compiled.
+    /// </returns>
+    /// <remarks>
+    /// Shared by the two ways a segment can name a tree instead of a file — its own recursion flags, and
+    /// a <c>-exec</c> template's roots — so both reach the identical membership answer. Answering it twice
+    /// is how one route came to advise and the other to stay silent on the same directory.
+    /// </remarks>
+    private static (string Target, string Project)? ProjectUnder(
+        IReadOnlyList<string> roots,
+        HookContext context,
+        string workingDirectory)
     {
-        foreach (var root in BashCommandScanner.CsScanRoots(segment, recursesByDefault: name is "rg" or "ag"))
+        foreach (var root in roots)
         {
             var absolute = Path.GetFullPath(Path.Combine(workingDirectory, root));
             if (!Directory.Exists(absolute) || !IsUnderRoot(absolute, context.Root))

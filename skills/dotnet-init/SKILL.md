@@ -1,9 +1,51 @@
 ---
 name: dotnet-init
-description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit in a project — "set up dotnet-toolkit here", "/dotnet-init", "make Claude use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Copies the plugin's single always-loaded rule into .claude/rules/dotnet-index.md — a pure router naming no tools, mandating the dotnet-read, dotnet-write, dotnet-explore and dotnet-review skills over Grep/Read/Edit for C#, each of which carries its own tool set — merges the read-only MCP tools into .claude/settings.json's permission allowlist so they don't prompt on every call, records what it installed in .claude/dotnet-toolkit/install.json, and on a re-run verifies that state and refreshes what the plugin has changed since. Checks for conflicts with other installed plugins, backs up anything it touches, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md.
+description: Use when the user asks to set up, install, wire up, verify, refresh, or remove dotnet-toolkit for Claude Code or Codex — "set up dotnet-toolkit here", "/dotnet-init", "make my agent use the MCP tools in this repo", and equally "did the init work", "check the dotnet-toolkit installation", "is this repo wired up correctly", "are my copies out of date", "what does uninstalling leave behind". Routes Codex to its local marketplace plus user MCP registration, and Claude Code to the repo-local rule and permission wiring. Checks for conflicts, backs up repo files before changing them, and only writes after the user approves the exact plan. Does not modify the repo's CLAUDE.md or AGENTS.md.
 ---
 
 # Wiring dotnet-toolkit into a project
+
+## Choose the host first
+
+**Codex:** use the Codex section of `<pluginRoot>/docs/installation.md`, then stop; the Claude-specific
+procedure below does not apply. Register the existing local marketplace and plugin, and register the
+published server separately with `codex mcp add dotnet -- dotnet <absolute-clone-path>/dist/DotnetToolkit.McpServer.dll`.
+Obtain the persistent clone path from the local marketplace entry (`codex plugin list --json`), not
+from the versioned plugin cache. Leave MCP `cwd` unset, so the server starts in the active workspace.
+Do not copy `.claude/rules/`, edit `.claude/settings.json`, or create a Codex-only copy of an agent
+brief. If a `dotnet` MCP entry already exists, show it and ask before replacing it.
+
+**Establish the executor before constructing any path.** The agent host's OS and the OS its tool
+processes run in are different questions, and only the second one decides how a path is spelled. Run
+the doctor below first and read its `environment:` section — it names the executor, the topology, and
+the effective `CODEX_HOME`. The case that breaks silently is a Windows desktop app executing in WSL2:
+`CODEX_HOME` is the Windows-owned profile reached through `/mnt/c/...`, any `~/.codex` on the Linux
+side is *not* in effect, and a registered `C:\...` path is unopenable by the Linux process that has
+to launch it — while every listing command still reports the server enabled. Register from a shell
+running where the tools will run, and give the marketplace `source` the same spelling as the DLL path.
+
+**Verify by launching, never by listing.** `codex plugin list --json` and `codex mcp list --json`
+report what configuration says; they start no process, so they cannot detect a broken registration —
+which is exactly how an install reaches a user looking healthy with zero callable tools. The check
+that can fail is:
+
+```
+dotnet <absolute-clone-path>/dist/DotnetToolkit.McpServer.dll doctor --repo <target-repo>
+```
+
+It reports executor and topology, which config file is in effect, whether each stored path is
+openable *from this process* (naming the corrected spelling when it is not), the marketplace source,
+the SDK the workspace will load with and why, whether `bubblewrap` is present for the WSL sandbox,
+and then launches the configured command for a real handshake — process started, protocol
+initialized, tools discovered, ping, workspace root/index/projects. It exits nonzero on any failure.
+Report its output rather than a claim that the install "looks right"; a live `/mcp` check in the UI
+is a useful confirmation but is a manual observation, not the verification.
+
+Codex has two independent controls: `/plugins` enables or disables the skills/hooks bundle;
+`[mcp_servers.dotnet] enabled = false` disables the server. Removing one does not remove the other.
+
+**Claude Code:** continue with the procedure below. It owns the repo-local `.claude/` wiring that
+Claude Code needs because it does not discover Codex's `AGENTS.md` or user MCP registration.
 
 Installing this plugin (`/plugin install`, or `--plugin-dir`) makes its MCP tools *available*. It does
 not make Claude *prefer* them — nothing tells a fresh session in a consuming repo that Grep and Read give

@@ -97,7 +97,7 @@ internal static class HookCli
 
         return name switch
         {
-            "guard-cs-edit" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" =>
+            "guard-cs-edit" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" or "apply_patch" =>
                 GuardCsEdit.Evaluate(payload, context),
             "guard-cs-read" when payload.ToolName == "Read" =>
                 GuardCsRead.Evaluate(payload, context, blocked),
@@ -111,6 +111,10 @@ internal static class HookCli
                 WriteChecklistHint.Evaluate(payload),
             "meter-tool-call" =>
                 await ToolCallMeter.EvaluateAsync(payload, context),
+            "track-subagent-start" =>
+                SubagentTracker.Start(payload),
+            "track-subagent-stop" =>
+                SubagentTracker.Stop(payload),
             _ => HookOutcome.Allow,
         };
     }

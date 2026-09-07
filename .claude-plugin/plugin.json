@@ -18,5 +18,6 @@
     "refactoring",
     "code-navigation",
     "token-efficiency"
-  ]
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
 }

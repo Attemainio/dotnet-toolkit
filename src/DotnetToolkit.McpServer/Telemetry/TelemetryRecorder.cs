@@ -163,6 +163,13 @@ public sealed class TelemetryRecorder
         /// <summary>What produced the counts, so a recalibration is not silently mixed with older rows.</summary>
         public required string TokenEstimator { get; init; }
 
+        public string? HarnessSessionId { get; init; }
+        public string? Harness { get; init; }
+        public string? Model { get; init; }
+        public string? TurnId { get; init; }
+        public string? TranscriptPath { get; init; }
+
+        /// <summary>Legacy mirror retained for databases and older hook payloads.</summary>
         public string? ClaudeSessionId { get; init; }
         public string? AgentId { get; init; }
         public string? AgentType { get; init; }
@@ -186,15 +193,22 @@ public sealed class TelemetryRecorder
             using var cmd = connection.CreateCommand();
             cmd.CommandText = """
                 INSERT OR IGNORE INTO tool_call_events
-                    (event_id, session_id, claude_session_id, agent_id, agent_type, tool_use_id,
-                     tool_name, request_tokens, response_tokens, token_estimator, created_at)
+                    (event_id, session_id, claude_session_id, harness_session_id, harness, model,
+                     turn_id, transcript_path, agent_id, agent_type, tool_use_id, tool_name,
+                     request_tokens, response_tokens, token_estimator, created_at)
                 VALUES
-                    ($event_id, $session_id, $claude_session_id, $agent_id, $agent_type, $tool_use_id,
-                     $tool_name, $request_tokens, $response_tokens, $token_estimator, $created_at);
+                    ($event_id, $session_id, $claude_session_id, $harness_session_id, $harness, $model,
+                     $turn_id, $transcript_path, $agent_id, $agent_type, $tool_use_id, $tool_name,
+                     $request_tokens, $response_tokens, $token_estimator, $created_at);
                 """;
             cmd.Parameters.AddWithValue("$event_id", Identity.Ids.Event());
             cmd.Parameters.AddWithValue("$session_id", Identity.Ids.AmbientSession);
             cmd.Parameters.AddWithValue("$claude_session_id", (object?)e.ClaudeSessionId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$harness_session_id", (object?)e.HarnessSessionId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$harness", (object?)e.Harness ?? "unknown");
+            cmd.Parameters.AddWithValue("$model", (object?)e.Model ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$turn_id", (object?)e.TurnId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$transcript_path", (object?)e.TranscriptPath ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$agent_id", (object?)e.AgentId ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$agent_type", (object?)e.AgentType ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$tool_use_id", e.ToolUseId);

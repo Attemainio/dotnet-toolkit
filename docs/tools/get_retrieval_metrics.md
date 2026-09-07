@@ -132,7 +132,9 @@ get_retrieval_metrics()
       "byTool":[{"key":"Grep","calls":19,"requestTokens":610,"responseTokens":8300},
                 {"key":"Read","calls":12,"requestTokens":240,"responseTokens":19800}]},
      {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602,
-      "byTool":[{"key":"get_symbol","calls":14,"requestTokens":460,"responseTokens":3602}]}]}}
+      "byTool":[{"key":"get_symbol","calls":14,"requestTokens":460,"responseTokens":3602}]}],
+   "byHarness":[{"key":"codex","calls":45,"requestTokens":1310,"responseTokens":31702}],
+   "byModel":[{"key":"gpt-5.6-sol","calls":45,"requestTokens":1310,"responseTokens":31702}]}}
 ```
 
 **`byAgentTool` is `byTool` and `byAgent` crossed** — one row per agent, each carrying its own nested
@@ -142,6 +144,18 @@ folds every agent together per tool, `byAgent` folds every tool together per age
 read for "where did *this* agent's tokens actually go, call by call" instead of inferring it from two
 separate aggregates or trusting a probe's own self-reported call log, which every measured run so far
 has undercounted (see `skills/dotnet-performance/SKILL.md`).
+
+`byHarness` distinguishes the host that dispatched the call (`claude-code`, `codex`, or a value set
+in `DOTNET_TOOLKIT_HARNESS`). `byModel` reports the hook's model identifier verbatim, so Codex
+sessions using a local LLM remain distinguishable without teaching the toolkit a vendor-specific model
+list. Older rows appear under `(unknown model)`; rows created before this dimension existed are
+attributed to `claude-code` by the database migration.
+
+The MCP tool's own retrieval rows are model-neutral and work with every MCP client. Whole-agent
+command/input/output metering additionally requires a client with compatible tool hooks; a custom or
+local-LLM harness can reuse `hook meter-tool-call`, supply the documented JSON fields, and set
+`DOTNET_TOOLKIT_HARNESS` to its stable host name. Without that hook integration, the response remains
+valid but the optional `harness` block cannot observe tools dispatched outside this server.
 
 **The two directions are priced differently, which is why they are never summed.**
 
@@ -157,6 +171,9 @@ short argument list) and responses large, so the weighting rarely reverses a com
 change the margin.
 
 `byAgent` keys on the subagent's `agent_type`, with `(main thread)` for calls outside any subagent.
+Claude Code includes that identity directly in the tool payload. Codex exposes it through
+`SubagentStart`/`SubagentStop`; the lifecycle hooks correlate the active `session_id` and `turn_id`
+with intervening tool calls, then remove the temporary correlation when the subagent stops.
 That is what attributes a call to one side of a benchmark without any agent labelling itself — a
 self-reported call log is precisely what this replaces, and self-reports have undercounted badly on
 every measured run: on 2026-08-13 a `dotnet-explore` run reported "20 calls used" against a metered 34

@@ -21,6 +21,17 @@ namespace DotnetToolkit.McpServer.Tests;
 /// </summary>
 public sealed class SampleSolutionFixture : IAsyncLifetime
 {
+    /// <summary>How long the .NET CLI gets to exit before the fixture gives up on it.</summary>
+    private static readonly TimeSpan ProcessTimeout = TimeSpan.FromMinutes(3);
+
+    /// <summary>How long to keep draining a finished process's pipes before moving on without them.</summary>
+    /// <remarks>
+    /// Short on purpose. The drain only enriches a failure message, and the pipe may be held open
+    /// indefinitely by an MSBuild node the CLI left running, so a generous bound would spend that whole
+    /// budget on every successful run.
+    /// </remarks>
+    private static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(5);
+
     public SolutionLocator Locator { get; private set; } = null!;
     public ProjectIndex Index { get; private set; } = null!;
     public WorkspaceHost Workspace { get; private set; } = null!;
@@ -101,6 +112,26 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         }
     }
 
+    /// <summary>Runs the .NET CLI to completion and asserts it succeeded.</summary>
+    /// <param name="args">The CLI arguments.</param>
+    /// <param name="workingDir">The directory to run in.</param>
+    /// <remarks>
+    /// <para>
+    /// <strong>Process exit is the completion signal here; EOF on its pipes is not.</strong>
+    /// <c>dotnet restore</c> spawns MSBuild worker nodes that inherit the redirected write-ends and
+    /// outlive it — measured on this fixture, restore returns in under a second and leaves ten of them
+    /// running, with <c>MSBUILDDISABLENODEREUSE=1</c> and <c>DOTNET_CLI_USE_MSBUILD_SERVER=0</c> both set.
+    /// Those switches reduce the behavior but do not remove it on every SDK, so an earlier version that
+    /// waited for EOF hung until its own timeout and then failed the entire collection — 205 tests — over
+    /// output nobody reads unless the command failed.
+    /// </para>
+    /// <para>
+    /// The two pipes are still drained concurrently rather than one after the other, because that part of
+    /// the hazard is real: reading one to completion first deadlocks the moment the child fills the other
+    /// pipe's buffer. What changed is that the drain is now best-effort and short — it decorates a failure
+    /// message, it does not decide the verdict.
+    /// </para>
+    /// </remarks>
     private static async Task RunDotnet(string args, string workingDir)
     {
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -111,35 +142,60 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
             RedirectStandardError = true,
         };
 
-        // `dotnet restore` spawns PERSISTENT MSBuild worker nodes that inherit these redirected pipes and
-        // outlive the parent. ReadToEndAsync waits for EOF, which such a node never delivers — so the read
-        // blocks forever even though restore itself exited. Disabling node reuse (and the build server)
-        // keeps every child short-lived so the pipes actually close.
+        // Fewer surviving nodes is still better than more, even though it is not a guarantee.
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 
+        // InitializeAsync registered an SDK before this call, and the child would otherwise inherit it.
+        // Measured here as a 10.0.111 host handed 10.0.301's MSBuild.dll: exit 1, nothing written to
+        // either stream, and the whole collection failed on what looked like a hung pipe.
+        MSBuildRegistration.ScrubInheritedRegistration(psi);
+
         using var process = Process.Start(psi)!;
 
-        // Drain BOTH pipes concurrently: reading one to completion first deadlocks as soon as the child
-        // fills the other pipe's buffer.
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        using var timeout = new CancellationTokenSource(ProcessTimeout);
         try
         {
             await process.WaitForExitAsync(timeout.Token);
-            // Bound the drain too: a stray pipe holder must fail loudly, never hang the suite.
-            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(30));
         }
-        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-            Assert.Fail($"dotnet {args} did not complete within the timeout (likely a pipe held open by a build server)");
+            Assert.Fail($"dotnet {args} did not exit within {ProcessTimeout.TotalMinutes:0} minute(s)");
         }
 
-        Assert.True(process.ExitCode == 0, $"dotnet {args} failed:\n{await stdoutTask}\n{await stderrTask}");
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(DrainGrace);
+        }
+        catch (TimeoutException)
+        {
+            // A surviving MSBuild node still holds the write-end. The exit code is the contract.
+        }
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"dotnet {args} failed with exit code {process.ExitCode}:\n{Captured(stdoutTask)}\n{Captured(stderrTask)}");
     }
+
+    /// <summary>Reads a stream drain that may not have finished.</summary>
+    /// <param name="read">The drain task.</param>
+    /// <returns>What was read, or a note distinguishing why it is absent.</returns>
+    /// <remarks>
+    /// The two absent cases are told apart deliberately. A drain still running means a build node holds
+    /// the write-end and the output is merely late; a faulted one means the read itself broke, which is a
+    /// different problem with a different fix — and collapsing them into one message sends the reader
+    /// hunting for a stray process that was never there.
+    /// </remarks>
+    private static string Captured(Task<string> read) => read.Status switch
+    {
+        TaskStatus.RanToCompletion => read.Result,
+        TaskStatus.Faulted => $"(read failed: {read.Exception?.GetBaseException().Message})",
+        _ => "(not captured: a surviving build node still held the pipe open)",
+    };
 }
 
 /// <summary>

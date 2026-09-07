@@ -48,6 +48,13 @@ internal static class ToolCallMeter
             return HookOutcome.Allow;
         }
 
+        var (agentId, agentType) = SubagentTracker.Resolve(payload);
+        var harness = Environment.GetEnvironmentVariable("DOTNET_TOOLKIT_HARNESS")?.Trim();
+        if (string.IsNullOrEmpty(harness))
+        {
+            harness = payload.TurnId is not null || payload.Model is not null ? "codex" : "claude-code";
+        }
+
         var measurement = new JsonObject
         {
             ["toolName"] = payload.ToolName,
@@ -55,10 +62,15 @@ internal static class ToolCallMeter
             ["requestTokens"] = TelemetryRecorder.EstimateTokens(payload.ToolInputRaw),
             ["responseTokens"] = TelemetryRecorder.EstimateTokens(payload.ToolResponseRaw),
             ["estimator"] = Estimator,
-            ["claudeSessionId"] = payload.SessionId,
+            ["harnessSessionId"] = payload.SessionId,
+            ["claudeSessionId"] = harness == "claude-code" ? payload.SessionId : null,
+            ["harness"] = harness,
+            ["model"] = payload.Model,
+            ["turnId"] = payload.TurnId,
+            ["transcriptPath"] = payload.TranscriptPath,
             ["guardSessionId"] = GuardSuspension.CurrentSessionId(),
-            ["agentId"] = payload.AgentId,
-            ["agentType"] = payload.AgentType,
+            ["agentId"] = agentId,
+            ["agentType"] = agentType,
         };
 
         await ControlClient.SendAsync(

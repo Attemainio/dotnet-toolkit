@@ -13,7 +13,18 @@ class with no signal that the rest exists. A `PreToolUse` hook adds an advisory 
 shell read reaches a compiled `.cs` file, but does not block it — `Grep`/`Glob` are watched by no hook
 at all. The router below, not hook enforcement, is what actually keeps you on the right tool.
 
-Tool names are prefixed `mcp__plugin_dotnet-toolkit_dotnet__`.
+**Tool names carry a host-dependent prefix.** In Claude Code they are
+`mcp__plugin_dotnet-toolkit_dotnet__<tool>`, because the plugin qualifies the server it ships. Codex
+registers the same server under the bare name `dotnet` and namespaces by that instead, so the prefix
+differs there. Every fully-qualified name below is written in the Claude Code form.
+
+**Resolve the prefix once per session rather than assuming it.** Run
+`ToolSearch("select:mcp__plugin_dotnet-toolkit_dotnet__workspace_status")`; if that returns nothing,
+search for the bare tool name (`ToolSearch("workspace_status")`) and read the prefix off whatever
+comes back, then apply that same prefix to every name in this skill. One probe settles it for the
+whole session. Do not guess a prefix and do not fall back to `Grep`/`Read` because a qualified name
+missed — the tools are there under a different label, and the fallback is the failure this skill
+exists to prevent.
 
 ## Step 0 — call `workspace_status` before any read
 

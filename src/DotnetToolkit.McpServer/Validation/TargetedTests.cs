@@ -47,6 +47,9 @@ public sealed class TargetedTests
         // never sees EOF (the process hangs even though WaitForExitAsync already returned).
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+        // This one runs a bare `dotnet` off PATH, which on a multi-SDK machine is a different install
+        // from the registered one -- exactly the pairing that makes an inherited registration fatal.
+        MSBuildRegistration.ScrubInheritedRegistration(psi);
         psi.ArgumentList.Add("test");
         psi.ArgumentList.Add("--nologo");
         psi.ArgumentList.Add("--filter");

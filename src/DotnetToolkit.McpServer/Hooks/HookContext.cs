@@ -21,10 +21,20 @@ internal sealed record HookContext(
     IReadOnlySet<string> ReadBlocklist)
 {
     /// <summary>Shell utilities that dump a file's bytes, used when the environment names no others.</summary>
+    /// <remarks>
+    /// The list is about what a command <em>does to the transcript</em>, not about how it is usually used.
+    /// The second and third rows were added after a red-team pass read compiled source through all of them
+    /// with no advisory at all: a hex or base64 dump puts the same source in front of the model as
+    /// <c>cat</c> does, only less legibly, and an interpreter one-liner does it without naming the file as
+    /// an argument. Leaving them out made the advisory a matter of which utility the caller happened to
+    /// reach for.
+    /// </remarks>
     public static IReadOnlySet<string> DefaultReadBlocklist { get; } = new HashSet<string>(
         [
             "cat", "sed", "head", "tail", "less", "more", "awk", "gawk",
             "grep", "egrep", "fgrep", "rg", "ag", "nl", "tac", "bat",
+            "xxd", "od", "hexdump", "base64", "strings", "dd",
+            "python", "python3", "py", "perl", "ruby", "node", "deno", "pwsh", "powershell", "php",
         ],
         StringComparer.OrdinalIgnoreCase);
 

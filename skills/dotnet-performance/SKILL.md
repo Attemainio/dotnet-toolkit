@@ -5,6 +5,15 @@ description: Use when asked what dotnet-toolkit actually costs compared to doing
 
 # Measuring what this plugin costs against not having it
 
+## Host requirement
+
+This benchmark depends on the three probe agents' different tool grants, not only their prompts.
+Claude Code installs those agent definitions with the plugin. Codex plugins do not currently install
+custom-agent registrations, so in Codex run this skill only when the matching agents have already been
+made available through Codex's Claude import flow. If they are absent, stop and report that the
+benchmark cannot preserve its isolation; substituting unrestricted built-in agents would make the
+comparison invalid. The canonical briefs remain under `agents/` and must be referenced, not copied.
+
 `dotnet-selfeval` asks whether the *tools* are efficient against each other — which route inside the
 plugin is cheapest. This skill asks the prior question: **is the plugin cheaper than not using it, in
 this repo, on this kind of task — and does a real, unrestricted session actually behave the way an

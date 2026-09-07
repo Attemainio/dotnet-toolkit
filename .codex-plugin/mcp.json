@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dotnet": {
+      "command": "dotnet",
+      "args": ["dist/DotnetToolkit.McpServer.dll"],
+      "startup_timeout_sec": 120
+    }
+  }
+}

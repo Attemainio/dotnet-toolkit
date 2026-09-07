@@ -2,10 +2,10 @@
 
 # dotnet-toolkit
 
-**Compiler-aware C# code intelligence for Claude Code.**
+**Compiler-aware C# code intelligence for Claude Code and Codex.**
 
 dotnet-toolkit runs a local MCP server holding a Roslyn model of your solution — the same compiler your
-IDE and `dotnet build` use. Claude asks it for symbols, references, call trees and type hierarchies
+IDE and `dotnet build` use. Your coding agent asks it for symbols, references, call trees and type hierarchies
 instead of reading files, and every edit is compiled in memory before it reaches disk.
 
 - **Fewer wrong answers** — real dispatch, overloads, inheritance and partial classes, not text matches.
@@ -14,7 +14,7 @@ instead of reading files, and every edit is compiled in memory before it reaches
 - **Safer edits** — a patch that does not compile never lands, and every applied change records *why*.
 - **Local by design** — nothing leaves your machine; caches live in your repo and rebuild from source.
 
-> **Status:** beta · **Requires:** Claude Code and the .NET 10 SDK · **Platforms:** Windows, Linux,
+> **Status:** beta · **Requires:** Claude Code or Codex and the .NET 10 SDK · **Platforms:** Windows, Linux,
 > macOS, WSL · **Install:** clone this repo — no build step, not in a public marketplace yet.
 
 [Quick start](#quick-start) · [Benchmarks](docs/benchmarks.md) · [Installation](docs/installation.md) ·
@@ -43,7 +43,34 @@ is gone. Then, inside Claude Code, wire it into the repo you want to work on:
 you approve: one always-loaded router rule, the MCP tools added to your permission allowlist, and a
 record of what it installed. It never touches your CLAUDE.md.
 
-Now ask Claude something you would normally grep for. To find out whether it is paying for itself on
+For Codex, register this clone as a local marketplace, install the plugin bundle, and register the
+server separately — the bundle ships skills and hooks, but no MCP tools:
+
+```bash
+codex plugin marketplace add /path/to/dotnet-toolkit
+codex plugin add dotnet-toolkit@dotnet-toolkit
+codex mcp add dotnet -- dotnet /absolute/path/to/dotnet-toolkit/dist/DotnetToolkit.McpServer.dll
+```
+
+**Write that path for the OS your tools run in, not the one you are looking at.** A Windows Codex
+desktop app set to execute in WSL2 keeps its Windows-owned profile but launches the server in Linux,
+where `C:\...` is not a path — and every listing command still reports the server enabled. See
+[installation.md](docs/installation.md#which-path-to-write-depends-on-the-executor-not-on-the-app)
+for the per-topology table.
+
+Then check it for real, because configuration listings cannot fail:
+
+```bash
+dotnet /path/to/dotnet-toolkit/dist/DotnetToolkit.McpServer.dll doctor --repo /path/to/your/repo
+```
+
+It launches the configured server, completes a handshake, lists the tools, loads the workspace, and
+names a fix for anything that failed. Use `/plugins` inside the Codex CLI to enable, disable, install
+or remove the bundle, and `/hooks` to review and trust the hooks. Codex reads the thin `AGENTS.md`
+adapter, while `CLAUDE.md`, the skills, agent briefs, hooks, and published MCP server remain shared
+source files.
+
+Now ask your agent something you would normally grep for. To find out whether it is paying for itself on
 *your* codebase rather than the two solutions benchmarked below:
 
 ```text
