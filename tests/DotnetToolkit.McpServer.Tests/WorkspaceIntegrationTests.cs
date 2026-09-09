@@ -41,6 +41,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public TargetedTests TargetedTests { get; private set; } = null!;
     public CallSlice CallSlice { get; private set; } = null!;
     public TelemetryRecorder Telemetry { get; private set; } = null!;
+    public KnowledgeStore Store => _store;
 
     private KnowledgeStore _store = null!;
     private string _workDir = "";
@@ -79,7 +80,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         _store = new KnowledgeStore(Locator, NullLogger<KnowledgeStore>.Instance);
         Symbols = new SymbolStore(_store);
         FeatureLog = new FeatureLogStore(_store);
-        Builder = new SymbolIndexBuilder(Workspace, Symbols, Locator, NullLogger<SymbolIndexBuilder>.Instance);
+        Builder = new SymbolIndexBuilder(Workspace, Symbols, _store, Locator, NullLogger<SymbolIndexBuilder>.Instance);
         await Builder.RebuildAsync();
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
@@ -264,7 +265,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public void WorkspaceStatus_NamesLoadedProjects()
     {
-        var status = ServerTools.WorkspaceStatus(_f.Locator, _f.Index, _f.Workspace);
+        var status = ServerTools.WorkspaceStatus(_f.Locator, _f.Index, _f.Workspace, _f.Store);
 
         Assert.Contains("loaded:", status);
         Assert.Contains("Lib", status);

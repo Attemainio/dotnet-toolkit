@@ -74,6 +74,18 @@ public sealed class WorkspaceHost : IDisposable
 
     public WorkspaceState State { get; private set; }
 
+    /// <value>
+    /// Which MSBuild this workspace registered, and why, or <see langword="null"/> before a load has
+    /// been attempted.
+    /// </value>
+    /// <remarks>
+    /// Kept for reporting because it is the only thing that says an installed SDK does not satisfy the
+    /// repository's <c>global.json</c>. Without it, the symptom that reaches a caller is an unresolved
+    /// <c>Microsoft.Build.Framework</c> assembly, which names neither the SDK that was chosen nor the
+    /// pin it failed to match, and the choice itself is visible only on stderr.
+    /// </remarks>
+    public string? MSBuildSelection { get; private set; }
+
     public TimeSpan LoadElapsed => _loadWatch.Elapsed;
 
     public IReadOnlyList<string> LoadDiagnostics
@@ -154,7 +166,8 @@ public sealed class WorkspaceHost : IDisposable
         // then calling MSBuildWorkspace.Create() in one body resolves MSBuild assemblies before the
         // registration line ever runs -- which is the failure MSBuildLocator exists to prevent, and
         // it presents as a workspace that loads with missing references rather than as an error.
-        _log.LogInformation("MSBuild: {Registration}", MSBuildRegistration.Register(_locator.Root));
+        MSBuildSelection = MSBuildRegistration.Register(_locator.Root);
+        _log.LogInformation("MSBuild: {Registration}", MSBuildSelection);
 
         await LoadCoreAsync(entry);
     }

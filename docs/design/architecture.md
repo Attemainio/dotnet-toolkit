@@ -80,9 +80,33 @@ bump is what you actually needed.
   default / `compact` / `json`) via `Output/Formats.Render`.
 - `Devlog/` — **legacy, retained only for migration.** The markdown devlog is no longer written or
   queried; `DevlogMigration.cs` imports existing entries into the SQLite `feature_log` once at startup.
-- `Store/` — the SQLite knowledge store (`KnowledgeStore.cs`, WAL + migrations in `Schema.cs`): symbol
+- `Store/` — the SQLite knowledge store (`KnowledgeStore.cs`, migrations in `Schema.cs`): symbol
   index and reference edges (`SymbolStore.cs`), append-only development log (`FeatureLogStore.cs`),
   immutable raw telemetry.
+  - **Journal mode is chosen from the filesystem, not fixed** (`CacheFilesystem.cs`). WAL keeps its
+    index in a shared-memory `-shm` file and coordinates writers with POSIX advisory locks, and SQLite
+    does not support it over a network filesystem. A WSL2 `/mnt/c` mount is 9p/DrvFs and emulates both,
+    which is the likeliest origin of a store found with torn B-tree pages through the tail of its
+    largest table; those mounts (plus CIFS/NFS/UNC/mapped network drives) get
+    `journal_mode=TRUNCATE` + `synchronous=FULL` instead, restated per connection because a rollback
+    journal is per-connection state where WAL persists in the file header.
+  - **A damaged store is quarantined and rebuilt, never repaired** (`StoreCorruption.cs`,
+    `StoreRecovery.cs`). `StoreCorruption` classifies only `SQLITE_CORRUPT` and `SQLITE_NOTADB` as
+    damage — `SQLITE_IOERR` is excluded on purpose, since it also covers a full disk and a transient
+    read failure, and quarantining on one would discard a healthy store. `KnowledgeStore.VerifyAndHeal`
+    runs `PRAGMA quick_check(1)` on the background index pass rather than in the constructor, because
+    the check reads every page (~0.03s locally, ~0.7s across 9p) and the MCP handshake waits on that
+    constructor. `KnowledgeStore.ReportFailure` handles damage found mid-session: it disables the store
+    and drops a `knowledge.db.corrupt` marker, because a damaged store keeps answering from whatever
+    pages still read and a caller cannot tell that frozen snapshot from a current answer. The marker,
+    not the in-process verdict, is what survives the kill an MCP server normally ends with — and the
+    rename a quarantine needs would fail on Windows while any connection still held the file.
+  - **`feature_log` is the one table a rebuild must not lose.** Everything else is derived from source,
+    git and this process's telemetry; the development log records *why* code changed and nothing else
+    in the repository holds it. `StoreRecovery` copies it out of the quarantined file in `rowid`
+    windows, so an unreadable page costs its window rather than the table, and deletes the orphans that
+    admits (SQLite's `ON CONFLICT` clauses do not apply to foreign keys, so `INSERT OR IGNORE` cannot
+    skip a row whose parent was lost).
 - `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` computes the `decl`/`body` version layers from
   token text (trivia-blind, so comments and formatting move nothing); `ContentVersion.cs` implements the
   layered version token every content response carries.
@@ -176,6 +200,14 @@ bump is what you actually needed.
   settings because it is the one tool whose effect is to make the rest of the plugin optional. Keeping
   it separate means the guards' off-switch is never edited as a side effect of touching an unrelated
   server tool.
+
+  `ToolFailureReporting.cs` is **not** a tool group: it carries no `[McpServerToolType]`, and registers
+  one `AddCallToolFilter` (from `Program.cs`) around every tool call. Without it the SDK's own handler
+  answers a thrown exception with the bare string `An error occurred invoking '<tool>'` — no type, no
+  message, no path — which a caller cannot tell apart from a bug in its own arguments. One filter keeps
+  every tool signature untouched; a `try`/`catch` per tool method would be eighteen copies drifting
+  apart. When the knowledge store is what failed, the filter reports its health message instead, so a
+  corrupt cache names itself.
 
   `ResponseGuard.cs` is **not** a tool group either: it is `get_symbol`'s one-shot large-source check
   plus the process-wide table of which (symbol, include) requests have already been warned about, so an

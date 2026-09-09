@@ -226,8 +226,15 @@ the index.
 Omitting `query` altogether is a different failure and not one this server can improve: the argument is
 **required in the tool schema**, so the MCP host rejects the call before it is dispatched and returns its
 own opaque `An error occurred invoking 'search_index'`. That requirement is deliberate and worth more than
-a better message would be — it is what tells a caller the argument is mandatory in the first place. If you
-see that error, you omitted `query`.
+a better message would be — it is what tells a caller the argument is mandatory in the first place.
+
+**Since contract 3.102 that string means a schema rejection and nothing else**, so seeing it does now
+mean you omitted `query`. It used to be ambiguous: anything the tool *threw* produced the identical
+sentence, because the SDK's own handler swallows the exception. A corrupt knowledge cache reported
+exactly this on every query that matched a symbol, and cost a working session to diagnose from the
+client side — the caller could not tell a damaged store from a bad argument, and this manual sent them
+looking at the argument. A failure inside the tool now comes back as `search_index failed — <type>:
+<message>`, naming the cache and its path when the cache is the cause.
 
 | Arg | Grammar | Notes |
 |---|---|---|

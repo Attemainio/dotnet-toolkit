@@ -78,6 +78,16 @@ reason to report standards-derived work as not-assessed rather than to guess a p
 A degraded workspace names the failing project — reference edges from a project MSBuild couldn't
 evaluate contribute nothing, and semantic results from it are incomplete or wrong, not just thin.
 
+## `knowledgeCache` and `msbuild` — the two lines that appear only when something is wrong
+
+Both are absent while the session is healthy, so they cost nothing on the common path. Added in
+contract **3.102**.
+
+| Line | Appears when | What it means, and what to do |
+|---|---|---|
+| `knowledgeCache: …` | The SQLite knowledge cache is damaged | Symbol search, reference counts and the development log are disabled **for this session**, deliberately: a damaged store keeps answering from whatever pages still read, and a caller cannot tell that frozen snapshot from a current answer. The file is quarantined beside itself as `knowledge.db.corrupt-<timestamp>` and rebuilt from source on the next server start, with `feature_log` carried across — deleting `knowledge.db` rebuilds it immediately. |
+| `msbuild: …` | The workspace is not cleanly loaded, **or** no installed SDK satisfies this repository's `global.json` | Read it before blaming a tool. An unsatisfied pin reaches a caller as an unresolved `Microsoft.Build.Framework, Version=15.1.0.0`, which names neither the SDK that was chosen nor the pin it failed to match; this line names both. |
+
 # `reload_workspace` — force a re-scan
 
 | Arg | Meaning |

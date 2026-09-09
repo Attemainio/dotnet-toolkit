@@ -6,6 +6,7 @@ using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
+using DotnetToolkit.McpServer.Tools;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -74,7 +75,10 @@ builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
-    .WithToolsFromAssembly();
+    .WithToolsFromAssembly()
+    // Without this, anything a tool throws reaches the caller as the SDK's bare "An error occurred
+    // invoking '<tool>'", which names neither the subsystem nor the cause.
+    .WithFailureDetail();
 
 var app = builder.Build();
 

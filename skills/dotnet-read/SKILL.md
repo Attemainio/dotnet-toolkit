@@ -384,6 +384,11 @@ Answers to:
 
 - Is the workspace ready, is indexing done, where is `pluginRoot`? → `workspace_status`
 - Which projects failed to load, and why? → `workspace_status`
+- **A tool just failed, or results look frozen at an older revision?** → `workspace_status`. It prints
+  `knowledgeCache:` when the SQLite cache is damaged (symbol search and the development log are then
+  disabled for the session, and the cache is rebuilt on the next server start), and `msbuild:` when no
+  installed SDK satisfies the repo's `global.json` — the state that otherwise reaches you as an
+  unresolved `Microsoft.Build.Framework`. Both lines are absent when nothing is wrong.
 - I pulled/checked out/rebased — how do I refresh? → `reload_workspace(scope: "all")`
 - Is the server answering at all? → `ping`
 - How do I get plain JSON instead of TOON? → `set_output_format(format: "compact"|"json")`

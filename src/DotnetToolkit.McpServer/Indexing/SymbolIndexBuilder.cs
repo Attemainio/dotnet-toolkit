@@ -19,6 +19,7 @@ public sealed class SymbolIndexBuilder
 {
     private readonly WorkspaceHost _workspace;
     private readonly SymbolStore _symbols;
+    private readonly KnowledgeStore _store;
     private readonly ILogger<SymbolIndexBuilder> _log;
     private readonly SolutionLocator _locator;
     private int _running;
@@ -27,10 +28,12 @@ public sealed class SymbolIndexBuilder
     public bool Ready => _ready;
 
     public SymbolIndexBuilder(
-        WorkspaceHost workspace, SymbolStore symbols, SolutionLocator locator, ILogger<SymbolIndexBuilder> log)
+        WorkspaceHost workspace, SymbolStore symbols, KnowledgeStore store, SolutionLocator locator,
+        ILogger<SymbolIndexBuilder> log)
     {
         _workspace = workspace;
         _symbols = symbols;
+        _store = store;
         _locator = locator;
         _log = log;
     }
@@ -45,6 +48,13 @@ public sealed class SymbolIndexBuilder
             return;
         try
         {
+            // The store's own pages are checked here rather than in its constructor: the check reads
+            // every one of them (~0.7s across a 9p mount) and the MCP handshake waits on that
+            // constructor. A damaged cache is quarantined and rebuilt from source before this pass
+            // repopulates it, so the repair costs one index build rather than a lost session.
+            if (!_store.VerifyAndHeal())
+                return;
+
             // Before anything else: heal an FTS mirror left inconsistent by an older build. This runs
             // ahead of the workspace wait because it needs no semantic model, and search_index answers
             // from the store long before MSBuild finishes.
@@ -98,7 +108,12 @@ public sealed class SymbolIndexBuilder
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Symbol index build failed");
+            // A failed index write leaves the store serving whatever it already held, which a caller
+            // cannot tell apart from a current answer -- the symptom is a cache silently frozen at an
+            // older revision. ReportFailure disables it when the file itself is the cause, and logs
+            // the path; anything else is an ordinary build failure and only reported.
+            if (!_store.ReportFailure(ex))
+                _log.LogError(ex, "Symbol index build failed");
         }
         finally
         {

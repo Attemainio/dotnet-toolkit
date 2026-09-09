@@ -3,6 +3,7 @@ using System.Text;
 
 using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
+using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Workspace;
 using ModelContextProtocol.Server;
 
@@ -42,7 +43,8 @@ public static class ServerTools
         + "standards/<name>.md or docs/tools/<tool>.md to reach the files that ship with the plugin, which "
         + "nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent "
         + "definition.")]
-    public static string WorkspaceStatus(SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace)
+    public static string WorkspaceStatus(
+        SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace, KnowledgeStore store)
     {
         var sb = new StringBuilder();
         sb.Append("root: ").Append(locator.Root).Append('\n');
@@ -96,6 +98,12 @@ public static class ServerTools
         sb.Append("index: ").Append(index.State)
           .Append(' ').Append(index.FileCount).Append(" files, ").Append(index.TypeCount).Append(" types\n");
 
+        // A damaged cache keeps answering from whatever pages still read, which a caller cannot tell
+        // apart from a current answer. This is the call every skill makes first, so it is where saying
+        // so actually reaches someone. Absent while the store is healthy.
+        if (store.HealthMessage is { } health)
+            sb.Append("knowledgeCache: ").Append(health).Append('\n');
+
         var diags = workspace.LoadDiagnostics;
         sb.Append("workspace: ").Append(workspace.State.ToString().ToLowerInvariant());
         switch (workspace.State)
@@ -129,6 +137,17 @@ public static class ServerTools
                 break;
         }
         sb.Append('\n');
+
+        // Only when it is telling you something. The registration line is the only place that names an
+        // SDK not satisfying this repository's global.json, and from a client that state otherwise
+        // presents as an unresolved Microsoft.Build.Framework naming neither the SDK nor the pin.
+        if (workspace.MSBuildSelection is { } msbuild
+            && (diags.Count > 0
+                || workspace.State is not WorkspaceState.Loaded
+                || msbuild.Contains("no installed SDK satisfies", StringComparison.Ordinal)))
+        {
+            sb.Append("msbuild: ").Append(msbuild).Append('\n');
+        }
 
         if (diags.Count > 0)
         {
