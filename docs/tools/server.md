@@ -90,7 +90,7 @@ contract **3.102**.
 
 | Line | Appears when | What it means, and what to do |
 |---|---|---|
-| `knowledgeCache: …` | The SQLite knowledge cache is damaged | Symbol search and reference counts are disabled **for this session**, deliberately: a damaged store keeps answering from whatever pages still read, and a caller cannot tell that frozen snapshot from a current answer. The file is quarantined beside itself as `knowledge.db.corrupt-<timestamp>` and rebuilt from source on the next server start — every table is derived, so nothing is lost; deleting `knowledge.db` rebuilds it immediately. |
+| `knowledgeCache: …` | The SQLite knowledge cache is damaged | Symbol search and reference counts are disabled **for this session**, deliberately: a damaged store keeps answering from whatever pages still read, and a caller cannot tell that frozen snapshot from a current answer. The file is quarantined beside itself as `knowledge.db.corrupt-<timestamp>` (only the newest two quarantines are kept) and rebuilt from source on the next server start — every table is derived, so nothing is lost; deleting `knowledge.db` rebuilds it immediately. The server's stderr log names the pid and session id that opened each store, so a shared cache directory can be read back to the process that quarantined it. |
 | `msbuild: …` | The workspace is not cleanly loaded, **or** no installed SDK satisfies this repository's `global.json` | Read it before blaming a tool. An unsatisfied pin reaches a caller as an unresolved `Microsoft.Build.Framework, Version=15.1.0.0`, which names neither the SDK that was chosen nor the pin it failed to match; this line names both. |
 
 # `reload_workspace` — force a re-scan

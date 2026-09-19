@@ -77,6 +77,12 @@ public sealed class KnowledgeStore : IKnowledgeStore
                 + "using a {Mode} rollback journal instead", filesystem, RollbackJournal);
         }
 
+        // One line per process at open, so a cache directory shared by several sessions (a subagent
+        // fleet, a second terminal) can be read back to which process wrote which quarantine or marker.
+        _log.LogInformation(
+            "Knowledge cache {Path} opened by pid {Pid} as session {Session}",
+            DatabasePath, Environment.ProcessId, Identity.Ids.AmbientSession);
+
         try
         {
             OpenOrRebuild();

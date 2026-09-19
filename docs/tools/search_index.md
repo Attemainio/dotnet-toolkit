@@ -187,7 +187,7 @@ looking at the argument. A failure inside the tool now comes back as `search_ind
 
 | Arg | Grammar | Notes |
 |---|---|---|
-| `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. An unrecognized token matches no symbol; when that leaves zero hits the response carries `kindsHint` |
+| `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. An unrecognized token matches no symbol; when that leaves zero hits the response carries `kindsHint`. Space- or comma-separated; a JSON array serialised into the string (`["method","property"]`) parses the same way, as it does for `modifiers` and `xmlDoc` |
 | `modifiers` | bare tokens **AND** (a symbol carries several at once) — opposite of `kinds`; `-token` excludes and combines | literal C# keywords (`public`, `static`, `readonly`, `sealed`, `override`, `async`, `partial`, …) + derived tags `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`. Same zero-hit `modifiersHint` as `kinds` |
 | `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); a name that resolves to no interface returns an empty result **plus `implementsHint`**, so that zero is never confused with "resolved, but nothing implements it" |
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
@@ -248,8 +248,10 @@ though, so a symbol carrying only `<remarks>` and no `<summary>` could in princi
 equivalence — pass `summary` only if you've actually seen that happen. `summary:full` is the one that earns
 its own call: the summary *text* isn't in `shape` at all.
 
-`hint` is a response field, not an argument: present only when `query` is built entirely from
-kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
+`hint` is a response field, not an argument, present only on an empty page: when `query` is built
+entirely from kind/modifier keywords it says so (see above); on any other zero-hit query it states
+that only names and doc summaries are indexed, so a string literal, comment or local variable is a
+`Grep` and a doubtful name wants a shorter fragment. `kindsHint`/`modifiersHint` follow the
 same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
 `includeHint` and `groupByHint` are simpler and unconditional: present whenever that
 argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each

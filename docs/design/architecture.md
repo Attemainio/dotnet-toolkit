@@ -107,7 +107,10 @@ bump is what you actually needed.
     not the in-process verdict, is what survives the kill an MCP server normally ends with — and the
     rename a quarantine needs would fail on Windows while any connection still held the file.
   - **Nothing needs carrying across a rebuild.** `StoreRecovery` only quarantines; the next index
-    pass refills the replacement from source.
+    pass refills the replacement from source. It keeps the newest two quarantines and deletes the
+    rest (`KeptQuarantines`): each is a full copy of the cache, and a mount that trips the corruption
+    path on every start piled up five before anyone looked. The store logs its pid and ambient
+    session id at open, so a shared cache directory reads back to the process that wrote a marker.
 - `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` hashes a body from token text (trivia-blind,
   so comments and formatting move nothing), which is what `mechanicalFacts` is cached against;
   `Contracts/Contract.cs` is the contract version string, `SymbolComponents.cs` the `include`

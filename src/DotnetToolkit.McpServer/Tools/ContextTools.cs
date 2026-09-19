@@ -895,6 +895,15 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                   " -- that reads as a structural filter, not identifier text. Use kinds for type shape " +
                   "(class/interface/struct/record/enum/delegate) or modifiers for keywords like partial, " +
                   "together with a real identifier or domain term in query."
+                // Any other empty page gets the one fact a caller cannot infer from an empty list: the
+                // index holds names and doc summaries, never bodies. A string literal, a log message or a
+                // local variable is a Grep, and saying so once here is cheaper than the second search a
+                // caller otherwise spends re-phrasing the same unindexed text. Measured on FluidScript
+                // (2026-09-19): three consecutive zero-hit searches for a literal before the caller gave up.
+                : limited.Count == 0 && terms.Count > 0
+                ? "no symbol NAME matched. search_index indexes identifiers and doc summaries only -- not "
+                  + "string literals, comments, or local variables. For text inside a body use Grep; for a "
+                  + "name you are unsure of, try a shorter or camel-case-interior fragment."
                 : null;
         var termsWithNoHits = terms.Count > 1
             ? terms.Where(t => !limited.Any(r => r.Hit.FqName.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList()
@@ -1844,13 +1853,16 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     /// include; a token prefixed with '-' is an exclude, e.g. "method property -struct" (mixing the two
     /// is legal to parse — SearchIndex decides above whether to honor the exclude side or drop it once
     /// include is non-empty; this method only splits). Space, comma, tab, and newline all separate
-    /// tokens, so "method,property" and "method property" parse the same way.
+    /// tokens, so "method,property" and "method property" parse the same way — and so does a JSON array
+    /// serialised into the string (<c>["method", "property"]</c>), which is how a caller that read the
+    /// parameter as a list rather than a string sends it; brackets and quotes are separators too, so the
+    /// call succeeds instead of answering a kindsHint about a token named '["method"'.
     /// </summary>
     private static (string[] Include, string[] Exclude) ParseKindFilter(string? kinds)
     {
         if (string.IsNullOrWhiteSpace(kinds))
             return ([], []);
-        var tokens = kinds.Split([' ', ',', '\t', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var tokens = kinds.Split([' ', ',', '\t', '\n', '[', ']', '"', '\''], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var include = tokens.Where(t => t[0] != '-').ToArray();
         var exclude = tokens.Where(t => t[0] == '-' && t.Length > 1).Select(t => t[1..]).ToArray();
         return (include, exclude);

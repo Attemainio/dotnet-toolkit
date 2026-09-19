@@ -2144,18 +2144,53 @@ public sealed class WorkspaceIntegrationTests
         }
 
         /// <summary>
-        /// The hint is scoped to queries built entirely from structural words: a real term mixed in means the
-        /// caller is searching for an actual identifier, not misusing query as a structural filter, so a
-        /// zero-hit result there carries no hint -- exactly like any other zero-hit search.
+        /// The structural hint is scoped to queries built entirely from structural words. Any other empty
+        /// page gets the names-only hint instead: the index holds identifiers and doc summaries, never
+        /// bodies, and an empty list alone does not say so -- a caller searching for a string literal
+        /// otherwise re-phrases the same unindexed text two or three times before giving up.
         /// </summary>
         [Fact]
-        public async Task SearchIndex_ZeroHitQueryWithARealTerm_CarriesNoHint()
+        public async Task SearchIndex_ZeroHitQueryWithARealTerm_SaysNamesOnly()
         {
             var root = Root(await ContextTools.SearchIndex(
                 _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "asyncdisposable ZzzNoSuchSymbolAnywhereXyz123", groupBy: "none"));
 
             Assert.Empty(TableRows(root.GetProperty("items")));
+            var hint = root.GetProperty("hint").GetString();
+            Assert.Contains("string literals", hint, StringComparison.Ordinal);
+            Assert.Contains("Grep", hint, StringComparison.Ordinal);
+            Assert.DoesNotContain("structural filter", hint, StringComparison.Ordinal);
+        }
+
+        /// <summary>A page with hits carries no hint at all; the hint is a zero-hit explanation, not a banner.</summary>
+        [Fact]
+        public async Task SearchIndex_QueryWithHits_CarriesNoHint()
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Widget", groupBy: "none"));
+
+            Assert.NotEmpty(TableRows(root.GetProperty("items")));
             Assert.False(root.TryGetProperty("hint", out _));
+        }
+
+        /// <summary>
+        /// A caller that read kinds as a list sends it as a serialised JSON array. That is the same filter
+        /// with brackets and quotes around it, so it is parsed as one rather than answered with a kindsHint
+        /// about a token named '["method"' -- measured as a live failure on FluidScript (2026-09-19).
+        /// </summary>
+        [Theory]
+        [InlineData("[\"method\", \"property\"]")]
+        [InlineData("['method','property']")]
+        [InlineData("method property")]
+        public async Task SearchIndex_KindsAsAJsonArrayString_IsParsedAsTheSameFilter(string kinds)
+        {
+            var root = Root(await ContextTools.SearchIndex(
+                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "Spin", kinds: kinds, groupBy: "none"));
+
+            var rows = TableRows(root.GetProperty("items"));
+            Assert.NotEmpty(rows);
+            Assert.All(rows, r => Assert.Equal("Method", r["kind"].GetString()));
+            Assert.False(root.TryGetProperty("kindsHint", out _));
         }
 
         [Fact]

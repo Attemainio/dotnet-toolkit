@@ -76,6 +76,32 @@ public sealed class StoreRecoveryTests : IDisposable
         Assert.Equal("ok", report);
     }
 
+    /// <summary>
+    /// Each quarantine is a full copy of the cache, and a repository that trips the corruption path on
+    /// every start would otherwise pile them up without bound. Only the newest two survive, sidecars
+    /// included, and the one just made is always among them.
+    /// </summary>
+    [Fact]
+    public void OnlyTheNewestTwoQuarantinesAreKept()
+    {
+        var path = Path.Combine(_locator.EnsureCacheDir(), "knowledge.db");
+        foreach (var stamp in new[] { "20260101T000000Z", "20260102T000000Z", "20260103T000000Z" })
+        {
+            File.WriteAllText($"{path}.corrupt-{stamp}", "old");
+            File.WriteAllText($"{path}.corrupt-{stamp}-wal", "old");
+        }
+        File.WriteAllText(path, "this is not a SQLite database, not even slightly");
+
+        var store = Open();
+
+        Assert.True(store.Available);
+        var kept = QuarantinedStores().Select(Path.GetFileName).OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        Assert.Equal(StoreRecovery.KeptQuarantines, kept.Length);
+        Assert.Equal("knowledge.db.corrupt-20260103T000000Z", kept[0]);
+        Assert.StartsWith("knowledge.db.corrupt-2026", kept[1], StringComparison.Ordinal);
+        Assert.False(File.Exists($"{path}.corrupt-20260101T000000Z-wal"), "a pruned store's sidecars go with it");
+    }
+
     [Fact]
     public void AFileThatIsNotADatabaseIsQuarantinedAndRebuilt()
     {
