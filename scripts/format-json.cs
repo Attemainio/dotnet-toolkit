@@ -1,5 +1,5 @@
 // Pretty-prints a JSON file. Used to inspect the compact caches under
-// .claude/dotnet-toolkit/cache/ (index.json, devlog-index.json) without a Python dependency.
+// .claude/dotnet-toolkit/cache/ (index.json) without a Python dependency.
 // Run: dotnet run scripts/format-json.cs -- <path-to-json>
 
 using System.Text.Json;

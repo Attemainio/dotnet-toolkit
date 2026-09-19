@@ -7,8 +7,9 @@ needed only for a particular kind of task lives behind a pointer below.
 ## What this is
 
 A Claude Code plugin for .NET repositories: a Roslyn-powered MCP server (`DotnetToolkit.McpServer`)
-exposing token-efficient code query, project navigation, and development-log tools, plus skills that
-teach Claude to prefer these tools over raw Read/Grep/`dotnet build`. This repo is both the plugin's
+exposing token-efficient symbol location, navigation and relationship tools, plus skills that teach
+Claude to locate with these tools, read only the located range, and edit with `Edit`/`Write` while a
+hook keeps the index current. This repo is both the plugin's
 implementation and (via `.mcp.json`) a live consumer of its own server. Dogfooding is the point: if a
 tool is awkward or wrong for a real task here, that's a bug report about the tool, not a reason to fall
 back to shell.
@@ -24,7 +25,7 @@ The protocol itself lives one level down, loaded only when the work needs it:
 | Owns | File |
 |---|---|
 | Every retrieval tool, what each answers, the cheap-route table, `limitedBy`, TOON | `skills/dotnet-read/SKILL.md` |
-| `validate_patch`/`rename_symbol`, the fetch-to-patch loop, the standards step, failures | `skills/dotnet-write/SKILL.md` |
+| The write path (`Edit`/`Write` on located text, `rename_symbol`), the standards step, how the index follows edits, failures | `skills/dotnet-write/SKILL.md` |
 | Briefing and launching the `dotnet-explore` agent | `skills/dotnet-explore/SKILL.md` |
 | Partitioning and launching `dotnet-code-review` | `skills/dotnet-review/SKILL.md` |
 | Which coding standard applies when — shared by the writer and the reviewer | `standards/index.md` |
@@ -112,7 +113,7 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the nine hooks, and it is
+- **`dist/` is what runs**, not `src/` — for the MCP server *and* the seven hooks, and it is
   **committed to git** so a consuming machine needs no local build step. Re-publish after any server
   change, **and commit the republished `dist/` in the same commit** — a stale *committed* `dist/` is
   worse than a stale local one, since it ships to every consumer who pulls.
@@ -173,7 +174,7 @@ pointer rather than deleting it, and the harness facts behind all of it — is o
 
 # Compact instructions
 
-When compacting, preserve: the concrete task in flight and its remaining steps; any `symbolId`,
-`contentVersion`, or `draftId` still in play; `validate_patch` failures and what was being corrected;
-and decisions already settled with the user. Drop resolved tool output, file listings, and superseded
+When compacting, preserve: the concrete task in flight and its remaining steps; any `symbolId` or
+`declarationSites` range still in play; a `dotnet build` failure and what was being corrected; and
+decisions already settled with the user. Drop resolved tool output, file listings, and superseded
 drafts — they are re-fetchable from the MCP tools in one call.

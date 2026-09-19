@@ -23,12 +23,13 @@ For each pair below, confirm the second file **points** rather than restates:
 | Fact | Sole owner | Must only point |
 | --- | --- | --- |
 | Which standards apply when | `standards/index.md` | `skills/dotnet-write/SKILL.md`; `skills/dotnet-review/SKILL.md`; `agents/dotnet-code-review.md`'s load rule |
-| The write-time checklist | the `hint-write-checklist` hook | `skills/dotnet-write/SKILL.md` |
-| `validate_patch` error codes, draft lifetime, severity table | `docs/tools/validate_patch.md` | `skills/dotnet-write/SKILL.md` |
+| The write-time checklist | the `hint-cs-write-checklist` hook | `skills/dotnet-write/SKILL.md` |
+| `rename_symbol` arguments, response fields, errors | `docs/tools/rename_symbol.md` | `skills/dotnet-write/SKILL.md` |
+| How the index follows an edit (what `refresh-cs-files` does and says) | `docs/design/hooks.md` for the mechanism; `skills/dotnet-write/SKILL.md` for the caller-facing rule | `docs/tools/server.md` (`reload_workspace` says when it is *not* needed); `skills/dotnet-read/SKILL.md` |
 | The intent→**skill** router | `.claude/rules/dotnet-index.md` | `skills/dotnet-init/SKILL.md` (copies the rule verbatim; never embeds its own); `CLAUDE.md`; `README.md` |
 | The intent→**tool** router, and the **cross-tool** cheap-route (anti-pattern) table | `skills/dotnet-read/SKILL.md` for reads, `skills/dotnet-write/SKILL.md` for writes | `.claude/rules/dotnet-index.md` (names skills, never tools). A `docs/tools/<tool>.md` **Next steps** footer is a *different* fact — what to call next with the response in hand — and stays; a general "instead of X do Y" catalogue reappearing in one is the duplicate |
 | Per-tool mechanics, arguments, examples | `docs/tools/<tool>.md` | `skills/dotnet-read/SKILL.md`; `skills/dotnet-write/SKILL.md`; tool `[Description]`s |
-| Guard denial messages' remedy | the skill each guard names (`dotnet-read`/`dotnet-write`) | `Hooks/GuardCs*.cs` (name the skill; never restate its tool usage) |
+| Guard advisory messages' remedy | the skill each guard names (`dotnet-read`) | `Hooks/GuardCs*.cs` (name the skill and the locate-then-ranged-`Read` pair; never restate more) |
 | Agent instructions | `agents/<name>.md` | `docs/design/agents.md` (human-facing; neither agent reads it) |
 | Hook behaviour | `src/DotnetToolkit.McpServer/Hooks/*` | `docs/design/hooks.md`, `hooks/hooks.json` |
 | Always-loaded size policy | **this file, §D** | `CLAUDE.md` |
@@ -70,7 +71,7 @@ right thing to measure rather than the source literal.
 
 | | |
 | --- | --- |
-| Tools | 18 (19 as of 2026-08-12) |
+| Tools | 18 (19 as of 2026-08-12; **17 as of 2026-09-19**, after `validate_patch` and `search_log` were removed — the figures below predate that and need re-measuring) |
 | Longest description | `get_references`, 1,850 chars |
 | Descriptions in the 1,490–1,850 band | 5 (`get_references`, `get_symbol`, `get_call_hierarchy`, `get_scope`, `search_index`) |
 | All tool descriptions | ≈ 16,100 chars |
@@ -81,8 +82,9 @@ right thing to measure rather than the source literal.
 argument: the per-tool rule is still a guard (`ToolDescriptionBudgetTests` now enforces 1,900 bytes
 per description *and* 5,000 per whole schema in CI, which is stricter than this section). The
 **per-parameter** rule is not enforced by any test and now has one live breach —
-`get_symbol.source` at **698 chars**, against the 500 threshold. `get_symbol.include` (476) is the
-next closest. Everything else measured is comfortably inside.
+`get_symbol.source` at **698 chars**, against the 500 threshold — since removed with the `source`
+argument itself (2026-09-19), so there is no live per-parameter breach until re-measured.
+`get_symbol.include` (476) is the next closest. Everything else measured is comfortably inside.
 
 Nothing exceeded 2,000, so §B's per-tool rule is currently a **guard**, not a repair. The `taskId`
 blurb's 5,148 rendered chars are **not** a live finding under the third row: the source already holds
@@ -279,9 +281,8 @@ Structural checks against `claude-docs.md`. Cheap, and each has a silent failure
   there is no fix from outside either. `dotnet-code-review` and `dotnet-perf-full-probe` keep
   `Grep`/`Read` and would answer confidently from text search instead, which is the silent version of
   this failure and the reason it is a static check rather than something a run would surface.
-  Rationale in `docs/design/agents.md`. `dotnet-perf-raw-probe` and `dotnet-guard-redteam` grant no MCP
-  tool and must **not** be given `ToolSearch` — the raw probe's whole value is a grant with nothing
-  else in it.
+  Rationale in `docs/design/agents.md`. `dotnet-perf-raw-probe` grants no MCP tool and must **not**
+  be given `ToolSearch` — its whole value is a grant with nothing else in it.
 
   ```bash
   for f in agents/*.md; do

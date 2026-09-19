@@ -130,7 +130,7 @@ specimen of each, and note which are **absent** (an absent feature is untested c
 | Overload set | `get_symbol` on a bare method name → `ambiguous_symbol` | tests the disambiguation path *and the size of its error payload* |
 | Generic type/method | `search_index` for a known generic | tests `displayString` verbosity and id stability |
 | Interface with several implementers | `search_index(implements: "<name>")` | tests `get_type_hierarchy` and `get_references` dispatch coverage |
-| Very long member (>150 lines) | widest `endLine - line` in census results | the whole case for `bodyOutline` + `source: "code@a-b"` |
+| Very long member (>150 lines) | widest `endLine - line` in census results | the whole case for `bodyOutline` + a ranged `Read` of one region instead of the whole declaration |
 | Records / enums / delegates | `kinds:` filter per kind | kind-specific response shapes |
 | Multi-project solution | `get_project_graph` | cross-project references, cycle detection |
 
@@ -143,11 +143,11 @@ once with defaults.
 | Family | Tools | Probes |
 | --- | --- | --- |
 | A · Orientation | `ping`, `workspace_status`, `reload_workspace`, `get_project_graph`, `detect_circular_dependencies` | each cold; `workspace_status` again after a `reload_workspace`; `get_project_graph` whole-graph vs scoped to one project; `detect_circular_dependencies` with the unsupported `scope: "type"` |
-| B · Discovery | `search_index` | one multi-term query vs. the same terms as separate calls; `kinds`, `modifiers` (AND semantics), `pathPrefix`, `implements`, `xmlDoc`, `summary: "has"` vs `"full"`; all three `groupBy` values on one identical query; `limit` at 3 / 10 / 50; `origin: "external"`; one query spanning several kinds, so the `shape` column varies across `P`/`M`/`N`/`O`, kept for Step 3d; that same query with `intent` omitted, `"edit"`, `"logic"` and `"surface"`, so the `read` column varies across each of its values (`mem`, `out`, `code`) and its absence, also kept for 3d |
-| C · Retrieval | `get_symbol` | the full `include`/`source` ladder on **one** census symbol (Step 3a); `symbols:[…]` batch vs. N single calls; `source: "code@a-b"` with several ranges; a subtractive query (`source: "full-remarks-attributes"`); the default `Automatic` source line format against the same fetch forced `-exact` and `-compact`, to confirm Automatic actually picked the shorter of the two; an `ambiguous_symbol` case; a symbol that does not exist |
+| B · Discovery | `search_index` | one multi-term query vs. the same terms as separate calls; `kinds`, `modifiers` (AND semantics), `pathPrefix`, `implements`, `xmlDoc`, `summary: "has"` vs `"full"`; all three `groupBy` values on one identical query; `limit` at 3 / 10 / 50; `origin: "external"`; one query spanning several kinds, so the `shape` column varies across `P`/`M`/`N`/`O`, kept for Step 3d; a multi-term query where one term is a string literal or a local variable known to exist in a body (must come back in `termsWithNoHits`, since only names are indexed) |
+| C · Retrieval | `get_symbol` + ranged `Read` | the full `include` ladder on **one** census symbol (Step 3a) — default, each component alone, `"all"`; `symbols:[…]` batch vs. N single calls; the locate-then-`Read` pair (`declarationSites` → `Read(offset, limit)`) against one whole-file `Read` of the same file, measuring both halves of the pair; `declarationSites` on a doc-commented member (`startLine` at the `///`, `signatureLine` present) and on an expression-bodied one (`endLine` is the last line); `bodyOutline` on the longest census member, then a ranged `Read` of one landmark; an `ambiguous_symbol` case; a symbol that does not exist |
 | D · Relations | `get_references`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_scope` | each on a census symbol; `get_references` on an interface member (dispatch coverage); `get_call_hierarchy` at rising `maxDepth`, `includeTree: false` vs `true`, and the same call at `maxDepth: 1` with default vs. raised `maxChildrenPerNode` (`blastRadius.totalUniqueNodes` must not move, and the capped run must report `truncated`/`omittedChildren`; at greater depths a tighter cap legitimately reaches fewer nodes, so do not assert equality there); `get_scope` with and without `receiver` |
-| E · History | `search_log`, `get_semantic_diff` | `search_log` for a term known to be in the log and one known not to be; `get_semantic_diff` over a recent commit range and over an unresolvable ref |
-| F · Write path | `validate_patch`, `rename_symbol` | **`applyOnSuccess: false` only** — an identity edit on a census symbol, a deliberately non-compiling edit (judge the distilled diagnostics), a stale `baseVersions` token (judge the conflict payload), a body-changing edit whose `baseVersions` came from a *default* `get_symbol` (expect `unleased_body`; judge that payload), and the same clean edit run once with default `runAnalyzers` and once with `runAnalyzers: false` (judge the token delta and confirm `checks.analyzers` reports `{"ran": false, "skipReason": "…"}` rather than a verdict). `rename_symbol`: a dry run on a census symbol (judge whether `files`/`occurrences` justify their cost against `detectedChanges`), a colliding name (judge the distilled diagnostics), and a stale `baseVersion` |
+| E · History | `get_semantic_diff` | over a recent commit range and over an unresolvable ref |
+| F · Write path | `rename_symbol` | **`apply: false` only** — a dry run on a census symbol (judge whether `files`/`occurrences` justify their cost), a colliding name (judge `nameAlreadyExists`), an invalid identifier, a type whose file is named after it (judge `fileRenameHint`), and the same dry run with `renameInComments: true` (judge the occurrence delta) |
 | G · Meta | `set_output_format`, `get_retrieval_metrics` | one identical `get_symbol` call rendered as `toon`, `compact` and `json`, measuring each; **restore the original format before finishing** |
 
 Errors are probes, not accidents. An error payload's token cost and usability are part of the tool — an
@@ -297,7 +297,7 @@ Run cost: <N tool calls, N tokens returned> (this evaluation's own taskId totals
 <one line per tier: files checked, and clean | N findings. An unlisted tier reads as skipped>
 
 ## Not exercised
-<census features absent from this specimen, the probes they would have gated, and the five tools that
+<census features absent from this specimen, the probes they would have gated, and the six tools that
 record no telemetry and so carry no measured cost>
 ```
 
@@ -306,10 +306,9 @@ in one line — do not manufacture findings, and do not silently omit a family t
 
 ## Boundaries
 
-- **Never changes the subject it measured.** `validate_patch` runs with `applyOnSuccess: false`,
-  always. This skill never applies a patch and never edits `.cs` — a pass that rewrites the tools it
-  is measuring invalidates its own baseline. Code findings feed a separate change task, through
-  `validate_patch` as normal.
+- **Never changes the subject it measured.** `rename_symbol` runs with `apply: false`, always. This
+  skill never edits `.cs` — a pass that rewrites the tools it is measuring invalidates its own
+  baseline. Code findings feed a separate change task, through `dotnet-write` as normal.
 - **Writes exactly two things**: the report, and the cheap-route rows from 3a into
   `skills/dotnet-read/SKILL.md` / `skills/dotnet-write/SKILL.md`. That is not an exception to the
   rule above — a markdown table describing which tool to call is not a tool, so updating it changes

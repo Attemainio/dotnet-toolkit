@@ -1,7 +1,7 @@
 {
   "name": "dotnet-toolkit",
-  "version": "1.0.1+codex.20260907152403",
-  "description": "Compiler-aware C# code intelligence, guarded edits, and retrieval metrics for Claude Code and Codex.",
+  "version": "2.0.0+codex.20260919000000",
+  "description": "Compiler-aware C# navigation and retrieval metrics for Claude Code and Codex.",
   "author": {
     "name": "Attemainio"
   },
@@ -18,8 +18,8 @@
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": ".NET Toolkit",
-    "shortDescription": "Compiler-aware C# tools and guarded edits",
-    "longDescription": "Use Roslyn-backed navigation, validation, review, and model-neutral retrieval metrics from Claude Code or Codex.",
+    "shortDescription": "Compiler-aware C# navigation tools",
+    "longDescription": "Use Roslyn-backed navigation, review, a solution-wide rename, and model-neutral retrieval metrics from Claude Code or Codex.",
     "developerName": "Attemainio",
     "category": "Developer Tools",
     "capabilities": [

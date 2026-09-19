@@ -1,41 +1,36 @@
 # `rename_symbol` — rename a symbol and every reference to it, from the semantic model
 
-Replaces: a search-and-replace, or a chain of `validate_patch` calls hand-written one call site at a
-time. Roslyn computes the edits from the compiler's own reference graph, applies them to a **forked
-in-memory solution**, and runs the same validation ladder `validate_patch` runs — so a name collision is
-a reported compile failure, not a broken working tree.
+Replaces: a search-and-replace, or a pile of `Edit` calls hand-written one call site at a time.
+Roslyn computes the edits from the compiler's own reference graph — interface, virtual and delegate
+dispatch included, unrelated text that shares the name excluded — and writes them to disk when asked.
 
-Why this exists as its own tool rather than as a `validate_patch` recipe: a rename's edits are
-**derived**, not authored. You never write them, so there is nothing for `baseVersions`, drafts, or
-amends to guard beyond the one symbol you named. Everything after the fork — the ladder, the diagnostic
-distiller, the disk commit, the development-log entry — is literally the same code path as
-`validate_patch`.
+This is the one edit the toolkit still makes itself. Everything else is `Edit`/`Write` on text you
+have read, with `dotnet build` as the gate; a rename is the case a string replacement cannot do
+safely, because the set of sites is a semantic question. **Nothing here compiles the result** —
+`dotnet build` is the gate for this edit too. What the tool adds is the rewrite and the blast radius
+before it.
 
 | Arg | Meaning |
 |---|---|
 | `symbol` | What to rename: a fully-qualified name, a unique suffix, or a `sym_…` id from any previous response. Append a parameter list (`Widget.Spin(int)`) to pick one overload. Several matches is `error: "ambiguous_symbol"` with the candidate list. |
-| `newName` | The new identifier. Not a valid C# identifier, or a bare keyword, is `error: "invalid_name"` — rejected before any work, so you don't pay a ladder run to learn it. Prefix with `@` if a verbatim identifier is genuinely intended. |
-| `baseVersion` | **Required.** The `contentVersion` `get_symbol` handed out for this symbol — a single string, not the `{id: version}` map `validate_patch` takes, because only one symbol is being named. A version that disagrees is `error: "stale_base"`. The declaration-only token from a default `get_symbol` fetch is enough; there is no `unleased_body` equivalent here, since you are not rewriting a body. |
-| `applyOnSuccess` | Commit to disk when sufficient and successful (default `false`). |
-| `intent` | **Required when `applyOnSuccess: true`.** One sentence of *why* — applying with one is what writes to the development log (this tool and `validate_patch` are its only writers). |
+| `newName` | The new identifier. Not a valid C# identifier, or a bare keyword, is `error: "invalid_name"` — rejected before any work. Prefix with `@` if a verbatim identifier is genuinely intended. |
+| `apply` | Write to disk (default `false`). `false` is a complete dry run. |
 | `renameOverloads` | Also rename this method's sibling overloads (default `false`). Ignored for a non-method symbol. |
 | `renameInComments` | Also rewrite the old name where it appears in comments and doc comments (default `false`). |
 | `renameInStrings` | Also rewrite it inside string literals (default `false`). |
-| `requestedLevel` | Optional floor, same vocabulary as `validate_patch`. The computed level is already floored at `dependent_compile` (see below), so this only ever raises past that. An unrecognized value is silently not honored, same as `validate_patch` — `ladder.requestedLevelHint` says so and names what it probably was. |
-| `tags` | Optional `string[]` on the development-log entry. |
 
 ## The dry run is the point
 
-`applyOnSuccess: false` (the default) is a complete rehearsal: the rename is computed, validated to
-`dependent_compile` or higher, and reported in full — **nothing is written**. Read `files` before
-applying, especially for a widely-referenced symbol.
+`apply: false` (the default) computes the rename in a forked in-memory solution and reports it in
+full — **nothing is written**. Read `files` before applying, especially for a widely-referenced
+symbol: the blast radius is the thing you cannot predict.
 
 ```json
 "rename":{"oldName":"Spin","newName":"Rotate","oldSymbolId":"sym_5c62…","newSymbolId":"sym_8306…",
           "kind":"Method","filesChanged":2,"occurrencesRewritten":5},
 "files":[{"file":"Lib/Widget.cs","occurrences":4},{"file":"App/Program.cs","occurrences":1}],
-"ladder":{"completedLevel":"dependent_compile","requiredLevel":"dependent_compile","isSufficient":true},
-"succeeded":true,"applied":false
+"applied":false,
+"notChecked":"Dry run: nothing was written. Pass apply:true to write these files."
 ```
 
 `occurrences` counts **whole-identifier occurrences of the old name that disappeared** in that file —
@@ -43,78 +38,37 @@ declaration, every reference, every `<see cref="…"/>`, plus comment/string hit
 them. It is not a diff-region count: Roslyn coalesces a rename's scattered edits into one text change
 per file, which reports `1` for a file where four references moved.
 
-The same fields on an applied run mean the same thing, with `applied: true`.
+The same fields on an applied run mean the same thing, with `applied: true` and `notChecked` saying
+to build.
 
-## Reading the verdict
+## Applying
 
-Done means all of `succeeded: true`, `isSufficient: true`, `applied: true` (or a deliberate dry run).
-`succeeded: false` means the rename does not compile — almost always the new name already exists in the
-same scope **with the same signature**. `diagnostics.rootCauses` has the same distilled shape
-`validate_patch` returns; fix the collision with `validate_patch` first, then retry the rename. Nothing
-reached disk either way.
+`apply: true` writes every changed file back in the encoding it was read in, adopts the new text
+into the live workspace, and **refreshes the symbol index for those files in the same call** — so
+`newSymbolId` resolves and the new name is searchable immediately, without a `reload_workspace`.
 
-**A name clash whose signature *differs* does not fail.** It is legal C#: the two members simply become
-an overload set, so the ladder is clean and `succeeded: true` — which means you asked for a rename and
-got an overload. **`nameAlreadyExists`** is the field that says so, naming the container and how many
-members already carried the name. It is a note, not an error, because the result compiles and may well
-be what you meant; decide, don't skim past it.
+`newSymbolId` differs from `oldSymbolId` by construction: a symbol id hashes the fully-qualified
+name. Anything you hold under the old id is now stale; use the new one.
 
-The same field appears on a **failed** rename too, saying the opposite thing: there it names the clash
-the distilled CS0102/CS0229 is reporting, so the cause is stated in words rather than left to be
-inferred from the diagnostics. Read which sentence you got — "the rename still succeeded" and "that is
-almost certainly the collision the diagnostics report" call for very different next moves.
+The rewritten solution is **not compiled**. Run `dotnet build` afterwards, as after any edit. Two
+things the response does tell you ahead of the build:
 
-**`ladder.nextAction` is absent when `nameAlreadyExists` already explained the failure** — its own generic
-"the new name collides or breaks a call site" would only restate the same instruction in blunter words,
-naming no kind the way `nameAlreadyExists` does. `nextAction` still fires normally for every other
-failure (an analyzer error, a degraded workspace, a collision `nameAlreadyExists` did not catch).
-
-**On failure, `rename.newSymbolId` and every `detectedChanges[].symbolId` are omitted**, not just
-absent from the example above. A symbol id is a hash of its fully-qualified name, so a rename that
-collided with an existing name would otherwise mint an id that is already taken — exposing it would
-silently point a caller at the wrong (pre-existing) symbol rather than the one just renamed.
-**`previousSymbolId` is emitted on every entry in that case**, including the ones where it equals the
-withheld id, so a failed rename still leaves each entry with something resolvable to fetch — nothing
-was written, so the pre-rename id is still live.
-
-The response also carries the same **`checks`** block `validate_patch` returns — which rungs ran and over
-what, the analyzer pass's findings by severity, and what went unassessed. See
-`docs/tools/validate_patch.md` for the shape and for how `.editorconfig` severity decides what blocks.
-That includes the suggestion filter, which matters most here: a rename touches whole files it barely
-changes, so `suggestions` is limited to the rewritten lines and the withheld count is stated in
-`notAssessed`.
-
-One failure mode is specific to renaming: the new name can trip a **naming or documentation analyzer**
-the old one satisfied. If that rule's effective severity is `error`, the rename is blocked even though
-every call site rewrote correctly, and `nextAction` points at the rule's severity rather than at a
-collision.
-
-**`dependent_compile` is the floor**, not the computed level. A rename alters an existing contract by
-definition and its call sites can sit in any project that depends on this one, so a rename is never
-signed off by one project's compile — even when the only detected change in a referencing file reads as
-a body edit.
-
-### `membersRekeyed` — mechanical churn, collapsed
-
-Renaming a type re-keys the `symbolId` of every member it contains, so the raw change list reports each
-one as an `added`/`removed` pair — a 20-member type renders 40 entries that say nothing beyond "the type
-was renamed", which the response already states. Those pairs (solely-`added` matched against
-solely-`removed` by bare name) are collapsed out of the **reported** list and counted instead:
-
-```
-membersRekeyed: 2
-```
-
-This is a **reporting** change only. The full detected set still drives ladder escalation, targeted test
-selection, and diagnostics, so nothing about what gets validated depends on it. A member that genuinely
-changed — not merely re-keyed — does not pair off and stays in the reported list.
+- **`nameAlreadyExists`** — the same container already declares a member with the new name. A
+  same-signature clash will not compile (CS0102/CS0229); a different-signature one compiles
+  perfectly, because C# has simply gained an overload — you asked for a rename and got an overload
+  set. The note fires on both, because the tool cannot tell them apart without compiling; the build
+  can. Decide, don't skim past it.
+- **`limitedBy: "degraded"`** — projects failed to load, so the reference graph this rename derived
+  its edits from is incomplete: call sites in those projects are silently missing, which is a wrong
+  rename rather than a thin one. Fix the load failure, `reload_workspace`, and rerun before trusting
+  the result.
 
 ## What this tool deliberately does not do
 
 **It does not rename the file.** When the symbol is a type whose file is named after it, the response
-carries a `fileRenameHint` naming the paths and the `git mv` to run, followed by `reload_workspace`.
-Renaming the file inside the workspace would leave this server holding a document whose `FilePath` no
-longer exists, and change detection here is an mtime poll that cannot reconcile that.
+carries a `fileRenameHint` naming the paths and the `git mv` to run. Renaming the file inside the
+workspace would leave this server holding a document whose `FilePath` no longer exists, and change
+detection here is an mtime poll that cannot reconcile that; the refresh hook picks up the `git mv`.
 
 **Comments and strings are opt-in, and they are textual guesses.** The reference rewrite is semantic and
 complete; `renameInComments`/`renameInStrings` are ordinary word-boundary matching, with all the
@@ -129,23 +83,14 @@ over, or prose that would read as wrong afterwards.
 | `invalid_name` | Not a valid identifier, or a bare keyword. |
 | `unchanged_name` | The symbol already has that name. |
 | `external_symbol` | Declared outside this solution's source (a BCL/NuGet symbol) — not renameable here. |
-| `missing_base_version` / `stale_base` | No `baseVersion`, or one that no longer matches. Refetch with `get_symbol`. |
-| `stale_workspace` | The workspace's copy of a file the rename touches is behind disk. `reload_workspace` and retry — applying would revert whatever else changed in that file. |
-| `intent_required` | `applyOnSuccess: true` without an `intent`. |
+| `stale_workspace` | The workspace's copy of a file the rename touches is behind disk, usually mid-reload. `workspace_status`, wait for `loaded`, retry — applying would revert whatever else changed in that file. Only on `apply: true`; a dry run reports from whatever the workspace holds. |
 | `rename_rejected` | Roslyn itself refused the rename; the message says why. |
 | `no_changes` | The rename produced no text changes at all. |
 | `workspace_loading` | Semantics not ready. Check `workspace_status`, retry. |
 
-Not an error, but read it the same way: **`limitedBy: "degraded"`** on a successful response means projects
-failed to load, so the reference graph this rename derived its edits from is incomplete — call sites in
-those projects are silently missing, which is a wrong rename rather than a thin one. On a failed one,
-`ladder.nextAction` points at `workspace_status` instead of claiming the new name collides. Either way:
-fix the load failure, `reload_workspace`, and rerun before trusting the result.
-
 ## Next steps
 
-- Before calling: `get_symbol` for the `contentVersion` (a default fetch is enough).
-- To see the blast radius first, or to check whether a name is even free: this tool with
-  `applyOnSuccess: false`.
-- After applying, if `fileRenameHint` is present: `git mv`, then `reload_workspace`.
-- To fix a collision the ladder reported: `validate_patch`, then retry the rename.
+- To see the blast radius first, or to check whether a name is even free: this tool with the
+  default `apply: false`.
+- After applying: `dotnet build`. If `fileRenameHint` is present: `git mv`.
+- Rename plus other edits: rename first, then `Edit` the rest against a fresh read — the text moved.

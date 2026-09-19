@@ -15,6 +15,7 @@ public sealed record RetrievalEvent
     public string? SymbolId { get; init; }
     public string? Resolution { get; init; }
     public string? Direction { get; init; }
+    /// <summary>Always null since contract 4.0; the column stays so older rows still read.</summary>
     public string? ContentVersion { get; init; }
     public int ReturnedSymbols { get; init; }
     public int ReturnedTokens { get; init; }

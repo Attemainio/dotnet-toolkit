@@ -62,7 +62,7 @@ ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
   `.claude/dotnet-toolkit/standards/` directory left over from an older install is **dead text**
   nothing reads: report it for deletion.
 - `.claude/settings.json`'s `permissions.allow` covers the read-only tools and **not**
-  `validate_patch`/`rename_symbol` — writers must keep prompting. Their presence is a finding.
+  `rename_symbol` — the writer must keep prompting. Its presence is a finding.
 - The plugin is actually connected: `workspace_status` answers, and the solution it resolved is the
   one the repo expects. A rule installed against a plugin that is not loaded is worse than no rule —
   it tells the session to call tools that will not answer.
@@ -105,6 +105,6 @@ remain.
   leave, delete for a clean removal" is a fine disposition — an *unmentioned* directory is not. The
   backups directory survives deliberately; the report says where it is.
 - Nothing left instructing a session to call MCP tools that are gone: no remaining file naming
-  `search_index`, `get_symbol`, or `validate_patch`. The repo's own `CLAUDE.md` may name them — that
+  `search_index`, `get_symbol`, or `rename_symbol`. The repo's own `CLAUDE.md` may name them — that
   is the repo's own text, which is fine, but the report must say so rather than leave a dangling
   instruction unexplained.

@@ -10,20 +10,17 @@ numbers is to say how efficient the tools are *now*, and a month of accumulated 
 slower versions of the same tools distorts exactly that. Aggregate history was reachable through a
 `scope`/`sessionIds` pair until contract 3.94, which removed both.
 
-The dev log (`search_log`) is **not** cleared with it — that records *why* code changed, which outlives
-the process that recorded it. Only cost measurement is per-session.
-
 | Arg | Meaning |
 |---|---|
 | `taskIds` | One or more **caller-supplied** task ids to narrow to — the values passed as `taskId` on the tool calls themselves. This is the only narrowing there is: a task id names one caller *inside* the session. |
 | `since` / `until` | Optional ISO date bounds (`yyyy-MM-dd` only) on `created_at`, inclusive on both ends. Rarely needed now — the reading already covers only this process's own lifetime — but still useful to split a long-running session by day. |
-| `groupBy` | `tool` \| `symbol` \| `level` \| `session` \| `task` \| `none` (default `tool`). `session` returns a single row: this session's own id, call count, and `firstSeen`/`lastSeen` span. `task` does the same per caller-supplied task id, which is the one that separates concurrent callers. |
+| `groupBy` | `tool` \| `symbol` \| `session` \| `task` \| `none` (default `tool`). `session` returns a single row: this session's own id, call count, and `firstSeen`/`lastSeen` span. `task` does the same per caller-supplied task id, which is the one that separates concurrent callers. |
 
 ### Attributing calls to a caller: the `taskId` argument
 
 Every tool that records telemetry — `get_symbol`, `search_index`, `get_references`, `get_scope`,
 `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`,
-`detect_circular_dependencies`, `get_semantic_diff`, `search_log`, `validate_patch` — takes an optional
+`detect_circular_dependencies`, `get_semantic_diff`, `rename_symbol` — takes an optional
 `taskId`. Omit it and the call is attributed to the ambient session; supply one and the call can be read
 back on its own.
 
@@ -33,7 +30,7 @@ how you measure a single call's exact cost — snapshot, call, snapshot, subtrac
 
 ```
 get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
-get_symbol(symbol: "Pipeline.Deep", include: "source", taskId: "eval_flow_20260728T0900")
+get_symbol(symbol: "Pipeline.Deep", include: "bodyOutline", taskId: "eval_flow_20260728T0900")
 get_retrieval_metrics(taskIds: ["eval_flow_20260728T0900"], groupBy: "tool")
 ```
 
@@ -69,25 +66,16 @@ get_retrieval_metrics(groupBy: "tool")
 ```
 
 ```json
-{"totals":{"toolCalls":77,"tokensReturned":31450,
-           "validationAttempts":6,"insufficientValidations":0,"failedValidations":0},
+{"totals":{"toolCalls":77,"tokensReturned":31450},
  "groups":[
    {"key":"get_symbol","calls":49,"tokensReturned":21004},
    {"key":"search_index","calls":15,"tokensReturned":5718},
    {"key":"get_references","calls":7,"tokensReturned":3133},
-   {"key":"validate_patch","calls":6,"tokensReturned":1595}]}
+   {"key":"rename_symbol","calls":6,"tokensReturned":1595}]}
 ```
 
-`validate_patch` writes a validation that actually ran to a separate raw-events table (`patch_events`,
-not `retrieval_events`) since it records ladder fields no read tool has (`completedLevel`,
-`isSufficient`, …). A call **rejected before validation** — `stale_base`, `unheld_symbol`,
-`invalid_edit`, `no_edits` and the rest — is not a validation attempt and writes an ordinary
-`retrieval_events` row instead, the way every other tool records its error payloads; it still cost a
-round trip and the tokens of its error payload, and both belong in the totals. `totals` and the default
-`tool` grouping fold both tables in alongside the read tools; `validationAttempts` above counts only the
-`patch_events` side, i.e. the calls that reached the ladder, rather than raw token volume. A
-`validate_patch` entry appears in `groups` only when at least one such call has been made — it's absent,
-not zero, in a session with no patch activity.
+A tool appears in `groups` only when at least one call to it has been made — absent, not zero,
+otherwise.
 
 `groupBy: "session"` returns exactly one row, this session's, which is how you read its id and how long
 it has been running:
@@ -192,9 +180,9 @@ Five things to read correctly:
 - **`tokenEstimator` names an approximation, not a measurement.** `chars4` is `(length + 3) / 4` over
   the serialized payload. It is applied identically to both routes, so ratios between them hold even
   though absolute figures do not.
-- **The block is absent, never zeroed, when the meter recorded nothing** — the same way a
-  `validate_patch` group is absent in a session with no patch activity. "The meter recorded nothing"
-  and "the tools cost nothing" are different claims, and a zero would state the second. The usual cause
+- **The block is absent, never zeroed, when the meter recorded nothing** — the same way a tool's
+  group is absent in a session that never called it. "The meter recorded nothing" and "the tools
+  cost nothing" are different claims, and a zero would state the second. The usual cause
   is a server started before `hooks.json` registered the hook.
 - **It is omitted entirely when you pass `taskIds`.** A hook has no way to know a caller-supplied task
   id, so metered rows carry none; returning them unfiltered beside task-filtered retrieval numbers

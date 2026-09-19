@@ -5,8 +5,8 @@ root = true
 # blocks the build when it fires. Add a rule only with the reasoning for silencing it, in the same edit.
 #
 # Not to be confused with tests/DotnetToolkit.McpServer.Tests/fixtures/SampleSolution/.editorconfig,
-# which is test DATA — EditorConfigValidationTests asserts that severities configured there are honored
-# by validate_patch's analyzer pass. It declares `root = true` of its own, so nothing here reaches it.
+# which is test DATA loaded by the integration fixture. It declares `root = true` of its own, so
+# nothing here reaches it.
 
 [tests/**/*.cs]
 # xUnit1051 wants TestContext.Current.CancellationToken threaded through every call that accepts a

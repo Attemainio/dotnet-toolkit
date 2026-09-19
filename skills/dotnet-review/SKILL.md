@@ -104,10 +104,10 @@ Because it has `get_semantic_diff`, a review scoped to committed refs is worth s
 instance can then skip files a formatting-only commit merely touched. It reads git refs, so it cannot
 see uncommitted work; for a working-tree review, state the file list instead.
 
-Note: it consults the development log with `search_log` before asserting a finding, so a pattern
-recorded as a deliberate past decision is cited rather than re-flagged. The log only covers changes
-applied through `validate_patch`, so decisions made outside that path leave no trace — if a finding
-might reflect one, that context still has to come from you.
+Note: it has no `Bash`, so it cannot run `git log`/`git blame` to check whether a pattern was a
+deliberate past decision — it reads site comments and `<remarks>` only. If a finding might reflect
+a decision recorded elsewhere (a commit message, an ADR, a tracker), that context has to come from
+you in the briefing.
 
 The `[security]` aspect has no dedicated static-analysis scanner behind it (no CVE/dependency check, no
 taint tracking) — its findings come from reading source and tracing references like every other aspect.
@@ -158,9 +158,8 @@ the path, and point at `dotnet-init` to refresh it.
 
 ## What this agent will never do
 
-`dotnet-code-review` has no `validate_patch` access — it cannot record log entries, and it is
-instructed never to modify code. Note that this is **instruction, not sandboxing**: `memory: project`
-makes the harness grant it `Write`/`Edit` for its own memory namespace, so its resolved tool list does
-include them (see `docs/design/agents.md`). If the user wants findings actually applied, that's your
-job after reviewing what it reported — **invoke `dotnet-write`** and apply them through
-`validate_patch` with an `intent`, which both validates the change and records why it was made.
+`dotnet-code-review` is instructed never to modify code. Note that this is **instruction, not
+sandboxing**: `memory: project` makes the harness grant it `Write`/`Edit` for its own memory
+namespace, so its resolved tool list does include them (see `docs/design/agents.md`). If the user
+wants findings actually applied, that's your job after reviewing what it reported — **invoke
+`dotnet-write`**, read each site, `Edit` it, and `dotnet build` once at the end.

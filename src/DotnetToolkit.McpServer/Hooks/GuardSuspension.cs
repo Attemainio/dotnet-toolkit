@@ -5,13 +5,13 @@ namespace DotnetToolkit.McpServer.Hooks;
 /// <summary>Which of the three guard states is currently in force.</summary>
 internal enum GuardMode
 {
-    /// <summary>Normal enforcement: write guards deny, read guards advise.</summary>
+    /// <summary>Normal enforcement: the read guards advise on a whole-file raw read.</summary>
     Active,
 
     /// <summary>Nothing blocks and nothing advises - every guard hook allows the call outright.</summary>
     Suspended,
 
-    /// <summary>Read guards deny too, on top of the write guards that always did.</summary>
+    /// <summary>The read guards deny a whole-file raw read instead of advising.</summary>
     Blocked,
 }
 
@@ -30,7 +30,7 @@ internal sealed record GuardState(GuardMode Mode, DateTimeOffset? Until, string 
     /// <summary>Whether nothing blocks and nothing advises - the unequipped-session simulation.</summary>
     public bool Suspended => Mode == GuardMode.Suspended;
 
-    /// <summary>Whether the read guards are hard-denying too, on top of the write guards' usual hard deny.</summary>
+    /// <summary>Whether the read guards are hard-denying a whole-file raw read instead of advising.</summary>
     public bool Blocked => Mode == GuardMode.Blocked;
 }
 

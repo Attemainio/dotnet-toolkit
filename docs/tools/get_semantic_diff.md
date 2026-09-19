@@ -65,5 +65,5 @@ cut off.
 ## Next steps
 
 - **Inspect a changed symbol** → `get_symbol` on its `displayString` — `get_symbol.md`
-- **Why it changed** → `search_log` — `search_log.md`
+- **Why it changed** → `git log -p` on the file; the toolkit keeps no change log of its own.
 - **Judge blast radius before reverting** → `get_call_hierarchy` — `get_call_hierarchy.md`

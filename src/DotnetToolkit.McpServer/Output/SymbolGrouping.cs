@@ -14,11 +14,9 @@ public static class SymbolGrouping
     /// <remarks>
     /// <paramref name="Shape"/> is <see cref="SymbolShape"/>'s terse retrieval hint, null on every symbol
     /// small enough that the default get_symbol fetch is already the right next call.
-    /// <paramref name="Read"/> is <see cref="ReadAdvice"/>'s answer to what that shape implies — the
-    /// include to pass next — and is null under the same condition, for the same reason.
     /// <paramref name="Generated"/> says the declaration is source-generator output, which is the reason
     /// its file and lines are unresolved rather than an indexing failure. <paramref name="Lines"/> is the
-    /// <c>@from-to</c> read selector, not a patch span. <paramref name="Refs"/> and
+    /// <c>@from-to</c> line span of the signature. <paramref name="Refs"/> and
     /// <paramref name="Modifiers"/> are <see cref="RefCode"/>'s and <see cref="ModifierCode"/>'s codes, each
     /// null when the caller left that column out of include -- and, for Refs, also when nothing was measured.
     /// <paramref name="Parts"/> is how many files this symbol's declaration is split across, carried only
@@ -28,7 +26,7 @@ public static class SymbolGrouping
     public sealed record Row(
         string SymbolId, string Kind, string LeafName, string File, string Namespace,
         string? Lines, bool? HasSummary, string? Summary, string? Shape = null,
-        DeclarationPlacement Placement = DeclarationPlacement.InTree, string? Read = null,
+        DeclarationPlacement Placement = DeclarationPlacement.InTree,
         string? Refs = null, string? Modifiers = null, int? Parts = null);
 
     /// <summary>
@@ -42,7 +40,6 @@ public static class SymbolGrouping
     public static Dictionary<string, object?> Build(IReadOnlyList<Row> rows, bool primaryIsNamespace)
     {
         var shapeLegend = rows.Any(r => r.Shape is not null) ? SymbolShape.Legend : null;
-        var readLegend = rows.Any(r => r.Read is not null) ? ReadAdvice.Legend : null;
         var refsLegend = rows.Any(r => r.Refs is not null) ? RefCode.Legend : null;
         var modifiersLegend = rows.Any(r => r.Modifiers is not null) ? ModifierCode.Legend : null;
         var primaryGroups = GroupInOrder(rows, primaryIsNamespace ? r => r.Namespace : r => r.File);
@@ -55,8 +52,6 @@ public static class SymbolGrouping
                 var flat = new Dictionary<string, object?>();
                 if (shapeLegend is not null)
                     flat["shape"] = shapeLegend;
-                if (readLegend is not null)
-                    flat["read"] = readLegend;
                 if (refsLegend is not null)
                     flat["refs"] = refsLegend;
                 if (modifiersLegend is not null)
@@ -71,8 +66,6 @@ public static class SymbolGrouping
         var top = new Dictionary<string, object?>();
         if (shapeLegend is not null)
             top["shape"] = shapeLegend;
-        if (readLegend is not null)
-            top["read"] = readLegend;
         if (refsLegend is not null)
             top["refs"] = refsLegend;
         if (modifiersLegend is not null)
@@ -123,8 +116,6 @@ public static class SymbolGrouping
             d["lines"] = r.Lines;
         if (r.Shape is not null)
             d["shape"] = r.Shape;
-        if (r.Read is not null)
-            d["read"] = r.Read;
         if (r.HasSummary is not null)
             d["hasSummary"] = r.HasSummary;
         if (r.Summary is not null)

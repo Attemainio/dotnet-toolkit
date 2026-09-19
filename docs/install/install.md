@@ -157,12 +157,11 @@ Merge into `.claude/settings.json` (**not** `settings.local.json` — this is a 
 same as the rules) under `permissions.allow`, one `mcp__plugin_dotnet-toolkit_dotnet__<tool>` entry
 per **read-only** tool: `search_index`, `get_symbol`, `get_references`, `get_scope`, `get_call_slice`,
 `get_call_hierarchy`, `get_type_hierarchy`, `get_project_graph`, `detect_circular_dependencies`,
-`get_semantic_diff`, `search_log`, `workspace_status`, `reload_workspace`, `get_retrieval_metrics`,
-`ping`, `set_output_format`.
+`get_semantic_diff`, `workspace_status`, `reload_workspace`, `get_retrieval_metrics`, `ping`,
+`set_output_format`.
 
-**`validate_patch` and `rename_symbol` are deliberately absent.** They write to the user's source;
-they must keep prompting. Adding them is a finding, not an improvement — say so if the user asks for
-"all of them".
+**`rename_symbol` is deliberately absent.** It writes to the user's source; it must keep prompting.
+Adding it is a finding, not an improvement — say so if the user asks for "all of them".
 
 - **Additive only.** Read the existing file, append the missing entries, preserve every existing key,
   entry, and the file's formatting. Never replace the file, and never touch `permissions.deny`.
@@ -186,8 +185,9 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
 - One line on what Step 2 found, and how it was handled (collisions included).
 - One line stating plainly that `dotnet-index.md` is always-loaded (rules load independently of
   CLAUDE.md, alongside it, same priority — not above it) and is inherited by every subagent, that
-  the standards load only when a skill reads them, and that the `PreToolUse` hooks are the actual
-  enforcement. CLAUDE.md itself is untouched.
+  the standards load only when a skill reads them, and that the hooks are advisory (a note on a
+  whole-file `.cs` read) plus a `PostToolUse` re-index after every edit — nothing blocks. CLAUDE.md
+  itself is untouched.
 
 ## Step 5 — Back up, then apply
 
@@ -196,8 +196,7 @@ they must keep prompting. Adding them is a finding, not an improvement — say s
    apply. `.claude/settings.json` is included in this.
 2. Copy `dotnet-index.md` into `.claude/rules/`, copy `.gitignore` into `.claude/dotnet-toolkit/`,
    and delete the approved legacy files. It's
-   markdown, so `Write`/`Edit` is correct — `validate_patch` is for `.cs`, and the hooks don't touch
-   these files.
+   markdown, so `Write`/`Edit` is correct, and the hooks don't touch these files.
 3. Merge the allowlist into `.claude/settings.json`.
 4. Write `.claude/dotnet-toolkit/install.json`:
 

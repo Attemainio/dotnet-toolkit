@@ -41,7 +41,7 @@ timeout. Tool calls await readiness themselves rather than blocking startup.
   an indexing failure. Like every additive column here, the migration clears the derived symbol index so
   the next build repopulates it — the first start after upgrading re-indexes.
 - **MSBuild workspace** (`Workspace/WorkspaceHost.cs`, `StartLoading()`) — the full semantic model.
-  Powers `get_references` and `validate_patch`, and the live path of `get_symbol`.
+  Powers `get_references` and `rename_symbol`, and the live path of `get_symbol`.
 
 Change detection across both tiers is **mtime-polling**, not filesystem watchers — deliberate, so it
 works on WSL `/mnt/*` drives where inotify doesn't fire. Three things follow a changed `.cs` file from
@@ -81,13 +81,13 @@ bump is what you actually needed.
   `DOTNET_TOOLKIT_DOTNET_ROOT` pins one) and registers it before any Roslyn MSBuild code runs. See
   "Environment" below for why the wrong choice degrades silently.
 - `Workspace/ToolkitConfig.cs` — optional per-repo `.claude/dotnet-toolkit/config.json`: solution
-  override, `devlogDir` (legacy, devlog import only), `excludeGlobs`, and `defaultFormat` (`toon`
-  default / `compact` / `json`) via `Output/Formats.Render`.
-- `Devlog/` — **legacy, retained only for migration.** The markdown devlog is no longer written or
-  queried; `DevlogMigration.cs` imports existing entries into the SQLite `feature_log` once at startup.
+  override, `excludeGlobs`, and `defaultFormat` (`toon` default / `compact` / `json`) via
+  `Output/Formats.Render`.
 - `Store/` — the SQLite knowledge store (`KnowledgeStore.cs`, migrations in `Schema.cs`): symbol
-  index and reference edges (`SymbolStore.cs`), append-only development log (`FeatureLogStore.cs`),
-  immutable raw telemetry.
+  index, declaration sites and reference edges (`SymbolStore.cs`, `SymbolStore.Update.cs` for the
+  scoped per-file refresh), immutable raw telemetry. Every table is derived from source, git or this
+  process's own telemetry — the development log that once lived here (`feature_log`) was dropped with
+  the patch tool on 2026-09-19 (migration 20).
   - **Journal mode is chosen from the filesystem, not fixed** (`CacheFilesystem.cs`). WAL keeps its
     index in a shared-memory `-shm` file and coordinates writers with POSIX advisory locks, and SQLite
     does not support it over a network filesystem. A WSL2 `/mnt/c` mount is 9p/DrvFs and emulates both,
@@ -106,15 +106,12 @@ bump is what you actually needed.
     pages still read and a caller cannot tell that frozen snapshot from a current answer. The marker,
     not the in-process verdict, is what survives the kill an MCP server normally ends with — and the
     rename a quarantine needs would fail on Windows while any connection still held the file.
-  - **`feature_log` is the one table a rebuild must not lose.** Everything else is derived from source,
-    git and this process's telemetry; the development log records *why* code changed and nothing else
-    in the repository holds it. `StoreRecovery` copies it out of the quarantined file in `rowid`
-    windows, so an unreadable page costs its window rather than the table, and deletes the orphans that
-    admits (SQLite's `ON CONFLICT` clauses do not apply to foreign keys, so `INSERT OR IGNORE` cannot
-    skip a row whose parent was lost).
-- `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` computes the `decl`/`body` version layers from
-  token text (trivia-blind, so comments and formatting move nothing); `ContentVersion.cs` implements the
-  layered version token every content response carries.
+  - **Nothing needs carrying across a rebuild.** `StoreRecovery` only quarantines; the next index
+    pass refills the replacement from source.
+- `Fingerprint/` + `Contracts/` — `SyntaxFingerprint.cs` hashes a body from token text (trivia-blind,
+  so comments and formatting move nothing), which is what `mechanicalFacts` is cached against;
+  `Contracts/Contract.cs` is the contract version string, `SymbolComponents.cs` the `include`
+  vocabulary.
 - `Identity/` — ULIDs and the content-derived `symbolId`; `Workspace/SymbolKey.cs` derives ids from
   Roslyn symbols. See "Id namespaces" below.
 - `Indexing/TypeReferenceScan.cs` — the one definition of "which members reference this type", shared by
@@ -126,31 +123,19 @@ bump is what you actually needed.
   `workspace_status`'s `pluginRoot`. This is the only route from an always-loaded rule or a subagent to
   the files the plugin ships (`docs/tools/<name>`, `standards/<name>`), because `${CLAUDE_PLUGIN_ROOT}`
   is not expanded inside a rule or an agent definition. Dropping it strands every standards read.
-- `Validation/` — the write path: `PatchSandbox.cs` (forked in-memory solution, optionally seeded from a
-  draft's proposed text), `ChangeClassifier.cs` (declaration delta → change kinds),
-  `EscalationTable.cs` (§13.2 rule table), `ValidationLadder.cs` (levels 1–4, then the analyzer pass),
-  `AnalyzerRunner.cs` (runs each project's referenced `DiagnosticAnalyzer`s over the changed documents —
-  `Compilation.GetDiagnostics()` runs none of them, so without this every `CA*`/`IDE*` rule an
-  `.editorconfig` configures was invisible to validation. It also diffs each changed document against
-  the pre-patch solution and holds **suggestions** to the lines the patch actually rewrote, counting
-  the rest as `PreexistingSuggestions`: suggestions scale with the size of the changed *file*, not of
-  the change, so an unfiltered pass made the caller triage findings it did not cause. Errors and
-  warnings stay unfiltered — those are consequences worth hearing wherever they land),
-  `CheckReport.cs` (the `checks` block: which
-  rungs ran over what, analyzer findings by severity, and an explicit not-assessed list, so a clean run
-  is distinguishable from an unexamined one),
-  `DiagnosticDistiller.cs` (root causes, suggested inspections, and the `locations` where each error
-  landed in the proposed text's coordinates), `PatchDraftStore.cs` (bounded, 15-minute in-memory store
-  of validated-but-unapplied patches — deliberately *not* in SQLite, since a draft describes a fork of
-  the currently loaded workspace and is meaningless once that is gone).
+- `Workspace/DocumentWriter.cs` — the one place the server writes source: `rename_symbol`'s apply
+  path, which writes each changed document back in the encoding it was read in, then adopts the new
+  text into the live solution and refreshes the index for exactly those files. There is no validating
+  or compiling write path — `Edit`/`Write` are the write path, the `refresh-cs-files` hook keeps the
+  index in step, and `dotnet build` is the gate (the `validate_patch` tool and its `Validation/`
+  subsystem were removed on 2026-09-19; the reasoning is in
+  `.claude/dotnet-toolkit/plans/2026-09-19-navigation-only-cut.md`).
 - `Output/` — how a response is rendered, never what it contains: `Formats.cs` (the `toon`/`compact`/
-  `json` switch and the raw-block splicing TOON needs for source text), `CompactFormatter.cs`,
+  `json` switch and the raw-block splicing TOON needs for the body outline), `CompactFormatter.cs`,
   `OutlineRenderer.cs`, `SymbolGrouping.cs` (search_index's namespace/file nesting and its collapse
-  rules), `ShapeFacts.cs` (the counted facts one symbol's column is built from), `SymbolShape.cs`
+  rules), `ShapeFacts.cs` (the counted facts one symbol's column is built from) and `SymbolShape.cs`
   (the `P…M…N…L…O…D…C…A…` column on a search hit or a `get_symbol` member row, plus the legend text
-  stated once per envelope) and `ReadAdvice.cs` (the `read` column — the same facts turned into the
-  include to pass next, plus the `intent` override; deliberately redundant with `SymbolShape`, since a
-  derivation a reader does not perform is not information). The renderer is deliberately kind-blind
+  stated once per envelope). The renderer is deliberately kind-blind
   and ungated: every non-zero count
   it is handed is emitted, and **which counts exist is decided where they are gathered** —
   `ProjectIndex.DocSite` for a search hit, `ContextTools.MemberSiteOf` for a member row. A count left
@@ -181,14 +166,16 @@ bump is what you actually needed.
   no MCP transport is started, and the same licence the `hook` verb has.
 - `Hooks/` — the Claude Code and Codex hooks, as a `hook <name>` subcommand of this same binary rather than
   as shell scripts. `HookCli.cs` dispatches and owns the fail-open boundary; `CsFileMembership.cs` and
-  `BashCommandScanner.cs` carry the logic the read guards (and `guard-cs-bash-write`'s write-shape
-  detection) share; `WriteChecklistHint.cs` is the one matching an MCP tool rather than a built-in.
-  `GuardSuspension.cs` holds the four blocking guards' (`guard-cs-edit`, `guard-cs-read`,
-  `guard-cs-bash-read`, `guard-cs-bash-write`) tri-state switch — `Active`/`Suspended`/`Blocked` — read
-  by `HookCli` before it dispatches to any of them and written by `set_hook_guards`; its state is an
-  expiry (plus which of the two non-default modes) rather than a flag, and it inverts `HookCli`'s
-  fail-open rule on purpose — an unreadable state file leaves the guards at their default, not
-  suspended. `docs/design/hooks.md`.
+  `BashCommandScanner.cs` carry the logic the two read guards share, including the ranged-read
+  recogniser (`Read` with `offset`/`limit`, `sed -n 'a,bp'`, `head -n`, `tail -n +N`) that lets a
+  ranged read pass silently in every mode; `CsFileRefresh.cs` is the `PostToolUse` hook that sends
+  every written `.cs` path to the running server's `refresh` command (`Control/`), so the index follows
+  an edit within the call rather than on the next sweep; `CsWriteChecklistHint.cs` fires once per
+  session on the first `Edit`/`Write` of a compiled `.cs` file. `GuardSuspension.cs` holds the two read
+  guards' tri-state switch — `Active`/`Suspended`/`Blocked` — read by `HookCli` before it dispatches
+  to either and written by `set_hook_guards`; its state is an expiry (plus which of the two
+  non-default modes) rather than a flag, and it inverts `HookCli`'s fail-open rule on purpose — an
+  unreadable state file leaves the guards at their default, not suspended. `docs/design/hooks.md`.
 - `Tools/` — the MCP surface:
 
   | File | Tools |
@@ -196,8 +183,7 @@ bump is what you actually needed.
   | `ContextTools.cs` | `get_symbol`, `get_references`, `search_index` |
   | `FlowTools.cs` | `get_scope`, `get_call_slice`, `get_call_hierarchy`, `get_type_hierarchy` |
   | `GraphTools.cs` | `get_project_graph`, `detect_circular_dependencies` |
-  | `HistoryTools.cs` | `get_semantic_diff`, `search_log` |
-  | `PatchTools.cs` | `validate_patch` |
+  | `HistoryTools.cs` | `get_semantic_diff` |
   | `RenameTools.cs` | `rename_symbol` |
   | `MetricsTools.cs` | `get_retrieval_metrics` |
   | `ServerTools.cs` | `ping`, `set_output_format`, `workspace_status`, `reload_workspace` |
@@ -212,25 +198,12 @@ bump is what you actually needed.
   one `AddCallToolFilter` (from `Program.cs`) around every tool call. Without it the SDK's own handler
   answers a thrown exception with the bare string `An error occurred invoking '<tool>'` — no type, no
   message, no path — which a caller cannot tell apart from a bug in its own arguments. One filter keeps
-  every tool signature untouched; a `try`/`catch` per tool method would be eighteen copies drifting
+  every tool signature untouched; a `try`/`catch` per tool method would be seventeen copies drifting
   apart. When the knowledge store is what failed, the filter reports its health message instead, so a
   corrupt cache names itself.
 
-  `ResponseGuard.cs` is **not** a tool group either: it is `get_symbol`'s one-shot large-source check
-  plus the process-wide table of which (symbol, include) requests have already been warned about, so an
-  identical repeat is served in full. It lives here rather than in `Output/` because it decides *what*
-  a response contains, not how it renders.
-
-  **Its key has not caught up with the `source`/`include` split** (contract 3.90): `ShouldWarn` still
-  takes only `(symbolId, include)`, and the source query now lives in a separate `source` argument
-  that never reaches it. Two different whole-declaration source queries on one symbol — `source:
-  "full"` then `source: "code"` — therefore share a key, so the second is served unwarned even though
-  it is not the verbatim repeat the override is documented to require. Fixing it means keying on both
-  arguments; `ResponseGuardTests` also still passes `"source:full"` as an *include* value, which the
-  grammar no longer accepts, so those tests are green on strings the tool would now reject.
-
   `VocabularyHint.cs` is **not** a tool group: it is the shared "you passed something I don't
-  recognise" responder behind the `kindsHint`/`modifiersHint`/`includeHint`/`groupByHint`/`intentHint`
+  recognise" responder behind the `kindsHint`/`modifiersHint`/`includeHint`/`groupByHint`
   fields, which name an unrecognized argument value in the response instead of failing the call.
 
   `ToolTelemetry.cs` is **not** a tool group: it is the single place a response becomes a
@@ -240,17 +213,16 @@ bump is what you actually needed.
 
 ## Id namespaces
 
-Four disjoint namespaces, deliberately never sharing a hash space:
+Three disjoint namespaces, deliberately never sharing a hash space:
 
 | Prefix | Meaning |
 |---|---|
 | `sym_` | live, doc-comment-derived |
 | `symfb_` | `Ids.FallbackSymbolId` — not a `get_symbol` fetch target. Either `GetDocumentationCommentId()` returned null, or it returned an id that does not identify the symbol uniquely: a **local function or lambda**, whose id is minted as though it were a member of the containing type, so same-signature helpers in different methods of one class all collide onto one `sym_` id |
 | `symidx_` | `Ids.IndexOnlySymbolId`, `get_symbol`'s syntax-only fallback |
-| `draft_` | `Ids.Draft()`, a validated-but-unapplied patch |
 
-`validate_patch` rejects any non-`sym_` id in `baseVersions` with `stale_index_only_id` rather than
-letting it become a confusing `stale_base` cascade.
+Neither provisional prefix is a stable handle: a `symidx_` id resolves only while the workspace is
+still index-only, and a `symfb_` one never resolves at all. `rename_symbol` refuses both.
 
 ## Changing the tool surface
 
@@ -282,20 +254,19 @@ workspace. The .NET runtime remains the only runtime requirement.
 `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
 `scripts/build-plugin.cmd` wrapper).
 
-`hooks/hooks.json` ships nine hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
-`hook guard-cs-bash-read`, `hook guard-cs-bash-write`, `hook refresh-cs-files`,
-`hook hint-write-checklist`, `hook meter-tool-call`, `hook track-subagent-start`, and
-`hook track-subagent-stop` — all subcommands of that same published
+`hooks/hooks.json` ships seven hooks — `hook hint-cs-write-checklist`, `hook guard-cs-read`,
+`hook guard-cs-bash-read`, `hook refresh-cs-files`, `hook meter-tool-call`,
+`hook track-subagent-start`, and `hook track-subagent-stop` — all subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets
-the enforcement from installation alone. They parse their payload with `System.Text.Json` and **fail
-open** on anything unexpected: a workflow guard must never wedge editing. Nothing the plugin ships at
-runtime requires a shell, a shebang, or `node`/`python3`/`jq`.
+them from installation alone. They parse their payload with `System.Text.Json` and **fail open** on
+anything unexpected: a hook must never wedge editing. Nothing the plugin ships at runtime requires a
+shell, a shebang, or `node`/`python3`/`jq`.
 
-`guard-cs-edit`'s deny message, `guard-cs-bash-write`'s deny message (added 2026-08-21 to close the
-write-through-`Bash` gap `dotnet-guard-redteam` found — see `docs/design/hooks.md`), and
-`guard-cs-read`/`guard-cs-bash-read`'s advisory message (allow, not deny, since 2026-08-21 — see
-`docs/design/hooks.md`), all point at `docs/tools/<tool>.md` rather than restating a tool's manual —
-the message fires often, the manual is read once.
+Nothing denies. `guard-cs-read`/`guard-cs-bash-read` advise on a whole-file read of a compiled `.cs`
+file (allow, not deny, since 2026-08-21; silent on a ranged read since 2026-09-19), and point at the
+`dotnet-read` skill rather than restating a tool's manual — the message fires often, the manual is
+read once. The write guards (`guard-cs-edit`, `guard-cs-bash-write`) were removed on 2026-09-19 with
+the patch tool they routed to.
 
 ### How rules load
 

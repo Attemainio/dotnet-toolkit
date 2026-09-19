@@ -178,6 +178,52 @@ internal static partial class BashCommandScanner
         return null;
     }
 
+    /// <summary>
+    /// Whether a segment reads a bounded line range of a file rather than the whole of it: <c>sed -n</c>
+    /// with a numeric address (<c>12,40p</c>, <c>12p</c>), <c>head</c> with a count (<c>-n 40</c>,
+    /// <c>-40</c>), or <c>tail</c> with one (<c>-n +12</c>).
+    /// </summary>
+    /// <param name="segment">One segment from <see cref="Segments"/>.</param>
+    /// <returns>True for a ranged read; false for anything else, including a bare <c>head</c> or a <c>sed</c> without <c>-n</c>.</returns>
+    /// <remarks>
+    /// A ranged read of a located symbol is the intended way to fetch its text, the same as a
+    /// <c>Read</c> with <c>offset</c>/<c>limit</c>, so the read guard lets it through silently. A bare
+    /// <c>head</c> defaults to ten lines and is left to the advisory: it is almost always "show me the
+    /// start of this file", which is the whole-file question the note exists for.
+    /// </remarks>
+    public static bool IsRangedRead(string segment)
+    {
+        var name = CommandName(segment);
+        var tokens = TokenizeQuoteAware(segment).Skip(1).Select(t => t.Value).ToList();
+        switch (name?.ToLowerInvariant())
+        {
+            case "sed":
+                return tokens.Any(t => t == "-n" || (t.StartsWith('-') && !t.StartsWith("--", StringComparison.Ordinal) && t.Contains('n')))
+                    && tokens.Any(t => SedRange().IsMatch(t));
+            case "head":
+            case "tail":
+                for (var i = 0; i < tokens.Count; i++)
+                {
+                    if (tokens[i] is "-n" or "-c" && i + 1 < tokens.Count && LineCount().IsMatch(tokens[i + 1]))
+                        return true;
+                    if (LineCountFlag().IsMatch(tokens[i]))
+                        return true;
+                }
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    [GeneratedRegex(@"^\d+(,\d+)?p$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex SedRange();
+
+    [GeneratedRegex(@"^\+?\d+$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex LineCount();
+
+    [GeneratedRegex(@"^-(n\+?\d+|\+?\d+)$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex LineCountFlag();
+
     /// <summary>The last <c>.cs</c>-suffixed argument in a segment, ignoring option flags.</summary>
     /// <param name="segment">One segment from <see cref="Segments"/>.</param>
     /// <returns>The path token as written, or null when the segment names no <c>.cs</c> file.</returns>

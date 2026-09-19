@@ -50,7 +50,7 @@ public sealed class WorkspaceHost : IDisposable
     // ContextTools.GetSymbolOne and Ids.IndexOnlySymbolId).
     private bool _hasLoadedOnce;
 
-    // Guards validate_patch's fetch-validate-commit-adopt sequence for calls that write to disk, AND the
+    // Guards rename_symbol's fetch-rewrite-write-adopt sequence for calls that write to disk, AND the
     // brief swap-in-new-generation step of LoadAsync (used by both the initial load and TriggerReload).
     // Without the first half, two concurrent applies can each fetch the same pre-commit Solution, both
     // pass their staleness checks against it, and then both write -- the second silently clobbering the
@@ -216,8 +216,8 @@ public sealed class WorkspaceHost : IDisposable
                 }
             }
 
-            // Swapping in the new workspace/solution must not happen while validate_patch's
-            // fetch-validate-commit-adopt sequence (RunExclusiveApplyAsync) is mid-flight against the
+            // Swapping in the new workspace/solution must not happen while rename_symbol's
+            // fetch-rewrite-write-adopt sequence (RunExclusiveApplyAsync) is mid-flight against the
             // CURRENT generation: AdoptAppliedText applies WithDocumentText against DocumentIds that are
             // only meaningful for the _solution/_workspace generation an apply read them from, and those
             // ids are not portable to a freshly reloaded generation (MSBuildWorkspace mints new

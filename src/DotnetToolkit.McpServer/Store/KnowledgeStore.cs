@@ -8,9 +8,8 @@ namespace DotnetToolkit.McpServer.Store;
 /// Owns the single SQLite knowledge-store file under the target repo's cache dir.
 /// </summary>
 /// <remarks>
-/// Every table but the development log is derived from source, git and this process's own telemetry
-/// (spec §17), so a damaged store is quarantined and rebuilt rather than repaired, and the log is
-/// carried across into the replacement. Connections are pooled by <see cref="SqliteConnection"/>, so
+/// Every table is derived from source, git and this process's own telemetry (spec §17), so a damaged
+/// store is quarantined and rebuilt rather than repaired. Connections are pooled by <see cref="SqliteConnection"/>, so
 /// callers open short-lived connections via <see cref="Connect"/> per operation.
 /// </remarks>
 public sealed class KnowledgeStore : IKnowledgeStore
@@ -132,9 +131,8 @@ public sealed class KnowledgeStore : IKnowledgeStore
                 _log.LogError("Knowledge cache at {Path} failed its integrity check: {Report}", DatabasePath, report);
             }
 
-            var quarantined = Quarantine("its pages failed SQLite's integrity check");
+            Quarantine("its pages failed SQLite's integrity check");
             Initialize();
-            RecoverDevelopmentLog(quarantined);
             HealthMessage = null;
             return true;
         }
@@ -171,9 +169,7 @@ public sealed class KnowledgeStore : IKnowledgeStore
     /// tables it reads start empty on every start. Startup is the load-bearing end of that: an MCP server
     /// is normally killed rather than stopped, and a killed process never reaches the shutdown callback in
     /// <c>Program</c>, so rows surviving one would be exactly the stale history this removes. The
-    /// development log (<c>feature_log</c>) is deliberately outside the purge - it records why code
-    /// changed, which outlives the process that recorded it, and so is the symbol index, which caches the
-    /// code rather than recording this session's use of it.
+    /// symbol index is outside the purge: it caches the code rather than recording this session's use of it.
     /// </remarks>
     public void PurgeTelemetry()
     {
@@ -200,24 +196,19 @@ public sealed class KnowledgeStore : IKnowledgeStore
     {
         // A marker means a previous session hit a damaged page and could not rename the file itself,
         // which is the normal case on Windows: the rename fails while any connection still holds it.
-        var quarantined = File.Exists(MarkerPath)
-            ? Quarantine("a previous session reported it damaged")
-            : null;
+        var quarantined = File.Exists(MarkerPath);
+        if (quarantined)
+            Quarantine("a previous session reported it damaged");
 
         try
         {
             Initialize();
         }
-        catch (Exception ex) when (StoreCorruption.IsDamage(ex) && quarantined is null)
+        catch (Exception ex) when (StoreCorruption.IsDamage(ex) && !quarantined)
         {
             // Damage bad enough to stop the migrations: the file cannot be opened as a database at all.
-            quarantined = Quarantine("it could not be opened as a database");
+            Quarantine("it could not be opened as a database");
             Initialize();
-        }
-
-        if (quarantined is not null)
-        {
-            RecoverDevelopmentLog(quarantined);
         }
     }
 
@@ -238,25 +229,6 @@ public sealed class KnowledgeStore : IKnowledgeStore
         return quarantined;
     }
 
-    /// <summary>Carries the development log out of a quarantined store into the fresh one.</summary>
-    /// <param name="quarantined">The store <see cref="Quarantine"/> moved aside.</param>
-    private void RecoverDevelopmentLog(string quarantined)
-    {
-        try
-        {
-            using var connection = Connect();
-            var rows = StoreRecovery.RecoverDevelopmentLog(quarantined, connection, _log);
-            _log.LogInformation(
-                "Carried {Rows} development-log rows across from {Quarantined}", rows, quarantined);
-        }
-        catch (Exception ex) when (ex is SqliteException or IOException)
-        {
-            // The rebuild has already succeeded. Losing the salvage is worse than a clean store but far
-            // better than refusing to open one, and the quarantined file is still there to read by hand.
-            _log.LogWarning(ex, "Could not recover the development log from {Quarantined}", quarantined);
-        }
-    }
-
     /// <summary>Disables the store for this session and marks it for rebuild on the next start.</summary>
     /// <param name="exception">The failure that revealed the damage.</param>
     /// <param name="what">How the store is broken, phrased to follow its path in a sentence.</param>
@@ -264,7 +236,7 @@ public sealed class KnowledgeStore : IKnowledgeStore
     {
         Available = false;
         HealthMessage =
-            $"knowledge cache at {DatabasePath} {what}; symbol search and the development log are "
+            $"knowledge cache at {DatabasePath} {what}; symbol search and reference counts are "
             + "disabled for this session. It is rebuilt automatically on the next server start, or "
             + "delete the file to rebuild it now.";
         _log.LogError(exception, "Knowledge cache at {Path} {What}; disabling it for this session",
@@ -359,7 +331,6 @@ public sealed class KnowledgeStore : IKnowledgeStore
     // catches as "store unavailable", silently disabling telemetry rather than reporting the typo.
     private static void PurgeTelemetry(SqliteConnection connection) => Execute(connection, """
         DELETE FROM retrieval_events;
-        DELETE FROM patch_events;
         DELETE FROM tool_call_events;
         """);
 

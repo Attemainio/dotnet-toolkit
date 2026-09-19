@@ -49,8 +49,8 @@ Claude Code needs because it does not discover Codex's `AGENTS.md` or user MCP r
 
 Installing this plugin (`/plugin install`, or `--plugin-dir`) makes its MCP tools *available*. It does
 not make Claude *prefer* them — nothing tells a fresh session in a consuming repo that Grep and Read give
-wrong answers on C#, or that `validate_patch` is the write path, or that the plugin ships coding
-standards at all. A plugin cannot ship a `.claude/rules/` file the harness auto-loads; only a repo's own
+wrong answers on C#, or that a symbol is located with `get_symbol` and read in a range, or that the
+plugin ships coding standards at all. A plugin cannot ship a `.claude/rules/` file the harness auto-loads; only a repo's own
 `.claude/rules/` gets scanned, and a plugin has no manifest field to register one. This skill writes that
 guidance into a target repo, additively, and only with explicit approval.
 

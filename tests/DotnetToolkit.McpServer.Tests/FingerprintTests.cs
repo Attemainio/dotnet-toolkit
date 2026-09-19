@@ -72,8 +72,8 @@ public sealed class FingerprintTests
     /// <summary>
     /// A positional record declared with a semicolon has no open brace, and the absent token reports
     /// SpanStart 0 — so hashing "everything before the open brace" hashed the EMPTY STRING, and every such
-    /// record in the solution shared one decl layer. A stale record declaration was then undetectable:
-    /// validate_patch accepted a baseVersion belonging to an entirely different record.
+    /// record in the solution shared one decl layer, so a change to one record's declaration was
+    /// indistinguishable from a change to any other's.
     /// </summary>
     [Fact]
     public void EveryPositionalRecordHasItsOwnDeclLayer()
@@ -101,37 +101,4 @@ public sealed class FingerprintTests
         Assert.Equal(before.Decl, after.Decl);
     }
 
-    // Tokens from different tiers carry different layer sets: the agent holds decl|body|refs|api from
-    // get_symbol, while the patch classifier computes only the syntax layers. Comparison must be per
-    // shared layer — string equality would reject every validly-based patch as stale.
-    [Fact]
-    public void AgreesWithComparesOnlySharedLayers()
-    {
-        var syntaxOnly = ContentVersion.Parse("decl:aaaa|body:bbbb");
-        var fourLayer = ContentVersion.Parse("decl:aaaa|body:bbbb|refs:cccc|api:dddd");
-
-        Assert.True(syntaxOnly.AgreesWith(fourLayer));   // refs/api simply weren't computed here
-        Assert.True(fourLayer.AgreesWith(syntaxOnly));
-        Assert.NotEqual(syntaxOnly.ToString(), fourLayer.ToString()); // ...yet they are not equal strings
-
-        // A shared layer that actually moved is still a disagreement.
-        Assert.False(syntaxOnly.AgreesWith(ContentVersion.Parse("decl:aaaa|body:ZZZZ")));
-        // No overlap at all verifies nothing.
-        Assert.False(syntaxOnly.AgreesWith(ContentVersion.Parse("api:dddd")));
-    }
-
-    [Fact]
-    public void ContentVersionRoundTripsAndComparesPerLayer()
-    {
-        var full = ContentVersion.Of(decl: "aaaa", body: "bbbb");
-        Assert.Equal("decl:aaaa|body:bbbb", full.ToString());
-        Assert.Equal(full.ToString(), ContentVersion.Parse(full.ToString()).ToString());
-
-        // A held decl-only lease is satisfied even though the holder never saw the body.
-        Assert.True(full.Satisfies(ContentVersion.Parse("decl:aaaa")));
-        // A moved body invalidates a held full token.
-        Assert.False(full.Satisfies(ContentVersion.Parse("decl:aaaa|body:cccc")));
-        // Empty known never satisfies.
-        Assert.False(full.Satisfies(ContentVersion.Parse(null)));
-    }
 }

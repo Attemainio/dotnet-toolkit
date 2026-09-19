@@ -1,261 +1,78 @@
-# `get_symbol` — a symbol's shape, docs, location, source
+# `get_symbol` — where a symbol lives, and what it looks like from outside
 
-Replaces `Read` on a `.cs` file — returns the whole symbol even when split across partial-class
-files (`Read` gives one fragment with no signal the rest exists), for a fraction of the tokens.
+A locator. Give it a name you already know — a type, a method, an overload, a `sym_…` id from any
+earlier response — and it answers **where** (every declaration site, doc comment included, one entry
+per part of a partial) and **what shape** (signature, modifiers, and on request the docs, members,
+attributes, base type, interfaces, usings, a control-flow outline and reference counts).
 
-## Two selectors, one grammar each
-
-`include` and `source` are separate arguments on purpose. **`include` only ever adds; `source` only
-ever subtracts.** No `-` appears in `include`; no component name appears in `source`.
-
-They used to share one string, and that string carried both grammars at once: an additive list of
-component names with a subtractive source spec nested inside it. `comments` as a list entry would
-have *added* while `-comments` inside the spec *removed* — the same word meaning opposite things one
-comma apart. Splitting them is what makes `-` unambiguous here and everywhere else in the toolkit.
-
-### `include` — which components
-
-Three forms:
-
-1. **Omitted, or `"standard"`** (default) — `xmlDoc`, `referenceCounts`. Start here.
-   `recentLog` is deliberately **not** in it, though it is cheap to compute: measured, it was 57% of
-   the default response (330 tokens against 142 without it) on the tool that is 68% of all retrieval
-   spend, and nothing on a read pass branches on it — *why does this code look like this* routes to
-   `search_log`, not here. Ask for it by name on a write pass, where it is load-bearing.
-2. **`"all"`** — every component below. Reach for this only when about to edit the symbol, or
-   genuinely want everything about it at once. **In practice this is `source` plus a `refs` lease**:
-   every other component (`members`, `attributes`, `baseType`, `interfaces`, `xmlDoc`, `bodyOutline`)
-   is suppressed once source is present (each component's own row above states this), so `"all"`'s
-   only real addition over a bare `source: "full"` is `referenceCounts` and the `|refs:` layer `all`
-   narrows `contentVersion` to. Measured: 613 tokens vs. 603 for source alone on the same symbol.
-3. **An explicit comma list**, e.g. `"members,xmlDoc"` — **replaces** the default set rather than
-   adding to it. Use whenever `standard`/`all` is close but not quite right.
-
-An unrequested component is absent from the JSON entirely, not `null` — it costs nothing. A
-misspelled name is an `invalid_component` error rather than being silently dropped.
-
-### `source` — which lines, and what to strip from them
-
-`"full"` (default) keeps the leading `///` doc comment; `"code"` drops it — and, for a **type**,
-every member's own doc comment too. Append `-modifier` suffixes to subtract further, and `@ranges`
-to select lines. Given **alone it replaces the default set**, so asking for code does not also drag
-back `xmlDoc` and `referenceCounts`:
+**It returns no source text.** The text is one `Read` away, and the response carries the exact
+range:
 
 ```
-source: "code"                          the declaration, no doc comments
-source: "code@120-160"                  one region of a long member
-source: "full-exact@120-121"            an exact slice, for anchoring an edit
-source: "full-remarks-attributes"       full, minus the <remarks> tag and attribute lines
-source: "code", include: "xmlDoc"       both arguments — they union
+get_symbol(symbol: "Sample.Lib.Widget.Spin")
+  → declarationSites: [{file: "Lib/Widget.cs", startLine: 12, endLine: 24, signatureLine: 15}]
+
+Read(file: "Lib/Widget.cs", offset: 12, limit: 13)        # endLine - startLine + 1
 ```
 
-A malformed source query is its own error, distinct from an unknown component name: the response
-names the source argument and its grammar rather than listing component names, which told a caller
-nothing when what they had mistyped was a modifier.
+A ranged `Read` draws no advisory from the read guard; a whole-file `Read` does. That is the whole
+division of labour: the toolkit finds, `Read` fetches, `Edit` changes, `dotnet build` checks.
 
-### The unconditional skeleton
+Don't know the name yet? `search_index` finds it; this tool locates what it found.
 
-Every call gets `symbolId`, `contentVersion` and `declarationSites` (`file`, `startLine`,
-`endLine` — exactly what a `validate_patch` edit takes, computed live so it's correct even for a
-symbol split across partial-class files).
+## The line contract
 
-`kind`, `displayString`, `containingType` and `modifiers` sit one tier below — always computed, but
-**suppressed when the source actually served already states them**. A signature line reading
-`public static string KindOf(ISymbol symbol)` has already said Method, said the name, and said the
-modifiers; repeating them beside it is four fields the response can be read without. **Exception: a
-line-sliced `source` (`@`, below)** usually cuts the signature line out of the result, so they are
-restored there.
+Every call returns `declarationSites`, computed live from the syntax tree — correct for a partial
+split across files, and not dependent on the index being current.
 
-`origin` is emitted **only** when it reads `"external"`. It was `"source"` on almost every response
-ever returned, so stating it cost a field on all of them to carry information on nearly none —
-absent now means "declared in this solution". **There is no `accessibility` field** — `modifiers`' literal keyword phrase (`"public
-sealed"`) already carries it.
+| Field | Meaning |
+|---|---|
+| `file` | Repo-root-relative, forward slashes. |
+| `startLine` | Where the declaration's leading `///` doc comment begins, when it has one. Otherwise the same line as `signatureLine`. **This is the `Read` offset.** |
+| `signatureLine` | Where the declaration itself starts: the line with the `class`/method keyword. **Present only when it differs from `startLine`**, so absence means "same as `startLine`", not "not computed". This is the number to quote when answering "where is this declared" — `search_index` reports the same line as a hit's `line`. |
+| `endLine` | The closing brace, or the last line of an expression-bodied member. `Read(limit: endLine - startLine + 1)` covers the whole declaration. |
 
-That means **location never costs a second call** — the default `standard` fetch already carries
-`declarationSites`; don't reach for `include: "all"` just to find a line number.
+Attribute lines sit between `startLine` and `signatureLine` when both a doc comment and attributes
+are present; with attributes but no doc comment, `startLine` is the first attribute line.
 
-**`startLine` and `signatureLine` answer different questions, and mixing them up is the common
-mistake.** `startLine` is an *edit span*: it takes in a leading `///` doc comment so a patch anchored
-on it can rewrite the comment along with the declaration. `signatureLine` is where the declaration
-itself begins — the line a human means by "where is this declared", and the same line `search_index`
-reports as a hit's `line`.
+A **partial** type carries one entry per part, in source order. Read the parts you need; a member
+is always a single-file declaration and reads normally.
 
-`signatureLine` is **present only when it differs from `startLine`**, which happens exactly when a doc
-comment is present. Its absence therefore means "same as `startLine`", not "not computed" — the one
-deliberate exception on this shape to the rule that an absent field carries no information.
+**`origin: "external"`** marks a BCL/NuGet symbol, resolvable only because this repo's code
+uses it (`search_index(origin: "external")` finds such symbols). Its `declarationSites` is `[]`,
+and the field exists to say why. Absent `origin` means the ordinary case.
 
-```json
-"declarationSites":[{"file":"src/…/Contract.cs","startLine":3,"endLine":24,"signatureLine":7}]
-```
+**`generated: true`** marks a symbol whose every declaration is source-generator output under
+`obj/`. `declarationSites` is `[]` — there is no editable text, the file is rewritten on every
+build — and the flag says that this is why, not a lookup bug.
 
-Anchor a `validate_patch` edit on `startLine`. Quote `signatureLine` when reporting where something
-lives — answering "declared at line 3" when the `class` keyword is on line 7 is the measured failure
-this field removes.
+## `include` — which components
 
-`origin: "external"` marks a BCL/NuGet symbol resolved only because this repo's own code
-calls/constructs/implements/extends it (`search_index(origin: "external")` is how such a symbol is
-found in the first place). An external symbol's `declarationSites` is always `[]`, and the field
-exists to say why — an absent `origin` means the ordinary case, a symbol this solution declares.
+One argument, one grammar. It only ever adds; there is no `-` and no `:` in it.
 
-`generated: true` marks a symbol whose every declaration is source-generator output — no span to
-patch, the file is rewritten on every build. Roslyn still counts it as `"source"`, so
-`declarationSites` being empty is this, not a lookup bug.
+1. **Omitted, or `"standard"`** — `xmlDoc` and `referenceCounts`. Start here.
+2. **`"all"`** — every component below. Rarely the right call: `members` on a large type and
+   `mechanicalFacts` both cost real tokens, and a navigation question seldom needs both at once.
+3. **A comma list**, e.g. `"members,baseType"` — **replaces** the default set. Use it whenever
+   `standard` is close but not quite right.
 
-## Components
+An unrequested component is absent from the JSON entirely, not `null`. A misspelled name is an
+`invalid_component` error rather than being silently dropped.
+
+`kind`, `displayString`, `modifiers`, `containingType` and `declarationSites` are unconditional.
+There is no `accessibility` field — `modifiers` (`"public sealed"`) already carries it.
 
 | Component | Returns |
 |---|---|
-| `source` | Full declaration rendered per its `SourceLineFormat` (see below): `[{line, text}]` (Exact, one entry per physical line) or `[{lines, text}]` (Compact, one entry per contiguous run) — `line`, or a run's start, is an absolute file number, directly usable as a `validate_patch` span. Under `toon` this renders as a raw, unescaped block (a quoted array-of-objects would turn every C# line into escape noise); `json`/`compact` keep the structured array. Requested through the **`source` argument**, not `include`. `"full"` (default) includes the leading `///` doc comment; `"code"` drops it — and, for a **type**, every member's own doc comment too — a **reading** mode. Either mode takes `-modifier` suffixes to subtract further: doc-tag modifiers (`summary`, `remarks`, `returns`, `value`, `inheritdoc`, `params`, `typeParams`, `exceptions`) only work under `full`; `attributes`/`comments`/`exact`/`compact` work under either (`lineNumbers` is a deprecated alias for `compact`). No `+tag` exists — a query only ever subtracts, and only ever removes a *whole* line, never an attribute/comment sharing a line with real code. |
-| `sourceSubtractionsApplied` | Present only when the `source:` query requested at least one `-modifier` subtraction. Lists exactly which of the requested tokens (`"-remarks"`, `"-attributes"`, `"-comments"`, ...) actually removed a line — a requested token **absent** from this list matched nothing (e.g. `-remarks` on a member with no `<remarks>`), which the rendered `source` otherwise gives no sign of: dropping zero lines looks identical to the modifier not existing. Absent entirely when no subtraction was requested. |
-| `sourceLineFormat` | `"exact"`/`"compact"` naming which format `Automatic` actually picked — only when `source` was requested with `Automatic` (the default). Absent when the caller forced `-exact`/`-compact` explicitly (it already knows what it asked for) or when `source` wasn't requested at all. **One exception: a multi-file partial reports `"compact"` even under a forced `-exact`**, because that request cannot be honoured (see below) — this field is how you find out it lost. Saves sniffing the `source` array's own shape (`line` vs `lines`) to find out. |
-| `source` `@lines` | `@` plus line ranges appended to the source query (after any modifiers): `source: "@46-76"`, `source: "code@46-76;79-83"` (`;` separates ranges, **not** `,`), `source: "@-50"`, `source: "@52"`. Absolute file line numbers, reusable as-is from any earlier response. Adds `sourceLines`: `"kept/whole"` (or `"none/whole"` on a miss — not an error; the response still states what would have worked). `contentVersion` still covers the **whole** symbol, so holding it is not confirmation the whole symbol was seen. A slice still leases the body layer — enough to patch from; a second edit into a member already read this way does not need `include: "all"` again. |
-| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag isn't present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent only when none of these tags exist at all. Suppressed when `source` is also requested **and the lines actually returned carry the whole doc comment**. `source: "code"` exists precisely to strip the `///` block, so it never suppresses. An `@` line selection is judged on what it kept: a slice covering every line of the doc comment suppresses, one that cut any of it away serves `xmlDoc` — half a summary read as prose is not the summary. Suppressing on "is a slice" alone deleted the documentation from the response rather than deduplicating it. |
-| `mechanicalFacts` | Server-computed structural facts as opaque JSON; `null` if the body changed since computed. Empty sub-fields (`throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides`) are omitted rather than emitted empty. **Reach for it over `bodyOutline` when the question is what the body *does to the world* — does it throw, await, take a lock, write state, satisfy an interface member — rather than how it is *shaped inside*.** `bodyOutline` answers "where in this 300-line method is the loop I want to slice out"; this answers "is this method safe to call under a lock", "does it have I/O in it", "which interface member does it implement", each without reading the body at all. It is the semantic tier and costs more than the outline's purely syntactic scan, so it is the wrong reflex for navigation and the right one for a judgment about behaviour. Like `bodyOutline` and `source`, it leases the `body` layer. |
-| `bodyOutline` | Control-flow landmarks (`switch/case`, `if`, `for/foreach/while/do`, `catch`, `using`, `lock`) for mapping a long body before slicing it — purely syntactic, same cost tier as `source`, not `mechanicalFacts`' semantic tier. `text` truncated to 28 chars. A bare `try`/`else`/`finally` has no name of its own and is omitted; infer its span from the parent row. Absent (with `bodyOutlineNote`) for anything without an executable body (a type, a field, an auto-property). `bodyOutlineNote` also appears — rows still returned — when the outline is unlikely to earn its cost: under ~40 lines, or past that but averaging worse than one landmark per 25 lines (a mostly linear body). Suppressed when `source` is also requested — both exist as a structural stand-in for the body, so once `source` is present they'd only restate what it already shows. |
-| `referenceCounts` | `{callers, tests}` for a member (never a type), plus `{implementations, overrides}` only where the kind makes a non-zero answer possible (interface/unsealed class/interface member; virtual/abstract member). An enum, static class or plain method omits them rather than reporting a structural `0`; the whole component is absent when nothing is left to report. |
-| `recentLog` | Recent dev-log entries touching this symbol, each flagged `current: true/false` against the live body. |
-| `members` | Type only: `[{symbolId, displayString, kind, line, shape, contentVersion}]` per member — **private included**, since `M` in `search_index`'s `shape` counts them too — plus `file` when a member is declared in a different file (a partial); absent, not `""`, when it's the type's own primary declaration file — the same convention as every other blank cell in this response, but stated in a sibling **`fileLegend`** field once per response (only when the table actually mixes a blank and a named file — a non-partial type never shows the column at all) since nothing else names it. `line`/`shape` match `search_index`'s own conventions. `contentVersion` is present only under `include: "all"` — narrowed to `decl`, enough to lease a signature/doc edit, not a body edit (`unleased_body` if attempted) — and absent on a plain `members` fetch, since a read-only pass never uses it and an about-to-edit pass re-fetches the member itself for its body version anyway. Counted per **declaration**: each part of a partial type carries its own share while this listing merges every part; a nested type is counted by `N` yet still listed here. Suppressed when `source` is also requested — the member list is a stand-in for reading the body, and `source` already shows it. **Capped at 40** — a type declaring more carries `totalMembers` (the true count) and `truncated: true` alongside the first 40, the same `total*`/`truncated` convention `get_references`, `get_scope` and `ambiguous_symbol` already report their own caps under; both fields are absent under the cap. There is no offset/paging argument yet — `search_index(query, kinds:"method property field", pathPrefix:...)` scoped to the type's file reaches the rest. |
-| `attributes` | This symbol's own (non-inherited) attributes as `[{name, arguments}]` — `name` strips a trailing `Attribute` suffix. A compiler-supplied argument (`[CallerMemberName]` etc.) is dropped, so e.g. xUnit's bare `[Fact]` reports no arguments. Absent when none. Suppressed when `source` is also requested. |
-| `baseType` | Type only: `{symbolId, displayString}` for the direct base type only (not the transitive chain — that's `get_type_hierarchy`). Suppressed when `source` is also requested. |
-| `interfaces` | Type only: `[{symbolId, displayString}]` for direct interfaces (not `AllInterfaces`). Suppressed when `source` is also requested. |
-| `usings` | File-level `using` directives, source order. **Not** suppressed by `source` — a symbol's declaration span never includes the file's usings, so it stays genuinely new information either way. |
-
-## Reading vs. editing — the invariant that bites
-
-A `-modifier` (or `source: "code"` on a type) removes a line from the **response**, never the file —
-and `validate_patch` replaces `startLine`–`endLine` **verbatim**. A span built from a stripped
-fetch silently deletes every line the modifier hid inside it:
-
-```
-get_symbol(source: "code-comments@40-80")           →  you see 40, 41, 44, 45, …
-validate_patch(startLine: 40, endLine: 80, …)       →  42-43 were `// comments`. They are now gone.
-```
-
-Unsafe to anchor an edit on: `-comments`, `-attributes`, `source: "code"` **on a type**. Safe by
-construction: a leading `///` doc comment dropped by `code` is always at the *start*, so a
-first-to-last-line span never covered it anyway — which is also why `declarationSites` can be
-wider than what `code` returned.
-
-**Rule: strip on the way in, fetch whole on the way out.** Read with `source: "code"` or
-`source: "code-comments"`; patch from `source: "full"` with the gutter left on.
-
-`source`'s line format is **`Automatic` by default**: the server renders both the numbered gutter
-(`[{line, text}]`) and the `@start-end` span form (`[{lines, text}]`) and keeps whichever is
-literally fewer characters. The gutter costs a few characters *per line*; a span header costs a few
-characters *per contiguous run* — so for an unmodified declaration of any real size, Compact wins
-almost every time.
-
-Under `toon`, the gutter renders as **`120│ text`, with the numbers right-aligned to the widest one
-in the block**:
-
-```
-  98│     public int Bar()
-  99│     {
- 100│         return 1;
-```
-
-The code therefore starts at the same column on every row, so the boundary between the number and
-the source it labels is never something to re-find per line — which is where a line number gets read
-as part of the code. The padding is real and is charged to `Automatic`'s comparison, so a block
-spanning a digit boundary is measured at what it actually costs rather than at its narrowest row.
-`json`/`compact` keep the structured `[{line, text}]` array and have no gutter to align.
-
-`-exact` forces the numbered gutter even on the rare declaration where the spans would be shorter;
-`-compact` forces the spans even when the gutter would be shorter (`-lineNumbers` is a deprecated
-alias for `-compact`). The two force-modifiers contradict each other — `-exact-compact` together is
-an `invalid_component`.
-
-### A partial declared across several files
-
-`source` returns **every part**, in the same order `declarationSites` lists them — that is what the
-promise of "the whole symbol, where `Read` gives one fragment" means for a partial. Through contract
-3.62 it returned only the first part while `declarationSites` named them all, so the response
-contradicted itself; if you are reading an older transcript, that is what you are seeing.
-
-Each run is then prefixed with its file, because a bare line number stops identifying a place once
-every part has its own line 100:
-
-```
-@src/Store/SymbolStore.cs:5-698
-…
-@src/Store/SymbolStore.Update.cs:5-313
-…
-```
-
-Two consequences worth knowing:
-
-- **The span form is imposed**, even against `-exact`. A per-line gutter carries a number and nothing
-  else, so it has nowhere to put the file, and an `-exact` rendering here would interleave two files'
-  line numbers with no way to tell them apart. `sourceLineFormat` reports `"compact"` so the override
-  is visible rather than silent.
-- **`sourceLines` is omitted** on a sliced fetch of a multi-file partial. Its `kept/whole` denominator
-  is one file's span and there is no single one; `declarationSites` already carries every part's, and
-  each run's `@file:start-end` header says which file its lines came from.
-
-An `@` selection still applies by absolute line number across every part, so a range matching lines in
-two files returns both — labelled, not merged. That is usually not what you wanted: fetch the member
-you actually care about instead, which is a single-file declaration and slices normally.
-
-Force `-exact` for anything you are about to build a `validate_patch` span from. Compact's line
-number is the *start* of each run, not one per line — a line further into a run has to be counted
-forward from that header, and a miscount produces a patch against the wrong span, not an error.
-`Automatic` may silently return either shape, so don't rely on it for a fetch you intend to edit
-from — check `sourceLineFormat` (or force `-exact`) instead of inferring the shape yourself.
-
-## What `contentVersion` a patch needs
-
-The `standard` token carries `decl` (+`refs`), no `body` layer. `validate_patch` rejects a
-**body-changing** edit built on it (`error: "unleased_body"`) rather than skipping the staleness
-check for text it would overwrite. Fetch with `include: "all"` — or anything containing `source`,
-`bodyOutline`, or `mechanicalFacts` — whenever the edit rewrites a body, which is also when you
-wanted the text anyway. A response is narrowed to exactly the layers it served, so a `standard`
-token and an `"all"` token aren't directly comparable if diffing them yourself.
-
-## Don't refetch what you already hold
-
-If you fetched this exact symbol earlier in the same conversation and haven't edited it since, reuse
-the `contentVersion`/`declarationSites` you already have rather than calling `get_symbol` again to get
-back numbers you're already holding — a plain re-fetch for unchanged content is pure waste. This is
-easy to miss right after an edit: an applied `validate_patch`/`rename_symbol` response already hands
-back `newVersion` and refreshed `declarationSites` for exactly the symbols it just changed (see each
-tool's "Editing the same symbol again" guidance), so a second edit to a symbol you just patched goes
-straight into another `validate_patch` call — it does not need a `get_symbol` in between. A genuine
-refetch is warranted only for *content* you didn't hold in the first place (a different `include`), for
-a symbol this session hasn't touched, or after `workspace_status`/a tool response reports the file
-`stale`.
-
-## The large-source guard
-
-An unsliced `source` request on a declaration of **500 lines or more** is answered once with advice
-instead of the source. The response is an ordinary one — same `symbolId`, `contentVersion`,
-`limitedBy`, `declarationSites` — carrying `members` (on a type) or `bodyOutline` (on anything else)
-in place of what was asked for, plus a `guard` block:
-
-```
-guard:
-  reason: large_source
-  declaredLines: 2342
-  advice: source would return about 2342 lines, so members is served instead. For one region,
-          slice with source:"code@start-end" off declarationSites. Repeat this call unchanged to
-          get the source anyway.
-```
-
-**Repeating the call verbatim gets the source.** That is the whole override: no new argument, no
-flag to have known about beforehand. Consent is re-sending, because a guard with no way through
-would make the genuine case — the whole 2000-line type really is wanted — cost more in region-by-
-region fetches than the guard ever saved. The acknowledgement is keyed on the symbol *and* the
-`include`, holds for 15 minutes, and refreshes each time you use it, so a task that reads the same
-large symbol repeatedly is asked once.
-
-It does not fire on a sliced fetch (`source: "@120-160"`), since the slice already bounds the response,
-and it does not fire on `members`, `bodyOutline` or any other component — only on `source`.
-
-**A guard triggered by `include: "all"` still serves a leaseable `members` list**: each member row
-carries its own `contentVersion`, exactly as it would outside the guard, so an about-to-edit call
-does not lose that just because the type was too large to serve `source` whole. The substitute is
-the same capped `members` component described above, so the guard's own cost is bounded too — before
-the cap existed, the "cheaper" alternative on a large enough partial could itself run past ten
-thousand tokens, which is the guard paying the price it exists to avoid.
+| `xmlDoc` | `{summary, returns, remarks, value, inheritdoc, params, typeParams, exceptions}`, XML-stripped to plain text, each absent when that tag is not present. `params`/`typeParams` are `[{name, text}]`; `exceptions` is `[{type, text}]`; `inheritdoc` is `true` when `<inheritdoc/>` is present. Whole component absent when none of these tags exist. |
+| `referenceCounts` | `{callers, tests}` for a member (never a type), plus `{implementations, overrides}` only where the kind makes a non-zero answer possible. An enum, static class or plain method omits them rather than reporting a structural `0`; the whole component is absent when nothing is left to report. |
+| `members` | Type only: `[{symbolId, displayString, kind, line, shape}]` per member — **private included**, since `M` in `search_index`'s `shape` counts them too — plus `file` when a member is declared in a different file (a partial). A `shape` legend and, when the table mixes a blank and a named `file`, a `fileLegend` sit beside the list. **Capped at 40**: a type declaring more carries `totalMembers` and `truncated: true` alongside the first 40. `search_index(pathPrefix: <the file>, kinds: "method property field")` reaches the rest. |
+| `bodyOutline` | Control-flow landmarks (`switch/case`, `if`, `for/foreach/while/do`, `catch`, `using`, `lock`) as `[{text, startLine, endLine, depth}]`, for mapping a long body before reading part of it. Purely syntactic. Absent, with `bodyOutlineNote`, for anything without an executable body (a type, a field, an auto-property). `bodyOutlineNote` also appears — rows still returned — when the outline is unlikely to earn its cost: a short body, or a mostly linear one. |
+| `mechanicalFacts` | What the body *does to the world*: `throws`, `awaits`, `writes`, `locks`, `implementsMembers`, `overrides` — empty ones omitted. `null` if the body changed since they were computed. Reach for it over `bodyOutline` when the question is "is this safe under a lock", "does it do I/O", "which interface member is this" rather than "where in this body is the loop". Semantic tier; costs more than the outline. |
+| `attributes` | This symbol's own (non-inherited) attributes as `[{name, arguments}]`; `name` strips a trailing `Attribute`. Compiler-supplied arguments (`[CallerMemberName]`) are dropped. Absent when none. |
+| `baseType` | Type only: `{symbolId, displayString}` for the direct base only. The transitive chain is `get_type_hierarchy`. |
+| `interfaces` | Type only: `[{symbolId, displayString}]` for the interfaces named on the declaration, not `AllInterfaces`. |
+| `usings` | The file's `using` directives, in source order. |
 
 ## Several symbols in one call
 
@@ -266,85 +83,82 @@ entry:
 get_symbol(symbols: ["Sample.Lib.Widget", "Sample.Lib.IWidget"])
 ```
 
-`results` is an array, one entry per requested symbol. A successful entry has `symbolId,
-contentVersion, limitedBy, content`; a symbol that didn't resolve has `error` instead
-(`symbol_not_found`, `ambiguous_symbol`) — one bad lookup doesn't fail the batch. Whatever **every**
-entry repeats verbatim (`components` always; `origin`/`containingType` too when every symbol is
-from one type) lifts into a `shared` block beside `results`, but only when that's genuinely
-smaller. The batch's win is round trips — on tokens it's roughly a wash. An `@` line selection is
-rejected in a batch (`lines_with_batch`): one span of file lines can't apply to several symbols.
+`results` is an array, one entry per requested symbol. A successful entry has `symbolId`,
+`limitedBy` and `content`; a symbol that did not resolve has `error` instead (`symbol_not_found`,
+`ambiguous_symbol`) — one bad lookup does not fail the batch. Whatever **every** entry repeats
+verbatim lifts into a `shared` block beside `results`, but only when that is genuinely smaller. The
+batch's win is round trips; on tokens it is roughly a wash.
 
 ## Resolution failures
 
 `ambiguous_symbol` hoists the prefix every candidate shares (`sharedPrefix`) so each candidate's
 `displayString` carries only the part that differs — concatenate the two, or pass the candidate's
-`symbolId` instead.
+`symbolId` instead. Candidates are capped at 10; `totalCandidates` states the true match count,
+with `truncated: true` when the cap bit. **A name like `Run` can match fifty members in a test
+tree — an absent candidate is not an absent symbol.** Qualify with the containing type or
+namespace, or append a parameter list (`Widget.Spin(int)`).
 
 `symbol_not_found` carries **`didYouMean`** — up to 5 ranked near-misses for the failed name's last
-segment, each `{symbolId, name, kind}`. Absent when the segment is under 3 characters, the name was
-a `sym_...` id, or nothing ranked. It's a ranked index lookup first (recovers a wrong namespace or
-dropped containing type), kept only to hits whose own unqualified name still **contains** the
-segment you typed — the index tokenizer splits camel case, so without that filter
-`NoSuchSymbolAtAllXyz` ranked against every name merely sharing the token `All` — then an
-edit-distance scan (≤3 edits, case-insensitive) only if that leaves nothing. So a genuine typo of
-nothing comes back bare rather than with confident nonsense, and the scan costs nothing on the
-normal path.
+segment, each `{symbolId, name, kind}`. It is a ranked index lookup first (recovers a wrong namespace
+or a dropped containing type), kept to hits whose own unqualified name still contains the segment you
+typed, then an edit-distance scan (≤3 edits, case-insensitive) only if that leaves nothing. Absent
+when the segment is under 3 characters, the name was a `sym_…` id, or nothing ranked.
 
-**Every symbol-resolving tool returns this** — `get_references`, `get_call_hierarchy`,
-`get_call_slice`, `get_type_hierarchy`, `rename_symbol` too. Candidates are capped at 10;
-`totalCandidates` always states the true match count, with `truncated: true` when the cap bit. **A
-name like `Run` can match fifty members in a test tree — an absent candidate is not an absent
-symbol.** Qualify with the containing type/namespace, or append a parameter list.
+**Every symbol-resolving tool returns these same shapes** — `get_references`, `get_call_hierarchy`,
+`get_call_slice`, `get_type_hierarchy`, `rename_symbol` too.
+
+## `limitedBy`
+
+| Value | Means |
+|---|---|
+| absent | Answered from the live compilation. |
+| `index_only` | The workspace is not loaded yet; the answer came from the syntax index alone. `declarationSites` is still right; `referenceCounts`, `mechanicalFacts`, `baseType`/`interfaces` and `members`' symbol ids are not available or provisional (`symidx_…` ids). Check `workspace_status`, retry once it reports `loaded`. |
+| `stale` | The file changed since the sweep last saw it. The next sweep (within a couple of seconds) clears it; a re-call after that is current. |
+| `degraded` | A project failed to load. Everything from the other projects is fine; anything that depends on the failed one is missing, not thin. `workspace_status` names the project. |
 
 ## Gate expansion on `referenceCounts`
 
 `{callers, tests, implementations, overrides}` decides whether an expansion is worth the tokens:
 
-- **0 callers** → usually nothing to find. **But not if the symbol can be invoked without being
-  named** — `callers` counts only static call sites in the loaded solution, so anything a framework
-  invokes by reflection (an entry point, a `[DI]`-registered implementation, a serialization
-  target, a test/event handler) is invisible to it. **Never conclude "dead code" from a 0 alone.**
-- **1–5 and a signature change is planned** → fetch them.
-- **more than 5** → fetch the list without bodies first, then bodies only for what you'll actually edit.
+- **0 callers** → usually nothing to find — **but not if the symbol can be invoked without being
+  named.** `callers` counts static call sites in the loaded solution; anything a framework invokes by
+  reflection (an entry point, a DI-registered implementation, a serialization target, a test) is
+  invisible to it. **Never conclude "dead code" from a 0 alone.**
+- **1–5 and a signature change is planned** → `get_references`, then read each site.
+- **more than 5** → `get_references` for the list, then read only what you will actually change.
 
-Before writing a helper that plausibly already exists, `search_index` first — one cheap call beats
-a duplicate implementation.
+Before writing a helper that plausibly already exists, `search_index` first.
 
 ## Reference
 
 | Arg | Meaning |
 |---|---|
 | `symbol` / `symbols` | Fully-qualified name, unique suffix, `Name(ParamType)` to pick an overload, or a `sym_…` id from any earlier response. Exactly one of the two. |
-| `include` | Omitted/`"standard"` (default) \| `"all"` \| a comma list of component names that replaces the default. Only ever **adds**; contains no `-` or `:`. |
-| `source` | The source query: `"full"` (default) or `"code"`, `-modifier` suffixes to subtract, `@ranges` to select lines. Only ever **subtracts**. Given alone it replaces the default component set. |
+| `include` | Omitted/`"standard"` (default) \| `"all"` \| a comma list of component names that replaces the default. |
 
 Default call, real response:
 
 ```
-get_symbol(symbol: "FeatureLogStore.Append")
+get_symbol(symbol: "SymbolStore.SymbolsDeclaredIn")
 ```
 ```json
-{"symbolId":"sym_c25d7c88b0e916b0","contentVersion":"decl:ddca3badaba1|refs:532f4bebd9ac",
- "content":{"kind":"Method","displayString":"string FeatureLogStore.Append(LogEntry entry)",
+{"symbolId":"sym_c25d7c88b0e916b0",
+ "content":{"kind":"Method",
+   "displayString":"IReadOnlyList<string> SymbolStore.SymbolsDeclaredIn(string file)",
    "modifiers":"public",
-   "containingType":{"symbolId":"sym_fc346a8c5efa6a88","displayString":"FeatureLogStore"},
-   "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs",
-                         "startLine":27,"endLine":78}],
-   "xmlDoc":"Appends one log record and its per-symbol rows in a single transaction. Returns the log id.",
-   "referenceCounts":{"callers":2,"implementations":0,"overrides":0,"tests":0}}}
+   "containingType":{"symbolId":"sym_fc346a8c5efa6a88","displayString":"SymbolStore"},
+   "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Store/SymbolStore.Update.cs",
+                         "startLine":27,"endLine":38,"signatureLine":30}],
+   "xmlDoc":{"summary":"The ids of every symbol whose declaration lies in the given file."},
+   "referenceCounts":{"callers":2,"tests":3}}}
 ```
-
-`recentLog` is absent here because the default set no longer asks for it — name it in `include` (or
-use `"all"`) when you want it. When it *is* requested and still absent, that absence means
-"nothing to report", not "not computed" (that distinction is `limitedBy`'s job).
 
 ## Next steps
 
-`referenceCounts` gates what is worth fetching next (above). From here:
-
-- **Expand to call sites** → `get_references` — `get_references.md`
-- **Open-ended caller tree** → `get_call_hierarchy` — `get_call_hierarchy.md`
-- **Only need part of a long member** → re-call with `source: "code@120-160"`
-- **Editing part of one you have already read** → `source: "@120-160"` — unstripped, and
-  the slice leases the body layer, so this is a complete pre-edit fetch
-- **Editing it** → keep `contentVersion` and `declarationSites`, then `validate_patch` — `validate_patch.md`
+- **Read the code** → `Read(file, offset: startLine, limit: endLine - startLine + 1)`.
+- **Read part of a long member** → `include: "bodyOutline"`, then a `Read` over the landmark's
+  `startLine`–`endLine`.
+- **Expand to call sites** → `get_references` — `get_references.md`.
+- **Open-ended caller tree** → `get_call_hierarchy` — `get_call_hierarchy.md`.
+- **Change it** → `Edit`, anchored on the text you read; `dotnet build` afterwards. A rename goes
+  through `rename_symbol` — `rename_symbol.md`.

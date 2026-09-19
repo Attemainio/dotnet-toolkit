@@ -6,12 +6,14 @@
 
 dotnet-toolkit runs a local MCP server holding a Roslyn model of your solution — the same compiler your
 IDE and `dotnet build` use. Your coding agent asks it for symbols, references, call trees and type hierarchies
-instead of reading files, and every edit is compiled in memory before it reaches disk.
+instead of reading whole files, reads only the lines a symbol occupies, and edits with the tools it
+already has — the index follows every edit on its own.
 
 - **Fewer wrong answers** — real dispatch, overloads, inheritance and partial classes, not text matches.
 - **Less context burned** — [measured](#measured-against-raw-tools) at 2.6× less injected into the
   context window than the same questions answered with `Read`/`Grep`, across two real solutions.
-- **Safer edits** — a patch that does not compile never lands, and every applied change records *why*.
+- **Navigation only, by design** — it locates; `Read`, `Edit` and `dotnet build` do what they already
+  do well. One tool-made edit remains: a compiler-derived `rename_symbol`.
 - **Local by design** — nothing leaves your machine; caches live in your repo and rebuild from source.
 
 > **Status:** beta · **Requires:** Claude Code or Codex and the .NET 10 SDK · **Platforms:** Windows, Linux,
@@ -84,7 +86,7 @@ Now ask your agent something you would normally grep for. To find out whether it
 ## Measured against raw tools
 
 Each run sends one identical question list, blind, to three subagents, run sequentially: one granted
-**only** these MCP tools (guards forced to hard-deny a raw read, the ceiling), one granted **only**
+**only** these MCP tools (guards forced to hard-deny a whole-file raw read, the ceiling), one granted **only**
 `Read`/`Grep`/`Glob`/`Bash` (guards suspended, the floor), and one granted **both** tool families at the
 plugin's shipped default guard state (what a real session actually does). All three are metered by the
 same hook, and ground truth is established independently after every probe returns.
@@ -131,15 +133,15 @@ exact, distinctive name. dotnet-toolkit is for the questions where C# semantics 
 
 You talk to Claude normally; the skills pick the tools.
 
-- **Find and read symbols** without loading whole files — including across every fragment of a partial
-  class.
+- **Find and locate symbols** without loading whole files — every declaration site, doc comment
+  included, across every fragment of a partial class — then read exactly those lines.
 - **Trace relationships** — callers, implementations, overrides, base chains, the shortest path between
   two functions, project graphs and dependency cycles.
 - **Size a change** — the blast radius of a signature edit, with dispatch included.
-- **Validate patches against the compiler** before anything is written to disk.
-- **Rename symbols** from the reference graph rather than search-and-replace.
-- **Explain history** — which symbols a branch actually changed and which changes are breaking, plus a
-  development log recording *why* each past change was made.
+- **Rename symbols** from the reference graph rather than search-and-replace, with a dry run first.
+- **Keep up with your edits** — a hook re-indexes every `.cs` file a tool writes, so the next search
+  already sees the change.
+- **Explain history** — which symbols a branch actually changed and which changes are breaking.
 - **Report its own cost** — per-call token accounting, so retrieval spend is measurable rather than
   assumed.
 
@@ -159,22 +161,21 @@ flowchart LR
     M --> W["Roslyn semantic model<br/>(loads in background)"]
     I --> S["your solution"]
     W --> S
-    M --> L["dev log<br/>(why a change was made)"]
+    H["refresh hook<br/>(after every edit)"] --> M
 ```
 
 1. **A syntax index is ready in seconds**, so `search_index` and `get_symbol` answer almost immediately
    after startup.
 2. **The full MSBuild semantic model loads in the background**, enabling `get_references`,
-   `validate_patch` and the rest. Tools say which tier answered rather than guessing.
-3. **Claude retrieves symbols and relationships over MCP** instead of reading files.
-4. **Proposed patches compile in memory first.** Nothing reaches disk unless a real compilation holds;
-   your `.editorconfig` decides what counts as broken, and the reason for the change is recorded.
-5. **A guard hook blocks the write fallback** — `Edit`/`Write` on a compiled `.cs` file is refused with
-   a pointer to `validate_patch`, and so is a write-shaped shell command reaching the same file through
-   `Bash` (a redirect, `sed -i`/`perl -i`, `tee`, `cp`/`mv`, `dd`). `Read` and a shell *read* are not
-   blocked, only advised: a hook allows the call and adds a note that the plugin's tools would likely
-   answer it more cheaply or completely, since [measurement](docs/benchmarks.md) showed that isn't true
-   for every kind of question.
+   `rename_symbol` and the rest. Tools say which tier answered rather than guessing.
+3. **Claude locates symbols and relationships over MCP**, then reads only the line range a symbol
+   occupies — no tool returns source, and a ranged `Read` draws no note.
+4. **Edits go through `Edit`/`Write`**, anchored on the text just read, and `dotnet build` is the
+   gate. A `PostToolUse` hook sends every written `.cs` file to the server, which re-indexes just
+   those documents before the next call.
+5. **Nothing is blocked.** A hook adds an advisory note to a *whole-file* `Read` or shell read of a
+   compiled `.cs` file, saying a locate plus a ranged read would likely have cost less — guidance to
+   weigh, since [measurement](docs/benchmarks.md) showed that isn't true for every kind of question.
 
 The server and its hooks are invoked directly as `dotnet <dll>`, never through a shell, so nothing the
 plugin runs while inspecting or modifying your source can execute an arbitrary command. Responses use

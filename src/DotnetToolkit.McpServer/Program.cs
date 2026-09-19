@@ -1,5 +1,4 @@
 using DotnetToolkit.McpServer.Control;
-using DotnetToolkit.McpServer.Devlog;
 using DotnetToolkit.McpServer.Diagnostics;
 using DotnetToolkit.McpServer.Hooks;
 using DotnetToolkit.McpServer.Indexing;
@@ -52,7 +51,6 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 builder.Services.AddSingleton<SolutionLocator>();
 builder.Services.AddSingleton<ProjectIndex>();
 builder.Services.AddSingleton<WorkspaceHost>();
-builder.Services.AddSingleton<DevlogStore>();
 
 // v2 knowledge store + telemetry (spec Part IV). The store is rebuildable; if it fails to
 // open, KnowledgeStore.Available stays false and telemetry degrades to no-ops.
@@ -62,12 +60,9 @@ builder.Services.AddSingleton<TelemetryRecorder>();
 builder.Services.AddSingleton<MetricsReader>();
 
 builder.Services.AddSingleton<SymbolStore>();
-builder.Services.AddSingleton<FeatureLogStore>();
 builder.Services.AddSingleton<SymbolIndexBuilder>();
 builder.Services.AddSingleton<CallSlice>();
-builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.TargetedTests>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<DotnetToolkit.McpServer.Validation.PatchDraftStore>();
 builder.Services.AddSingleton<ControlServer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.GitAnalyzer>();
 builder.Services.AddSingleton<DotnetToolkit.McpServer.Git.SemanticDiff>();
@@ -94,12 +89,6 @@ app.Services.GetRequiredService<SymbolIndexBuilder>().Start();
 
 // Loopback control channel for hooks that need to trigger a rescan/reload outside the MCP session.
 app.Services.GetRequiredService<ControlServer>().Start();
-
-// One-time import of the legacy markdown devlog into feature_log (no-op once the log has entries).
-DevlogMigration.Run(
-    app.Services.GetRequiredService<DevlogStore>(),
-    app.Services.GetRequiredService<FeatureLogStore>(),
-    app.Services.GetRequiredService<ILogger<Program>>());
 
 // Telemetry covers this process and no other, so the raw tables are cleared at both ends of its life.
 // The startup purge inside KnowledgeStore is the load-bearing one - an MCP server is usually killed

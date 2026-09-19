@@ -1,17 +1,21 @@
 ---
 name: dotnet-read
-description: Use when reading or navigating C#/.NET code — find or search for a class, interface, method, property or field; read a symbol's source; look up who calls something or what implements it; trace a call tree or a path between two functions; see what is callable at a line; inspect a base chain or project references; find a dependency cycle; see what a commit or branch changed; or find out why existing code looks the way it does. Replaces Grep, Glob, find, cat and Read on .cs files with the plugin's Roslyn-backed MCP tools, and names the one right tool and call shape for each question.
+description: Use when reading or navigating C#/.NET code — find or search for a class, interface, method, property or field; locate a symbol's declaration and read it; look up who calls something or what implements it; trace a call tree or a path between two functions; see what is callable at a line; inspect a base chain or project references; find a dependency cycle; or see what a commit or branch changed. Replaces Grep, Glob, find, cat and whole-file Read on .cs files with the plugin's Roslyn-backed MCP tools plus a ranged Read, and names the one right tool and call shape for each question.
 ---
 
 # Reading and navigating C# with dotnet-toolkit
 
 Every question below is answered by a Roslyn-backed MCP tool that reads the compiler's own model.
-`Grep`, `Glob`, `find`, `cat`, `sed` and bare `Read` on a `.cs` file are wrong here, not just
-slower — they cannot see interface, virtual or delegate dispatch, count comment and string matches as
-real hits, silently under-report when output is truncated, and hand back one fragment of a partial
-class with no signal that the rest exists. A `PreToolUse` hook adds an advisory note when `Read` or a
-shell read reaches a compiled `.cs` file, but does not block it — `Grep`/`Glob` are watched by no hook
-at all. The router below, not hook enforcement, is what actually keeps you on the right tool.
+`Grep`, `Glob`, `find`, `cat`, `sed` and whole-file `Read` on a `.cs` file are wrong here for
+**finding** things, not just slower — they cannot see interface, virtual or delegate dispatch, count
+comment and string matches as real hits, silently under-report when output is truncated, and hand
+back one fragment of a partial class with no signal that the rest exists. **Reading the text once it
+is located is a different matter**: no tool here returns source. `get_symbol` answers *where*
+(`declarationSites`, doc comment included), and a **ranged `Read`** over that range fetches the text —
+that is the intended pair, and a ranged read draws no hook note. A `PreToolUse` hook adds an advisory
+when `Read` or a shell read takes a *whole* compiled `.cs` file, but does not block it —
+`Grep`/`Glob` are watched by no hook at all. The router below, not hook enforcement, is what keeps
+you on the right tool.
 
 **Tool names carry a host-dependent prefix.** In Claude Code they are
 `mcp__plugin_dotnet-toolkit_dotnet__<tool>`, because the plugin qualifies the server it ships. Codex
@@ -42,7 +46,7 @@ gives you two things nothing else can:
 
    **Never write `${CLAUDE_PLUGIN_ROOT}` into a path.** The harness substitutes it into `.mcp.json`
    args, hook commands and skill content, but **not** into a rule or an agent definition, so it stays
-   literal and the read fails. `Read` the joined path — the guards only block `.cs`.
+   literal and the read fails. `Read` the joined path — the read guards only ever note a `.cs` file.
 
 Re-call it whenever a response comes back `stale` or `degraded` (see *Workspace readiness* below).
 
@@ -58,7 +62,7 @@ ToolSearch("select:mcp__plugin_dotnet-toolkit_dotnet__get_references")
 
 **Never describe the task to `ToolSearch` and let it rank candidates.** The mechanism is lexical
 (regex or BM25 over tool names, descriptions and argument descriptions), not semantic. Measured here:
-11 of 18 tools failed to appear in the top 5 for a natural-phrasing query — `"who calls this method"`
+11 of the then 18 tools failed to appear in the top 5 for a natural-phrasing query — `"who calls this method"`
 never surfaced `get_references` at all. The tables below pick the tool; `ToolSearch` only fetches it.
 
 **The schema is then enough for an ordinary call.** Reach for a manual only for an advanced selector,
@@ -99,19 +103,19 @@ to a single ranked row, whose `file` names only the fragment that ranked. `parts
 enumeration of declaration sites** — `get_symbol`'s `declarationSites` is the call that enumerates
 them, and on a 13-file partial a benchmarked MCP route read the hits instead and answered 5.
 
-A hit's `lines` is an `@from-to` selector — the same one `get_symbol`'s `source` argument takes, so it
-pastes straight into the next call. It marks the **signature span only** and excludes a leading `///`
-doc comment. The `@` is what says "read slice": `validate_patch` takes a bare `"N-M"`, and an edit
-anchored here would silently drop the doc comment. Use `get_symbol`'s `declarationSites` for that.
+A hit's `lines` (`@from-to`) is the **signature span only** — it excludes a leading `///` doc comment,
+so it is the line to quote for "where is this", not the range to `Read` for the whole declaration.
+`get_symbol`'s `declarationSites` is the range to read.
+
+**Names only.** The index holds identifiers and doc summaries, not bodies: a string literal, a log
+message, a comment or a local variable is not findable here. That one question is a `Grep`, and the
+only one on C# where it is the right tool.
 
 **`include` picks each hit's columns**, comma-separated, and **replaces** the default set exactly as
-`get_symbol`'s `include` does. Default: `shape,read,refs,modifiers`. Also available: `summary`
-(a `hasSummary` bool) and `summary:full` (the text, capped at 160 chars).
+`get_symbol`'s `include` does. Default: `shape,refs,modifiers`. Also available: `summary`
+(a `hasSummary` bool) and `summary:full` (the text, capped at 160 chars). Commas, never hyphens.
 
-Commas, never hyphens — `-` already means *subtract* in that grammar, so `"shape-refs"` reads as
-"shape without refs".
-
-Three of the four columns are terse codes, each with its legend stated once per response:
+All three columns are terse codes, each with its legend stated once per response:
 
 | Column | Reads | Letters |
 |---|---|---|
@@ -138,71 +142,53 @@ page. Read its zeroes and its silences precisely:
   When dispatch is the question, ask `get_references` or `get_symbol`'s `referenceCounts` — both
   expand to the interface members a symbol implements.
 
-**Read the `read` column before deciding the next call.** Each hit carries `shape` (what fetching it
-costs) and, whenever the default `get_symbol` fetch is *not* the right next call, `read` — the
-include to pass instead: `mem`, `out` or `code`, legend stated once per response. Absent means the
-default fetch is already right.
-
-**The column is cheap, not free** — the distinction matters when you are judging whether to ask for
-it. When *no* hit is labelled it costs nothing at all: the column and its legend are dropped
-entirely. Once *any* row carries advice the tabular form gains the column for all of them, and the
-silent rows each pay an empty cell. Measured on a 50-hit page: 75 tokens for the whole column, of
-which ~32 were the 46 empty cells. It repays that many times over — following one `read: mem` label
-measured 274 tokens against 1,995 for `source: "full"` on the same type, so a single followed label
-covers the page's column cost ~23×.
-
-Pass **`intent: "edit" | "logic" | "surface"`** to aim it at what you are about to do; your intent is
-a fact the hit's shape cannot contain, and stating it beats re-deriving it per row.
+**Read `shape` before deciding the next call.** A type with a large `M` wants
+`get_symbol(include: "members")`, never a whole-type `Read`. A member with a large `L` wants
+`get_symbol(include: "bodyOutline")` to map it, then a `Read` of the one region. Anything small wants
+`get_symbol` for `declarationSites` and one `Read` of that range.
 
 Manual: `<pluginRoot>/docs/tools/search_index.md`
 
-### `get_symbol` — read a symbol you can name
+### `get_symbol` — locate a symbol you can name
 
 Answers to:
 
-- What is this symbol, and where exactly is it defined?
-- What is its full source, including every partial-class fragment?
+- Where exactly is this symbol declared — every file and line range, partials included?
 - What XML docs, attributes, members, interfaces and base type does it have?
 - How many callers, tests, implementations and overrides does it have?
-- What is its control-flow structure, without paying for the whole body?
-- Can I fetch only the lines or components I actually need?
-- What must I hold before editing it safely?
-- Has it changed since I last looked?
+- What is its control-flow structure, without reading the whole body?
 - Is the name I used ambiguous, or misspelled?
 - Is expanding to its references worth it?
 
-**This replaces `Read` on a `.cs` file.** It returns the whole symbol across partials for a fraction
-of the file's tokens, plus `declarationSites` (file + `startLine`/`endLine`, *including* a leading
-`///` doc comment) and a `contentVersion` — exactly what the write path needs.
+**It returns no source text.** `declarationSites` carries `file`, `startLine` (where a leading `///`
+doc comment begins), `signatureLine` (where the declaration itself begins; present only when it
+differs) and `endLine` (the closing brace), one entry per part of a partial. **The text is one
+ranged read away:**
 
-**Report a location from `signatureLine`, not `startLine`.** `startLine` is an edit span and takes in
-the doc comment; `signatureLine` is where the declaration itself begins, and matches what
-`search_index` reports. It is present **only when the two differ**, so its absence means "same as
-`startLine`". Answering "declared at line 3" when the `class` keyword is on line 7 is the mistake it
+```
+Read(file, offset: startLine, limit: endLine - startLine + 1)
+```
+
+That pair — `get_symbol` to locate, `Read` of that range to fetch — is the whole reading path. It
+costs less than a whole-file `Read` on anything but a tiny file, misses no part of a partial, and the
+ranged read draws no hook note. Do not `Read` a whole file to find a symbol you could have named.
+
+**Report a location from `signatureLine`, not `startLine`.** `startLine` is the read offset and takes
+in the doc comment; `signatureLine` is where the declaration begins, and matches what `search_index`
+reports. Answering "declared at line 3" when the `class` keyword is on line 7 is the mistake it
 exists to prevent.
 
-**`include` and `source` are two arguments with one grammar each**, and that is the whole point:
-`include` is a plain comma list of component names that only ever **adds**, and `source` is the source
-query that only ever **subtracts**. No `-` ever appears in `include`; no component name ever appears
-in `source`.
+**`include` is a plain comma list of component names** that replaces the default (`xmlDoc,
+referenceCounts`):
 
 ```
-include: "members"                      a type's surface
-source:  "code"                         the source without doc comments
-source:  "code@120-160"                 one region of a long member
-source:  "full-exact@120-121"           an exact slice, for anchoring an edit
-include: "all"                          about to edit
-source: "code", include: "xmlDoc"       both — they union
+include: "members"                      a type's surface — navigate by member list, not by reading the type
+include: "bodyOutline"                  landmarks in a long member, then Read one region
+include: "members,baseType,interfaces"  a type's shape from outside
+include: "mechanicalFacts"              does it throw / await / lock / write, without reading it
 ```
 
-**`source` alone replaces the default set**, so asking for the code does not also drag back members,
-attributes and interfaces. `bodyOutline` maps a member before you slice it.
-
-**An unsliced `source` on a 500+ line declaration is warned about once** rather than served: the
-response carries `members`/`bodyOutline` and a `guard` block naming the size and the cheaper route.
-**Repeating the call verbatim gets the source** — that is the whole override, and taking it is a
-correct decision when you genuinely want the whole thing. Do not work around it by fetching the
-symbol in pieces you did not want; either follow the advice or repeat the call.
+`members` is capped at 40, with `totalMembers`/`truncated` past the cap.
 
 Manual: `<pluginRoot>/docs/tools/get_symbol.md`
 
@@ -247,7 +233,8 @@ bind to something you never meant, and the wrong answer looks exactly as authori
 one. That field names what actually resolved; `targetSymbolId` is a hash and confirms nothing on
 sight.
 
-An item's `symbolId` is a fetch target, **not an edit lease**.
+An item's `symbolId` is a fetch target; the text at a site is a `Read` around `sites[].line`, or a
+`get_symbol` on the item for its whole declaration span — and only for the sites you will change.
 
 Manual: `<pluginRoot>/docs/tools/get_references.md`
 
@@ -346,21 +333,6 @@ correctly report no change.
 
 Manual: `<pluginRoot>/docs/tools/get_semantic_diff.md`
 
-### `search_log` — why the code looks the way it does
-
-Answers to:
-
-- Why was this change made, and by what reasoning?
-- Was this approach already tried and rejected?
-- Which symbols did a past change touch?
-
-Search it **before** proposing a design, not after. Matching is AND over `intent` text — every term
-must appear, in any order, so adding a term narrows rather than widens. An empty result means nothing
-was *recorded*, never that nothing was decided; the log only covers changes applied through
-`validate_patch`.
-
-Manual: `<pluginRoot>/docs/tools/search_log.md`
-
 ### `get_retrieval_metrics` — where the tokens went
 
 Answers to:
@@ -385,11 +357,13 @@ Answers to:
 - Is the workspace ready, is indexing done, where is `pluginRoot`? → `workspace_status`
 - Which projects failed to load, and why? → `workspace_status`
 - **A tool just failed, or results look frozen at an older revision?** → `workspace_status`. It prints
-  `knowledgeCache:` when the SQLite cache is damaged (symbol search and the development log are then
+  `knowledgeCache:` when the SQLite cache is damaged (symbol search and reference counts are then
   disabled for the session, and the cache is rebuilt on the next server start), and `msbuild:` when no
   installed SDK satisfies the repo's `global.json` — the state that otherwise reaches you as an
   unresolved `Microsoft.Build.Framework`. Both lines are absent when nothing is wrong.
-- I pulled/checked out/rebased — how do I refresh? → `reload_workspace(scope: "all")`
+- I pulled/checked out/rebased — how do I refresh? → `reload_workspace(scope: "all")`. An
+  `Edit`/`Write` needs nothing: the `refresh-cs-files` hook re-indexes what was written, and the
+  `index:` line says `symbols refreshed Ns ago` and how many files are still queued
 - Is the server answering at all? → `ping`
 - How do I get plain JSON instead of TOON? → `set_output_format(format: "compact"|"json")`
 
@@ -406,12 +380,13 @@ committed before the note that prevents it was ever read.
 |---|---|
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
 | `search_index`, then `get_references` (or `get_symbol`) only to learn whether anything uses it | Nothing — the `refs` column is already there by default. `R0` is the dead-code answer, `I`/`V` the dispatch one. Measured: that route took 3 calls where a single `grep` took 1. The one case still worth a second call is a symbol reached *only* through an interface, which reads `R0` — `get_symbol(include: "referenceCounts")` is dispatch-aware |
-| `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(include: "shape,read,refs,modifiers,summary:full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
+| `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(include: "shape,refs,modifiers,summary:full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |
 | `get_symbol` on a hit just to learn whether it is public, static, or overridable | The `modifiers` column, already on the hit — it comes from the index the search already read, so it costs nothing extra |
-| `get_symbol(include: "all")` on a member purely to obtain the body lease a patch needs | `include: "bodyOutline"` — the same `body:` layer for a fraction of the tokens (measured on a 117-line method: 2,133 vs **192**). `all` is the widest include, not the required one; the `read` column under `intent: "edit"` names the cheap one directly |
+| Whole-file `Read` of a `.cs` file to see one method | `get_symbol` for `declarationSites`, then `Read(file, offset: startLine, limit: endLine - startLine + 1)` — the same text, none of the rest of the file |
+| `get_symbol(include: "all")` to "see everything" about a member | The default include, or `bodyOutline` for a long body (measured on a 117-line method: `all` 2,133 tokens vs **192**); `all` adds `members`/`mechanicalFacts` costs a navigation question never needs |
 | `search_index("fee")`, `search_index("ledger")`, `search_index("TryBuy")` … one call per term | `search_index("fee ledger TryBuy TrySell")` — one round trip, and cross-term ranking you otherwise lose |
 | `search_index(query: "class")`, `query: "partial class"`, `query: "nested"` to enumerate a structural shape | `kinds`/`modifiers` for "is a class"/"is partial"; `shape`'s `N` count for "is nested" — `query` still needs a real identifier or domain term, from the README/CLAUDE.md if you don't have one yet |
-| Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `contentVersion`/`declarationSites`; after an edit, use the applied response's `newVersion` and refreshed `declarationSites` directly |
+| Re-fetching a symbol with `get_symbol` that this session already fetched and that hasn't changed | Reuse the held `declarationSites`; after an edit of your own the lines have moved by exactly your edit, and a `Read` anchored on text you know is cheaper than a locate |
 | `get_references` for a caller list you only need as names | `get_call_hierarchy(maxDepth: 1)` — measured ~1/3 the tokens at 8 callers, ~1/6 at 25 (395 vs 2,255), ~1/8 at 105: the gap widens with fan-in because `get_references` pays per *site* and the hierarchy pays per *caller*. Reach for `get_references` when you need the `{file, line, snippet}` sites, and pay for it deliberately |
 | `get_references` for an open-ended multi-level tree on a high-fan-in symbol | `get_call_hierarchy(maxDepth: 1)` — at 105 callers it measured ~1/8 the tokens |
 | Repeated `get_references` walking outward to see whether X reaches Y | `get_call_slice(from: "X", to: "Y")` |
@@ -422,13 +397,12 @@ committed before the note that prevents it was ever read.
 | Batch `get_symbol(symbols: [...])` used reflexively as "obviously cheaper" at any size | What decides it is whether `shared` can **hoist**, not n alone. A *homogeneous* batch (same `kind`, one `include`) hoists those fields out of every entry and is a wash-to-slight-win from about n=5 — measured 1,291 tokens against ~1,310 for the five separate fetches, so take it for the 4 saved calls. A *mixed-kind* batch hoists almost nothing and the per-entry `results[i]` nesting costs more than it saves until roughly n=8–10 |
 | `search_index` (at any `limit`) to enumerate the files a partial type is declared in, reading the returned hits as the list | `get_symbol` — its `declarationSites` returns every fragment, and is the only call that does. A partial type is **one** hit; `parts: N` on it says how many files, never which. Measured on a 13-file partial: two ranked searches reported 5 files and rated themselves "fairly sure", while one `get_symbol` had all 13 |
 | Hand-tallying `sites` rows across `get_references` items to answer "how many call sites" | `totalSites` — the tool's own count over the whole result, present whenever it differs from `totalItems`. The hand tally lost one site of 19 on a response that carried all 19 |
-| `get_symbol(include: "members")` on a very large or many-fragment partial type | Check the hit's `shape` first: `members` is **capped at 40** — a `M245` type reports the first 40 plus `totalMembers: 245, truncated: true`, not all 245 (measured 11,367 tokens for the old uncapped response on a 13-file partial). Past the cap, reach for `search_index(pathPrefix: "<the one fragment file>")` or a `source: "code@a-b"` slice off `declarationSites`. `guard: large_source` still routes a too-large `source` fetch into this same capped `members`, so that "cheaper route" is now genuinely cheap rather than a second oversized response |
+| `get_symbol(include: "members")` on a very large or many-fragment partial type | Check the hit's `shape` first: `members` is **capped at 40** — a `M245` type reports the first 40 plus `totalMembers: 245, truncated: true`, not all 245 (measured 11,367 tokens for the old uncapped response on a 13-file partial). Past the cap, reach for `search_index(pathPrefix: "<the one fragment file>", kinds: "method property field")` |
 | `search_index(implements: "IFoo")` returns zero when you expected hits | Cheap and correct once `IFoo` resolves — direct implementers only, same edges `search_index`'s `I` column counts. Check `implementsHint` first: **present** means the name never resolved to an indexed interface (a spelling problem, not a filter problem); **absent** means a real zero — cross-check with `get_type_hierarchy` or `get_references(direction:"implementations")`, which count transitively and so can still show something further down the chain |
-| Fetching a whole long member to read one region | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@120-160"` for the region |
-| `get_symbol(include: "all")` on a read-only pass | The default include, or a named component list — `all` is a write-path lease you have no use for |
+| Reading a whole long member to see one region | `get_symbol(include: "bodyOutline")` to map it, then `Read` over the one landmark's `startLine`–`endLine` |
 | Opening every `.csproj` to trace references | `get_project_graph` |
 | Reading `git diff` and inferring what changed | `get_semantic_diff` |
-| Guessing why code looks deliberate | `search_log` |
+| Guessing why code looks deliberate | `git log -p` / `git blame` on the file — the toolkit keeps no change log; the repository's history is the record |
 
 ## Workspace readiness — `limitedBy`
 
@@ -437,14 +411,16 @@ committed before the note that prevents it was ever read.
 - **absent** — fully informed. Silence is the healthy case.
 - **`index_only`** — the syntax tier answered. Reference counts and semantic resolution are
   unavailable, **not zero**.
-- **`stale`** — the file changed on disk since the workspace read it. `reload_workspace`, then
-  re-read: line spans will have moved. Never build a patch on a `stale` response.
+- **`stale`** — the file changed on disk since the workspace read it. The next sweep (within a
+  couple of seconds) clears it by itself; re-call after that, since line spans will have moved. Never
+  anchor an edit on a `stale` response's lines.
 - **`degraded`** — projects failed to load. Results may be silently **wrong**, not merely thin. Call
   `workspace_status`, fix the build, then `reload_workspace`. Never report a finding from a degraded
   workspace without saying so.
 
 `get_references` needs live semantics and returns `error: "workspace_loading"` until ready. After a
-large git operation, call `reload_workspace`.
+large git operation, call `reload_workspace`; after an ordinary edit, nothing — the refresh hook and
+the sweep keep the index current.
 
 ## Reading responses
 
@@ -476,10 +452,9 @@ Every tool that records telemetry takes an optional **`taskId`**. No tool takes 
 
 - **The set of symbols the task touches isn't known yet** → invoke `dotnet-explore` instead of fanning
   out `search_index`/`get_references` here. It spends the wide responses in its own context and hands
-  back `symbolId`s, use sites and blast radius. Skip it when the symbol is already known, or when the
-  next step needs a `contentVersion` — the agent relays none.
-- **About to change a `.cs` file** → invoke `dotnet-write`. It owns the fetch-to-patch loop, and the
-  `include` you need on the read pass differs from the one you'd use here.
+  back `symbolId`s, use sites and blast radius. Skip it when the symbol is already known.
+- **About to change a `.cs` file** → invoke `dotnet-write`. It owns the locate-read-edit-build loop,
+  the standards step, and how the index follows your edits.
 - **Judging code quality** → invoke `dotnet-review`. Never review C# inline.
 
 Non-C# files (`.csproj`, `.json`, `.md`, `.cmd`) are ordinary `Read`/`Grep` territory — this skill

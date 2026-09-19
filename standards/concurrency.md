@@ -213,5 +213,5 @@ with the interleaving stated concretely. Missing `ConfigureAwait(false)` in libr
 cancellation tokens, unbounded channels, a channel whose writer never calls `Complete()`, and a
 double-await/blocking call on a `ValueTask` reachable only on an uncommon path are 🟡. Anything asserting
 "this could race" without naming the two call paths that overlap is 🔵 at most — trace both paths with
-`get_references`/`get_call_hierarchy` before asserting, and check `search_log` for a recorded reason the
-pattern is intentional.
+`get_references`/`get_call_hierarchy` before asserting, and check the site's comments and `<remarks>`
+for a recorded reason the pattern is intentional.

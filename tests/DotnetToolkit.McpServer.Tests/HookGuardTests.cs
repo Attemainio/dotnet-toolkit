@@ -151,93 +151,6 @@ public sealed class CsFileMembershipTests : IClassFixture<HookRepoFixture>
     }
 }
 
-public sealed class GuardCsEditTests : IClassFixture<HookRepoFixture>
-{
-    private readonly HookRepoFixture _repo;
-
-    public GuardCsEditTests(HookRepoFixture repo) => _repo = repo;
-
-    [Fact]
-    public void Evaluate_EditOnExistingCsFile_Denies()
-    {
-        var payload = new HookPayload("Edit", _repo.CompiledFile, null);
-
-        var outcome = GuardCsEdit.Evaluate(payload, _repo.Context());
-
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("dotnet-write", outcome.Stderr);
-    }
-
-    [Fact]
-    public void Evaluate_EditOnFileNoProjectCompiles_Allows()
-    {
-        // validate_patch answers file_not_in_solution for a file outside the loaded solution, so denying
-        // the plain tool here would leave no write path at all. GuardCsRead gates on the same membership.
-        Assert.Equal(
-            HookOutcome.Allow,
-            GuardCsEdit.Evaluate(new HookPayload("Edit", _repo.FileWithoutProject, null), _repo.Context()));
-    }
-
-    [Fact]
-    public void Evaluate_WriteCreatingNewCsFile_Allows()
-    {
-        // A new file has no symbolId to lease a contentVersion against, so it cannot go through
-        // validate_patch in the first place.
-        var payload = new HookPayload("Write", Path.Combine(_repo.Root, "src", "App", "BrandNew.cs"), null);
-
-        Assert.Equal(HookOutcome.Allow, GuardCsEdit.Evaluate(payload, _repo.Context()));
-    }
-
-    [Fact]
-    public void Evaluate_WriteOverExistingCsFile_Denies()
-    {
-        var payload = new HookPayload("Write", _repo.CompiledFile, null);
-
-        Assert.Equal(2, GuardCsEdit.Evaluate(payload, _repo.Context()).ExitCode);
-    }
-
-    [Fact]
-    public void Evaluate_ApplyPatchUpdatingExistingCsFile_Denies()
-    {
-        var command = """
-            *** Begin Patch
-            *** Update File: src/App/Compiled.cs
-            @@
-            -class Compiled;
-            +class Compiled { }
-            *** End Patch
-            """;
-        var payload = new HookPayload("apply_patch", null, command);
-
-        Assert.Equal(2, GuardCsEdit.Evaluate(payload, _repo.Context()).ExitCode);
-    }
-
-    [Fact]
-    public void Evaluate_ApplyPatchAddingNewCsFile_Allows()
-    {
-        var command = """
-            *** Begin Patch
-            *** Add File: src/App/BrandNew.cs
-            +class BrandNew;
-            *** End Patch
-            """;
-        var payload = new HookPayload("apply_patch", null, command);
-
-        Assert.Equal(HookOutcome.Allow, GuardCsEdit.Evaluate(payload, _repo.Context()));
-    }
-
-    [Theory]
-    [InlineData("README.md")]
-    [InlineData("App.csproj")]
-    [InlineData("Component.razor")]
-    public void Evaluate_NonCsFile_Allows(string name)
-    {
-        var payload = new HookPayload("Edit", Path.Combine(_repo.Root, name), null);
-
-        Assert.Equal(HookOutcome.Allow, GuardCsEdit.Evaluate(payload, _repo.Context()));
-    }
-}
-
 public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
 {
     private readonly HookRepoFixture _repo;
@@ -288,6 +201,30 @@ public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
             HookOutcome.Allow,
             GuardCsRead.Evaluate(new HookPayload("Read", _repo.FileWithoutProject, null), _repo.Context(), blocked: true));
     }
+
+    /// <summary>
+    /// A Read with offset/limit is how a located symbol's text is meant to be fetched, so it draws no
+    /// note - and no denial even in forced-block mode, or the MCP probe could not read code at all.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"file_path":"x","offset":12,"limit":30}""")]
+    [InlineData("""{"file_path":"x","offset":12}""")]
+    [InlineData("""{"file_path":"x","limit":40}""")]
+    public void Evaluate_RangedRead_IsSilentInEveryMode(string toolInput)
+    {
+        var payload = new HookPayload("Read", _repo.CompiledFile, null) { ToolInputRaw = toolInput };
+
+        Assert.Equal(HookOutcome.Allow, GuardCsRead.Evaluate(payload, _repo.Context()));
+        Assert.Equal(HookOutcome.Allow, GuardCsRead.Evaluate(payload, _repo.Context(), blocked: true));
+    }
+
+    [Fact]
+    public void Evaluate_WholeFileReadWithExplicitInput_StillAdvises()
+    {
+        var payload = new HookPayload("Read", _repo.CompiledFile, null) { ToolInputRaw = """{"file_path":"x"}""" };
+
+        Assert.Contains("ranged Read", GuardCsRead.Evaluate(payload, _repo.Context()).Stdout);
+    }
 }
 
 public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
@@ -295,6 +232,33 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
     private readonly HookRepoFixture _repo;
 
     public GuardCsBashReadTests(HookRepoFixture repo) => _repo = repo;
+
+    [Theory]
+    [InlineData("sed -n '12,40p' {0}")]
+    [InlineData("sed -n 12p {0}")]
+    [InlineData("head -n 40 {0}")]
+    [InlineData("head -40 {0}")]
+    [InlineData("tail -n +12 {0}")]
+    public void Evaluate_RangedReadOfCompiledFile_IsSilentInEveryMode(string template)
+    {
+        var command = string.Format(template, _repo.CompiledFile);
+
+        Assert.Equal(HookOutcome.Allow, GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
+        Assert.Equal(HookOutcome.Allow, GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context(), blocked: true));
+    }
+
+    [Theory]
+    [InlineData("sed 's/a/b/' {0}")]
+    [InlineData("head {0}")]
+    [InlineData("cat {0}")]
+    public void Evaluate_WholeFileReadOfCompiledFile_StillAdvises(string template)
+    {
+        var command = string.Format(template, _repo.CompiledFile);
+        var outcome = GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
+
+        Assert.Equal(0, outcome.ExitCode);
+        Assert.Contains("ranged read", outcome.Stdout);
+    }
 
     [Fact]
     public void Evaluate_MultiTermGrepOverCompiledFile_AllowsWithAdvisoryNote()
@@ -448,71 +412,6 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
     }
 }
 
-public sealed class GuardCsBashWriteTests : IClassFixture<HookRepoFixture>
-{
-    private readonly HookRepoFixture _repo;
-
-    public GuardCsBashWriteTests(HookRepoFixture repo) => _repo = repo;
-
-    [Theory]
-    [InlineData("echo 'marker' >> {0}")]
-    [InlineData("sed -i 's/x/y/' {0}")]
-    [InlineData("tee {0}")]
-    public void Evaluate_WriteShapedCommandOntoCompiledFile_Denies(string template)
-    {
-        var command = string.Format(template, _repo.CompiledFile);
-
-        var outcome = GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context());
-
-        Assert.Equal(2, outcome.ExitCode);
-        Assert.Contains("dotnet-write", outcome.Stderr);
-    }
-
-    [Fact]
-    public void Evaluate_RedirectOntoNewCsFile_Allows()
-    {
-        // A file that does not exist yet has no symbolId for validate_patch to lease a version against -
-        // the same allowance guard-cs-edit makes for Write creating a new file.
-        var target = Path.Combine(_repo.Root, "src", "App", "BrandNew.cs");
-        var command = $"echo 'marker' >> {target}";
-
-        Assert.Equal(
-            HookOutcome.Allow,
-            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
-    }
-
-    [Fact]
-    public void Evaluate_RedirectOntoFileNoProjectCompiles_Allows()
-    {
-        var command = $"echo 'marker' >> {_repo.FileWithoutProject}";
-
-        Assert.Equal(
-            HookOutcome.Allow,
-            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
-    }
-
-    [Fact]
-    public void Evaluate_ReadOnlyCommand_Allows()
-    {
-        var command = $"cat {_repo.CompiledFile}";
-
-        Assert.Equal(
-            HookOutcome.Allow,
-            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
-    }
-
-    [Fact]
-    public void Evaluate_RedirectAfterCdIntoAnotherRepo_Allows()
-    {
-        var command = $"cd {_repo.Sibling} && echo 'marker' >> src/Other/Elsewhere.cs";
-
-        Assert.Equal(
-            HookOutcome.Allow,
-            GuardCsBashWrite.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
-    }
-}
-
-
 public sealed class HookPayloadTests
 {
     [Fact]
@@ -653,20 +552,25 @@ public sealed class SubagentTrackerTests
     }
 }
 
-public sealed class WriteChecklistHintTests
+public sealed class CsWriteChecklistHintTests : IClassFixture<HookRepoFixture>
 {
+    private readonly HookRepoFixture _repo;
+
+    public CsWriteChecklistHintTests(HookRepoFixture repo) => _repo = repo;
+
     [Fact]
-    public void Evaluate_FirstCallOfSession_EmitsTheChecklist()
+    public void Evaluate_FirstEditOfSession_EmitsTheChecklist()
     {
         var session = NewSession();
         try
         {
-            var outcome = WriteChecklistHint.Evaluate(Patch(session));
+            var outcome = CsWriteChecklistHint.Evaluate(Edit(session, _repo.CompiledFile), _repo.Context());
 
             Assert.Equal(0, outcome.ExitCode);
             Assert.NotNull(outcome.Stdout);
             Assert.Contains("PreToolUse", outcome.Stdout);
-            Assert.Contains("validate_patch", outcome.Stdout);
+            Assert.Contains("dotnet build", outcome.Stdout);
+            Assert.DoesNotContain("validate_patch", outcome.Stdout);
         }
         finally
         {
@@ -675,17 +579,36 @@ public sealed class WriteChecklistHintTests
     }
 
     [Fact]
-    public void Evaluate_SecondCallOfSameSession_IsSilent()
+    public void Evaluate_SecondEditOfSameSession_IsSilent()
     {
         var session = NewSession();
         try
         {
-            WriteChecklistHint.Evaluate(Patch(session));
-            var second = WriteChecklistHint.Evaluate(Patch(session));
+            CsWriteChecklistHint.Evaluate(Edit(session, _repo.CompiledFile), _repo.Context());
+            var second = CsWriteChecklistHint.Evaluate(Edit(session, _repo.CompiledFile), _repo.Context());
 
-            // A checklist repeated on every patch of a long editing task is noise, and noise is ignored.
+            // A checklist repeated on every edit of a long refactor is noise, and noise is ignored.
             Assert.Equal(0, second.ExitCode);
             Assert.Null(second.Stdout);
+        }
+        finally
+        {
+            DeleteMarker(session);
+        }
+    }
+
+    [Fact]
+    public void Evaluate_FileNoProjectCompiles_IsSilentAndClaimsNothing()
+    {
+        var session = NewSession();
+        try
+        {
+            // Neither a loose file nor a nested fixture solution's file is the C# the checklist is about,
+            // and neither may consume the session's one emission.
+            Assert.Null(CsWriteChecklistHint.Evaluate(Edit(session, _repo.FileWithoutProject), _repo.Context()).Stdout);
+            Assert.Null(CsWriteChecklistHint.Evaluate(Edit(session, _repo.NestedSolutionFile), _repo.Context()).Stdout);
+            Assert.Null(CsWriteChecklistHint.Evaluate(Edit(session, Path.Combine(_repo.Root, "README.md")), _repo.Context()).Stdout);
+            Assert.NotNull(CsWriteChecklistHint.Evaluate(Edit(session, _repo.CompiledFile), _repo.Context()).Stdout);
         }
         finally
         {
@@ -697,8 +620,8 @@ public sealed class WriteChecklistHintTests
     public void Evaluate_NoSessionId_IsSilent()
     {
         // Without an id there is no way to tell a first call from a fiftieth, so emitting would repeat
-        // the checklist on every patch. The always-loaded rule and the skill carry it instead.
-        var outcome = WriteChecklistHint.Evaluate(new HookPayload("mcp__x__validate_patch", null, null));
+        // the checklist on every edit. The always-loaded rule and the skill carry it instead.
+        var outcome = CsWriteChecklistHint.Evaluate(new HookPayload("Edit", _repo.CompiledFile, null), _repo.Context());
 
         Assert.Equal(0, outcome.ExitCode);
         Assert.Null(outcome.Stdout);
@@ -715,12 +638,12 @@ public sealed class WriteChecklistHintTests
 
     private static string NewSession() => Guid.NewGuid().ToString("N");
 
-    private static HookPayload Patch(string session) =>
-        new("mcp__plugin_dotnet-toolkit_dotnet__validate_patch", null, null) { SessionId = session };
+    private static HookPayload Edit(string session, string file) =>
+        new("Edit", file, null) { SessionId = session };
 
     private static void DeleteMarker(string session)
     {
-        var marker = Path.Combine(Path.GetTempPath(), "dotnet-toolkit-hooks", $"{session}.patched");
+        var marker = Path.Combine(Path.GetTempPath(), "dotnet-toolkit-hooks", $"{session}.cs-checklist");
         if (File.Exists(marker))
         {
             File.Delete(marker);

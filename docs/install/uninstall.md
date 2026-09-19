@@ -53,6 +53,6 @@ check.
 ## Confirm, don't assert
 
 After the deletions, nothing remaining in the repo should name `search_index`, `get_symbol`, or
-`validate_patch` — except whatever the repo wrote itself, which is theirs to keep. Check rather than
+`rename_symbol` — except whatever the repo wrote itself, which is theirs to keep. Check rather than
 claim it, and if the repo's own `CLAUDE.md` names the tools, say so explicitly rather than leaving a
 dangling instruction unexplained.

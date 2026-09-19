@@ -9,26 +9,29 @@ string matches as hits, and silently drops sites when output is truncated.
 | `direction` | `callers` (default) \| `implementations` \| `overrides`. An unrecognized value falls back to `callers` and the response carries `directionHint` naming what it probably was. |
 | `limit` | Max items per page (default `50`, cap `200`). Lower it when a few worked examples are enough — a high-fan-in symbol's full page is the most expensive response this server produces. |
 | `offset` | Items to skip before `limit` (default `0`). Pass the previous response's `nextOffset` to reach the rest. |
-| `includeBodies` | Inline each caller's source as `content: [{line, text}]` — same per-line shape as `get_symbol`'s `source`, including the `toon`-format raw-block rendering (default `false` — fetch bodies only for the ones you'll actually edit). |
-| `fields` | Comma list of extras beyond the default `symbolId`/`displayString`/`sites`: `contentVersion` (this item's own version, for leasing it independently — rarely needed), `signature` (the full parameter-list `displayString` instead of the default compact name/arity form), `crefs` (also return the XML-doc `<see cref="..."/>` sites excluded by default, each tagged `kind:"cref"`). |
+| `fields` | Comma list of extras beyond the default `symbolId`/`displayString`/`sites`: `signature` (the full parameter-list `displayString` instead of the default compact name/arity form), `crefs` (also return the XML-doc `<see cref="..."/>` sites excluded by default, each tagged `kind:"cref"`). |
+
+There is no option to inline each caller's source. A site is `file` + `line`; read the caller with
+`Read(file, offset: line - N, limit: M)` around it, or `get_symbol(symbolId)` for its whole
+declaration span — and only for the callers you will actually change.
 
 Real call and response (trimmed):
 
 ```
-get_references(symbol: "FeatureLogStore.Append")
+get_references(symbol: "SymbolStore.SymbolsDeclaredIn")
 ```
 
 ```json
 {"targetSymbolId":"sym_c25d7c88b0e916b0",
  "items":[
    {"symbolId":"sym_0e0e...",
-    "displayString":"DevlogMigration.Run/3",
-    "sites":[{"file":"src/DotnetToolkit.McpServer/Devlog/DevlogMigration.cs","line":29,
-              "snippet":"log.Append(new FeatureLogStore.LogEntry("}]},
+    "displayString":"SymbolIndexBuilder.RefreshDocumentsAsync/1",
+    "sites":[{"file":"src/DotnetToolkit.McpServer/Indexing/SymbolIndexBuilder.cs","line":229,
+              "snippet":"var previous = _symbols.SymbolsDeclaredIn(relative);"}]},
    {"symbolId":"sym_2b15...",
-    "displayString":"PatchTools.AppendLog/6",
-    "sites":[{"file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","line":190,
-              "snippet":"featureLog.Append(new FeatureLogStore.LogEntry("}]}],
+    "displayString":"RenameTools.RenameSymbol/13",
+    "sites":[{"file":"src/DotnetToolkit.McpServer/Tools/RenameTools.cs","line":190,
+              "snippet":"symbolStore.SymbolsDeclaredIn(path)"}]}],
  "dispatchKind":"direct",
  "totalItems":2,"excludedTextMatches":1}
 ```
@@ -40,8 +43,7 @@ own, so this direction reports the members that *reference* the type and there i
 describe — emitting `direct` there stated a fact about nothing and read as a claim the references were
 non-virtual. A **delegate** type keeps its kind, because `delegate` is a true statement about how the
 members returned actually invoke it. Each item carries `symbolId, displayString, sites` on every call;
-`contentVersion` (with `fields:"contentVersion"`), `isTest` (emitted only when `true`) and `content`
-(with `includeBodies:true`) are present only when they apply — absent, not `null`, otherwise.
+`isTest` (emitted only when `true`) is present only when it applies — absent, not `null`, otherwise.
 `excludedTextMatches` is the count of comment/string matches a grep would have wrongly included — 1
 here, correctly excluded. `targetSymbolId` and `targetDisplayString` are omitted when `symbol` was
 already a `sym_...` id, since they would only restate the input.
@@ -157,37 +159,6 @@ mentions goes with them. On a heavily documented API this is the difference betw
 response being comments and none of it being. Pass `fields: "crefs"` to get them back, each tagged
 `kind: "cref"` so code sites stay distinguishable.
 
-`includeBodies:true`'s `content` is the same `[{line, text}]` shape as `get_symbol`'s `source` (shown
-here as `format:"json"`, trimmed to one caller):
-
-```
-get_references(symbol: "SearchText.CamelParts", includeBodies: true)
-```
-
-```json
-{"targetSymbolId":"sym_bfdafc...",
- "items":[{"symbolId":"sym_528271...",
-   "displayString":"SearchText.ForQuery/1",
-   "sites":[{"file":"src/DotnetToolkit.McpServer/Store/SearchText.cs","line":50,
-             "snippet":"foreach (var candidate in new[] { segment }.Concat(CamelParts(segment)))"}],
-   "content":[
-     {"line":43,"text":"    public static string? ForQuery(string query)"},
-     {"line":54,"text":"                // Prefix match, so \"Ledg\" still finds \"Ledger\". Quoted to keep FTS5 from reading a"},
-     {"line":56,"text":"                terms.Add($\"\\\"{candidate.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"*\");"}]}]}
-```
-
-Under the default `toon` format, that same `content` renders as the raw block described above —
-a line building a doubled-up quoted string literal, unescaped exactly as the file reads:
-
-```
-content:
-  43: public static string? ForQuery(string query)
-  ...
-  54:                 // Prefix match, so "Ledg" still finds "Ledger". Quoted to keep FTS5 from reading a
-  55:                 // term as one of its operators (NOT, OR, NEAR) or choking on a stray character.
-  56:                 terms.Add($"\"{candidate.Replace("\"", "\"\"")}\"*");
-```
-
 ## Named types (including delegates)
 
 A class, record, interface or delegate has no call sites of its own, so `callers` on one answers the
@@ -229,4 +200,4 @@ Absent whenever `direction` matched, so an ordinary call carries no extra field.
 
 - **Need the tree, not one hop** → `get_call_hierarchy` — `get_call_hierarchy.md`
 - **Need the path to one known destination** → `get_call_slice` — `get_call_slice.md`
-- **Editing every caller** → one `validate_patch` call per touched symbol, sharing one `intent` — `validate_patch.md`
+- **Editing every caller** → `Read` each site's declaration, `Edit` it, and one `dotnet build` after the burst — `dotnet-write`

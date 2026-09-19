@@ -8,10 +8,6 @@ public sealed class ToolkitConfig
     [JsonPropertyName("solution")]
     public string? Solution { get; set; }
 
-    /// <summary>Legacy devlog markdown directory, read only by the one-time migration into the SQLite feature_log.</summary>
-    [JsonPropertyName("devlogDir")]
-    public string DevlogDir { get; set; } = "devlog";
-
     [JsonPropertyName("excludeGlobs")]
     public string[] ExcludeGlobs { get; set; } = [];
 

@@ -50,54 +50,34 @@ public static class ContextTools
             | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
 
     [McpServerTool(Name = "get_symbol")]
-    [Description("Read the actual code of a C# type or member you can already name — go to definition, peek at the "
-        + "implementation, show me the body of this method, what does this class look like. Returns source "
-        + "text, signature, XML docs, members, attributes, base type, reference counts and exact file location."
-        + " USE THIS INSTEAD OF OPENING A .cs FILE (Read, cat, sed): it returns the whole symbol even when "
-        + "split across partial-class files — Read gives one fragment and no signal the rest exists — for a "
-        + "fraction of the file's tokens. Don't know the name yet? search_index finds it; this one reads it. "
-        + "Every response carries declarationSites (file + startLine/endLine, INCLUDING a leading /// doc "
-        + "comment when present, plus signatureLine) and a contentVersion token — exactly what validate_patch "
-        + "needs as baseVersions and edit spans. Never anchor an edit on search_index's line, which excludes "
-        + "the doc comment. A patch that rewrites a BODY needs a "
-        + "contentVersion from an include that actually served one, so fetch with \"all\" (or "
-        + "source/bodyOutline/mechanicalFacts) when about to edit — the default include leases the declaration "
-        + "only. NEVER build an edit span from a fetch whose -modifiers dropped lines inside it (source:code on"
-        + " a type, -comments, -attributes): the patch replaces the span verbatim, so unseen lines are deleted."
-        + " Strip when reading; edit from full source. include: \"standard\" (default) | \"all\" | a component list"
-        + " that REPLACES the default — see the include parameter. Common calls: include:\"members\" for a type's"
-        + " surface, \"source:code\" for code without doc comments, \"source:code@120-160\" for one region of a "
-        + "long member (a slice still leases the body layer), \"bodyOutline\" to map one before slicing it. Use "
-        + "symbols to fetch several at once. Component semantics, the @ and -modifier grammar, worked examples:"
-        + " docs/tools/get_symbol.md.")]
+    [Description("Locate and describe a C# type or member you can already name — go to definition, where is this "
+        + "declared, what does this class look like, what are its members. Returns the exact file location "
+        + "(declarationSites: file + startLine/endLine, INCLUDING a leading /// doc comment when present, plus "
+        + "signatureLine, ONE ENTRY PER PART of a partial), the signature, and on request XML docs, members "
+        + "with their shapes, attributes, base type, interfaces, usings, a control-flow outline, reference "
+        + "counts. It returns NO source text: read the code with Read(file, offset: startLine, limit: "
+        + "endLine-startLine+1) over the declarationSites range — a ranged Read never draws an advisory. "
+        + "startLine is where a leading /// doc comment begins, endLine is the closing brace. Don't know the "
+        + "name yet? search_index finds it; this one locates it. include: \"standard\" (default) | \"all\" | a "
+        + "component list that REPLACES the default — see the include parameter. Common calls: "
+        + "include:\"members\" for a type's surface, \"bodyOutline\" to map a long method before reading part of "
+        + "it. Use symbols to fetch several at once. Component semantics and worked examples: "
+        + "docs/tools/get_symbol.md.")]
     public static async Task<string> GetSymbol(
         WorkspaceHost workspace,
         SolutionLocator locator,
         ProjectIndex index,
         SymbolStore symbolStore,
-        FeatureLogStore featureLog,
         SymbolIndexBuilder indexBuilder,
         TelemetryRecorder telemetry,
         [Description("The class, interface, struct, record, enum, method, property, field or event to look up: its fully-qualified name (append a parameter list to pick an overload), a unique suffix of it, or a sym_... id from a previous response. Exactly one of symbol or symbols is required.")] string? symbol = null,
         [Description("\"standard\" (default, omit this) | \"all\" | a plain comma-separated list of component "
             + "names that REPLACES the default set exactly: xmlDoc, mechanicalFacts, bodyOutline, "
-            + "referenceCounts, recentLog, members, attributes, baseType, interfaces, usings, source. No ':' "
-            + "or '-' here -- the source grammar lives in the source argument, so this list only ever adds. "
-            + "Pass both to union them. What each component returns, and why source suppresses several of "
-            + "them: docs/tools/get_symbol.md.")] string? include = null,
-
-        [Description("The source query, kept separate from include so each argument has ONE grammar and '-' "
-            + "only ever subtracts. \"full\" (default: includes the leading /// doc comment) or \"code\" "
-            + "(drops it, and for a TYPE its members' too -- a reading mode). Subtract further with "
-            + "-attributes, -comments, -exact/-compact, or a doc tag under full (-summary, -remarks, "
-            + "-returns, ...). Select lines with @46-76;79-83 -- absolute file numbers, and a slice still "
-            + "leases the body layer a patch needs. Given alone it replaces the default set, so \"give me the "
-            + "code\" does not drag back members and interfaces. NEVER build an edit span from a fetch whose "
-            + "subtractions dropped lines inside it. Full grammar: docs/tools/get_symbol.md.")] string? source = null,
+            + "referenceCounts, members, attributes, baseType, interfaces, usings. What each component "
+            + "returns: docs/tools/get_symbol.md.")] string? include = null,
 
         [Description("Fetch several symbols in one call instead of symbol. The same include is applied to "
-            + "every entry, and each entry is a full, independent fetch. A source @line selection is rejected here, "
-            + "since one span of file lines cannot apply to several symbols. Exactly one of symbol or "
+            + "every entry, and each entry is a full, independent fetch. Exactly one of symbol or "
             + "symbols is required.")]
             string[]? symbols = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
@@ -110,25 +90,13 @@ public static class ContextTools
         if (targets is not { Length: > 0 })
             return Formats.Render(new { error = "missing_symbol", detail = "Provide exactly one of symbol or symbols." });
 
-        // A line selection names a span in one specific file, so applying the same include unchanged to
-        // every entry would slice each symbol by another one's line numbers. Rejected rather than
-        // silently returning fragments that look like real answers.
-        if (symbols is { Length: > 0 } && SymbolComponents.Resolve(include, source, out _) is { HasSlicedSource: true })
-        {
-            return Formats.Render(new
-            {
-                error = "lines_with_batch",
-                detail = "A source @line selection applies to one symbol's own file lines; fetch it with symbol, not symbols.",
-            });
-        }
-
         if (targets is [var only] && symbols is null)
         {
-            var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                toolCallId, sessionId, attributedTask, only, include, source);
+            var one = await GetSymbolOne(workspace, locator, index, symbolStore, indexBuilder,
+                toolCallId, sessionId, attributedTask, only, include);
             var rendered = Formats.Render(JsonSerializer.Deserialize<JsonElement>(one.Json));
             return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", only, one.SymbolId,
-                include ?? "standard", one.ContentVersion, 1,
+                include ?? "standard", 1,
                 one.LimitedBy, one.ErrorKind, rendered);
         }
 
@@ -141,8 +109,8 @@ public static class ContextTools
         string? firstLimitedBy = null;
         foreach (var target in targets)
         {
-            var one = await GetSymbolOne(workspace, locator, index, symbolStore, featureLog, indexBuilder,
-                toolCallId, sessionId, attributedTask, target, include, source);
+            var one = await GetSymbolOne(workspace, locator, index, symbolStore, indexBuilder,
+                toolCallId, sessionId, attributedTask, target, include);
             results.Add(JsonSerializer.Deserialize<JsonElement>(one.Json));
             firstErrorKind ??= one.ErrorKind;
             firstLimitedBy ??= one.LimitedBy;
@@ -157,7 +125,7 @@ public static class ContextTools
         }
 
         return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", string.Join(",", targets),
-            null, include ?? "standard", null, targets.Length, firstLimitedBy,
+            null, include ?? "standard", targets.Length, firstLimitedBy,
             firstErrorKind, batchRendered);
     }
 
@@ -248,9 +216,9 @@ public static class ContextTools
 
 private static async Task<SymbolFetchResult> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
-        FeatureLogStore featureLog, SymbolIndexBuilder indexBuilder,
+        SymbolIndexBuilder indexBuilder,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include, string? source)
+        string symbol, string? include)
     {
         // Every return in this method is PLAIN JSON, regardless of Formats.Current — its result is
         // always re-parsed and re-rendered by its caller (GetSymbol, for both the single-symbol and
@@ -269,102 +237,47 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             {
                 // Workspace not ready: answer from the syntax index at signature level (Conformance C11).
                 await index.EnsureFreshAsync();
-                var fallback = IndexSymbol(index, locator, symbol, include, source);
+                var fallback = IndexSymbol(index, locator, symbol);
                 if (fallback is { } fb)
                 {
                     var indexEnvelope = new
                     {
-                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId, contentVersion = fb.Version,
+                        contract = Contract.Id, toolCallId, symbolId = fb.SymbolId,
                         limitedBy = "index_only", content = fb.Content,
                     };
                     var indexJson = Formats.ToJson(indexEnvelope);
-                    return new SymbolFetchResult(indexJson, fb.SymbolId, fb.Version, "index_only", null);
+                    return new SymbolFetchResult(indexJson, fb.SymbolId, "index_only", null);
                 }
             }
 
             var loading = Formats.ToJson(new { error = workspace.State == WorkspaceState.Loading ? "workspace_loading" : "no_workspace" });
-            return new SymbolFetchResult(loading, null, null, "index_only", "workspace_loading");
+            return new SymbolFetchResult(loading, null, "index_only", "workspace_loading");
         }
 
         var (sym, error) = await ResolveAsPlainJsonAsync(solution, ResolveHandle(symbol, symbolStore), symbolStore);
         if (sym is null)
-            return new SymbolFetchResult(error!, null, null, "live", "unresolved");
+            return new SymbolFetchResult(error!, null, "live", "unresolved");
 
         var symbolId = SymbolKey.IdOf(sym);
 
-        var components = SymbolComponents.Resolve(include, source, out var invalidComponent);
+        var components = SymbolComponents.Resolve(include, out var invalidComponent);
         if (components is not { } parts)
         {
             var badComponent = Formats.ToJson(new
             {
                 error = "invalid_component",
-                // A failed SOURCE query and an unknown COMPONENT name are different mistakes now that they
-                // arrive on different arguments, so they get different advice: listing the component names
-                // tells a caller nothing when what they actually mistyped was a source modifier.
-                detail = invalidComponent is not null && invalidComponent == source
-                    ? $"source:{source} is not a valid source query. Modes: full (default, keeps the /// doc "
-                        + "comment) or code. Subtract -attributes, -comments, -exact/-compact, or a doc tag "
-                        + "under full (-summary, -remarks, -returns, ...). Select lines with @46-76;79-83. "
-                        + "Full grammar: docs/tools/get_symbol.md."
-                    : InvalidComponentDetail(invalidComponent ?? include ?? ""),
+                detail = InvalidComponentDetail(invalidComponent ?? include ?? ""),
             });
-            return new SymbolFetchResult(badComponent, symbolId, null, "live", "invalid_component");
+            return new SymbolFetchResult(badComponent, symbolId, "live", "invalid_component");
         }
 
-        // The token describes only the layers this response's components were derived from, so a caller
-        // relying on it to detect drift is never told about a layer it never actually received.
-        var version = FullVersionOf(sym, symbolStore).Narrow(parts.RequiredLayers);
         var limitedBy = await LimitedByAsync(workspace, indexBuilder, SourceFilesOf(sym));
 
-        // A whole-declaration source fetch on something enormous is more often a mis-aimed read than a
-        // deliberate one, and the caller cannot know the size until it has already paid for it. Warn once,
-        // serve the cheaper component that answers the same question, and let an identical repeat through
-        // — why consent is re-sending the call rather than a new argument is in ResponseGuard.
-        if (parts.Has(SymbolComponents.Source) && !parts.HasSlicedSource)
-        {
-            var declaredLines = ResponseGuard.DeclaredLineCount(DeclarationSpans(sym, locator));
-            if (declaredLines >= ResponseGuard.LineThreshold
-                && ResponseGuard.ShouldWarn(symbolId, include, DateTimeOffset.UtcNow))
-            {
-                // A type's surface is its members; a member's is its control flow. Either one answers
-                // "what is in here", which is the question a whole-source fetch is usually a blunt way
-                // of asking — so the guard costs a round trip only when it guessed wrong.
-                var instead = sym is INamedTypeSymbol ? SymbolComponents.Members : SymbolComponents.BodyOutline;
-                // Carries the caller's original include:"all" intent through the substitution: without this,
-                // a member row served here never had a leaseable contentVersion even when "all" was explicitly
-                // requested, because "members" alone resolves with IsAll false (self-eval follow-up, 2026-08-11).
-                var guardParts = SymbolComponents.Resolve(instead, null, out _)!.Value;
-                if (parts.IsAll)
-                    guardParts = guardParts with { IsAll = true };
-
-                var guardContent = await BuildContent(sym, guardParts, solution, locator, symbolStore, indexBuilder, featureLog);
-                var guardVersion = FullVersionOf(sym, symbolStore).Narrow(guardParts.RequiredLayers).ToString();
-                var guarded = Formats.ToJson(new
-                {
-                    symbolId,
-                    contentVersion = guardVersion,
-                    limitedBy,
-                    components = guardParts.Resolved,
-                    guard = new
-                    {
-                        reason = "large_source",
-                        declaredLines,
-                        advice = $"source would return about {declaredLines} lines, so {instead} is served instead. "
-                            + "For one region, slice with source:code@start-end off declarationSites. Repeat this "
-                            + "call unchanged to get the source anyway.",
-                    },
-                    content = guardContent,
-                });
-                return new SymbolFetchResult(guarded, symbolId, guardVersion, limitedBy, "large_source");
-            }
-        }
-
-        var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder, featureLog);
+        var content = await BuildContent(sym, parts, solution, locator, symbolStore, indexBuilder);
         var served = ServedComponents(parts, content);
         var envelope = new
         {
             symbolId,
-            contentVersion = version.ToString(),
             limitedBy,
             // Named only when it says something the caller does not already know: a component that was
             // asked for and came back empty. Repeating the request back verbatim is pure restatement.
@@ -373,7 +286,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         };
 
         var json = Formats.ToJson(envelope);
-        return new SymbolFetchResult(json, symbolId, version.ToString(), limitedBy, null);
+        return new SymbolFetchResult(json, symbolId, limitedBy, null);
     }
 
     /// <summary>
@@ -395,31 +308,16 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))];
     }
 
-    /// <summary>
-    /// Explains why one entry of an <c>include</c> list could not be parsed.
-    /// </summary>
+    /// <summary>Explains why one entry of an <c>include</c> list could not be parsed.</summary>
     /// <param name="component">The offending entry, verbatim.</param>
-    /// <returns>A message naming the real mistake when the entry is recognisably a source request.</returns>
-    /// <remarks>
-    /// A malformed source request is by far the commonest cause, and listing the eleven bare component
-    /// names answers a question the caller did not ask: "source:code@70-81-lineNumbers" fails on the
-    /// ORDER of its parts, not on the component name, and nothing in the bare list shows that.
-    /// </remarks>
+    /// <returns>A message listing the valid names, and naming the removed source component when that is what was asked for.</returns>
     private static string InvalidComponentDetail(string component)
     {
-        var separator = component.IndexOfAny([':', '@']);
-        var isSourceRequest = separator > 0
-            && string.Equals(component[..separator], SymbolComponents.Source, StringComparison.OrdinalIgnoreCase);
-        if (!isSourceRequest)
-            return $"'{component}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.";
-
-        return $"'{component}' is not a usable source request. The form is "
-            + "source[:full|:code][-modifier...][@lines]: the -modifiers ("
-            + string.Join(", ", SourceQuery.ModifierNames)
-            + ") come BEFORE the @ line selection, which runs to the end of the entry, and each range is "
-            + "from-to, from- or -to over absolute file lines - e.g. source:code-lineNumbers@70-81;89-109. "
-            + "The doc-tag modifiers apply to source:full only, since source:code has already dropped the "
-            + "doc comment.";
+        var head = component.Split([':', '@'], 2)[0];
+        if (string.Equals(head, "source", StringComparison.OrdinalIgnoreCase))
+            return "'source' is no longer a component: get_symbol locates, and Read(file, offset, limit) over "
+                + "declarationSites reads the text. Valid: " + string.Join(", ", SymbolComponents.All) + ".";
+        return $"'{component}' is not a component. Valid: {string.Join(", ", SymbolComponents.All)}.";
     }
 
     // Carries GetSymbolOne's result plus the telemetry fields its caller needs to record against the
@@ -428,7 +326,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
     private readonly record struct SymbolFetchResult(
         string Json,
         string? SymbolId,
-        string? ContentVersion,
         string? LimitedBy,
         string? ErrorKind);
 
@@ -506,7 +403,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 /// <summary>
     /// Resolves a name/id that only matches a previously-discovered external symbol row (BCL/NuGet code
     /// this repo's own source calls, implements, or extends) into a live <c>ISymbol</c> via its stored
-    /// documentation-comment id, so it flows through the same BuildContent/DeclarationSites/VersionOf
+    /// documentation-comment id, so it flows through the same BuildContent/DeclarationSites
     /// path a source symbol does — those already tolerate a symbol with no source locations. Only ever
     /// finds symbols SymbolIndexBuilder's edge walk already surfaced; not a general external-library
     /// browser.
@@ -572,12 +469,11 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "full parameter list instead), and sites, a list of {file, line, snippet} with ONE ROW PER {file, "
         + "line}. XML-doc <see cref=\"...\"/> mentions bind to the symbol but are not code, so they are excluded "
         + "like any other comment match and reported as excludedDocMentions; pass fields:\"crefs\" to get them "
-        + "back. isTest is present only when true; content (the inline body) only with includeBodies:true. "
+        + "back. isTest is present only when true. "
         + "targetSymbolId confirms which overload this answered for, and is omitted when the caller already "
         + "passed a sym_... id. An item's "
-        + "symbolId is a get_symbol target, not an edit lease: updating a call site means fetching it with "
-        + "get_symbol first for the contentVersion and declarationSites validate_patch needs. Full contract and"
-        + " examples: docs/tools/get_references.md.")]
+        + "symbolId is a get_symbol target: updating a call site means editing at the site's file and line. "
+        + "Full contract and examples: docs/tools/get_references.md.")]
     public static async Task<string> GetReferences(
         WorkspaceHost workspace,
         SolutionLocator locator,
@@ -587,10 +483,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         [Description("callers | implementations | overrides (default callers). An unrecognized value falls back to callers rather than erroring, and the response's directionHint names what it probably was.")] string direction = "callers",
         [Description("Max items to return (default 50, cap 200). Lower it when a few worked examples are enough - a high-fan-in symbol's full page is the most expensive response this server produces.")] int limit = 50,
         [Description("Items to skip before limit (default 0). Pass the previous response's nextOffset to reach the references past the page you already have.")] int offset = 0,
-        [Description("Include member bodies inline (default false).")] bool includeBodies = false,
-        [Description("Comma list of extra per-item fields: contentVersion (this item's own hash, independent "
-            + "of the target symbol's — useful only for a caller manually diffing this item against a later "
-            + "fetch; almost never used in practice, so it costs real tokens for almost no callers), signature "
+        [Description("Comma list of extra per-item fields: signature "
             + "(the full parameter-list displayString instead of the default compact name/arity form), crefs "
             + "(also return the XML-doc <see cref=\"...\"/> sites excluded by default, each tagged "
             + "kind:\"cref\"). Omit for the cheaper defaults.")] string? fields = null,
@@ -600,7 +493,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         var attributedTask = Ids.TaskId(taskId);
         var toolCallId = Ids.ToolCall();
         var refLimitedBy = workspace.IsDegraded ? "degraded" : null;
-        var wantContentVersion = false;
         var wantSignature = false;
         var wantCrefs = false;
         if (!string.IsNullOrWhiteSpace(fields))
@@ -609,7 +501,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             {
                 switch (f.ToLowerInvariant())
                 {
-                    case "contentversion": wantContentVersion = true; break;
                     case "signature": wantSignature = true; break;
                     case "crefs": wantCrefs = true; break;
                 }
@@ -620,13 +511,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         {
             var loading = Error(toolCallId, "workspace_loading");
             return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, null, null,
-                null, 0, "index_only", "workspace_loading", loading, direction);
+                0, "index_only", "workspace_loading", loading, direction);
         }
 
         var (sym, error) = await ResolveAsync(solution, ResolveHandle(symbol, symbolStore), toolCallId, symbolStore);
         if (sym is null)
             return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, null, null,
-                null, 0, "live", "unresolved", error!, direction);
+                0, "live", "unresolved", error!, direction);
 
         var normalized = direction.Trim().ToLowerInvariant();
             var directionHint = normalized is "callers" or "implementations" or "overrides" ? null
@@ -635,9 +526,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                         ? $" Did you mean '{nearestDirection}'?" : "");
         var items = normalized switch
         {
-            "implementations" => await Implementations(sym, solution, locator, includeBodies),
-            "overrides" => await Overrides(sym, solution, locator, includeBodies),
-            _ => await Callers(sym, solution, locator, includeBodies),
+            "implementations" => await Implementations(sym, solution, locator),
+            "overrides" => await Overrides(sym, solution, locator),
+            _ => await Callers(sym, solution, locator),
         };
 
         // A <see cref="..."/> binds to the symbol, so Roslyn reports doc mentions among the references —
@@ -725,12 +616,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             items = shown.Select(i => new
             {
                 symbolId = i.SymbolId,
-                contentVersion = wantContentVersion ? i.Version : null,
                 displayString = wantSignature ? i.DisplayString : i.CompactDisplayString,
                 sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet, kind = s.IsCref ? "cref" : null }),
                 isTest = i.IsTest ? true : (bool?)null,
                 indirect = i.IsDirect ? null : (bool?)true,
-                content = i.Body,
             }),
             dispatchKind,
             entryPointHint,
@@ -748,7 +637,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         var json = Formats.Render(envelope);
         return Record(telemetry, toolCallId, sessionId, attributedTask, "get_references", symbol, SymbolKey.IdOf(sym), null,
-            null, shown.Count, refLimitedBy, null, json, normalized);
+            shown.Count, refLimitedBy, null, json, normalized);
     }
 
 
@@ -762,13 +651,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         + "limit, but that floor is shallow — any term the result never covered is named under termsWithNoHits,"
         + " so raise limit (cap 200) or re-ask that term alone. Never read an absent term as an absent symbol. "
         + "camel-case-interior terms match: \"Ledger\" finds FIFOLedger. This locates a name; get_symbol then "
-        + "reads what is in it. A hit's lines is an @from-to READ selector (paste it into get_symbol's source "
-        + "include) marking the signature span only, EXCLUDING any leading /// doc comment — anchor a patch on "
-        + "get_symbol's declarationSites instead. "
-        + "include picks each hit's columns -- shape,read,refs,modifiers by default, "
-        + "plus summary or summary:full -- and every column's legend is stated once per response. intent "
-        + "(edit|logic|surface) aims read at what you are about to do. "
-        + "An unrecognized value on kinds, modifiers, origin, include, groupBy or intent is named in a "
+        + "describes it and Read fetches its text. A hit's lines is the @from-to span of the signature only, "
+        + "EXCLUDING any leading /// doc comment — get_symbol's declarationSites is the doc-inclusive range "
+        + "to Read or Edit at. Names only: string literals and comments are not indexed, so a query made of "
+        + "ordinary words returns nothing (use grep for text). "
+        + "include picks each hit's columns -- shape,refs,modifiers by default, "
+        + "plus summary or summary:full -- and every column's legend is stated once per response. "
+        + "An unrecognized value on kinds, modifiers, origin, include or groupBy is named in a "
         + "<param>Hint response field rather than erroring. "
         + "Filters: kinds, modifiers, implements, xmlDoc, pathPrefix, groupBy, origin. Full grammar, "
         + "both legends, worked examples and response shape: docs/tools/search_index.md.")]
@@ -803,8 +692,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "with far more hits outside the prefix can return fewer than limit -- narrow the query text "
             + "too.")] string? pathPrefix = null,
         [Description("Which columns each hit carries, comma-separated; REPLACES the default "
-            + "\"shape,read,refs,modifiers\". Also summary (a hasSummary bool) or summary:full (the text, "
-            + "capped 160 chars). Commas, NEVER hyphens -- '-' means subtract in get_symbol's source grammar. "
+            + "\"shape,refs,modifiers\". Also summary (a hasSummary bool) or summary:full (the text, "
+            + "capped 160 chars). "
             + "refs is R=callers E=callees I=implementations V=overrides T=tests. Letter tables and legends: "
             + "docs/tools/search_index.md. An unrecognized column is named in includeHint.")] string? include = null,
         [Description("\"namespace\" nests namespace->file->symbols; \"file\" the reverse; \"none\" returns a "
@@ -814,10 +703,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         [Description("\"source\" (default) searches this repo's own declarations; \"external\" only the "
             + "BCL/NuGet symbols this repo's source already calls or implements -- not a library browser; "
             + "\"all\" both. originHint names an unrecognized value.")] string? origin = null,
-        [Description("What you are about to do, which aims the read column: \"edit\" (recommends the "
-            + "body-carrying include a patch needs), \"logic\" (behaviour, so source over docs), \"surface\" "
-            + "(the API shape). Omit to derive it from each hit's own shape. intentHint names an unrecognized "
-            + "value.")] string? intent = null,
         [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
     {
         var sessionId = Ids.AmbientSession;
@@ -834,7 +719,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         if (string.IsNullOrWhiteSpace(query))
         {
             return Record(telemetry, toolCallId, sessionId, attributedTask, "search_index", "",
-                null, null, null, 0, null, "missing_query", Formats.Render(new
+                null, null, 0, null, "missing_query", Formats.Render(new
                 {
                     error = "missing_query",
                     message = "search_index needs at least one term in query. The filters -- kinds, modifiers, "
@@ -888,14 +773,13 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // set exactly as get_symbol's include does -- same word, same grammar, so a caller who knows one knows
         // the other. Commas and NOT hyphens: '-' already means subtract there (source:code-comments), so
         // "shape-refs" would read as "shape without refs" to anyone who has used that grammar.
-        string[] includeVocabulary = ["shape", "read", "refs", "modifiers", "summary", "summary:full"];
+        string[] includeVocabulary = ["shape", "refs", "modifiers", "summary", "summary:full"];
         var includeTokens = ParseIncludeColumns(include);
         var badIncludeTokens = includeTokens.Where(t => !includeVocabulary.Contains(t)).ToList();
         var includeHint = badIncludeTokens.Count == 0 ? null
             : "include:" + string.Join(", ", badIncludeTokens.Select(t => $"'{t}'"))
                 + " is not a column and was ignored. Known columns: " + string.Join(", ", includeVocabulary) + ".";
         var wantShape = includeTokens.Contains("shape");
-        var wantRead = includeTokens.Contains("read");
         var wantRefs = includeTokens.Contains("refs");
         var wantModifiers = includeTokens.Contains("modifiers");
         var summaryMode = includeTokens.Contains("summary:full") ? "full"
@@ -907,14 +791,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         // loaded and so costs nothing to render. summary stays opt-in because shape's D count already says
         // whether a doc comment exists, and the text itself is the expensive half.
         static IReadOnlyList<string> ParseIncludeColumns(string? spec) => string.IsNullOrWhiteSpace(spec)
-            ? ["shape", "read", "refs", "modifiers"]
+            ? ["shape", "refs", "modifiers"]
             : [.. spec.Split([','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(t => t.ToLowerInvariant())];
-        var intentMode = intent is "edit" or "logic" or "surface" ? intent : null;
-            var intentHint = intent is null or "edit" or "logic" or "surface" ? null
-                : $"intent:'{intent}' was not recognized and was treated as omitted."
-                    + (VocabularyHint.NearestToken(intent, ["edit", "logic", "surface"]) is { } nearestIntent
-                        ? $" Did you mean '{nearestIntent}'?" : "");
             var groupByHint = groupBy is null or "namespace" or "file" or "none" ? null
                 : $"groupBy:'{groupBy}' was not recognized and was treated as 'namespace'."
                     + (VocabularyHint.NearestToken(groupBy, ["namespace", "file", "none"]) is { } nearestGroupBy
@@ -1047,16 +926,14 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 ? RefCode.For(counts, kind)
                 : null;
 
-        // The same @from-to selector get_symbol's source include takes, so a hit's location pastes straight
-        // into the next call. Deliberately NOT a patch span: '@' means a READ slice in this grammar while
-        // validate_patch takes a bare "N-M", and these lines exclude the leading doc comment anyway.
+        // The signature's own span, as a compact @from-to. Deliberately not the doc-comment-inclusive
+        // range get_symbol's declarationSites reports: this is "where is it", that is "what to Read".
         static string? LinesOf(ProjectIndex.DocSite? site) =>
             site?.Line is not { } line ? null
             : site.EndLine is { } end && end != line ? $"@{line}-{end}"
             : $"@{line}";
 
         var anyShape = wantShape && limited.Any(r => SymbolShape.For(ShapeOf(r.Site)) is not null);
-        var anyRead = wantRead && limited.Any(r => ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) is not null);
         var anyRefs = limited.Any(r => RefCodeOf(r.Hit.SymbolId, r.Hit.Kind) is not null);
         var anyMods = wantModifiers && limited.Any(r => ModifierCode.For(r.Hit.Modifiers) is not null);
 
@@ -1064,7 +941,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         {
             limitedBy = searchLimitedBy,
             shape = anyShape ? SymbolShape.Legend : null,
-            read = anyRead ? ReadAdvice.Legend : null,
             refs = anyRefs ? RefCode.Legend : null,
             modifiers = anyMods ? ModifierCode.Legend : null,
             termsWithNoHits = termsWithNoHits.Count == 0 ? null : termsWithNoHits,
@@ -1074,7 +950,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 originHint,
                 includeHint,
                 groupByHint,
-                intentHint,
                 refsHint,
                 implementsHint,
                 partsHint,
@@ -1093,7 +968,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 // Absent means one file, so the row's file is the whole answer; present means it is not.
                 parts = r.Site?.DeclarationFiles,
                 shape = anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
-                read = anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                 refs = RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
                 modifiers = anyMods ? ModifierCode.For(r.Hit.Modifiers) : null,
                 hasSummary = summaryMode == "has" ? (bool?)!string.IsNullOrWhiteSpace(r.Site?.Doc) : null,
@@ -1117,7 +991,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     summaryMode == "full" && r.Site?.Doc is { } doc ? CompactFormatter.Truncate(doc, SummaryCap) : null,
                     anyShape ? SymbolShape.For(ShapeOf(r.Site)) : null,
                     r.Hit.Placement,
-                    anyRead ? ReadAdvice.For(intentMode, r.Hit.Kind, ShapeOf(r.Site)) : null,
                     RefCodeOf(r.Hit.SymbolId, r.Hit.Kind),
                     anyMods ? ModifierCode.For(r.Hit.Modifiers) : null,
                     r.Site?.DeclarationFiles);
@@ -1140,8 +1013,6 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     withLimit["includeHint"] = includeHint;
                 if (groupByHint is not null)
                     withLimit["groupByHint"] = groupByHint;
-                if (intentHint is not null)
-                    withLimit["intentHint"] = intentHint;
                 if (refsHint is not null)
                     withLimit["refsHint"] = refsHint;
                 if (implementsHint is not null)
@@ -1174,7 +1045,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         }
 
         return Record(telemetry, toolCallId, sessionId, attributedTask, "search_index", query, null, null,
-            null, limited.Count, searchLimitedBy, null, json);
+            limited.Count, searchLimitedBy, null, json);
     }
 
 
@@ -1226,21 +1097,8 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
 private static async Task<object> BuildContent(
         ISymbol sym, SymbolComponents components, Solution solution, SolutionLocator locator,
-        SymbolStore symbolStore, SymbolIndexBuilder indexBuilder, FeatureLogStore featureLog)
+        SymbolStore symbolStore, SymbolIndexBuilder indexBuilder)
     {
-        // source already prints the declaration's own signature line as text, so anything that would
-        // just restate what that line already says gets suppressed rather than duplicated: displayString,
-        // modifiers (accessibility included), attributes, baseType, interfaces. members and
-        // bodyOutline are suppressed for the same reason even though neither restates the signature line:
-        // both exist as a structural summary IN PLACE OF reading the body, so once source is also present
-        // they duplicate what it already shows.
-        var hasSource = components.Has(SymbolComponents.Source);
-
-        // ...except when source was narrowed to specific lines, which usually cut the signature line out
-        // of the response entirely. Restating it then is not duplication, it is the only thing saying
-        // what member the fragment belongs to, so displayString/modifiers come back.
-        var restatesSignature = hasSource && !components.HasSlicedSource;
-
         // referenceCounts is the one component with a real latency cost — it awaits the semantic model —
         // so it is computed only when asked for, rather than computed and then thrown away.
         var counts = components.Has(SymbolComponents.ReferenceCounts) && indexBuilder.Ready
@@ -1252,7 +1110,7 @@ private static async Task<object> BuildContent(
         // location nor a shape leaves that second hop with nothing to go on. file is emitted only when it
         // differs from the type's own primary declaration file, so only a partial pays for the column.
         var primaryFile = sym.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
-        var allMemberRows = !hasSource && components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
+        var allMemberRows = components.Has(SymbolComponents.Members) && sym is INamedTypeSymbol type
             ? type.GetMembers().Where(IsListable).Select(m => (Symbol: m, Site: MemberSiteOf(m))).ToArray()
             : null;
         var membersTruncated = allMemberRows is { } allRows && allRows.Length > MembersCap;
@@ -1267,13 +1125,6 @@ private static async Task<object> BuildContent(
                 : null,
             line = row.Site?.Line,
             shape = row.Site is { } located ? SymbolShape.For(located.Facts) : null,
-            // Narrowed to decl, matching what a member ROW actually serves: a name, a location and a shape,
-            // never a body. VersionOf computes both layers, so handing its token over unnarrowed leased a
-            // body this response never showed - the exact thing unleased_body exists to prevent, and the
-            // opposite of what the line above it had claimed since it was written. Emitted only under
-            // include:"all": a read-only members-only call never uses it, and an about-to-edit call
-            // re-fetches the member itself for its body version anyway (self-eval finding, 2026-08-10).
-            contentVersion = components.IsAll ? VersionOf(row.Symbol).Narrow(["decl"]).ToString() : null,
         }).ToArray();
         var memberShapeLegend = memberRows?.Any(row => row.Site is { } s && SymbolShape.For(s.Facts) is not null) == true
             ? SymbolShape.Legend
@@ -1292,51 +1143,24 @@ private static async Task<object> BuildContent(
         // Direct only (BaseType/Interfaces, not AllInterfaces): a one-hop pointer, not a hierarchy walk —
         // get_type_hierarchy already owns the transitive chain.
         var namedType = sym as INamedTypeSymbol;
-        var baseType = !hasSource && components.Has(SymbolComponents.BaseType) && namedType?.BaseType is { } bt
+        var baseType = components.Has(SymbolComponents.BaseType) && namedType?.BaseType is { } bt
             ? TypeRef(bt)
             : null;
-        var interfaces = !hasSource && components.Has(SymbolComponents.Interfaces) && namedType is not null
+        var interfaces = components.Has(SymbolComponents.Interfaces) && namedType is not null
             ? namedType.Interfaces.Select(TypeRef).ToArray()
             : null;
 
-        // The whole declaration first, then the caller's line selection over it: the unsliced list is
-        // what the reported span is measured against, so both come from one render rather than two.
-        HashSet<string>? subtractionsApplied = null;
-        var declarationSource = hasSource
-            ? SourceOf(sym, locator, components.SourceQuery, out subtractionsApplied)
-            : null;
-        var source = declarationSource is null ? null : SelectLines(declarationSource, components.SourceQuery);
-        var renderedSource = RenderSource(source, components.SourceQuery, out var resolvedLineFormat);
-        var requestedSubtraction = components.SourceQuery.ExcludedTags.Count > 0
-            || components.SourceQuery.ExcludeAttributes || components.SourceQuery.ExcludeComments;
-
-        // xmlDoc cannot key off hasSource alone, because source does not always carry the doc comment it
-        // would otherwise be duplicating: source:code exists precisely to strip it, and a line selection
-        // usually cuts it out. Suppressing it in those two cases deleted the documentation from the
-        // response rather than deduplicating it, which left "read the code without its doc comment, and
-        // give me the summary as structured text" unaskable in a single call. A slice is asked which lines
-        // it actually kept rather than assumed to have cut the comment away, since @-selecting the opening
-        // of a declaration serves the comment in full — and restating it as xmlDoc there is precisely the
-        // duplication this rule exists to prevent.
-        var servesDocComment = hasSource
-            && components.SourceQuery.Mode == SourceMode.Full
-            && (!components.HasSlicedSource
-                || (declarationSource is not null && KeepsWholeDocComment(declarationSource, source)));
-
-        var outline = !hasSource && components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
+        var outline = components.Has(SymbolComponents.BodyOutline) ? BodyOutlineFor(sym) : null;
 
         // attachedContracts (P4) is deliberately absent rather than emitted as null/empty — an
         // unpopulated field is pure overhead until it carries data.
         return new
         {
-            // Suppressed alongside displayString and modifiers for the same reason: a served signature line
-            // already says "public static string KindOf(...)", and restating the kind beside it is a field the
-            // response can be read without.
-            kind = restatesSignature ? null : SymbolKey.KindOf(sym),
-            displayString = restatesSignature ? null : sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            kind = SymbolKey.KindOf(sym),
+            displayString = sym.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             // "external": no location in this repo's own solution — a BCL/NuGet symbol resolved via its
             // stored documentation-comment id (see ResolveExternalAsync), never a declaration this repo
-            // walked. Callers need it to know why declarationSites/source/xmlDoc came back empty rather than
+            // walked. Callers need it to know why declarationSites/xmlDoc came back empty rather than
             // assuming a lookup bug. Emitted ONLY then: "source" was true of almost every response ever
             // returned, so it cost a field on all of them to carry information on nearly none. Absent is the
             // common case and means source, exactly as the shape and refs columns treat their own defaults.
@@ -1346,50 +1170,21 @@ private static async Task<object> BuildContent(
             // In source, and nowhere to be found, read together as a lookup bug. Naming it says which of
             // the two it is, and that there is no span to patch because the file is rewritten every build.
             generated = IsGeneratedOnly(sym, locator) ? true : (bool?)null,
-            // Same suppression: a caller reading source is reading the declaration itself, and knew the
-            // containing type well enough to name the symbol. It stays on every non-source fetch, where it is
-            // the handle for walking up from a hit whose suffix resolved to something unexpected.
-            containingType = restatesSignature ? null : ContainingType(sym),
+            // The handle for walking up from a hit whose suffix resolved to something unexpected.
+            containingType = ContainingType(sym),
             declarationSites = DeclarationSites(sym, locator),
-            source = renderedSource,
-            // Only when Automatic actually had to choose — an explicit -lineNumbers/-compact already told
-            // the caller what it would get, so restating it here would be pure duplication.
-            sourceLineFormat = resolvedLineFormat switch
-            {
-                SourceQuery.SourceLineFormat.Exact => "exact",
-                SourceQuery.SourceLineFormat.Compact => "compact",
-                _ => null,
-            },
-            // Emitted only for a slice, because only a slice can mislead: contentVersion is fingerprinted
-            // over the whole symbol, so a caller leasing off a fragment would otherwise hold a token for
-            // content it never saw. "kept/whole", or "none/whole" when the ranges missed the declaration
-            // entirely — which also states the range that would have worked.
-            // Suppressed for a partial declared across several files: the "whole" denominator is one
-            // file's span and there is no single one. declarationSites already carries every part's
-            // span, and each run's @file:start-end header says which file its kept lines came from.
-            sourceLines = components.HasSlicedSource && declarationSource is { Count: > 0 }
-                    && declarationSource[0].File is null
-                ? $"{LineSpan(source)}/{declarationSource[0].Line}-{declarationSource[^1].Line}"
-                : null,
-            // Present only when the caller actually asked for a subtraction, naming exactly which of those
-            // requested tokens removed a line -- a token absent here (e.g. -remarks on a method with none)
-            // matched nothing, which the rendered source otherwise gives no sign of.
-            sourceSubtractionsApplied = hasSource && requestedSubtraction
-                ? subtractionsApplied?.OrderBy(t => t, StringComparer.Ordinal).ToArray() ?? []
-                : null,
-            xmlDoc = !servesDocComment && components.Has(SymbolComponents.XmlDoc)
+            xmlDoc = components.Has(SymbolComponents.XmlDoc)
                 ? OutlineBuilder.SectionsFromXml(sym.GetDocumentationCommentXml())
                 : null,
-            // Body-derived facts, served only while the body hash they were computed from still holds. Not
-            // source-suppressed: this is server-computed analysis, not something visible by reading source.
+            // Body-derived facts, served only while the body hash they were computed from still holds.
             mechanicalFacts = components.Has(SymbolComponents.MechanicalFacts)
                 ? MechanicalFactsFor(sym, symbolStore)
                 : null,
-            // Control-flow landmarks, computed purely from syntax like source rather than the semantic
-            // model mechanicalFacts needs — absent (with an explanatory bodyOutlineNote) for a symbol with
-            // no executable body of its own (a type, a field, an auto-property), or fully absent (both
+            // Control-flow landmarks, computed purely from syntax rather than the semantic model
+            // mechanicalFacts needs — absent (with an explanatory bodyOutlineNote) for a symbol with no
+            // executable body of its own (a type, a field, an auto-property), or fully absent (both
             // fields) when there's no declaration to walk at all. bodyOutlineNote is otherwise an
-            // advisory, not an error, for a declaration short enough that source:code would likely cost
+            // advisory, not an error, for a declaration short enough that a Read of it would likely cost
             // fewer tokens than this.
             bodyOutline = outline?.Rows?.Select(r => (object)new
             {
@@ -1409,18 +1204,14 @@ private static async Task<object> BuildContent(
             // Stated once beside the member list rather than repeated on every row, same as search_index.
             shape = memberShapeLegend,
             fileLegend = membersFileLegend,
-            attributes = !hasSource && components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
+            attributes = components.Has(SymbolComponents.Attributes) ? AttributesOf(sym) : null,
             // Unconditional like displayString, not an opt-in include component: the literal modifier
             // phrase already subsumes accessibility ("public sealed" states both), so there is no separate
-            // accessibility field at all. Suppressed when source is also requested, since source's own
-            // signature line already states the modifiers as text — unless that line was sliced away.
-            modifiers = restatesSignature ? null : DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym),
+            // accessibility field at all.
+            modifiers = DotnetToolkit.McpServer.Fingerprint.ModifierText.Render(sym),
             baseType,
             interfaces,
             usings = components.Has(SymbolComponents.Usings) ? UsingsOf(sym) : null,
-            // Why this code is the way it is. Entries describing a superseded body are flagged rather
-            // than presented as current truth.
-            recentLog = components.Has(SymbolComponents.RecentLog) ? RecentLogFor(sym, featureLog) : null,
         };
     }
 
@@ -1496,31 +1287,6 @@ private static async Task<object> BuildContent(
     }
 
     /// <summary>
-    /// The last few development-log entries touching this symbol (spec §9). An entry whose recorded
-    /// new version no longer matches the symbol's current body layer is marked <c>current: false</c> —
-    /// stale history is surfaced as stale, never silently as fact.
-    /// </summary>
-    private static object? RecentLogFor(ISymbol sym, FeatureLogStore featureLog)
-    {
-        var currentId = SymbolKey.IdOf(sym);
-        var entries = featureLog.RecentForSymbolWithChain(currentId);
-        if (entries.Count == 0)
-            return null;
-
-        var currentBody = VersionOf(sym).Get("body");
-        return entries.Select(e => new
-        {
-            logId = e.LogId,
-            date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
-            intent = e.Intent,
-            detail = e.Detail,
-            apiImpact = e.ApiImpact,
-            current = currentBody is null || e.NewVersion is null
-                || ContentVersion.Parse(e.NewVersion).Get("body") == currentBody,
-        }).ToList();
-    }
-
-    /// <summary>
     /// Facts are stored as JSON; returning the parsed element keeps them structured in the response
     /// without re-modelling every field here. Null when the body moved since they were computed.
     /// </summary>
@@ -1534,8 +1300,7 @@ private static async Task<object> BuildContent(
     /// <returns>The non-empty facts, or null when there are none or the stored JSON no longer parses.</returns>
     private static object? MechanicalFactsFor(ISymbol sym, SymbolStore symbolStore)
     {
-        var version = VersionOf(sym);
-        var json = symbolStore.FactsFor(SymbolKey.IdOf(sym), version.Get("body"));
+        var json = symbolStore.FactsFor(SymbolKey.IdOf(sym), BodyHashOf(sym));
         if (json is null)
             return null;
         try
@@ -1571,7 +1336,6 @@ private static object? ContainingType(ISymbol sym)
     {
         if (sym.ContainingType is not { } ct)
             return null;
-        // No contentVersion here: the containing type is a navigation pointer, not something being leased.
         return new
         {
             symbolId = SymbolKey.IdOf(ct),
@@ -1595,14 +1359,14 @@ private static object? ContainingType(ISymbol sym)
         /// comment, and the two differ only when one is present.
         /// </returns>
         /// <remarks>
-        /// The typed core <see cref="DeclarationSites"/> and <c>validate_patch</c>'s edit-span validation
-        /// both need the same bounds; this is the shared computation both sit on top of.
+        /// The typed core <see cref="DeclarationSites"/> and the symbol index's site rows both need the
+        /// same bounds; this is the shared computation both sit on top of.
         /// </remarks>
         internal static IReadOnlyList<(string File, int StartLine, int EndLine, int SignatureLine)> DeclarationSpans(ISymbol sym, SolutionLocator locator) =>
             sym.DeclaringSyntaxReferences
                 // Exclude source-generator output (obj/**): it is regenerated on every build and not an
                 // editable declaration site, so surfacing it alongside the hand-written partial only offers
-                // a validate_patch caller a span that will be overwritten out from under it.
+                // a caller a span that will be overwritten out from under it.
                 .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
                 .Select(r =>
             {
@@ -1624,26 +1388,25 @@ private static object? ContainingType(ISymbol sym)
         /// <param name="locator">Renders each site's path repo-relative.</param>
         /// <returns>One entry per declaring syntax reference, source-generator output excluded.</returns>
         /// <remarks>
-        /// Internal rather than private because <c>validate_patch</c> returns the same shape for the symbols a
-        /// patch changed. Both paths must produce byte-identical spans -- a caller is meant to feed either one
-        /// straight back into an edit -- so they share <see cref="DeclarationSpans"/> rather than each
-        /// computing bounds.
+        /// This is the line contract a caller's <c>Read(file, offset, limit)</c> depends on: startLine is
+        /// where a leading <c>///</c> comment begins, signatureLine where the declaration itself does,
+        /// endLine the closing brace (or the last line of an expression-bodied member).
         /// </remarks>
         internal static object[] DeclarationSites(ISymbol sym, SolutionLocator locator) =>
             DeclarationSpans(sym, locator)
-                // Flat file/startLine/endLine — these feed straight into a validate_patch edit. Start
-                // includes a leading /// doc comment when present, so an edit targeting this span can
-                // rewrite the comment along with the declaration, not just the declaration alone.
+                // Flat file/startLine/endLine — these feed straight into a ranged Read. Start includes
+                // a leading /// doc comment when present, so a Read of this span shows the comment along
+                // with the declaration, not the declaration alone.
                 .Select(s => (object)new
                     {
                         file = s.File,
                         startLine = s.StartLine,
                         endLine = s.EndLine,
                         // Present ONLY when it differs from startLine, which is exactly when a leading /// doc
-                        // comment widened the edit span. startLine is what a patch must anchor on; signatureLine
-                        // is where the declaration itself starts, and is the number to quote when answering
-                        // "where does this live" -- reporting the doc block's first line there is the mistake
-                        // this field exists to remove. Absent means "same as startLine", not "not computed".
+                        // comment widened the span. startLine is where a Read of the whole declaration begins;
+                        // signatureLine is where the declaration itself starts, and is the number to quote when
+                        // answering "where does this live" -- reporting the doc block's first line there is the
+                        // mistake this field exists to remove. Absent means "same as startLine", not "not computed".
                         signatureLine = s.SignatureLine == s.StartLine ? (int?)null : s.SignatureLine,
                     })
                 .ToArray();
@@ -1661,204 +1424,9 @@ private static object? ContainingType(ISymbol sym)
             SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)));
 
 
-    /// <summary>One line of a symbol's <c>source</c> component — 1-based absolute file line plus its
-    /// text, so a multi-line declaration renders as a real per-line table (TOON/JSON alike) instead of
-    /// one string carrying literal \n/\" escapes, and each line's number is directly usable as a
-    /// validate_patch startLine/endLine without a separate get_symbol round trip.</summary>
-    /// <param name="Line">The 1-based absolute line number in the file the line came from.</param>
-    /// <param name="Text">The line's text, unescaped.</param>
-    /// <param name="File">
-    /// Which file the line is in, set only for a partial declared across more than one — where a bare
-    /// line number stops identifying a place, because every part has its own line 100. Null for the
-    /// overwhelming majority, which is what keeps a single-file declaration rendering byte-identically
-    /// to before any part past the first was served at all.
-    /// </param>
-    private sealed record SourceLine(int Line, string Text, string? File = null);
-
-    /// <summary>One contiguous run of a symbol's <c>source</c> under <c>-lineNumbers</c>: the run's
-    /// absolute <c>start-end</c> file line span, plus its lines as bare text. A run belonging to a
-    /// multi-file partial is prefixed with its file (<c>path/To.cs:12-40</c>), since the span alone
-    /// would name a place in each part rather than one.</summary>
-    private sealed record SourceSpan(string Lines, IReadOnlyList<string> Text);
-
-    private static IReadOnlyList<SourceLine> SplitLines(string text, int startLine) =>
-        text.Replace("\r\n", "\n").Split('\n')
-            .Select((line, i) => new SourceLine(startLine + i, line))
-            .ToArray();
-
-    /// <summary>
-    /// Renders a symbol's source as either the per-line <c>{line, text}</c> list
-    /// (<c>SourceLineFormat.Exact</c>) or one <c>{lines, text}</c> entry per contiguous run
-    /// (<c>SourceLineFormat.Compact</c>). <c>SourceLineFormat.Automatic</c> (the default) renders both and
-    /// keeps whichever comes out shorter, measured on the actual rendered text rather than guessed from
-    /// line count.
-    /// </summary>
-    /// <param name="lines">The declaration's lines, already stripped per the query's modifiers.</param>
-    /// <param name="query">The resolved source query naming the requested <see cref="SourceQuery.LineFormat"/>.</param>
-    /// <param name="resolvedFormat">
-    /// Which format <see cref="SourceQuery.SourceLineFormat.Automatic"/> actually picked, so a caller can
-    /// report it without re-deriving it from the response shape. Null whenever the caller forced
-    /// <see cref="SourceQuery.SourceLineFormat.Exact"/>/<see cref="SourceQuery.SourceLineFormat.Compact"/>
-    /// explicitly — it already knows what it asked for — except on a multi-file partial, where Compact is
-    /// imposed over an explicit Exact and saying so is the only way the caller learns its request lost.
-    /// </param>
-    /// <returns>Null only when there was no source to render, so an absent component stays absent.</returns>
-    /// <remarks>
-    /// Grouping into runs is what keeps the numberless form honest: <c>-modifier</c> exclusions and an
-    /// <c>@</c> selection both drop lines, and bare text carrying no span headers would read as
-    /// contiguous code across a gap that is really there.
-    /// </remarks>
-    private static object? RenderSource(IReadOnlyList<SourceLine>? lines, SourceQuery query, out SourceQuery.SourceLineFormat? resolvedFormat)
-    {
-        resolvedFormat = null;
-        if (lines is null)
-            return null;
-
-        // A per-line gutter carries a number and nothing else, so it cannot say which of a partial's
-        // files a line belongs to. A multi-file declaration therefore renders as spans whatever was
-        // asked for — the @file:start-end header is the only form that stays unambiguous, and an -exact
-        // gutter here would interleave two files' line numbers with no way to tell them apart. Reported
-        // through resolvedFormat rather than silently, since it overrides an explicit choice.
-        if (lines.Any(l => l.File is not null))
-        {
-            resolvedFormat = SourceQuery.SourceLineFormat.Compact;
-            return ToSpans(lines);
-        }
-
-        if (query.LineFormat == SourceQuery.SourceLineFormat.Exact)
-            return lines;
-
-        var spans = ToSpans(lines);
-        if (query.LineFormat == SourceQuery.SourceLineFormat.Compact)
-            return spans;
-
-        var useCompact = CompactRenderedLength(spans) < ExactRenderedLength(lines);
-        resolvedFormat = useCompact ? SourceQuery.SourceLineFormat.Compact : SourceQuery.SourceLineFormat.Exact;
-        return useCompact ? spans : (object)lines;
-    }
-
-    /// <summary>Groups per-line source into one <see cref="SourceSpan"/> per contiguous run of lines.</summary>
-    /// <remarks>
-    /// A run is contiguous only <i>within one file</i>: consecutive numbers either side of a partial's
-    /// part boundary are two different places, and merging them would invent a span that exists in
-    /// neither file.
-    /// </remarks>
-    private static List<SourceSpan> ToSpans(IReadOnlyList<SourceLine> lines)
-    {
-        var spans = new List<SourceSpan>();
-        var runStart = 0;
-        for (var i = 0; i < lines.Count; i++)
-        {
-            if (i + 1 < lines.Count
-                && lines[i + 1].Line == lines[i].Line + 1
-                && string.Equals(lines[i + 1].File, lines[i].File, StringComparison.Ordinal))
-                continue;
-
-            var text = new string[i - runStart + 1];
-            for (var j = 0; j < text.Length; j++)
-                text[j] = lines[runStart + j].Text;
-            var span = $"{lines[runStart].Line}-{lines[i].Line}";
-            spans.Add(new SourceSpan(lines[runStart].File is { } file ? $"{file}:{span}" : span, text));
-            runStart = i + 1;
-        }
-
-        return spans;
-    }
-
-    /// <summary>
-    /// The exact character count the numbered <c>"{line}│ {text}"</c> rendering of <paramref name="lines"/>
-    /// comes out to, newline-joined — mirrors <see cref="Formats"/>'s own line-array renderer so
-    /// <see cref="RenderSource"/> can compare it against <see cref="CompactRenderedLength"/> without
-    /// building the response twice.
-    /// </summary>
-    /// <remarks>
-    /// Every row is charged the widest number's width rather than its own, because the renderer
-    /// right-aligns them. Charging each row its own digits would under-count any block spanning a
-    /// digit boundary — lines 998-1002 pad three of their rows — and Automatic would then keep the
-    /// numbered gutter on declarations where the spans are genuinely shorter.
-    /// </remarks>
-    private static int ExactRenderedLength(IReadOnlyList<SourceLine> lines)
-    {
-        if (lines.Count == 0)
-            return 0;
-
-        var width = lines.Max(l => l.Line).ToString().Length;
-        var length = 0;
-        foreach (var line in lines)
-            length += width + Formats.SourceGutter.Length + line.Text.Length + 1;
-        return length - 1;
-    }
-
-    /// <summary>
-    /// The exact character count the <c>@start-end</c> span rendering of <paramref name="spans"/> comes
-    /// out to, newline-joined — mirrors <see cref="Formats"/>'s own span-array renderer for the same
-    /// reason as <see cref="ExactRenderedLength"/>.
-    /// </summary>
-    private static int CompactRenderedLength(IReadOnlyList<SourceSpan> spans)
-    {
-        if (spans.Count == 0)
-            return 0;
-
-        var length = 0;
-        foreach (var span in spans)
-        {
-            length += 1 + span.Lines.Length + 1;
-            foreach (var text in span.Text)
-                length += text.Length + 1;
-        }
-        return length - 1;
-    }
-
-    /// <summary>
-    /// Every part of a symbol's declaration, rendered per <paramref name="query"/> — one entry per line,
-    /// in the order <see cref="DeclarationSpans"/> reports the parts.
-    /// </summary>
-    /// <param name="sym">The symbol whose source is wanted.</param>
-    /// <param name="locator">Resolves each part's path, and excludes source-generator output.</param>
-    /// <param name="query">The resolved source query, or null for <see cref="SourceQuery.Full"/>.</param>
-    /// <param name="subtractionsApplied">The union, across every part, of <see cref="SourceLinesOf"/>'s own.</param>
-    /// <returns>The lines, or null when the symbol declares no editable source at all.</returns>
-    /// <remarks>
-    /// This served <c>DeclaringSyntaxReferences.FirstOrDefault()</c> alone until contract 3.63, so a
-    /// partial split across files returned one part while <c>declarationSites</c> listed every one. The
-    /// response contradicted itself, and get_symbol's headline claim — the whole symbol, where <c>Read</c>
-    /// gives one fragment — was false for precisely the case that claim is about. Parts stamp each line
-    /// with its file, which is what lets <see cref="ToSpans"/> keep them apart; a single-part symbol
-    /// stamps nothing, so the common case is untouched.
-    /// </remarks>
-    private static IReadOnlyList<SourceLine>? SourceOf(
-        ISymbol sym, SolutionLocator locator, SourceQuery? query, out HashSet<string> subtractionsApplied)
-    {
-        subtractionsApplied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var parts = sym.DeclaringSyntaxReferences
-            .Where(r => !SolutionLocator.IsGeneratedOrBuildPath(locator.RelPath(r.SyntaxTree.FilePath)))
-            .ToArray();
-        if (parts.Length == 0)
-            return null;
-
-        var resolved = query ?? SourceQuery.Full;
-        if (parts.Length == 1)
-            return SourceLinesOf(NormalizeDeclNode(parts[0].GetSyntax()), resolved, out subtractionsApplied);
-
-        var lines = new List<SourceLine>();
-        foreach (var part in parts)
-        {
-            var file = locator.RelPath(part.SyntaxTree.FilePath);
-            var partLines = SourceLinesOf(NormalizeDeclNode(part.GetSyntax()), resolved, out var partApplied);
-            foreach (var line in partLines)
-                lines.Add(line with { File = file });
-            subtractionsApplied.UnionWith(partApplied);
-        }
-        return lines;
-    }
-
-    /// <summary>Overload for the callers that never pass a custom <see cref="SourceQuery"/> and so never subtract anything.</summary>
-    private static IReadOnlyList<SourceLine>? SourceOf(ISymbol sym, SolutionLocator locator) =>
-        SourceOf(sym, locator, null, out _);
-
     /// <summary>
     /// Control-flow landmarks for one member's body (spec §9 <c>bodyOutline</c>), plus an advisory note
-    /// when the declaration is short enough that <c>source:code</c> is likely cheaper than the outline.
+    /// when the declaration is short enough that a Read of it is likely cheaper than the outline.
     /// Rows is null (bodyOutline stays absent) for a symbol with no executable body of its own (a type,
     /// a field, an auto-property) or with no syntax reference at all (external/no declaration to walk);
     /// Note still explains the former case rather than leaving the caller to guess why both fields are
@@ -1882,247 +1450,21 @@ private static object? ContainingType(ISymbol sym)
 
         var node = NormalizeDeclNode(reference.GetSyntax());
         var rows = BodyOutlineExtractor.Extract(node);
-        // Doc-comment-inclusive bounds, matching declarationSites/SourceLinesOf's SourceMode.Full span —
-        // node.Span alone excludes leading trivia and would undercount a well-documented short method as
-        // shorter than the source fetch its own declarationSites promises.
+        // Doc-comment-inclusive bounds, matching declarationSites — node.Span alone excludes leading
+        // trivia and would undercount a well-documented short method as shorter than the Read its own
+        // declarationSites promises.
         var (start, end) = DeclarationBoundsIncludingDocComment(node);
         var lineSpan = node.SyntaxTree!.GetLineSpan(TextSpan.FromBounds(start, end));
         var lineCount = lineSpan.EndLinePosition.Line - lineSpan.StartLinePosition.Line + 1;
         var note = lineCount < minWorthwhileLines
-            ? $"declaration is {lineCount} lines (<{minWorthwhileLines}) - source:code is likely cheaper than this outline"
+            ? $"declaration is {lineCount} lines (<{minWorthwhileLines}) - a Read of its declarationSites range is likely cheaper than this outline"
             : rows.Count * maxLinesPerLandmark < lineCount
                 ? $"declaration is {lineCount} lines but the outline has only {rows.Count} "
                     + $"entr{(rows.Count == 1 ? "y" : "ies")} - a mostly linear body, so this outline "
-                    + "describes little of it and source:code (or a source:code@from-to range) is likely "
-                    + "the better answer"
+                    + "describes little of it and a Read of its declarationSites range is likely the "
+                    + "better answer"
                 : null;
         return (rows, note);
-    }
-
-    /// <summary>
-    /// Slices <paramref name="node"/>'s own source text for the <c>source</c> component per
-    /// <paramref name="query"/> — <see cref="SourceMode.Full"/> widens the start to include a leading doc
-    /// comment (see <see cref="DeclarationBoundsIncludingDocComment"/>); <see cref="SourceMode.Code"/> uses
-    /// the node's own <see cref="SyntaxNode.Span"/>, which already excludes all leading trivia including
-    /// that comment. <see cref="ExcludedLines"/> then drops whatever <paramref name="query"/> subtracts on
-    /// top of that: every nested doc comment under <see cref="SourceMode.Code"/>, specific doc-comment tags
-    /// under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under either, whenever they
-    /// occupy a whole standalone line.
-    /// </summary>
-    private static IReadOnlyList<SourceLine> SourceLinesOf(SyntaxNode node, SourceQuery query, out HashSet<string> subtractionsApplied)
-    {
-        var (start, end) = query.Mode == SourceMode.Code
-            ? (node.SpanStart, node.Span.End)
-            : DeclarationBoundsIncludingDocComment(node);
-        var tree = node.SyntaxTree!;
-        var text = tree.GetText();
-        // The span opens at the declaration's first TOKEN, so its first line would arrive with the
-        // indentation stripped while every line under it kept its own. Widen back to the start of that
-        // line: a caller reconstructing the declaration line from this text - which is exactly what the
-        // tool tells it to do before a validate_patch edit - would otherwise write it back misindented.
-        start = IndentStartOf(text, start);
-        var span = TextSpan.FromBounds(start, end);
-        var startLine = tree.GetLineSpan(span).StartLinePosition.Line + 1;
-        var lines = SplitLines(text.ToString(span), startLine);
-
-        var excluded = ExcludedLines(node, text, query, out subtractionsApplied);
-        return excluded.Count == 0 ? lines : lines.Where(l => !excluded.Contains(l.Line)).ToArray();
-    }
-
-    /// <summary>
-    /// Widens <paramref name="position"/> back to the start of its line when only whitespace separates
-    /// the two, so a rendered first line carries the same indentation as the lines beneath it.
-    /// </summary>
-    /// <param name="text">The file the position indexes into.</param>
-    /// <param name="position">An absolute character offset, normally a declaration's first token.</param>
-    /// <returns>The widened offset, or <paramref name="position"/> when real code precedes it on the line.</returns>
-    private static int IndentStartOf(SourceText text, int position)
-    {
-        var lineStart = text.Lines.GetLineFromPosition(position).Start;
-        for (var i = lineStart; i < position; i++)
-        {
-            if (!char.IsWhiteSpace(text[i]))
-                return position;
-        }
-        return lineStart;
-    }
-
-    /// <summary>
-    /// Narrows already-rendered source lines to the query's <c>@</c> ranges, or returns them untouched
-    /// when the query selected none.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately a filter over the absolute line numbers <see cref="SourceLinesOf"/> already assigned,
-    /// never a re-slice of the text: that is what lets a range and a <c>-modifier</c> exclusion compose
-    /// in either order, and what keeps every surviving line's number directly usable as a
-    /// validate_patch startLine/endLine. A range reaching past the declaration therefore clamps to it on
-    /// its own, and one entirely outside it yields no lines rather than an error — the <c>sourceLines</c>
-    /// span reported alongside says which happened.
-    /// </remarks>
-    /// <param name="lines">The declaration's lines, already stripped per the query's modifiers.</param>
-    /// <param name="query">The resolved source query whose <see cref="SourceQuery.Lines"/> to apply.</param>
-    /// <returns>The lines falling inside at least one requested range, in their original order.</returns>
-    private static IReadOnlyList<SourceLine> SelectLines(IReadOnlyList<SourceLine> lines, SourceQuery query) =>
-        query.Lines.Count == 0
-            ? lines
-            : lines.Where(l => query.Lines.Any(r => r.Contains(l.Line))).ToArray();
-
-    /// <summary>Whether a source selection kept every line of the declaration's leading doc comment.</summary>
-    /// <remarks>
-    /// Decides whether <c>xmlDoc</c> is suppressed as a restatement of source the caller can already read.
-    /// The doc comment is the run of <c>///</c> lines a declaration opens with, so "kept whole" is a set
-    /// test over the absolute line numbers <see cref="SelectLines"/> filtered on. Keeping only part of it
-    /// does not count: half a summary read as prose is not the summary, and the structured form is what
-    /// the caller asked for.
-    /// </remarks>
-    /// <param name="whole">The declaration's rendered lines, before the query's ranges narrowed them.</param>
-    /// <param name="kept">The lines that survived that narrowing.</param>
-    /// <returns>True when the declaration opens with a doc comment and every line of it survived.</returns>
-    private static bool KeepsWholeDocComment(IReadOnlyList<SourceLine> whole, IReadOnlyList<SourceLine>? kept)
-    {
-        var docLines = whole
-            .TakeWhile(l => l.Text.TrimStart().StartsWith("///", StringComparison.Ordinal))
-            .Select(l => l.Line)
-            .ToList();
-        if (docLines.Count == 0)
-            return false;
-
-        var surviving = kept?.Select(l => l.Line).ToHashSet() ?? [];
-        return docLines.TrueForAll(surviving.Contains);
-    }
-
-    /// <summary>
-    /// Renders a line list's extent as <c>"first-last"</c> when it is contiguous, as every contiguous run
-    /// in order (<c>"63-70;146-147"</c>) when it is not, and <c>"none"</c> when empty.
-    /// </summary>
-    /// <remarks>
-    /// The runs are the whole point. A multi-range <c>@</c> selection and a <c>-comments</c> exclusion both
-    /// produce a DISJOINT set, and reporting min-to-max claimed the entire envelope for it: a 10-line answer
-    /// to <c>source:code@63-70;146-147</c> described itself as <c>63-147</c>, which is precisely the string a
-    /// caller reads as "I have the whole member" when it holds 10 of its 85 lines. A contiguous list still
-    /// renders as the single span it always did, and every run emitted here is directly usable as a
-    /// validate_patch startLine/endLine, the same guarantee the per-line numbers carry.
-    /// </remarks>
-    /// <param name="lines">The lines to describe.</param>
-    /// <returns>A compact span string for the <c>sourceLines</c> field.</returns>
-    private static string LineSpan(IReadOnlyList<SourceLine>? lines)
-    {
-        if (lines is not { Count: > 0 })
-            return "none";
-
-        var runs = new List<string>();
-        var start = lines[0].Line;
-        var previous = start;
-        foreach (var line in lines.Skip(1))
-        {
-            if (line.Line == previous + 1)
-            {
-                previous = line.Line;
-                continue;
-            }
-
-            runs.Add($"{start}-{previous}");
-            start = previous = line.Line;
-        }
-
-        runs.Add($"{start}-{previous}");
-        return string.Join(';', runs);
-    }
-
-    /// <summary>
-    /// Absolute 1-based file lines to drop from <paramref name="node"/>'s rendered source per
-    /// <paramref name="query"/>: the whole doc comment under <see cref="SourceMode.Code"/> (a member's own
-    /// <c>///</c> block, not just the requested symbol's leading one — already excluded via its span
-    /// start), specific tags under <see cref="SourceMode.Full"/>, and attributes/<c>//</c> comments under
-    /// either — always whole standalone lines (<see cref="IsWholeLine"/>), never a line shared with code.
-    /// </summary>
-    /// <param name="subtractionsApplied">
-    /// Which of <paramref name="query"/>'s requested subtractions (<c>"-remarks"</c>, <c>"-attributes"</c>,
-    /// <c>"-comments"</c>, ...) actually dropped a line — a subset of what was requested when one matched
-    /// nothing, which a caller has no other way to see (a subtraction that fires on nothing is otherwise a
-    /// silent no-op, indistinguishable from one that worked).
-    /// </param>
-    private static HashSet<int> ExcludedLines(
-        SyntaxNode node, SourceText text, SourceQuery query, out HashSet<string> subtractionsApplied)
-    {
-        var lines = new HashSet<int>();
-        subtractionsApplied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var trivia in node.DescendantTrivia())
-        {
-            if (trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
-                trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))
-            {
-                if (query.Mode == SourceMode.Code)
-                    AddSpan(lines, trivia.Span, text);
-                else if (query.ExcludedTags.Count > 0 && trivia.GetStructure() is DocumentationCommentTriviaSyntax doc)
-                    foreach (var xmlNode in doc.Content)
-                        if (TagNameOf(xmlNode) is { } tagName && query.ExcludedTags.Contains(tagName))
-                        {
-                            AddSpan(lines, xmlNode.Span, text);
-                            subtractionsApplied.Add("-" + tagName);
-                        }
-                continue;
-            }
-
-            if (query.ExcludeComments &&
-                (trivia.IsKind(SyntaxKind.SingleLineCommentTrivia) || trivia.IsKind(SyntaxKind.MultiLineCommentTrivia)) &&
-                IsWholeLine(trivia.Span, text))
-            {
-                AddSpan(lines, trivia.Span, text);
-                subtractionsApplied.Add("-comments");
-            }
-        }
-
-        if (query.ExcludeAttributes)
-            foreach (var attributeList in node.DescendantNodes().OfType<AttributeListSyntax>())
-                if (IsWholeLine(attributeList.Span, text))
-                {
-                    AddSpan(lines, attributeList.Span, text);
-                    subtractionsApplied.Add("-attributes");
-                }
-
-        return lines;
-    }
-
-    /// <summary>The doc-comment element's own XML local tag name (e.g. <c>"remarks"</c>, <c>"exception"</c>).</summary>
-    private static string? TagNameOf(XmlNodeSyntax xmlNode) => xmlNode switch
-    {
-        XmlElementSyntax element => element.StartTag.Name.LocalName.Text,
-        XmlEmptyElementSyntax empty => empty.Name.LocalName.Text,
-        _ => null,
-    };
-
-    /// <summary>
-    /// True when nothing but whitespace shares <paramref name="span"/>'s first and last line with it — the
-    /// bar for a whole-line removal. An attribute or comment inline with real code (e.g.
-    /// <c>[Fact] public void Foo()</c>, or a trailing <c>// comment</c>) is left untouched rather than
-    /// partially rewriting that line's text.
-    /// </summary>
-    private static bool IsWholeLine(TextSpan span, SourceText text)
-    {
-        var startLine = text.Lines.GetLineFromPosition(span.Start);
-        if (!string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(startLine.Start, span.Start))))
-            return false;
-
-        var endLine = text.Lines.GetLineFromPosition(Math.Max(span.Start, span.End - 1));
-        return string.IsNullOrWhiteSpace(text.ToString(TextSpan.FromBounds(span.End, endLine.End)));
-    }
-
-    /// <summary>
-    /// Adds every absolute 1-based line <paramref name="span"/> touches to <paramref name="lines"/>. Uses
-    /// <c>Span.End - 1</c>, not the raw end position, since a trivia span's end often lands at column 0 of
-    /// the FOLLOWING line (its trailing newline is part of its own span) — the raw end would then wrongly
-    /// mark that next line (real code) as covered too.
-    /// </summary>
-    private static void AddSpan(HashSet<int> lines, TextSpan span, SourceText text)
-    {
-        if (span.IsEmpty)
-            return;
-        var startLine = text.Lines.GetLineFromPosition(span.Start).LineNumber;
-        var endLine = text.Lines.GetLineFromPosition(Math.Max(span.Start, span.End - 1)).LineNumber;
-        for (var line = startLine; line <= endLine; line++)
-            lines.Add(line + 1);
     }
 
     /// <summary>
@@ -2251,18 +1593,18 @@ private static object? ContainingType(ISymbol sym)
 
     // ---- reference directions -------------------------------------------------
 
-private sealed record RefItem(string SymbolId, string Version, string DisplayString, string CompactDisplayString,
-        IReadOnlyList<(string File, int Line, string Snippet, bool IsCref)> Sites, string? DispatchKind, IReadOnlyList<SourceLine>? Body,
+private sealed record RefItem(string SymbolId, string DisplayString, string CompactDisplayString,
+        IReadOnlyList<(string File, int Line, string Snippet, bool IsCref)> Sites, string? DispatchKind,
         bool IsTest = false, bool IsDirect = true);
 
 
-private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
+private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator)
     {
         // A named type is not invocable, so FindCallersAsync answers nothing for one. Delegates are the
         // case that made this visible -- a delegate type is USED by the members that declare, construct or
         // invoke it, and "who uses this type" came back as an empty list instead.
         if (sym is INamedTypeSymbol type)
-            return await TypeReferences(type, solution, locator, includeBodies);
+            return await TypeReferences(type, solution, locator);
 
         var dispatch = DispatchKindOf(sym);
         var items = new List<RefItem>();
@@ -2287,12 +1629,10 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 .ToList();
             items.Add(new RefItem(
                 SymbolKey.IdOf(callingSymbol),
-                VersionOf(callingSymbol).ToString(),
                 callingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                 CompactDisplay(callingSymbol),
                 sites,
                 dispatch,
-                includeBodies ? SourceOf(callingSymbol, locator, null, out _) : null,
                 TestAttributes.IsTestMethod(callingSymbol), caller.IsDirect));
         }
 
@@ -2332,7 +1672,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
     }
 
     /// <summary>Members that reference a named type, grouped one item per referencing member.</summary>
-    private static async Task<List<RefItem>> TypeReferences(INamedTypeSymbol type, Solution solution, SolutionLocator locator, bool includeBodies)
+    private static async Task<List<RefItem>> TypeReferences(INamedTypeSymbol type, Solution solution, SolutionLocator locator)
     {
         var dispatch = DispatchKindOf(type);
         var sitesByOwner = new Dictionary<ISymbol, List<(string File, int Line, string Snippet, bool IsCref)>>(SymbolEqualityComparer.Default);
@@ -2358,17 +1698,15 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
         return sitesByOwner
             .Select(pair => new RefItem(
                 SymbolKey.IdOf(pair.Key),
-                VersionOf(pair.Key).ToString(),
                 pair.Key.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                 CompactDisplay(pair.Key),
                 [.. pair.Value.DistinctBy(s => (s.File, s.Line))],
                 dispatch,
-                includeBodies ? SourceOf(pair.Key, locator, null, out _) : null,
                 TestAttributes.IsTestMethod(pair.Key)))
             .ToList();
     }
 
-    private static async Task<List<RefItem>> Implementations(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
+    private static async Task<List<RefItem>> Implementations(ISymbol sym, Solution solution, SolutionLocator locator)
     {
         IEnumerable<ISymbol> results = sym switch
         {
@@ -2376,16 +1714,16 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
             INamedTypeSymbol nt => await SymbolFinder.FindDerivedClassesAsync(nt, solution),
             _ => await SymbolFinder.FindImplementationsAsync(sym, solution),
         };
-        return results.Select(s => ToItem(s, locator, null, includeBodies)).ToList();
+        return results.Select(s => ToItem(s, locator, null)).ToList();
     }
 
-    private static async Task<List<RefItem>> Overrides(ISymbol sym, Solution solution, SolutionLocator locator, bool includeBodies)
+    private static async Task<List<RefItem>> Overrides(ISymbol sym, Solution solution, SolutionLocator locator)
     {
         var results = await SymbolFinder.FindOverridesAsync(sym, solution);
-        return results.Select(s => ToItem(s, locator, null, includeBodies)).ToList();
+        return results.Select(s => ToItem(s, locator, null)).ToList();
     }
 
-private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispatch, bool includeBodies)
+private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispatch)
     {
         var sites = s.Locations.Where(l => l.IsInSource).Select(l =>
         {
@@ -2393,9 +1731,8 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
             return (File: locator.RelPath(span.Path), Line: span.StartLinePosition.Line + 1,
                 Snippet: s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), IsCref: false);
         }).ToList();
-        return new RefItem(SymbolKey.IdOf(s), VersionOf(s).ToString(),
-            s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), CompactDisplay(s), sites, dispatch,
-            includeBodies ? SourceOf(s, locator, null, out _) : null);
+        return new RefItem(SymbolKey.IdOf(s),
+            s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), CompactDisplay(s), sites, dispatch);
     }
 
     // The default get_references/get_call_hierarchy displayString: name + arity (e.g.
@@ -2577,8 +1914,8 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     /// declaring file, so leases remain valid across the index_only → live transition for unchanged
     /// declarations. referenceCounts is null here — counts require the edge cache.
     /// </summary>
-private static (object Content, string Version, string SymbolId)? IndexSymbol(
-        ProjectIndex index, SolutionLocator locator, string symbol, string? include, string? sourceSpec)
+private static (object Content, string SymbolId)? IndexSymbol(
+        ProjectIndex index, SolutionLocator locator, string symbol)
     {
         var namePart = symbol;
         var paren = namePart.IndexOf('(');
@@ -2599,49 +1936,15 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
         if (hit is null)
             return null;
 
-        var version = "decl:index";
-        object? source = null;
-        string? sourceLineFormat = null;
-        try
-        {
-            var text = File.ReadAllText(locator.AbsPath(hit.File));
-            var root = CSharpSyntaxTree.ParseText(text).GetRoot();
-            var node = root.DescendantNodes()
-                .Where(IsIndexableDeclaration)
-                .FirstOrDefault(n => n.SyntaxTree.GetLineSpan(n.Span).StartLinePosition.Line + 1 == hit.Line);
-            if (node is not null)
-            {
-                var normalized = NormalizeDeclNode(node);
-                var (decl, body) = SyntaxFingerprint.Compute(normalized);
-                version = ContentVersion.Of(decl, body).ToString();
-                if (SymbolComponents.Resolve(include, sourceSpec, out _) is { } parts && parts.Has(SymbolComponents.Source))
-                {
-                    source = RenderSource(SourceLinesOf(normalized, parts.SourceQuery, out _), parts.SourceQuery, out var resolvedLineFormat);
-                    sourceLineFormat = resolvedLineFormat switch
-                    {
-                        SourceQuery.SourceLineFormat.Exact => "exact",
-                        SourceQuery.SourceLineFormat.Compact => "compact",
-                        _ => null,
-                    };
-                }
-            }
-        }
-        catch
-        {
-            // A parse/IO failure just yields the placeholder version; still index_only, still honest.
-        }
-
         var content = new
         {
             kind = MapKindCode(hit.Kind),
             displayString = hit.FqName,
             declarationSites = new object[] { new { file = hit.File, span = new { startLine = hit.Line, endLine = hit.Line } } },
-            source,
-            sourceLineFormat,
             xmlDoc = hit.Doc,
             referenceCounts = (object?)null,
         };
-        return (content, version, Ids.IndexOnlySymbolId(hit.FqName));
+        return (content, Ids.IndexOnlySymbolId(hit.FqName));
     }
 
     private static bool IsIndexableDeclaration(SyntaxNode node) => node
@@ -2657,27 +1960,14 @@ private static (object Content, string Version, string SymbolId)? IndexSymbol(
 
     // ---- shared helpers -------------------------------------------------------
 
-    // internal: rename_symbol checks a caller's held baseVersion against the same syntax-layer token
-    // get_symbol minted, so the two must be computed by one function rather than two.
-    internal static ContentVersion VersionOf(ISymbol symbol)
+    /// <summary>The body-layer fingerprint of a symbol's declaration, or null for an external symbol or one with no body.</summary>
+    /// <remarks>Keys the stored mechanical facts, which are valid only while the body they were computed from stands.</remarks>
+    private static string? BodyHashOf(ISymbol symbol)
     {
         var reference = symbol.DeclaringSyntaxReferences.FirstOrDefault();
         if (reference is null)
-            return ContentVersion.Of(decl: "external");
-        var (decl, body) = SyntaxFingerprint.Compute(NormalizeDeclNode(reference.GetSyntax()));
-        return ContentVersion.Of(decl, body);
-    }
-
-    /// <summary>
-    /// The full four-layer token: syntax layers computed on demand, plus the semantic refs/api layers
-    /// from the index when it has them. Comparison is per supplied layer, so a caller holding only
-    /// decl+body still leases correctly against this.
-    /// </summary>
-    private static ContentVersion FullVersionOf(ISymbol symbol, SymbolStore symbolStore)
-    {
-        var syntax = VersionOf(symbol);
-        var (refs, api) = symbolStore.LayersFor(SymbolKey.IdOf(symbol));
-        return ContentVersion.Of(syntax.Get("decl"), syntax.Get("body"), refs, api);
+            return null;
+        return SyntaxFingerprint.Compute(NormalizeDeclNode(reference.GetSyntax())).Body;
     }
 
 private static SyntaxNode NormalizeDeclNode(SyntaxNode node) =>
@@ -2894,7 +2184,7 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
 
     private static string Record(
         TelemetryRecorder telemetry, string toolCallId, string sessionId, string taskId, string tool,
-        string requestedSymbol, string? symbolId, string? resolution, string? contentVersion,
+        string requestedSymbol, string? symbolId, string? resolution,
         int returnedSymbols, string? limitedBy, string? errorKind, string result,
         string? direction = null)
     {
@@ -2905,7 +2195,6 @@ private static async Task<(ISymbol? Symbol, string? Error)> ResolveAsync(
             telemetry, toolCallId, sessionId, taskId, tool, requestedSymbol, result,
             symbolId: symbolId,
             resolution: resolution,
-            contentVersion: contentVersion,
             returnedSymbols: returnedSymbols,
             limitedBy: limitedBy,
             errorKind: errorKind,

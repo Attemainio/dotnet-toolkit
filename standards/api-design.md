@@ -183,8 +183,8 @@ call deep does not re-validate what its only caller already guaranteed.
 Before changing a `public`/`protected` member's signature, return type, or observable behavior, check
 `get_semantic_diff` against the stated baseline — it reports exactly which symbols moved and which
 changes are breaking, rather than relying on a guess from the diff text. A breaking change to a shipped
-public member needs the `intent` passed to `validate_patch` to say so explicitly, so `search_log` later
-shows it was deliberate.
+public member needs its commit message to say so explicitly, so the history later shows it was
+deliberate.
 
 **When the break can be staged rather than shipped immediately**, mark the old member
 `[Obsolete("message pointing at the replacement", error: false)]` for at least one release before

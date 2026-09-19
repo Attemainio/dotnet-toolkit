@@ -83,5 +83,5 @@ if (attempts > MaxRetryAttempts) throw new RetryLimitException();
 
 Naming findings are 🟡 (convention violation) unless the name actively misleads about behavior — a
 `GetOrders` that mutates state, an `IsValid` that has side effects — which is 🔴. Don't flag a
-project-established convention that deviates from this file without first checking `search_log` and the
-surrounding code for evidence it's deliberate.
+project-established convention that deviates from this file without first checking the surrounding
+code and its comments for evidence it's deliberate.

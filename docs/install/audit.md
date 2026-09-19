@@ -66,16 +66,16 @@ Specific drift to look for, in the order it usually appears:
    it, and copies diverge. Check both directions.
 2. **A tool added but named in no skill at all.** The skills carry the tool tables now; the copied
    `.claude/rules/dotnet-index.md` names no tool, so a tool no skill mentions is unreachable for a
-   consumer. All **19** must be covered — retrieval and the four server/meta tools in `dotnet-read`,
-   the two writers in `dotnet-write`, with `workspace_status` and `reload_workspace` legitimately in
+   consumer. All **17** must be covered — retrieval and the server/meta tools in `dotnet-read`,
+   `rename_symbol` in `dotnet-write`, with `workspace_status` and `reload_workspace` legitimately in
    both, and `set_hook_guards` deliberately in `dotnet-performance` alone (it can suspend or force-block
    the guards, so naming it in the skill every read task loads would advertise the off-switch to every
    session).
    The skills are served from the plugin and never copied, so unlike the old always-loaded table this
    one cannot go stale in a consumer's tree — but it can still fall behind `Tools/*.cs`.
 3. **A tool added but not in init's permission allowlist.** The allowlist covers the read-only tools
-   only. `validate_patch` and `rename_symbol` are deliberately excluded — a write to the user's
-   source should keep prompting — so their absence is correct, and their *presence* is the finding.
+   only. `rename_symbol` is deliberately excluded — a write to the user's source should keep
+   prompting — so its absence is correct, and its *presence* is the finding.
 4. **A new `docs/` file nothing points at.** Tool docs are reached through `dotnet-index.md`'s
    router; a `docs/tools/<tool>.md` that its router doesn't list *is* a finding. The
    `docs/design/*.md` files are **not** — they are maintainer-facing by design, reached from the
@@ -96,7 +96,7 @@ Walk the scenarios and name, for each, the file the consumer would actually reac
 | Scenario | Must be reachable via |
 | --- | --- |
 | Find a symbol and its callers | `dotnet-index.md` routes to the `dotnet-read` skill → its tool table → the tool's own MCP schema → `docs/tools/<tool>.md` when the schema isn't enough |
-| Change a method | `dotnet-index.md` routes to the `dotnet-write` skill → its loop and cheap-route table → `docs/tools/validate_patch.md` |
+| Change a method | `dotnet-index.md` routes to the `dotnet-write` skill → locate (`dotnet-read`), ranged `Read`, `Edit`, `dotnet build`; the `refresh-cs-files` hook re-indexes what was written |
 | Rename a symbol | `dotnet-index.md` routes to the `dotnet-write` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill (resolves and injects `Standards root:`) → `dotnet-code-review` agent → `${CLAUDE_PLUGIN_ROOT}/standards/*.md` |
 | Map an unfamiliar change onto the code before editing | `dotnet-index.md` routes to the `dotnet-explore` **skill**, which briefs and launches the `dotnet-explore` agent |

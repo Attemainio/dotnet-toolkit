@@ -10,7 +10,7 @@ namespace DotnetToolkit.McpServer.Store;
 /// Only the two result codes that say the bytes on disk cannot be read as a database count here.
 /// <c>SQLITE_IOERR</c> is deliberately excluded even though a damaged file can raise it: it also
 /// covers a full disk, a revoked lock and a transient read failure, and quarantining on one of those
-/// would move a perfectly healthy store aside and throw away the development log's only copy.
+/// would move a perfectly healthy store aside and force a rebuild that nothing needed.
 /// </remarks>
 internal static class StoreCorruption
 {

@@ -11,7 +11,6 @@ description: >
   subsystem.
 tools: Read, Grep, Glob, mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_symbol, mcp__plugin_dotnet-toolkit_dotnet__get_references,
-  mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__get_scope,
   mcp__plugin_dotnet-toolkit_dotnet__get_call_slice,
   mcp__plugin_dotnet-toolkit_dotnet__get_call_hierarchy,
@@ -66,18 +65,20 @@ just when a tool errors. It reports whether the MSBuild workspace is fully `load
 a zero-hit or empty result from any of them while the workspace is not `loaded` is workspace state,
 not evidence of absence, and must be reported as such rather than asserted as a finding.
 
-**2. Retrieve the scope's code — in as few calls as possible.** Enumerate the scope once with
-`search_index` (many terms per call; `kinds:` narrows it), then fetch **the whole scope in one
-`get_symbol` call** by passing its `symbols` array with `include: "all"`. Do not walk symbol by
-symbol, and do not fetch the declaration layer, then the body layer, then references, for each one —
-that is three round-trips per symbol for what one batched call returns.
+**2. Locate the scope, then read it in ranges.** Enumerate the scope once with `search_index`
+(many terms per call; `kinds:` narrows it), then locate **the whole scope in one `get_symbol` call**
+by passing its `symbols` array — the default `include` plus `attributes` when an aspect needs them.
+No tool returns source: each result's `declarationSites` (`file`, `startLine`, `endLine`, doc
+comment included) is the range to read, with `Read(file, offset: startLine, limit: endLine -
+startLine + 1)`. Do not walk symbol by symbol through `get_symbol`, and do not `Read` a whole file
+to review three members in it — a ranged read draws no hook note and returns exactly the lines you
+are judging; a whole-file read draws an advisory and returns everything else too. In **scope mode**,
+where every member of a file is in scope, one whole-file `Read` is the right call and the advisory is
+noise to ignore.
 
-Reserve narrower fetches for follow-up on something the batch already pointed you at: a region of a
-long member via `source: "code@120-160"` — the source query is its own argument, separate from
-`include` — or `include: "bodyOutline"` first when the right region isn't known yet. Only `Read` a file in full when you are about to judge specific lines and no
-`get_symbol` fetch gave you them — note that a `PreToolUse` hook now only advises against `Read` on
-`.cs` files a project compiles rather than blocking it, so it will succeed if you reach for it; prefer
-`get_symbol` on efficiency and correctness grounds regardless, not because the read would fail.
+Reserve `include: "bodyOutline"` for a long member whose right region is not known yet, and
+`mechanicalFacts` for a throw/await/lock/write question that a read of the body would otherwise be
+the only way to answer.
 
 Trace callers, implementations, and overrides with `get_references`, never `Grep` — a text search
 misses interface and virtual dispatch and returns comment hits. Reach for `get_scope` (what is
@@ -88,13 +89,12 @@ one of those facts instead of a guess.
 
 **3. Load the standards.** See the next section — this is the step that decides which files you read.
 
-**4. Check for a prior recorded decision before asserting a violation.** `search_log` queries the
-development log — the intents recorded when past changes were applied. A pattern that looks wrong may
-be a deliberate, previously-reasoned choice. Search it whenever a finding could plausibly be an
-intentional tradeoff. If the log records the decision, cite it and drop the finding or reframe it as a
-question. The log only covers changes applied through `validate_patch`, so an empty result is not
-proof of absence: it means nothing was recorded, not that nothing was decided — mark such findings
-lower-confidence rather than asserting a violation.
+**4. Check for a prior recorded decision before asserting a violation.** A pattern that looks wrong
+may be a deliberate, previously-reasoned choice: a code comment at the site, an XML `<remarks>`, or
+the commit that introduced it (`git log -S`/`git blame` through `Bash` is not in your grant, so
+say so and ask the invoking agent to check when it matters). If the record shows the decision, cite
+it and drop the finding or reframe it as a question. An absent record is not proof of absence — mark
+such findings lower-confidence rather than asserting a violation.
 
 ## Loading the standards — core always, the rest on trigger
 
@@ -154,25 +154,24 @@ Covering all aspects at once does not lower any aspect's evidence bar.
   counter/trace/benchmark to verify. Cold paths keep LINQ and readability without complaint.
 - `[concurrency]` — a race or deadlock claim names the concrete interleaving: the two call paths that
   overlap, traced with `get_references` on the shared field/lock and `get_call_hierarchy` on the
-  methods touching it — never just the pattern. Check `search_log` before flagging an unusual
-  synchronization choice.
+  methods touching it — never just the pattern. Check the site's comments and `<remarks>` before
+  flagging an unusual synchronization choice.
 - `[cleanup]` — never author or apply a removal yourself. Every dead-code claim cites a stated
   `get_references` (`direction: "callers"`) zero-hit result — never a `Grep` count, never
   `referenceCounts` alone — plus the framework-invocation check under Boundaries. Never flag an
   `[Obsolete]` member with a future removal date.
-- `[docs]` — survey with `get_symbol` (`include: "xmlDoc,source:code"`), not raw file reads:
-  `xmlDoc.summary` absent is the missing-doc signal (a member with `<returns>` but no `<summary>` still
-  has non-null `xmlDoc` — that's a distinct finding). **`source:code`, not plain `source`**: a full
-  `source` already prints the `///` block as text, so `xmlDoc` is suppressed beside it and would read
-  as absent on every symbol, turning the missing-doc signal into a constant. In scope mode, enumerate the public surface with
-  `search_index` (`kinds: "class,interface,method,property"`) over the scope, then batch through
-  `get_symbol`'s `symbols` array. A present summary is not a pass — read the implementation before
-  judging it; a wrong `<summary>` is 🔴.
+- `[docs]` — survey with `get_symbol` (default `include`), not raw file reads: `xmlDoc.summary`
+  absent is the missing-doc signal (a member with `<returns>` but no `<summary>` still has non-null
+  `xmlDoc` — that's a distinct finding). In scope mode, enumerate the public surface with
+  `search_index` (`kinds: "class,interface,method,property"`, `xmlDoc: "-summary"` to list the
+  undocumented directly) over the scope, then batch through `get_symbol`'s `symbols` array. A present
+  summary is not a pass — read the implementation before judging it; a wrong `<summary>` is 🔴.
 - `[testing]` — for every changed/scoped public symbol, run `get_references` (`direction: "callers"`)
   and check for a test-project caller before asserting a coverage gap; `search_index` for a test method
   matching the symbol's name before assuming none exists. Never a guess from "this looks untested."
-- `[security]` — read the full source of every changed/scoped symbol (`source: "full"`); no static
-  scanner backs this aspect, so the finding comes from what's on the line. Check
+- `[security]` — read the full text of every changed/scoped symbol (a ranged `Read` over its
+  `declarationSites`); no static scanner backs this aspect, so the finding comes from what's on the
+  line. Check
   `[Authorize]`/`[AllowAnonymous]` via `get_symbol` (`include: "attributes"`). Use `get_references` for
   the blast radius of anything handling credentials/connection strings.
 
@@ -234,9 +233,9 @@ findings to justify having run. The `Standards:` line still applies.
 
 ## Boundaries — every invocation
 
-- **Never modify code.** Report findings for the main agent (or the user) to act on. You have no
-  `validate_patch` and must not route around it; fixes go back as findings. Your deliverable is the
-  review, never a patch.
+- **Never modify code.** Report findings for the main agent (or the user) to act on. The
+  `Write`/`Edit` you hold exist for your memory namespace only (see Memory); fixes go back as
+  findings. Your deliverable is the review, never a patch.
 - **Never guess at something checkable.** A dead-code claim needs a stated `get_references` result, not
   a text search. A hot-path claim needs a marker, a stated hint, or a clear heuristic match, not an
   assumed guess — say "uncertain, verify" rather than assert. A race/deadlock claim names the two call
@@ -247,7 +246,7 @@ findings to justify having run. The `Standards:` line still applies.
   anything a framework invokes reports only whatever happens to call it by name as well: reflection-
   registered entry points, DI-resolved implementations, serialization targets, `[Theory]` data, event
   handlers wired by attribute. The count is then incidental rather than meaningful — in this plugin,
-  `HistoryTools.SearchLog` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely because
+  `ServerTools.ReloadWorkspace` reports 0 callers and `ContextTools.GetSymbol` reports 3, purely because
   tests invoke one directly and not the other. Both are equally live, and neither number says so. A
   registration attribute on the symbol (or on its type) is the signal that the count is not the answer.
   Before claiming removal, check whether something reaches it another way — `get_call_slice` from a
@@ -256,19 +255,19 @@ findings to justify having run. The `Standards:` line still applies.
 - **Stay in your stated scope.** Defer everything else per "Scope discipline" above.
 - **Don't flag pure preference** outside what the standards actually state.
 - **Don't re-report what an analyzer already enforces.** If the repo has an `.editorconfig` that sets a
-  rule's severity, `validate_patch` already blocks (at `error`) or reports (at `warning`) every violation
-  of it in the changed documents — a finding restating one of those is noise the author has already been
-  told. Findings that need human judgment (a wrong abstraction, a race, a misleading name) are yours;
-  mechanically-checkable rule violations belong to the analyzers. Two exceptions worth keeping: a
-  violation in a file the patch did not touch, which that pass never looks at, and a rule the repo has
-  turned *off* where the standards still call the pattern out — say the rule is disabled when you flag it.
+  rule's severity, `dotnet build` already fails (at `error`) or reports (at `warning`) every violation
+  of it — a finding restating one of those is noise the author has already been told, or will be on
+  the next build. Findings that need human judgment (a wrong abstraction, a race, a misleading name)
+  are yours; mechanically-checkable rule violations belong to the analyzers. One exception worth
+  keeping: a rule the repo has turned *off* where the standards still call the pattern out — say the
+  rule is disabled when you flag it.
 
 ## Memory
 
 You have persistent, project-scoped memory (`memory: project` — one namespace per consuming repo,
 shared across all parallel instances since every instance is the same agent). Prefix every note with
 the aspect it applies to (e.g. `[performance] ...`). Record concise, factual notes on: project-specific
-conventions confirmed intentional (via a `search_log` hit or repeated deliberate pattern) so you stop
+conventions confirmed intentional (via a site comment, a `<remarks>`, or a repeated deliberate pattern) so you stop
 re-flagging them, recurring finding classes, and anything the standards don't cover that this project
 has clearly standardized on.
 

@@ -42,16 +42,18 @@ The fix is three independently-spawned agents, none with any memory of this conv
 others' runs:
 
 - **`dotnet-perf-full-probe`** — both this repo's dotnet-toolkit MCP tools *and*
-  `Read`/`Grep`/`Glob`/`Bash`, run under the plugin's **shipped default** guard state (read guards
-  advisory, write guards blocking, nothing suspended or forced). This is not an artificially restricted
+  `Read`/`Grep`/`Glob`/`Bash`, run under the plugin's **shipped default** guard state (whole-file
+  read guards advisory, nothing suspended or forced). This is not an artificially restricted
   agent — it is what a real Claude Code session with this plugin installed actually has available, and
   its run is what such a session actually does with it: free to reach for either tool family per
   question, and free to follow or ignore an advisory note the way any session would.
-- **`dotnet-perf-mcp-probe`** — only this repo's dotnet-toolkit MCP tools, no `Read`/`Grep`/`Glob`/`Bash`,
-  run under `set_hook_guards(state: "block")`. The tool grant alone already keeps it off raw tools; the
-  forced block is a backstop against a protocol slip (its one narrow `Read` allowance, for the protocol
-  file only) turning into silent contamination instead of a loud, reportable denial. This is the
-  **ceiling** — the best case the MCP tools alone can produce.
+- **`dotnet-perf-mcp-probe`** — only this repo's dotnet-toolkit MCP tools plus `Read`, narrowed by
+  instruction to the protocol file and to **ranged** reads over `declarationSites` (no MCP tool returns
+  source, so "locate, then read the range" *is* the MCP route), run under `set_hook_guards(state:
+  "block")`. The tool grant keeps it off `Grep`/`Glob`/`Bash`; the forced block is a backstop against a
+  protocol slip — a whole-file `Read` of a `.cs` file — turning into silent contamination instead of a
+  loud, reportable denial, while a ranged read passes under every state. This is the **ceiling** — the
+  best case the MCP route can produce.
 - **`dotnet-perf-raw-probe`** — only `Read`/`Grep`/`Glob`/`Bash`, no MCP tools, run under
   `set_hook_guards(state: "suspend")` so it can reach a `.cs` file at all with no advisory nudge either.
   This is the **floor** — a session that has never seen this plugin.
@@ -63,7 +65,7 @@ its permissions are ever in doubt, rather than guessing from its name:
 |---|---|---|---|
 | `dotnet-perf-full-probe` | MCP tools **and** `Read`/`Grep`/`Glob`/`Bash` | default (advisory) | a raw read succeeds and gets an advisory note nudging toward the MCP tools; not blocked |
 | `dotnet-perf-raw-probe` | `Read`/`Grep`/`Glob`/`Bash` only, no MCP tools | suspended | a raw read succeeds with no advisory note at all — simulates a session that never had this plugin |
-| `dotnet-perf-mcp-probe` | MCP tools, plus `Read` narrowed **by instruction, not by grant** to `performance_protocol.md` only | forced block | any other `Read` of a `.cs` file is denied outright by the hook — the grant alone doesn't stop it, the forced block does |
+| `dotnet-perf-mcp-probe` | MCP tools, plus `Read` narrowed **by instruction, not by grant** to `performance_protocol.md` and ranged reads over `declarationSites` | forced block | a ranged `Read` (offset + limit) passes silently; a whole-file `Read` of a `.cs` file is denied outright by the hook — the grant alone doesn't stop it, the forced block does |
 
 No probe carries `Edit`/`Write`/`NotebookEdit` or a write MCP tool — all three are read-only by tool
 grant, not merely by instruction, per Boundaries below.
@@ -71,8 +73,8 @@ grant, not merely by instruction, per Boundaries below.
 All three read the same `skills/dotnet-performance/performance_protocol.md` — one file, read by all
 three agents, rather than this skill re-typing near-identical instructions into three separate prompts
 where a future edit could update one copy and not the others. `dotnet-perf-mcp-probe` and
-`dotnet-perf-full-probe` carry `Read` for exactly this one file (never a `.cs` file for its own sake,
-never anything else outside the run); `dotnet-perf-raw-probe` already has `Read` as one of its four
+`dotnet-perf-full-probe` carry `Read` for this file and for the ranged declaration reads the MCP
+route ends in (never a whole `.cs` file for its own sake, never anything else outside the run); `dotnet-perf-raw-probe` already has `Read` as one of its four
 real tools. **The question list itself is per-run, so it stays in the prompt, not the protocol file** —
 see Step 2. Don't reuse `dotnet-explore` as one of the three probes: its own report format doesn't
 match a probe agent's, and its `Read` fallback (for non-`.cs` docs) is a stray variable this comparison
@@ -166,7 +168,7 @@ Pick outcomes that span the range where the answer plausibly changes sign, and s
 |---|---|
 | Find a type by exact name | **Narrowly, or not at all** — `grep -rn "class Foo"` is one cheap call. Expect this row to be close, and report it honestly if a raw-tool route wins. |
 | Find a symbol whose exact name you don't know | Ranked hits vs. a grep that needs several guesses; count *every* guess a raw-tool route took, including the ones that returned nothing. |
-| Read one method out of a 2000-line file | The file read has no way to return less than the file. |
+| Read one method out of a 2000-line file | A whole-file `Read` has no way to return less than the file; the MCP route is `get_symbol` for the span plus a ranged `Read` of just those lines — count both calls, and count the raw route's `grep -n` to find the line plus its ranged read too, if it took one. |
 | Read a type split across partial files | The raw route returns one fragment **and no signal the rest exists** — a correctness finding, not a cost one. **Expect this row to be closer than it sounds**: where every part carries identical declaration text, one `grep` enumerates them all, and on 2026-08-17 it beat an MCP route that read ranked `search_index` hits as an enumeration and reported 5 of 13. Ask *which files* rather than *what is in it* if you want the enumeration failure specifically, and score the MCP-tool answer on whether it reached `declarationSites`. |
 | Find every caller of a method | A raw-tool route cannot see interface, virtual or delegate dispatch. Verify against the MCP answer and count what text search *missed*, not just what it cost. |
 | Find implementers of an interface | Same shape as callers. |
@@ -263,16 +265,17 @@ state-changing passes below has to hand a clean default back to it later.
 
 1. `set_hook_guards(state: "block", minutes: <same sizing as pass 2>)`.
 2. **Prove the block actually reached the hooks before launching the probe**, the mirror image of pass
-   2's check: `Read` (not `Bash` — this exercises `guard-cs-read` directly, the guard that matters for
-   this probe's one narrow `Read` allowance) on any `.cs` file under `src/`, and check the result:
+   2's check: a **whole-file** `Read` (no `offset`/`limit`, and not `Bash` — this exercises
+   `guard-cs-read` directly, the guard that matters for this probe's `Read` allowance) on any `.cs`
+   file under `src/`, and check the result:
    - **Denied** (`PreToolUse` blocks the call) → the block is real; launch the probe.
    - **Allowed, with or without an advisory note** → the block did not reach the hooks. **Stop**, for
      the same reason and via the same fix as pass 2's failure mode — a session-id mismatch between the
      server and the live session.
 3. Launch `dotnet-perf-mcp-probe` and **wait for it to return** before restoring, for the identical
-   reason pass 2 does — restoring early re-arms nothing dangerous here (the probe has no raw tools to
-   fall back to), but it does silently drop the block mid-run if the probe's one `Read` allowance is
-   ever exercised, which would let a protocol slip through unblocked and unreported.
+   reason pass 2 does — restoring early re-arms nothing dangerous here (the probe has no raw search
+   tools to fall back to), but it does silently drop the block mid-run, which would let a whole-file
+   `Read` slip through unblocked and unreported.
 4. `set_hook_guards(state: "restore")`, then `workspace_status` to confirm the `hookGuards` line is
    gone.
 
@@ -582,11 +585,10 @@ question for that row to reverse, tying back to the unchecked conditions above>
 
 ## Boundaries
 
-- **Never edits `.cs`.** Not through `validate_patch`, and emphatically not through the raw `Edit` a
-  suspension makes reachable for the raw probe. The suspension is for *reading* like an unequipped
-  session; an edit made through it would land unrecorded, which is the exact failure the guards exist
-  to prevent. `dotnet-perf-full-probe` carries no `Edit`/`Write`/`NotebookEdit` at all, and no write MCP
-  tool either, so it is read-only by tool grant, not merely by instruction.
+- **Never edits `.cs`.** Not through `rename_symbol`, and not through `Edit`/`Write`. No probe
+  carries `Edit`/`Write`/`NotebookEdit` or `rename_symbol`, so all three are read-only by tool grant,
+  not merely by instruction; a write-shaped `Bash` command from the two probes that hold `Bash` is
+  out of scope by instruction, since nothing blocks it.
 - **Findings are about the plugin**, never about the consuming repo's code.
 - **Each run stands alone.** No reading prior `.claude/dotnet-toolkit/perf/` reports for context, no
   appending to one, unless the user explicitly asked for a comparison against a named prior run.

@@ -1,8 +1,12 @@
 # Route-table findings: tool selection, ToolSearch, and the eval corpus
 
 > **Historical record — read the dates.** This file captures what was measured on 2026-08-05/06 and
-> is deliberately not rewritten as the design moves. Two things have since changed, and the file's
+> is deliberately not rewritten as the design moves. Three things have since changed, and the file's
 > own file/section names still refer to the old layout:
+>
+> - **`validate_patch` and `search_log` no longer exist** (2026-09-19, contract 4.0). Every row
+>   below that names them, the `contentVersion` lease, or `get_symbol`'s `source` argument describes
+>   a surface that was removed; `Edit`/`Write` are the write path and a ranged `Read` the read path.
 >
 > - **The routing table left the always-loaded rule on 2026-08-07.** `.claude/rules/index.md` is now
 >   a pure skill router naming no tools; the intent→tool tables and §2's anti-pattern catalogue live

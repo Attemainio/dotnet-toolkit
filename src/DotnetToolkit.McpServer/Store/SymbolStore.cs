@@ -260,21 +260,6 @@ public sealed partial class SymbolStore
         return result;
     }
 
-    /// <summary>The semantic version layers (refs/api) recorded for a symbol, if the index has them.</summary>
-    public (string? Refs, string? Api) LayersFor(string symbolId)
-    {
-        if (!_store.Available)
-            return (null, null);
-        using var connection = _store.Connect();
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT refs_hash, api_hash FROM symbols WHERE symbol_id = $id LIMIT 1;";
-        cmd.Parameters.AddWithValue("$id", symbolId);
-        using var reader = cmd.ExecuteReader();
-        if (!reader.Read())
-            return (null, null);
-        return (reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
-    }
-
     /// <summary>
     /// Body-derived facts, returned only when they were computed from the body hash still in effect.
     /// A moved body yields null rather than stale facts.
@@ -289,31 +274,6 @@ public sealed partial class SymbolStore
         cmd.Parameters.AddWithValue("$id", symbolId);
         cmd.Parameters.AddWithValue("$body", currentBodyHash);
         return cmd.ExecuteScalar() as string;
-    }
-
-    /// <summary>Symbols in test projects that reference any of the given symbols (ladder level 5 input).</summary>
-    public IReadOnlyList<string> TestsReferencing(IReadOnlyCollection<string> symbolIds)
-    {
-        if (!_store.Available || symbolIds.Count == 0)
-            return [];
-        using var connection = _store.Connect();
-        using var cmd = connection.CreateCommand();
-        var names = symbolIds.Select((_, i) => "$s" + i).ToList();
-        cmd.CommandText = $"""
-            SELECT DISTINCT s.fq_name
-            FROM reference_edges e
-            JOIN symbols s ON s.symbol_id = e.from_symbol
-            WHERE e.edge_kind = 'test_reference' AND e.to_symbol IN ({string.Join(',', names)});
-            """;
-        var i = 0;
-        foreach (var id in symbolIds)
-            cmd.Parameters.AddWithValue("$s" + i++, id);
-
-        var tests = new List<string>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-            tests.Add(reader.GetString(0));
-        return tests;
     }
 
     /// <summary>One ranked result row from a full-text or LIKE search over the symbol index.</summary>

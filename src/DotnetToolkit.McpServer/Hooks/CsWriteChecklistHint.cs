@@ -4,27 +4,27 @@ using System.Text.Json.Nodes;
 namespace DotnetToolkit.McpServer.Hooks;
 
 /// <summary>
-/// Delivers the write-time checklist on the first <c>validate_patch</c> of a session.
+/// Delivers the write-time checklist on the first edit of a compiled <c>.cs</c> file in a session.
 /// </summary>
 /// <remarks>
-/// The other guards are retrospective: they fire only once <c>Edit</c>/<c>Write</c>/<c>Bash</c> has
-/// already been reached for. A caller that goes straight to <c>validate_patch</c> without invoking
-/// the <c>dotnet-write</c> skill trips none of them, so the checklist that skill carries never
-/// arrives. Firing here puts it in front of the caller at the moment it applies, which is also why
-/// the skill does not need to be pre-loaded to get it.
+/// A caller that goes straight to <c>Edit</c> without invoking the <c>dotnet-write</c> skill never
+/// sees the checklist that skill carries. Firing here — <c>PreToolUse</c> on the native edit tools,
+/// gated on the file being one a project compiles — puts it in front of the caller at the moment it
+/// applies, which is also why the skill does not need to be pre-loaded to get it. It never denies:
+/// <c>Edit</c> and <c>Write</c> are the write path for C#.
 /// <para>
-/// Once per session, not once per call: a checklist repeated on every patch of a long editing task is
+/// Once per session, not once per edit: a checklist repeated on every edit of a long refactor is
 /// noise, and noise is ignored. Dedupe state is a marker file under the OS temp directory keyed by
 /// session id — deliberately not inside the repo, which should not accumulate per-session files.
 /// </para>
 /// </remarks>
-internal static class WriteChecklistHint
+internal static class CsWriteChecklistHint
 {
     private const string MarkerDirectory = "dotnet-toolkit-hooks";
 
     private const string Checklist =
-        "First validate_patch of this session. Hold these - they are the items most expensive to catch "
-        + "late, and no analyzer checks them:\n"
+        "First C# edit of this session. Hold these - they are the items most expensive to catch late, "
+        + "and no analyzer checks them:\n"
         + "  - No credential-shaped literal in source; configuration comes from IConfiguration, the "
         + "environment, or a secret store.\n"
         + "  - No string-concatenated or interpolated SQL in a raw-SQL call - parameterize.\n"
@@ -32,21 +32,26 @@ internal static class WriteChecklistHint
         + "unmarked one relying on the global default.\n"
         + "  - New tests exercise real dependencies, not an in-memory database substitute, wherever they "
         + "assert constraint, transaction, or query-translation behavior.\n"
-        + "  - A body edit needs a contentVersion from a get_symbol that actually served the body "
-        + "(include: \"all\"); the default include leases the declaration only.\n"
-        + "  - intent is required to apply, and is the only record of WHY - the diff already says what.\n"
+        + "  - Before changing a signature, get_references/get_call_hierarchy for the blast radius; "
+        + "after a burst of edits, dotnet build is the gate - nothing here compiles for you.\n"
         + "Full procedure, the standards step, and every failure mode: invoke the dotnet-write skill.";
 
     /// <summary>Emits the checklist once per session, and allows silently every other time.</summary>
     /// <param name="payload">The parsed hook stdin payload.</param>
+    /// <param name="context">The repo the membership check is scoped to.</param>
     /// <returns>
-    /// The checklist as non-blocking <c>additionalContext</c> on the session's first patch, otherwise
-    /// <see cref="HookOutcome.Allow"/>. Never denies: this is a reminder, not a guard.
+    /// The checklist as non-blocking <c>additionalContext</c> on the session's first edit of a compiled
+    /// <c>.cs</c> file, otherwise <see cref="HookOutcome.Allow"/>. Never denies: this is a reminder.
     /// </returns>
-    public static HookOutcome Evaluate(HookPayload payload)
+    public static HookOutcome Evaluate(HookPayload payload, HookContext context)
     {
+        if (!TouchesCompiledCs(payload, context))
+        {
+            return HookOutcome.Allow;
+        }
+
         // No session id means no way to tell a first call from a fiftieth. Emitting anyway would
-        // repeat the checklist on every patch of the session, so stay silent and let the always-loaded
+        // repeat the checklist on every edit of the session, so stay silent and let the always-loaded
         // rule and the skill carry it instead.
         if (payload.SessionId is not { Length: > 0 } sessionId || !TryClaimFirstCall(sessionId))
         {
@@ -63,6 +68,32 @@ internal static class WriteChecklistHint
         };
 
         return HookOutcome.AllowWith(output.ToJsonString(JsonSerializerOptions.Default));
+    }
+
+    /// <summary>Whether the call writes a <c>.cs</c> file some project of this repo compiles.</summary>
+    /// <remarks>
+    /// A brand-new file has no owning project yet in the static check, and a test fixture's throwaway
+    /// solution is deliberately outside it; neither is the C# the checklist is about.
+    /// </remarks>
+    private static bool TouchesCompiledCs(HookPayload payload, HookContext context)
+    {
+        IEnumerable<string> files = payload.ToolName == "apply_patch"
+            ? ApplyPatchCommand.Parse(payload.Command).Select(change => change.Path)
+            : payload.FilePath is { Length: > 0 } path ? [path] : [];
+
+        foreach (var file in files)
+        {
+            if (!file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var absolute = Path.GetFullPath(Path.Combine(context.WorkingDirectory, file));
+            if (File.Exists(absolute) && CsFileMembership.TryResolveOwningProject(absolute, context.Root, out _))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -103,6 +134,6 @@ internal static class WriteChecklistHint
         var safe = new string([.. sessionId
             .Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
             .Take(MaxLength)]);
-        return $"{safe}.patched";
+        return $"{safe}.cs-checklist";
     }
 }

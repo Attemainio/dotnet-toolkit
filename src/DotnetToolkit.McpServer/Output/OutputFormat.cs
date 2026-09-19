@@ -24,28 +24,6 @@ public static class Formats
 
     private static readonly JsonSerializerOptions IndentedJsonOptions = new(JsonOptions) { WriteIndented = true };
 
-    /// <summary>
-    /// Separates a source line's number from the code it labels, in the raw block
-    /// <see cref="TryRenderSourceLineArray"/> splices into TOON output.
-    /// </summary>
-    /// <remarks>
-    /// A box-drawing bar rather than the <c>": "</c> this used through contract 3.61: a colon is
-    /// ordinary C# punctuation, so finding where the gutter ended meant ruling out every colon the
-    /// code itself carries, and <c>│</c> is the one character that never appears in the source it is
-    /// delimiting. Internal rather than private because <c>ContextTools.ExactRenderedLength</c> has
-    /// to charge its exact width — a gutter whose two definitions disagree makes Automatic pick
-    /// between a real rendering and an imagined one.
-    /// </remarks>
-    internal const string SourceGutter = "│ ";
-
-    /// <summary>
-    /// The active output format for the rest of this server process. Seeded once at startup from
-    /// <c>ToolkitConfig.DefaultFormat</c> (<c>Program.cs</c>); the <c>set_output_format</c> tool
-    /// (<see cref="Tools.ServerTools"/>) is the only other writer, so a session can change it without a
-    /// restart. Deliberately a single process-wide setting, not a per-call argument or per-repo-only
-    /// config: this server serves one target repo per process, and every response an LLM ever reads goes
-    /// through the same encoding choice.
-    /// </summary>
     public static OutputFormat Current { get; set; } = OutputFormat.Toon;
 
     /// <summary>Parses a response wire-format name.</summary>
@@ -71,14 +49,14 @@ public static class Formats
     /// than a per-call argument. <see cref="OutputFormat.Toon"/> (the default) goes through the same
     /// <see cref="ToElement"/> used to build nested pieces elsewhere, so the TOON encoder sees exactly the
     /// JSON we already trust rather than re-deriving its own property-naming/null-handling conventions
-    /// from the raw C# object graph, then <see cref="RenderToon"/> swaps any [{line, text}] source-line
-    /// array for a raw block (see its own doc comment for why). Callers pass a PLAIN object graph (no
+    /// from the raw C# object graph, then <see cref="RenderToon"/> swaps a bodyOutline array for a raw
+    /// block (see its own doc comment for why). Callers pass a PLAIN object graph (no
     /// manual columns/rows shaping) — ToonEncoder's own uniform-array detection tabulates a list of
     /// same-shaped objects natively, more cheaply than a hand-rolled {columns,rows} wrapper would
     /// (verified: the wrapper form costs more tokens once TOON-encoded, not fewer).
     /// <see cref="OutputFormat.Compact"/>/<see cref="OutputFormat.Json"/> serialize that same plain graph
     /// as ordinary JSON — without the old column-name deduplication, since TOON is now the token-optimized
-    /// path and JSON is the fallback/debugging one — and keep [{line, text}] structured, since JSON has no
+    /// path and JSON is the fallback/debugging one — and keep the outline structured, since JSON has no
     /// literal-block equivalent and a caller asking for strict JSON needs it to stay parseable.
     /// </summary>
     public static string Render(object envelope) => Current switch
@@ -95,11 +73,9 @@ public static class Formats
     /// find/replace unescape of the whole rendered TOON text; that also unescapes an embedded quote in
     /// any OTHER short string field still living inside a quoted TOON cell, corrupting it (an unescaped
     /// quote inside a still-quoted cell is not valid TOON) — presumably why it did not survive. This
-    /// instead structurally detects the one shape that actually needs it — an array of <see
-    /// cref="ContextTools.SourceLine"/>-equivalent {line, text} objects, however deeply nested (get_symbol's
-    /// source, or each item's content under get_references' includeBodies) — swaps each one for a unique
-    /// token before encoding, then splices in a raw, unescaped "line: text" block at that token's own
-    /// indentation after encoding. Every other field goes through ToonEncoder completely unchanged.
+    /// instead structurally detects the one shape that actually needs it — get_symbol's bodyOutline
+    /// rows, however deeply nested — swaps each one for a unique token before encoding, then splices in
+    /// a raw, unescaped block at that token's own indentation after encoding. Every other field goes through ToonEncoder completely unchanged.
     /// </summary>
     private static string RenderToon(object envelope)
     {
@@ -211,7 +187,7 @@ public static class Formats
             case JsonObject obj:
                 foreach (var key in obj.Select(kv => kv.Key).ToList())
                 {
-                    if (TryRenderSourceLineArray(obj[key], out var raw) || TryRenderSourceSpanArray(obj[key], out raw) || TryRenderOutlineArray(obj[key], out raw))
+                    if (TryRenderOutlineArray(obj[key], out var raw))
                     {
                         obj[key] = RawBlockToken(blocks.Count);
                         blocks.Add((key, raw));
@@ -227,75 +203,6 @@ public static class Formats
                     ExtractRawBlocks(item, blocks);
                 break;
         }
-    }
-
-    /// <summary>True (with the rendered block) only for an array whose every element is exactly a
-    /// {line: number, text: string} pair — the shape <see cref="ContextTools.SourceLine"/>
-    /// serializes to — never misfiring on an unrelated array that merely has a numeric and a string
-    /// field under different names.</summary>
-    /// <remarks>
-    /// Numbers are right-aligned to the widest one in the block, so the code starts at the same
-    /// column on every row. Ragged numbering makes the number/code boundary something the reader
-    /// re-locates on every line, and re-locating it is where a line number gets read as part of the
-    /// source it labels.
-    /// </remarks>
-    private static bool TryRenderSourceLineArray(JsonNode? node, out string raw)
-    {
-        raw = "";
-        if (node is not JsonArray arr || arr.Count == 0)
-            return false;
-
-        // Every element is validated before any is rendered: the width they all pad to is the widest
-        // number in the block, which is not known until the last element has been read.
-        var rows = new List<(int Line, string Text)>(arr.Count);
-        foreach (var item in arr)
-        {
-            if (item is not JsonObject o || o.Count != 2
-                || o["line"] is not JsonValue lineVal || !lineVal.TryGetValue<int>(out var line)
-                || o["text"] is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
-                return false;
-            rows.Add((line, (string)textVal!));
-        }
-
-        var width = rows.Max(r => r.Line).ToString().Length;
-        var sb = new StringBuilder();
-        foreach (var (line, text) in rows)
-            sb.Append(line.ToString().PadLeft(width)).Append(SourceGutter).Append(text).Append('\n');
-        sb.Length--;
-        raw = sb.ToString();
-        return true;
-    }
-
-    /// <summary>True (with the rendered block) only for an array whose every element is exactly a
-    /// {lines: string, text: string[]} pair — the shape <see cref="ContextTools.SourceSpan"/> serializes
-    /// to when <c>-lineNumbers</c> replaced the per-line gutter with contiguous runs.</summary>
-    /// <remarks>Each run is introduced by an <c>@start-end</c> header, deliberately the same syntax
-    /// <c>get_symbol</c>'s own <c>@</c> line selector accepts, so a span read off one response is
-    /// directly reusable as the next call's selection.</remarks>
-    private static bool TryRenderSourceSpanArray(JsonNode? node, out string raw)
-    {
-        raw = "";
-        if (node is not JsonArray arr || arr.Count == 0)
-            return false;
-        var sb = new StringBuilder();
-        foreach (var item in arr)
-        {
-            if (item is not JsonObject o || o.Count != 2
-                || o["lines"] is not JsonValue spanVal || spanVal.GetValueKind() != JsonValueKind.String
-                || o["text"] is not JsonArray textArr)
-                return false;
-            sb.Append('@').Append((string)spanVal!).Append('\n');
-            foreach (var line in textArr)
-            {
-                if (line is not JsonValue textVal || textVal.GetValueKind() != JsonValueKind.String)
-                    return false;
-                sb.Append((string)textVal!).Append('\n');
-            }
-        }
-        if (sb.Length > 0)
-            sb.Length--;
-        raw = sb.ToString();
-        return true;
     }
 
     /// <summary>True (with the rendered block) only for an array whose every element is exactly a

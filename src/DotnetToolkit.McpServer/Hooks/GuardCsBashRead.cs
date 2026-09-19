@@ -76,6 +76,13 @@ internal static class GuardCsBashRead
                 continue;
             }
 
+            // sed -n '12,40p', head -n 40, tail -n +12: a ranged read of one file is the intended way to
+            // fetch a located symbol's text, exactly as a Read with offset/limit is, so it draws no note.
+            if (BashCommandScanner.IsRangedRead(segment))
+            {
+                continue;
+            }
+
             if (NamedCompiledFile(segment, context, workingDirectory) is { } named)
             {
                 return blocked
@@ -210,9 +217,10 @@ internal static class GuardCsBashRead
     /// <returns>The message fed back to the agent.</returns>
     private static string FileMessage(string name, string argument, string project, HookContext context) =>
         $"""
-        {argument} is compiled by {project}. This repo's dotnet-toolkit MCP tools often answer this kind of
-        question more cheaply and completely than `{name}` - no truncation risk, and no irrelevant methods
-        pulled in alongside the one you want - though not on every question, so this is advice, not a denial.
+        {argument} is compiled by {project}, and `{name}` here reads it whole. Locating first usually costs
+        less and misses nothing: search_index or get_symbol gives the symbol's declarationSites, and a
+        ranged read of that span (`sed -n 'a,bp'`, or Read with offset/limit) fetches exactly the text
+        wanted - a ranged read draws no note. This is advice, not a denial.
 
         Consider invoking the dotnet-read skill instead. It names the right tool for the question you were
         about to answer, the call shape that costs least, and how to read the response. If you cannot invoke
@@ -253,10 +261,10 @@ internal static class GuardCsBashRead
     /// <returns>The message fed back to the agent.</returns>
     private static string BlockedFileMessage(string name, string argument, string project) =>
         $"""
-        Blocked Bash command '{name}' reading {argument}: guard-cs-bash-read is running in forced-block mode
-        (set_hook_guards(state: "block")), and {argument} is compiled by {project}. This repo's
-        dotnet-toolkit MCP tools answer it more cheaply and completely than raw shell text tools - no
-        truncation risk, and no irrelevant methods pulled in alongside the one you want.
+        Blocked Bash command '{name}' reading {argument} whole: guard-cs-bash-read is running in forced-block
+        mode (set_hook_guards(state: "block")), and {argument} is compiled by {project}. Locate the symbol
+        with search_index or get_symbol, then read its declarationSites range (`sed -n 'a,bp'`, or Read
+        with offset/limit) - a ranged read is never blocked.
 
         Do this instead: invoke the dotnet-read skill.
 

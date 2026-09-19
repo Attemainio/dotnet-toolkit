@@ -27,7 +27,6 @@ public sealed class OutputFormatTests : IDisposable
     private readonly WorkspaceHost _workspace;
     private readonly KnowledgeStore _store;
     private readonly SymbolStore _symbols;
-    private readonly FeatureLogStore _featureLog;
     private readonly SymbolIndexBuilder _builder;
     private readonly TelemetryRecorder _telemetry;
 
@@ -45,7 +44,6 @@ public sealed class OutputFormatTests : IDisposable
         _workspace.StartLoading();
         _store = new KnowledgeStore(_locator, NullLogger<KnowledgeStore>.Instance);
         _symbols = new SymbolStore(_store);
-        _featureLog = new FeatureLogStore(_store);
         _builder = new SymbolIndexBuilder(_workspace, _symbols, _store, _locator, NullLogger<SymbolIndexBuilder>.Instance);
         _telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
     }
@@ -61,7 +59,7 @@ public sealed class OutputFormatTests : IDisposable
     public async Task GetSymbol_IsToon_WhenFormatsCurrentIsToon()
     {
         var result = await ContextTools.GetSymbol(
-            _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
+            _workspace, _locator, _index, _symbols, _builder, _telemetry,
             "Demo.Foo");
 
         Assert.False(result.TrimStart().StartsWith('{'));
@@ -76,13 +74,13 @@ public sealed class OutputFormatTests : IDisposable
         Assert.Equal("output format set to json", confirmation);
 
         var result = await ContextTools.GetSymbol(
-            _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
+            _workspace, _locator, _index, _symbols, _builder, _telemetry,
             "Demo.Foo");
 
         // "json" is pretty-printed (WriteIndented), unlike "compact" — the two are otherwise the same data.
         Assert.Contains('\n', result);
         var root = JsonDocument.Parse(result).RootElement;
-        Assert.True(root.TryGetProperty("contentVersion", out _));
+        Assert.True(root.TryGetProperty("symbolId", out _));
     }
 
     [Fact]
@@ -93,47 +91,6 @@ public sealed class OutputFormatTests : IDisposable
 
         Assert.Equal("unknown format: yaml (use json|compact|toon)", confirmation);
         Assert.Equal(OutputFormat.Compact, Formats.Current);
-    }
-
-    /// <summary>
-    /// The numbered gutter right-aligns to the widest line number in the block, so the code column is
-    /// identical on every row and the boundary between number and source never has to be re-found.
-    /// Spliced in raw, which is why the block carries none of TOON's own quoting.
-    /// </summary>
-    [Fact]
-    public void ToonSourceBlock_RightAlignsLineNumbersToTheWidestOne()
-    {
-        Formats.Current = OutputFormat.Toon;
-
-        var rendered = Formats.Render(new
-        {
-            source = new[]
-            {
-                new { line = 9, text = "public int Bar()" },
-                new { line = 10, text = "    => 1;" },
-            },
-        });
-
-        Assert.Contains("\n   9│ public int Bar()\n", rendered);
-        Assert.Contains("\n  10│     => 1;", rendered);
-    }
-
-    /// <summary>Alignment is measured per block, so numbers of equal width cost no padding at all.</summary>
-    [Fact]
-    public void ToonSourceBlock_PadsNothingWhenEveryNumberIsTheSameWidth()
-    {
-        Formats.Current = OutputFormat.Toon;
-
-        var rendered = Formats.Render(new
-        {
-            source = new[]
-            {
-                new { line = 8, text = "{" },
-                new { line = 9, text = "}" },
-            },
-        });
-
-        Assert.Contains("\n  8│ {\n  9│ }", rendered);
     }
 
     /// <summary>

@@ -36,9 +36,6 @@ public static class Ids
         string.IsNullOrWhiteSpace(supplied) ? AmbientSession : supplied.Trim();
 
     public static string Event() => $"evt_{Ulid.NewString()}";
-    public static string Patch() => $"pch_{Ulid.NewString()}";
-    public static string ValidationAttempt() => $"val_{Ulid.NewString()}";
-    public static string Log() => $"log_{Ulid.NewString()}";
 
     /// <summary>
     /// <c>sym_{sha256[:16]}</c> of the fully-qualified metadata name plus the containing
@@ -57,11 +54,11 @@ public static class Ids
     /// derive a documentation-comment id from at all. A caller must never be able to mistake this for a
     /// live symbolId: the two are computed from incompatible inputs (a bare dotted name here vs. an
     /// assembly-qualified doc-comment id there) and will never agree even for the same logical symbol,
-    /// so keeping them in one hash space invites exactly the silent baseVersions mismatch this prefix
-    /// exists to make loud instead.
+    /// so keeping them in one hash space invites exactly the silent id mismatch this prefix exists to
+    /// make loud instead.
     /// </summary>
     /// <param name="fullyQualifiedName">The syntax index's dotted name for the declaration.</param>
-    /// <returns>A provisional id that <c>validate_patch</c> rejects outright.</returns>
+    /// <returns>A provisional id, resolvable only while the workspace is still index-only.</returns>
     public static string IndexOnlySymbolId(string fullyQualifiedName)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(fullyQualifiedName));
@@ -80,7 +77,7 @@ public static class Ids
     /// </summary>
     /// <param name="displayName">The symbol's fully-qualified display string.</param>
     /// <param name="assemblyName">The containing assembly's name, or empty.</param>
-    /// <returns>A provisional id that <c>validate_patch</c> rejects outright.</returns>
+    /// <returns>A provisional id that no store row will ever match.</returns>
     public static string FallbackSymbolId(string displayName, string assemblyName)
     {
         var input = $"{assemblyName}|{displayName}";
@@ -88,6 +85,4 @@ public static class Ids
         return "symfb_" + Convert.ToHexStringLower(hash.AsSpan(0, 8));
     }
 
-    /// <summary>Mints an id for a validated-but-unapplied patch draft held by <c>PatchDraftStore</c>.</summary>
-    public static string Draft() => $"draft_{Ulid.NewString()}";
 }

@@ -134,48 +134,4 @@ public static class HistoryTools
         return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "get_semantic_diff",
             requested, json, returnedSymbols: result.Added.Count + result.Removed.Count + result.Changed.Count);
     }
-
-
-    [McpServerTool(Name = "search_log")]
-    [Description("Why was this code written this way — search the development log of recorded intents for the history,"
-        + " reasoning, rationale and past decisions behind previous changes, with the symbols each one touched."
-        + " Answers \"why does this look like this\", \"was this approach already tried and rejected\", \"what was "
-        + "the reason for this design\", \"what is the story behind this file\". Use it before re-proposing a "
-        + "design. Each entry carries logId, date, intent, and tags (a JSON array, present only when the patch "
-        + "that created the entry actually supplied one — most entries carry none, since validate_patch's tags "
-        + "argument is optional and rarely used). Matching is over intent only — there is no tag-based filter. "
-        + "The query is split on whitespace and every term must appear somewhere in the intent, in ANY order "
-        + "(AND, not search_index's ranked OR): \"task id telemetry\" matches an intent containing all three "
-        + "words however they are arranged, and adding a term narrows the result rather than widening it. Only "
-        + "changes applied through validate_patch or rename_symbol are recorded, so an empty result means "
-        + "nothing was written down, never that nothing was decided.")]
-    public static string SearchLog(
-        FeatureLogStore featureLog,
-        TelemetryRecorder telemetry,
-        [Description("Words expected in the recorded reason or rationale, whitespace-separated; every term must appear in the intent, in any order. Omit to list the most recent entries.")] string? query = null,
-        [Description("Max entries (default 10).")] int limit = 10,
-        [Description(ToolTelemetry.TaskIdParam)] string? taskId = null)
-    {
-        var sessionId = Ids.AmbientSession;
-        var attributedTask = Ids.TaskId(taskId);
-        var toolCallId = Ids.ToolCall();
-
-        var entries = featureLog.SearchIntents(query, Math.Clamp(limit, 1, 50));
-        var items = entries.Select(e => new
-        {
-            logId = e.LogId,
-            date = e.CreatedAt.Length >= 10 ? e.CreatedAt[..10] : e.CreatedAt,
-            intent = e.Intent,
-            // Absent rather than an empty array when nothing was supplied — an empty TOON array renders as
-            // a dangling "tags[0]:" header with no row beneath it, which reads as a malformed entry rather
-            // than "no tags".
-            tags = e.Tags.Count > 0 ? e.Tags : null,
-        });
-        // Only worth the extra query when there is nothing else to tell "the log is empty" apart from
-        // "nothing matched this query" -- both render as items[0] otherwise, and the tool's own
-        // description leans on that distinction mattering.
-        var totalEntries = entries.Count == 0 ? featureLog.TotalEntries() : (int?)null;
-        return ToolTelemetry.Record(telemetry, toolCallId, sessionId, attributedTask, "search_log",
-            query ?? "(recent)", Formats.Render(new { items, totalEntries }), returnedSymbols: entries.Count);
-    }
 }

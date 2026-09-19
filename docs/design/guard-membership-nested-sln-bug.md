@@ -1,5 +1,10 @@
 # Bug: guard hooks silently ungoverned on any project with its own nested `.sln`
 
+> **Historical record.** The write guards this bug most affected (`guard-cs-edit`,
+> `guard-cs-bash-write`) were removed on 2026-09-19 — `Edit`/`Write` are the write path now. The
+> `CsFileMembership` fix described here still governs the two advisory read guards and the
+> `refresh-cs-files` hook's "is this file in the solution" check, which is why the file stays.
+
 **Found:** 2026-08-22, during a `dotnet-performance` benchmark run against PandaAI
 **Severity:** High — the write guard (`guard-cs-edit`), which is documented as a hard, unconditional
 deny, does not fire at all on the affected files. This is not a benchmark artifact; it is a standing

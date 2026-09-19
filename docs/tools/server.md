@@ -43,7 +43,7 @@ Real response, this repo:
 root: /path/to/dotnet-toolkit
 pluginRoot: /path/to/dotnet-toolkit
 solution: dotnet-toolkit.slnx
-index: ready 133 files, 220 types
+index: ready 133 files, 220 types; symbols refreshed 4s ago
 workspace: loaded 2 projects in 2.3s
   loaded: DotnetToolkit.McpServer, DotnetToolkit.McpServer.Tests
 ```
@@ -75,6 +75,11 @@ Added in contract **3.50**. A server that omits the line predates it and needs r
 `dist/`; the `dotnet-read`/`dotnet-write` skills and `agents/dotnet-code-review.md` all treat its absence as a
 reason to report standards-derived work as not-assessed rather than to guess a path.
 
+The `index:` line also says when the symbol store last followed an edit (`symbols refreshed Ns
+ago`) and, while a refresh is still running, how many files are queued (`, 3 file(s) queued`).
+Both come from the `refresh-cs-files` hook and the sweep, which re-index just the files a tool
+wrote; "queued" is the state to wait out before trusting `search_index` on a file you just changed.
+
 A degraded workspace names the failing project — reference edges from a project MSBuild couldn't
 evaluate contribute nothing, and semantic results from it are incomplete or wrong, not just thin.
 
@@ -85,7 +90,7 @@ contract **3.102**.
 
 | Line | Appears when | What it means, and what to do |
 |---|---|---|
-| `knowledgeCache: …` | The SQLite knowledge cache is damaged | Symbol search, reference counts and the development log are disabled **for this session**, deliberately: a damaged store keeps answering from whatever pages still read, and a caller cannot tell that frozen snapshot from a current answer. The file is quarantined beside itself as `knowledge.db.corrupt-<timestamp>` and rebuilt from source on the next server start, with `feature_log` carried across — deleting `knowledge.db` rebuilds it immediately. |
+| `knowledgeCache: …` | The SQLite knowledge cache is damaged | Symbol search and reference counts are disabled **for this session**, deliberately: a damaged store keeps answering from whatever pages still read, and a caller cannot tell that frozen snapshot from a current answer. The file is quarantined beside itself as `knowledge.db.corrupt-<timestamp>` and rebuilt from source on the next server start — every table is derived, so nothing is lost; deleting `knowledge.db` rebuilds it immediately. |
 | `msbuild: …` | The workspace is not cleanly loaded, **or** no installed SDK satisfies this repository's `global.json` | Read it before blaming a tool. An unsatisfied pin reaches a caller as an unresolved `Microsoft.Build.Framework, Version=15.1.0.0`, which names neither the SDK that was chosen nor the pin it failed to match; this line names both. |
 
 # `reload_workspace` — force a re-scan
@@ -95,46 +100,41 @@ contract **3.102**.
 | `scope` | `index` (re-scan file index) \| `workspace` (re-open the MSBuild solution, then rebuild the SQLite symbol index/project graph) \| `all` (default). |
 
 Call after a large external change the mtime-poller might not have caught yet in time — a `git
-checkout`, a `git pull`, a rebase, or any `.cs` edit made outside `validate_patch`. `workspace`/`all`
-queues a background `SymbolIndexBuilder` rebuild after reopening the solution (the same mechanism a
-successful `validate_patch` apply triggers), so `search_index`/`get_references` catch up on the new
-symbols and edges without waiting for the next periodic full sweep. That rebuild runs in the
+checkout`, a `git pull`, a rebase — or when the `refresh-cs-files` hook reported that the server was
+unreachable for a new or deleted file. An ordinary `Edit`/`Write` does **not** need it: the hook
+re-indexes the written files itself, and the sweep converges on anything the hook missed within a
+couple of seconds. `workspace`/`all` queues a background `SymbolIndexBuilder` rebuild after
+reopening the solution, so `search_index`/`get_references` catch up on the new symbols and edges
+without waiting for the next periodic full sweep. That rebuild runs in the
 background — `reload_workspace` returns before it finishes; check `workspace_status` if you need to
 confirm it's done.
 
-# `set_hook_guards` — suspend or force the C# guards, briefly
+# `set_hook_guards` — suspend or force the C# read guards, briefly
 
 | Arg | Meaning |
 |---|---|
 | `state` | `suspend` \| `block` \| `restore`. |
 | `minutes` | How long to suspend/block for. Default 30, capped at 240. Ignored when restoring. |
 
-A `PreToolUse` guard blocks `Edit`/`Write` on a compiled `.cs` file, and a sibling guard blocks a
-write-shaped shell command reaching the same file through `Bash` (a redirect, `sed -i`/`perl -i`,
-`tee`, `cp`/`mv`, `dd`) — these two are always a hard deny; there is no advisory-only mode for a write.
-`Read` and a shell *read* (`cat`/`grep`/`sed`/…) are advisory by **default** — they are allowed, with a
-note — but this tool can force them into a third state instead of only turning them off:
+There are no write guards: `Edit`/`Write` on a `.cs` file is the write path, and a `PostToolUse`
+hook re-indexes what was written. Two `PreToolUse` guards remain, both on **reads**: a whole-file
+`Read` of a compiled `.cs` file, and a whole-file shell read (`cat`/`grep`/`sed`/…) through `Bash`.
+By **default** they are advisory — the call is allowed, with a note that `get_symbol` plus a ranged
+`Read` would likely have cost less. A ranged read (`Read` with `offset`/`limit`, `sed -n 'a,bp'`,
+`head -n`, `tail -n +N`) draws nothing in any mode. This tool moves both guards to a different
+state for a bounded window:
 
-- **`suspend`** — nothing blocks and nothing advises, on any of the four guards, for a bounded window.
-  Simulates a session with no plugin installed at all.
-- **`block`** — the read guards (`guard-cs-read`, `guard-cs-bash-read`) hard-deny too, on top of the
-  write guards, which always did. Simulates this repo's own guard behavior before 2026-08-21, when the
-  read guards were denies rather than advisories.
-- **`restore`** — back to the default: write guards deny, read guards advise.
+- **`suspend`** — no advisory at all. Simulates a session with no plugin installed.
+- **`block`** — the two read guards hard-deny a whole-file raw read instead of advising. The
+  backstop `dotnet-performance`'s MCP-only probe runs under, so a probe cannot quietly fall back
+  to `cat`.
+- **`restore`** — back to the default: advise.
 
-**It is not the way past a guard that is in your way.** A guard's denial names the skill covering what
-you were trying to do, and that route is both cheaper and recorded; suspending or blocking the guards
-to do the same work by hand trades a better tool for a worse one. The legitimate uses are the ones
-where an unguarded or a forced-enforcement path *is* the subject: measuring these tools against
-`grep`/`Read` (`suspend`), reproducing what a repo without the plugin does (`suspend`), or reproducing
-this repo's pre-2026-08-21 read enforcement (`block`) — `dotnet-performance`'s three-probe run uses all
-three states, one per probe.
-
-What a suspension actually costs, and why it is worth stating before taking one: an edit made through
-raw `Edit`/`Write` reaches disk **without compiling**, without a dependent-compile check against its
-callers, and **without a development-log entry** — so `search_log` cannot recover why it was made once
-the session ends. `block` carries no such risk — it only ever makes a guard *more* restrictive, never
-less, so nothing reaches disk unrecorded under it.
+The legitimate uses are the ones where an unguarded or a forced path *is* the subject: measuring
+these tools against `grep`/`Read` (`suspend`), reproducing what a repo without the plugin does
+(`suspend`), or holding a probe to the MCP route (`block`) — `dotnet-performance`'s three-probe run
+uses all three states, one per probe. Outside a measurement, an advisory is guidance to weigh, not a
+wall to route around, so there is nothing here to reach for.
 
 A suspend or a block is stored as an **expiry, not a flag**. The state file under
 `.claude/dotnet-toolkit/cache/` names the instant the guards resume and which of the two states is in
@@ -151,9 +151,10 @@ reporting a restore it did not perform.
 
 ## Next steps
 
-- **`workspace_status` says `index_only` or `stale`** → `reload_workspace`, then re-fetch.
+- **`workspace_status` says `index_only`** → wait for the load, then re-fetch. **`stale`** clears on
+  the next sweep by itself; `reload_workspace` only after a git operation or a file add/delete the
+  hook could not deliver.
 - **`degraded`** → fix the build first; results may be silently wrong, not just thin.
-- **`hookGuards: SUSPENDED` and you did not ask for it** → `set_hook_guards(state: "restore")`; an
-  earlier session in this repo left one running, and until it lapses your `.cs` edits are unrecorded.
-- **`hookGuards: BLOCKED` and you did not ask for it, or a `Read` on a `.cs` file denies unexpectedly**
-  → `set_hook_guards(state: "restore")`; an earlier session left a forced block running.
+- **`hookGuards: SUSPENDED` or `BLOCKED` and you did not ask for it, or a `Read` on a `.cs` file
+  denies unexpectedly** → `set_hook_guards(state: "restore")`; an earlier session in this repo left
+  a window running.

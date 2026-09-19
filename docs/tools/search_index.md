@@ -34,14 +34,13 @@ term is itself a kind/modifier keyword, which `hint` covers instead (below).
 
 ### Hit shape
 
-Every hit: `symbolId, name, kind, file, lines`, plus whichever of `shape`, `read`, `refs` and
-`modifiers` the `include` argument asked for (all four by default).
+Every hit: `symbolId, name, kind, file, lines`, plus whichever of `shape`, `refs` and `modifiers`
+the `include` argument asked for (all three by default).
 
-`lines` is an **`@from-to` read selector** — `@190-197`, or `@15` when a declaration is one line —
-the same syntax `get_symbol`'s `source` include takes, so a hit's location pastes straight into the
-next call. The `@` is load-bearing: it marks a *read* slice, where `validate_patch` takes a bare
-`"N-M"`. These lines are the signature span and exclude a leading `///` doc comment, so anchoring an
-edit here silently drops it — `get_symbol`'s `declarationSites` is the edit span.
+`lines` is the signature's own span — `@190-197`, or `@15` when a declaration is one line. It
+**excludes a leading `///` doc comment**, so it answers "where is this" and is the number to quote;
+`get_symbol`'s `declarationSites` is the range to `Read` when you want the whole declaration, doc
+comment included.
 
 `file`/`lines` are resolved live at response time (swept for staleness), not read from a cache. An
 overload set is separated by **parameter count**, then by **parameter type**, so each member reports
@@ -111,71 +110,21 @@ nested type is counted by `N` yet still listed as a member there too. `C` on a t
 **transitive total** across its members (double-counts each member's own `C` by design — it
 answers "what would fetching the whole type cost"). `D` never overlaps `C`.
 
-**`C` is a fact at any count, but only worth acting on above roughly `C10`.** `source: "code-comments"`
-(dropping just the comments, keeping doc comments and code) saves one token per comment line — real,
-but at `C1`–`C5` the saving rounds to nothing next to the call itself. `P`, by contrast, names no
-route at all: it disambiguates an overload set at the point of choosing a `get_symbol` target, which
-is a real use, but no `include` answers "which overload" more cheaply than picking the right
-`symbol` argument in the first place — treat it as a fact, not advice, the way `read`'s absence is.
+`C` and `D` together say what a `Read` of the declaration costs beyond its code: a `C40` member is
+worth mapping with `bodyOutline` and reading in regions. `P` names no route at all: it disambiguates
+an overload set at the point of choosing a `get_symbol` target, which is a real use, but no argument
+answers "which overload" more cheaply than picking the right `symbol` in the first place — treat it
+as a fact, not advice.
 
-### The `read` column — which `include` to pass next
+### Choosing the next call from `shape`
 
-`shape` states the facts and leaves the inference to you. `read` is that inference already made: one
-token per hit naming the `get_symbol` include to call with, legend stated once per response, the
-same way `shape`'s is.
+There is no recommendation column; the facts are enough once the rule is stated:
 
-| Value | Next call |
+| The hit is | Next call |
 |---|---|
-| `mem` | `get_symbol(include: "members")` — navigate by member list, not a full-type read |
-| `out` | `get_symbol(include: "bodyOutline")` to map it, then `source: "code@from-to"` for the region |
-| `code` | `get_symbol(source: "code")` — one linear block, docs stripped. Only ever recommended on a hit that actually *has* doc lines to strip: with no `D` in its `shape`, `source: "code"` and `source: "full"` are byte-identical, so the label would name a saving that does not exist |
-| *absent* | the default fetch is already the right call |
-
-There is no `all`. Every body-serving include leases the identical `body:` layer, and `include: "all"`
-is the widest and most expensive of them — measured on a 117-line method, `all` 2,133 tokens against
-`bodyOutline`'s 192 for the same `body:` hash — so recommending it would be advice to overpay.
-
-**Absent is an assertion here, not a blank.** It is the second deliberate exception to "absent
-carries no information" (`shape`'s letters are the first), and it is what keeps the column
-affordable: a result of nothing but small symbols renders exactly as it did before `read` existed —
-no column, no legend.
-
-The column is cheap rather than free, though. Once *any* hit carries advice, the tabular form gains
-the column for every row, and the silent ones render an empty cell:
-
-```
-items[3]{symbolId,name,lines,shape,read,refs,modifiers}:
-  sym_5b5c…,ContextTools,@25-2480,M83-N4-L2456-D434,mem,I0,ps
-  sym_8aca…,ReadAdvice.Legend,@33-35,L3-D6,"","",psc
-```
-
-So the real cost is one legend plus one cell per hit on a mixed result, and nothing at all on a
-result where the default fetch is right throughout.
-
-`read` is deliberately redundant with `shape` — it carries no fact `shape` does not already carry.
-It exists because a derivation nobody performs is not information: `L2342-M87` reliably reads as a
-description rather than as "fetch the member list", and the whole 2342-line type gets fetched anyway.
-
-### `intent` — aiming the recommendation
-
-Without it, `read` is derived from each hit's own size and structure, and stays silent below ~60
-lines. Passing what you are about to do overrides that, because your intent is a fact the shape
-cannot contain:
-
-| `intent` | Effect |
-|---|---|
-| `edit` | the cheapest include that carries what the patch needs: `out` on a member (`bodyOutline` leases the `body:` layer for a fraction of `all`), `mem` on a type (which has no body layer to lease, so its surface is what an edit to it actually wants). **A Field is excluded from `out`** — it has no body layer either, `bodyOutline` refuses it outright rather than leasing an empty one, and routing an edit there anyway set up the next `validate_patch` to fail `unleased_body`; the default fetch is silent there instead. It used to answer `all` on every row — a column with one value carries no information, and it named the most expensive lease available |
-| `logic` | behaviour, not docs: `code` at any size, or `out` on a long branching body. Silent where `code` would save nothing (no `D` in the hit's `shape`), falling through to the no-intent answer |
-| `surface` | the API shape: `mem` on a type, silent on everything else (the default fetch already leads with the signature) |
-
-An unrecognized value is treated as omitted, and the response carries `intentHint` naming what it
-probably was. `N…` and `A…` have no `read` route of their own —
-nested types are separate symbols reached by `get_scope` or a `pathPrefix` search, and
-`include: "attributes"` remains the cheap `[Authorize]`/`[Obsolete]` check to ask for directly.
-
-The thresholds behind the no-intent path are the one guessed part of this. Analysis 3d in
-`dotnet-selfeval` exists to price advice like this — follow the column, ignore it, compare — and is
-what should move them.
+| a type with a large `M` | `get_symbol(include: "members")` — navigate by member list, never a whole-type `Read` |
+| a member with a large `L` and an `O` worth mentioning | `get_symbol(include: "bodyOutline")` to map it, then a `Read` over the landmark's `startLine`–`endLine` |
+| anything else | `get_symbol` for `declarationSites`, then one `Read` of that range |
 
 ## `query` is name text, not structure
 
@@ -244,7 +193,7 @@ looking at the argument. A failure inside the tool now comes back as `search_ind
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`lines`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
-| `include` | comma-separated; **replaces** the default set | `shape,read,refs,modifiers` (the default) plus `summary` (a `hasSummary` bool) or `summary:full` (the text, capped 160 chars, read from the syntax index — free even at `index_only`). **Commas, never hyphens**: `-` already means *subtract* in `get_symbol`'s source grammar, so `"shape-refs"` would read there as "shape without refs". An unrecognized column is named in `includeHint` and ignored |
+| `include` | comma-separated; **replaces** the default set | `shape,refs,modifiers` (the default) plus `summary` (a `hasSummary` bool) or `summary:full` (the text, capped 160 chars, read from the syntax index — free even at `index_only`). Commas, never hyphens. An unrecognized column is named in `includeHint` and ignored |
 | `groupBy` | — | `"namespace"` (namespace→file→symbols) \| `"file"` (file→namespace→symbols) \| `"none"` (flat, `file`/`kind` repeated per row). **Omit it** — the server renders both shapes and keeps whichever costs fewer tokens; an explicit value is always honored as given. Whichever axis fully collapses to one value flattens its wrapper to a header field, and a leaf's `kind` drops when every hit there shares one kind. An unrecognized non-null value is treated as `"namespace"` and the response carries `groupByHint` |
 | `limit` | — | default 10, cap 200 |
 
@@ -302,12 +251,17 @@ its own call: the summary *text* isn't in `shape` at all.
 `hint` is a response field, not an argument: present only when `query` is built entirely from
 kind/modifier keywords and `items` came back empty — see above. `kindsHint`/`modifiersHint` follow the
 same zero-hit gate for an unrecognized token in those two filters specifically. `originHint`,
-`includeHint`, `groupByHint` and `intentHint` are simpler and unconditional: present whenever that
+`includeHint` and `groupByHint` are simpler and unconditional: present whenever that
 argument was supplied and didn't match its own vocabulary, regardless of how many hits came back — each
 names the value that wasn't recognized, what it was silently treated as, and a `didYouMean`-style
 suggestion when exactly one vocabulary token is a close-enough match. All four are additive: the call
 still succeeds and returns the same fallback behavior it always has, only now with a signal that a
 fallback happened.
+
+`summary:full` and the name tokenizer are as far as text goes: **string literals, comments and
+identifiers inside bodies are not indexed.** A query for a log message, an error code or a local
+variable name returns nothing here by design; that is a `Grep`, and the one place grep is the right
+tool on C#.
 
 `implementsHint` and `refsHint` are neither of the above — both report a state the *index* is in, not
 a typo in an argument. `implementsHint` is present whenever `implements` was supplied and did not
@@ -325,26 +279,26 @@ declaration split across more than one file — to state that `file`/`lines` nam
 ## Reference
 
 ```
-search_index(query: "validate_patch FeatureLogStore", limit: 5, groupBy: "none")
+search_index(query: "RenameSymbol SymbolStore", limit: 5, groupBy: "none")
 ```
 ```json
 {"items":[
-   {"symbolId":"sym_dd78...","name":"DotnetToolkit.McpServer.Tools.PatchTools.ValidatePatch(...)",
-    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/PatchTools.cs","lines":"@29-151"},
-   {"symbolId":"sym_fc34...","name":"DotnetToolkit.McpServer.Store.FeatureLogStore",
-    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/FeatureLogStore.cs","lines":"@10-260"}]}
+   {"symbolId":"sym_dd78...","name":"DotnetToolkit.McpServer.Tools.RenameTools.RenameSymbol(...)",
+    "kind":"Method","file":"src/DotnetToolkit.McpServer/Tools/RenameTools.cs","lines":"@29-151"},
+   {"symbolId":"sym_fc34...","name":"DotnetToolkit.McpServer.Store.SymbolStore",
+    "kind":"Type","file":"src/DotnetToolkit.McpServer/Store/SymbolStore.cs","lines":"@10-260"}]}
 ```
 
 `name` is directly usable as `get_symbol`'s `symbol` argument — parameter types are shortened but
 matching is whitespace-blind, so the shortened form still resolves.
 
 **If a symbol you're about to edit has no summary**, see the `dotnet-write` skill — a missing
-summary on code you touch is something `validate_patch` should fix in the same edit, not just note.
+summary on code you touch is something the same edit should add, not just note.
 
 ## Next steps
 
-- **See a symbol's shape, docs or source** → `get_symbol` (pass the `symbolId` directly) — `get_symbol.md`
+- **See a symbol's shape, docs and exact location** → `get_symbol` (pass the `symbolId` directly), then a ranged `Read` for the text — `get_symbol.md`
 - **Find who calls it, with file/line per site** → `get_references` — `get_references.md`
 - **Just the caller list, one hop** → `get_call_hierarchy(maxDepth: 1)` — cheaper — `get_call_hierarchy.md`
 - **A type's base chain and every implementer** → `get_type_hierarchy` — `get_type_hierarchy.md`
-- **About to edit it** → `get_symbol` for `contentVersion` + `declarationSites`, then `validate_patch` — `validate_patch.md`
+- **About to edit it** → `get_symbol` for `declarationSites`, `Read` that range, `Edit` on the text you read — `dotnet-write`

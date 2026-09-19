@@ -70,4 +70,4 @@ A `Domain`/`Core` project with a project reference to `Infrastructure`/`Web`, or
 method, leaky abstraction, or service-locator use (per `antipatterns.md`) inside one file is 🟡 unless
 it's already crossing a project boundary, which raises it to 🔴. A single-implementer interface with no
 visible testability or planned-second-implementer intent is 🔵 — a question, not an assumed mistake;
-`search_log` first for a recorded reason before flagging it.
+check the site's comments, `<remarks>` and history for a recorded reason before flagging it.

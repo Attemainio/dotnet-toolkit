@@ -8,8 +8,8 @@ namespace DotnetToolkit.McpServer.Tests;
 
 /// <summary>
 /// Covers what happens to a knowledge store whose file is damaged: that the damage is recognised, that
-/// the store is rebuilt rather than left serving a frozen snapshot, and that the development log --
-/// the one table nothing can regenerate -- survives the rebuild.
+/// the store is rebuilt rather than left serving a frozen snapshot, and that the rebuilt store is
+/// refilled from source rather than left empty.
 /// </summary>
 public sealed class StoreRecoveryTests : IDisposable
 {
@@ -30,10 +30,16 @@ public sealed class StoreRecoveryTests : IDisposable
 
     private KnowledgeStore Open() => new(_locator, NullLogger<KnowledgeStore>.Instance);
 
-    private static string AppendLogEntry(KnowledgeStore store, string intent) =>
-        new FeatureLogStore(store).Append(new FeatureLogStore.LogEntry(
-            "tsk_recovery", null, null, intent, [], null,
-            [new FeatureLogStore.LogSymbol("sym_a", null, ["signature"], "changed", "decl:old", "decl:new", "non-breaking")]));
+    /// <summary>Writes one symbol row, the store's own data, as a probe that a table is queryable.</summary>
+    private static string AppendSymbolRow(KnowledgeStore store, string name)
+    {
+        var id = "sym_" + Guid.NewGuid().ToString("N")[..16];
+        new SymbolStore(store).ApplyIncremental(
+            [new SymbolStore.SymbolRow(id, name, "Method", "Lib", "decl:" + name, null, name)], [], []);
+        return id;
+    }
+
+    private static int SymbolRows(KnowledgeStore store) => new SymbolStore(store).SymbolCount();
 
     /// <summary>The quarantined databases, without the <c>-wal</c>/<c>-shm</c> sidecars moved with them.</summary>
     private string[] QuarantinedStores() =>
@@ -82,16 +88,16 @@ public sealed class StoreRecoveryTests : IDisposable
         Assert.Null(store.HealthMessage);
         Assert.Single(QuarantinedStores());
         // The replacement is a working store, not merely a file that exists: the schema is queryable,
-        // and it is empty because a file that was never a database had no log to carry across.
-        Assert.Equal(0, new FeatureLogStore(store).TotalEntries());
+        // and it is empty because nothing is carried across from a file that was never a database.
+        Assert.Equal(0, SymbolRows(store));
     }
 
     [Fact]
-    public void ADamageMarkerRebuildsTheStoreAndCarriesTheDevelopmentLogAcross()
+    public void ADamageMarkerRebuildsTheStore()
     {
         var first = Open();
-        AppendLogEntry(first, "the reason this code looks the way it does");
-        Assert.Equal(1, new FeatureLogStore(first).TotalEntries());
+        AppendSymbolRow(first, "Before");
+        Assert.Equal(1, SymbolRows(first));
         SqliteConnection.ClearAllPools();
 
         // What a previous session leaves behind when it hits a damaged page but cannot rename the file
@@ -103,12 +109,8 @@ public sealed class StoreRecoveryTests : IDisposable
         Assert.True(rebuilt.Available);
         Assert.Single(QuarantinedStores());
         Assert.False(File.Exists(Path.Combine(_locator.CacheDir, "knowledge.db.corrupt")));
-
-        // The whole point of salvaging rather than deleting: feature_log is a source of truth, and a
-        // rebuild that dropped it would lose why every past change was made.
-        var entries = new FeatureLogStore(rebuilt).SearchIntents("reason", 10);
-        Assert.Single(entries);
-        Assert.Equal("the reason this code looks the way it does", entries[0].Intent);
+        // Everything in the store is derived, so nothing is carried across: the next index pass refills it.
+        Assert.Equal(0, SymbolRows(rebuilt));
     }
 
     [Fact]
@@ -130,13 +132,13 @@ public sealed class StoreRecoveryTests : IDisposable
     public void VerifyAndHeal_LeavesAHealthyStoreAlone()
     {
         var store = Open();
-        var logId = AppendLogEntry(store, "unchanged by a clean verification");
+        var logId = AppendSymbolRow(store, "UnchangedByACleanVerification");
 
         Assert.True(store.VerifyAndHeal());
 
         Assert.Empty(QuarantinedStores());
         Assert.NotEmpty(logId);
-        Assert.Equal(1, new FeatureLogStore(store).TotalEntries());
+        Assert.Equal(1, SymbolRows(store));
     }
 
     [Fact]
@@ -176,7 +178,7 @@ public sealed class StoreRecoveryTests : IDisposable
     {
         var store = Open();
         for (var i = 0; i < 300; i++)
-            AppendLogEntry(store, $"entry {i} explaining why something changed");
+            AppendSymbolRow(store, $"Entry{i}");
 
         // WAL keeps recent writes out of the database file, so without a checkpoint the pages damaged
         // below would not be the pages holding these rows.

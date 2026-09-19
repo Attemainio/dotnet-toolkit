@@ -264,7 +264,7 @@ Then re-run `/dotnet-init` — a plugin pull does not refresh a consuming repo's
 - **Installed from the local marketplace**: `/plugin uninstall dotnet-toolkit@dotnet-toolkit`, then
   `/plugin marketplace remove dotnet-toolkit`, then `/reload-plugins`.
 
-The MCP server and the guard hooks travel *with* the plugin — they stop the moment it unloads.
+The MCP server and the hooks travel *with* the plugin — they stop the moment it unloads.
 
 The files `/dotnet-init` wrote into your `.claude/` are yours to keep or delete. Re-running it lists
 exactly what a clean removal touches, as a dry run.
@@ -321,7 +321,7 @@ of that folder splits it in two:
 
 | Tracked | Ignored |
 |---|---|
-| `install.json` — what you installed | `review/`, `eval/`, `perf/`, `redteam/` — reports from `dotnet-review`, `dotnet-selfeval`, `dotnet-performance`, `dotnet-guard-audit` |
+| `install.json` — what you installed | `review/`, `eval/`, `perf/` — reports from `dotnet-review`, `dotnet-selfeval`, `dotnet-performance` (and `redteam/`, left by the retired `dotnet-guard-audit`) |
 | `config.json` — your per-repo toolkit settings | `backups/` — init's pre-overwrite copies, one machine's |
 | `local-install.json` — your repo's own installation workarounds, if any | |
 | the `.gitignore` itself | `cache/` — self-ignored by the server, rebuildable |

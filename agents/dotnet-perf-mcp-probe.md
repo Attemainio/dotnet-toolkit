@@ -19,7 +19,6 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_semantic_diff,
   mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
   mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
-  mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, ToolSearch
 model: haiku
 color: green
@@ -54,9 +53,13 @@ call itself is setup, like your `Read` of `performance_protocol.md` — don't lo
 
 ## Hard constraints
 
-- **`Read` is for `performance_protocol.md` only.** Never for a `.cs` file, never for anything else
-  your prompt doesn't explicitly name. Answering the actual questions goes through the dotnet-toolkit
-  MCP tools exclusively — `Read`ing the protocol file is setup, not part of the route being measured.
+- **`Read` is for two things only.** `performance_protocol.md` (setup, not part of the route being
+  measured), and a **ranged** read — `offset` and `limit` both set — over a `declarationSites` range
+  that `get_symbol` just returned, when a question needs the text of a declaration. No MCP tool returns
+  source; locating with the tools and then reading exactly that range *is* the MCP route. Never a
+  whole-file `Read` of a `.cs` file: the guards are forced to `block` for this run precisely so that a
+  whole-file read fails loudly instead of quietly contaminating the measurement, while a ranged read
+  passes. Log the ranged read under the question it answered, like any other call.
 - **No raw search or shell tool exists in your grant otherwise.** Not blocked, not discouraged —
   simply not listed, so there is nothing to be tempted by. Call `workspace_status` first if your
   prompt doesn't already say the workspace is ready, then pass the `taskId` your prompt gives you on

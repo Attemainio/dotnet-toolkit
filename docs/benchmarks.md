@@ -192,8 +192,8 @@ A route that fails loudly is cheaper to work with than one that fails at 26-vs-2
 
 ## What these runs do not measure
 
-- **The write path.** `validate_patch` versus edit-then-build has never been benchmarked against raw
-  tools. Both probes are read-only.
+- **The write path.** `rename_symbol` versus a hand-written rename has never been benchmarked
+  against raw tools. Both probes are read-only.
 - **Multi-project ripple.** Every question in Specimen A landed in one of its three projects.
 - **Repos larger than ~500 types**, or monorepos.
 - **Comment density**, which is under-sampled. The false hit above came from a large block-commented-out

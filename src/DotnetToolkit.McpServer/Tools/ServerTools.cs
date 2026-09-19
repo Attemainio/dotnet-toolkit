@@ -68,16 +68,15 @@ public static class ServerTools
                 sb.Append(" for another ").Append((int)(until - DateTimeOffset.UtcNow).TotalMinutes).Append(" min");
             else
                 sb.Append(" by ").Append(Hooks.GuardSuspension.DisableVariable);
-            sb.Append(" - raw .cs reads and edits pass unchecked, and edits made through them are absent ")
-                .Append("from the development log\n");
+            sb.Append(" - raw .cs reads pass without an advisory note\n");
         }
         else if (guards.Blocked)
         {
             sb.Append("hookGuards: BLOCKED");
             if (guards.Until is { } until)
                 sb.Append(" for another ").Append((int)(until - DateTimeOffset.UtcNow).TotalMinutes).Append(" min");
-            sb.Append(" - guard-cs-read and guard-cs-bash-read now hard-deny a raw .cs read too, on top of the ")
-                .Append("write guards, which always did\n");
+            sb.Append(" - guard-cs-read and guard-cs-bash-read now hard-deny a whole-file raw .cs read instead ")
+                .Append("of advising\n");
         }
 
 

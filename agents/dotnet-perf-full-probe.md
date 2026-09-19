@@ -22,7 +22,6 @@ tools: mcp__plugin_dotnet-toolkit_dotnet__search_index,
   mcp__plugin_dotnet-toolkit_dotnet__get_semantic_diff,
   mcp__plugin_dotnet-toolkit_dotnet__get_project_graph,
   mcp__plugin_dotnet-toolkit_dotnet__detect_circular_dependencies,
-  mcp__plugin_dotnet-toolkit_dotnet__search_log,
   mcp__plugin_dotnet-toolkit_dotnet__workspace_status, Read, Grep, Glob, Bash, ToolSearch
 model: haiku
 color: blue
@@ -70,16 +69,15 @@ whatever else you answer. The `ToolSearch` call itself is setup, like your `Read
   comes back with an added note pointing at `dotnet-read`, treat it exactly as you would in any other
   session — weigh it, and switch tools or don't, on its merits for the question in front of you. Do not
   suppress your normal reaction to it, and do not follow it reflexively just because it is there.
-- **A write guard denial is a real boundary, not a probe finding.** You are read-only in intent — see
-  Hard constraints — so you should never reach the point of triggering `guard-cs-edit` or
-  `guard-cs-bash-write` in the first place.
+- **A ranged `Read` draws no note, by design.** `get_symbol` returns `declarationSites`, not source;
+  reading that range with `offset`/`limit` is the intended second half of the MCP route, and the
+  guards say nothing about it. Only a whole-file read of a compiled `.cs` file carries the advisory.
 
 ## Hard constraints
 
-- **Never edit `.cs`.** Not through `validate_patch` — you have no write MCP tools — and not through
-  `Edit`/`Write`, which are not in your grant either. `Bash` is present for legitimate raw reads
-  (`cat`, `grep`, `sed`, …) only; a write-shaped `Bash` command is out of scope for this run regardless
-  of what the guard would do with it.
+- **Never edit `.cs`.** You have no `rename_symbol`, and `Edit`/`Write` are not in your grant.
+  `Bash` is present for legitimate raw reads (`cat`, `grep`, `sed`, …) only; a write-shaped `Bash`
+  command is out of scope for this run — nothing blocks it, which is exactly why this line exists.
 - **Call `workspace_status` first** if your prompt doesn't already say the workspace is ready, then
   pass the `taskId` your prompt gives you on every MCP call after that.
 - **Log which tool you actually called, not which family you meant to prefer** — `performance_protocol.md`'s

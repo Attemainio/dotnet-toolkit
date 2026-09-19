@@ -34,7 +34,7 @@ IFeeStrategy path is the risk: TieredFeeStrategy overrides it and never
 names Calculate in its own text, so a search-and-replace would miss it.
 ```
 
-`FeeCalculator.cs` is 1,104 lines. It was never opened.
+`FeeCalculator.cs` is 1,104 lines. Nine of them were read.
 
 ## The calls behind it
 
@@ -48,26 +48,24 @@ search_index(query: "fee calculate tier", limit: 6)
 
 ```text
 shape: P=params M=members N=nested L=lines O=outline D=doclines C=commentlines A=attributes; absent=none
-read: "mem=include:members out=include:bodyOutline (maps a long body to slice; also the cheapest body lease for an edit) code=source:code; absent=default fetch is right"
 refs: "R=callers E=callees I=implementations(direct only) V=overrides T=tests; 0 shown where it is the answer, absent=not measured"
 modifiers: p=public i=internal t=protected x=private s=static a=abstract v=virtual o=override y=async l=sealed g=partial c=const d=readonly e=extension
-items[3]{symbolId,name,kind,file,lines,shape,refs,modifiers,read}:
-  sym_4c1e9a77b2d0f318,Billing.Fees.FeeCalculator.Calculate,Method,src/Billing/Fees/FeeCalculator.cs,@64-152,P2-L89-O14-D6,R6-T14,p,out
-  sym_71ba0c93ee54d18a,Billing.Fees.TieredFeeStrategy,Type,src/Billing/Fees/TieredFeeStrategy.cs,@9-58,M6-L50-D3,I0,pl,mem
-  sym_2ef8ab6104c7d955,Billing.Invoicing.InvoiceBuilder.ApplyFees,Method,src/Billing/Invoicing/InvoiceBuilder.cs,@81-96,P1-L16-O3-D3,R2,x,null
+items[3]{symbolId,name,kind,file,lines,shape,refs,modifiers}:
+  sym_4c1e9a77b2d0f318,Billing.Fees.FeeCalculator.Calculate,Method,src/Billing/Fees/FeeCalculator.cs,@64-152,P2-L89-O14-D6,R6-T14,p
+  sym_71ba0c93ee54d18a,Billing.Fees.TieredFeeStrategy,Type,src/Billing/Fees/TieredFeeStrategy.cs,@9-58,M6-L50-D3,I0,pl
+  sym_2ef8ab6104c7d955,Billing.Invoicing.InvoiceBuilder.ApplyFees,Method,src/Billing/Invoicing/InvoiceBuilder.cs,@81-96,P1-L16-O3-D3,R2,x
 termsWithNoHits[1]: tier
 ```
 
 Three things are already answered without a second call:
 
-- **Where it is** — `@64-152`, an `@from-to` selector that pastes straight into the next call.
-- **What fetching it costs** — `P2-L89-O14-D6`: two parameters, 89 lines, 14 branch points, 6 doc lines.
+- **Where it is** — `@64-152`, the signature span, which is the line to quote.
+- **What reading it costs** — `P2-L89-O14-D6`: two parameters, 89 lines, 14 branch points, 6 doc lines.
 - **What already uses it** — `R6-T14`: six callers, fourteen tests. This is the dead-code answer too;
   `R0` would mean nothing calls it.
 
-The `read` column names the include to pass next when the default fetch would be wrong: `out` on a
-89-line method with 14 branches, `mem` on a type. Each legend is stated once per response, and the
-whole column disappears when no row needs it.
+`shape` decides the next call: a 89-line method with 14 branches wants `bodyOutline` before any read,
+and a type with `M6` wants `members`. Each legend is stated once per response.
 
 `termsWithNoHits` names any search term the result never covered — an absent term is never evidence of
 an absent symbol.
@@ -80,7 +78,6 @@ get_symbol(symbol: "sym_4c1e9a77b2d0f318", include: "bodyOutline")
 
 ```text
 symbolId: sym_4c1e9a77b2d0f318
-contentVersion: "decl:5c4f619e8b71|body:36ac837aa4f6"
 content:
   kind: Method
   displayString: "decimal FeeCalculator.Calculate(Invoice invoice, Customer customer)"
@@ -103,51 +100,32 @@ content:
 ```
 
 `declarationSites` carries `startLine` **58** and `signatureLine` **64** — the six-line gap is the
-leading `///` doc comment. Report a location from `signatureLine`; anchor an edit on `startLine`, or
-the patch silently drops the docs.
+leading `///` doc comment. Report a location from `signatureLine`; `Read` from `startLine` when you
+want the docs too.
 
-`contentVersion` has two layers, `decl:` and `body:`. A patch that rewrites a body needs a version from
-an include that actually served one — which `bodyOutline` does, far more cheaply than `source`.
+No response carries source. The outline's rows carry line ranges, and that is what the next call
+takes.
 
 ### 3. Read only the lines that answer the question
 
 ```text
-get_symbol(symbol: "sym_4c1e9a77b2d0f318", source: "code@97-105")
+Read(file: "src/Billing/Fees/FeeCalculator.cs", offset: 97, limit: 9)
 ```
 
 ```text
-  source:
-    @97-105
-                foreach (var tier in Tiers)
-                {
-                    var applicable = Math.Min(remaining, tier.Ceiling);
-                    if (remaining <= tier.Ceiling)
-                    {
-                        total += RoundHalfUp(applicable * tier.Rate);
-                        break;
-                    }
-                    remaining -= applicable;
-                }
-  sourceLineFormat: compact
-  sourceLines: 97-105/64-152
+    97	            foreach (var tier in Tiers)
+    98	            {
+    99	                var applicable = Math.Min(remaining, tier.Ceiling);
+   100	                if (remaining <= tier.Ceiling)
+   101	                {
+   102	                    total += RoundHalfUp(applicable * tier.Rate);
+   103	                    break;
+   104	                }
+   105	                remaining -= applicable;
 ```
 
-Nine lines instead of 1,104.
-
-`sourceLineFormat: compact` is the default and carries no per-line numbers. Pass
-`source: "full-exact@97-105"` to get them rendered inline instead, which is what you want when quoting
-a location or anchoring an edit:
-
-```text
-  source:
-    97│             foreach (var tier in Tiers)
-    98│             {
-    99│                 var applicable = Math.Min(remaining, tier.Ceiling);
-   100│                 if (remaining <= tier.Ceiling)
-   101│                 {
-```
-
-The separator is a box-drawing `│` (U+2502), not `|` or `:`.
+Nine lines instead of 1,104, and the read draws no advisory — a ranged `Read` is the intended way
+to fetch text once a symbol is located. An `Edit` anchored on these exact lines is the write path.
 
 ### 4. Confirm the dispatch edge
 
@@ -161,9 +139,9 @@ comment and string hits a `grep` would have handed back as real.
 
 ## Why this shape
 
-Each response answers the *next* question as well as the current one. The search hit says what fetching
-costs, so the fetch is already decided; the outline says where the logic is, so the slice is already
-decided. The alternative is fetching wide and discarding most of it, which is what reading the file
-does.
+Each response answers the *next* question as well as the current one. The search hit says what reading
+costs, so the outline is already decided; the outline says where the logic is, so the nine-line
+`Read` is already decided. The alternative is reading wide and discarding most of it, which is what
+opening the file does.
 
 Full per-tool documentation: [`docs/tools/`](../tools/).

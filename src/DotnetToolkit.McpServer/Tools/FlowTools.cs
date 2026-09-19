@@ -201,8 +201,7 @@ public static class FlowTools
         + "containing-type-and-member name with the parameter list dropped — the same shape get_call_hierarchy "
         + "uses — and symbolId still disambiguates overloads; pass fields:\"signature\" for the full parameter "
         + "lists instead, which cost about a third of a slice's tokens. A node's symbolId is a get_symbol "
-        + "target, not an edit lease: to change one, fetch it with get_symbol first for the contentVersion and "
-        + "declarationSites validate_patch needs.")]
+        + "target: to change one, get_symbol first for its declarationSites, then edit there.")]
     public static async Task<string> GetCallSlice(
         WorkspaceHost workspace,
         SymbolStore symbolStore,
@@ -529,8 +528,8 @@ public static class FlowTools
             + " not a nested tree — get_symbol"
         + " on any result reveals its own immediate base if you need one more level — and is omitted entirely "
         + "when symbol is not a class/interface (structs/enums/delegates cannot be derived from). A result's "
-        + "symbolId is a get_symbol target, not an edit lease: changing an implementer means fetching it with "
-        + "get_symbol first for the contentVersion and declarationSites validate_patch needs.")]
+        + "symbolId is a get_symbol target: changing an implementer means get_symbol first for its "
+        + "declarationSites, then editing there.")]
     public static async Task<string> GetTypeHierarchy(
         WorkspaceHost workspace,
         SymbolStore symbolStore,

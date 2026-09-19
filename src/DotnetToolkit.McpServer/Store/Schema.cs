@@ -30,7 +30,18 @@ internal static class Schema
         new(17, "tool_call_events", ToolCallEvents),
         new(18, "host_agnostic_tool_call_events", HostAgnosticToolCallEvents),
         new(19, "declaration_sites_by_file", DeclarationSitesByFile),
+        new(20, "drop_development_log_and_patch_events", DropDevelopmentLogAndPatchEvents),
     ];
+
+    // The patch tool was removed on 2026-09-19 (Edit/Write are the write path, dotnet build the gate),
+    // and with it the only writer of the development log and of patch_events. A log that stops on a
+    // fixed date is answered as if it were current, so it goes rather than staying read-only; the
+    // repository's own history (git, and the external loggers people already use) is the record.
+    private const string DropDevelopmentLogAndPatchEvents = """
+        DROP TABLE IF EXISTS feature_log_symbols;
+        DROP TABLE IF EXISTS feature_log;
+        DROP TABLE IF EXISTS patch_events;
+        """;
 
     // declaration_sites was created by migration 2, never written, and dropped by migration 9. It comes
     // back because a document-scoped refresh needs "which files declare this symbol": the symbols the

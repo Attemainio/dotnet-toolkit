@@ -35,30 +35,30 @@ For each **added, removed, or signature-changed** symbol, ask: is it a tool meth
 contract type? Then go to Step 5's file table in `SKILL.md` and name every row that should have
 moved with it.
 
-### 2. `search_log` — the recorded intent
+### 2. `git log` — the recorded intent
 
-```
-search_log(<terms from step 1>)
+```bash
+git log --format='%h %s%n%b' <baseline>..HEAD -- src/
 ```
 
-**The development log is the only source that records *why*.** `validate_patch` is the sole writer,
-so every C# change made through the sanctioned path left an `intent` here — and nothing else in the
-repo has it. Git shows what changed; the log shows what it was *for*, which is what the describing
-files are supposed to say.
+**Commit messages are the only record of *why*.** The toolkit keeps no change log of its own, so the
+reasoning behind a C# change lives in the commit that made it — and this repo commits straight to
+`main` with a body that states the intent. Git's diff shows what changed; the message shows what it
+was *for*, which is what the describing files are supposed to say.
 
 Three things to look for:
 
-- An intent describing a **behaviour** change whose `docs/tools/<tool>.md` still describes the old
+- A message describing a **behaviour** change whose `docs/tools/<tool>.md` still describes the old
   behaviour.
-- An intent mentioning a file, flag, or argument name that no longer exists.
-- A symbol changed in step 1 with **no log entry at all** — it was edited outside `validate_patch`.
-  That is itself a finding: the reasoning is gone, and the next session will re-derive or contradict
-  it. Report it; do not try to reconstruct the intent.
+- A message mentioning a file, flag, or argument name that no longer exists.
+- A symbol changed in step 1 whose commit body says **nothing** about it. That is itself a finding:
+  the reasoning is gone, and the next session will re-derive or contradict it. Report it; do not try
+  to reconstruct the intent.
 
-### 3. `git log --stat` / `git diff --name-status` — everything the log cannot see
+### 3. `git diff --name-status` — the non-`.cs` tree
 
-The development log covers `.cs` changes made through `validate_patch`. It covers **none** of the
-files this skill mostly audits. So sweep the non-`.cs` tree directly:
+The semantic diff covers `.cs` only, and covers **none** of the files this skill mostly audits. So
+sweep the non-`.cs` tree directly:
 
 ```bash
 git diff --name-status <baseline>..HEAD -- \

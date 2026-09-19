@@ -4,7 +4,6 @@ using DotnetToolkit.McpServer.Indexing;
 using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
-using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Tools;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Data.Sqlite;
@@ -36,9 +35,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public ProjectIndex Index { get; private set; } = null!;
     public WorkspaceHost Workspace { get; private set; } = null!;
     public SymbolStore Symbols { get; private set; } = null!;
-    public FeatureLogStore FeatureLog { get; private set; } = null!;
     public SymbolIndexBuilder Builder { get; private set; } = null!;
-    public TargetedTests TargetedTests { get; private set; } = null!;
     public CallSlice CallSlice { get; private set; } = null!;
     public TelemetryRecorder Telemetry { get; private set; } = null!;
     public KnowledgeStore Store => _store;
@@ -61,7 +58,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         Formats.Current = OutputFormat.Compact;
 
         // Copy the fixture to a throwaway temp dir (native /tmp on WSL — faster than /mnt, and
-        // isolated so validate_patch's disk writes never pollute the repo/bin fixture).
+        // isolated so rename_symbol's disk writes never pollute the repo/bin fixture).
         var source = Path.Combine(AppContext.BaseDirectory, "fixtures", "SampleSolution");
         _workDir = Path.Combine(Path.GetTempPath(), "dt-fixture-" + Guid.NewGuid().ToString("N")[..8]);
         CopyDirectory(source, _workDir);
@@ -79,12 +76,10 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
 
         _store = new KnowledgeStore(Locator, NullLogger<KnowledgeStore>.Instance);
         Symbols = new SymbolStore(_store);
-        FeatureLog = new FeatureLogStore(_store);
         Builder = new SymbolIndexBuilder(Workspace, Symbols, _store, Locator, NullLogger<SymbolIndexBuilder>.Instance, Index);
         await Builder.RebuildAsync();
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
-        TargetedTests = new TargetedTests(Locator, NullLogger<TargetedTests>.Instance);
         CallSlice = new CallSlice(Symbols);
     }
 
@@ -214,13 +209,13 @@ public sealed class WorkspaceIntegrationTests
 
     public WorkspaceIntegrationTests(SampleSolutionFixture fixture) => _f = fixture;
 
-    private Task<string> GetSymbol(string symbol, string? include = null, string? source = null) =>
-        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol, include, source);
+    private Task<string> GetSymbol(string symbol, string? include = null) =>
+        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry,
+            symbol, include);
 
-    private Task<string> GetSymbols(string[] symbols, string? include = null, string? source = null) =>
-        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
-            symbol: null, include, source, symbols: symbols);
+    private Task<string> GetSymbols(string[] symbols, string? include = null) =>
+        ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry,
+            symbol: null, include, symbols: symbols);
 
     private Task<string> GetReferences(string symbol, string direction) =>
         ContextTools.GetReferences(_f.Workspace, _f.Locator, _f.Symbols, _f.Telemetry, symbol, direction);
@@ -250,12 +245,12 @@ public sealed class WorkspaceIntegrationTests
     public async Task Retrieval_WorksWithoutSessionOrTaskIds()
     {
         var json = await ContextTools.GetSymbol(
-            _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry,
+            _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry,
             "Lib.TurboWidget");
 
         var root = Root(json);
         Assert.False(root.TryGetProperty("error", out _));
-        Assert.True(root.TryGetProperty("contentVersion", out _));
+        Assert.True(root.TryGetProperty("symbolId", out _));
     }
 
     /// <summary>
@@ -313,30 +308,6 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// An explicit include list is an exact query of the columns wanted — everything known about a
-    /// symbol except the expensive part, spelled out directly, rather than reaching for "all" and
-    /// dragging the whole body along.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_ExplicitIncludeListIsExactlyTheNamedComponents()
-    {
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        Assert.True(full.GetProperty("content").GetProperty("source").GetArrayLength() > 0);
-
-        var trimmed = Root(await GetSymbol("Sample.Lib.Widget.Spin", "xmlDoc,mechanicalFacts,referenceCounts,recentLog"));
-        var content = trimmed.GetProperty("content");
-
-        // Absent entirely, not present-and-null: an unrequested component costs no tokens at all.
-        Assert.False(content.TryGetProperty("source", out _));
-        // ...while everything named in the list is present.
-        Assert.True(content.TryGetProperty("referenceCounts", out _));
-        Assert.Equal("Method", content.GetProperty("kind").GetString());
-        // The resolved set is echoed only when the caller passed a non-default include.
-        Assert.DoesNotContain("source", trimmed.GetProperty("components").EnumerateArray()
-            .Select(c => c.GetString()));
-    }
-
-    /// <summary>
     /// symbols batches several fetches under one resolution into one call. Each result must be exactly
     /// what a single-symbol call for that same symbol would return — batching is an orchestration
     /// convenience, not a different code path with its own behaviour to drift from the single-symbol one.
@@ -368,7 +339,7 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// A batch entry that fails to resolve has no symbolId/contentVersion/content to offer — its result is
+    /// A batch entry that fails to resolve has no symbolId/content to offer — its result is
     /// simply the error envelope ResolveAsync would have produced, exactly like an unresolved
     /// single-symbol call, not a row shaped to match its neighbours' columns (there are no columns).
     /// </summary>
@@ -382,14 +353,13 @@ public sealed class WorkspaceIntegrationTests
         Assert.False(rows[0].ContainsKey("error"));
 
         Assert.False(rows[1].ContainsKey("symbolId"));
-        Assert.False(rows[1].ContainsKey("contentVersion"));
         Assert.Equal("symbol_not_found", rows[1]["error"].GetString());
     }
 
     [Fact]
     public async Task GetSymbol_MissingBothSymbolAndSymbolsIsAnError()
     {
-        var result = Root(await ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog,
+        var result = Root(await ContextTools.GetSymbol(_f.Workspace, _f.Locator, _f.Index, _f.Symbols,
             _f.Builder, _f.Telemetry, symbol: null));
 
         Assert.Equal("missing_symbol", result.GetProperty("error").GetString());
@@ -433,13 +403,13 @@ public sealed class WorkspaceIntegrationTests
 
 /// <summary>
     /// An outline-equivalent include list used to be built by an early return from its own object
-    /// literal, which silently omitted containingType and recentLog. One build path means a component
+    /// literal, which silently omitted containingType. One build path means a component
     /// appears whenever it is asked for, regardless of which other components were requested alongside it.
     /// </summary>
     [Fact]
     public async Task GetSymbol_MembersRequestCarriesTheSameSkeletonAsEveryOtherRequest()
     {
-        var outline = Root(await GetSymbol("Sample.Lib.Widget", "xmlDoc,referenceCounts,recentLog,members"));
+        var outline = Root(await GetSymbol("Sample.Lib.Widget", "xmlDoc,referenceCounts,members"));
         var content = outline.GetProperty("content");
 
         Assert.NotEmpty(content.GetProperty("members").EnumerateArray());
@@ -551,49 +521,6 @@ public sealed class WorkspaceIntegrationTests
 
         Assert.Equal("symbol_not_found", root.GetProperty("error").GetString());
         Assert.False(root.TryGetProperty("didYouMean", out _));
-    }
-
-    /// <summary>
-    /// source:code strips the leading doc comment by design, so suppressing xmlDoc alongside it removed the
-    /// documentation from the response instead of deduplicating it. An unsliced source:full still suppresses.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_XmlDoc_SuppressedOnlyWhenSourceActuallyCarriesTheDocComment()
-    {
-        var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "code-exact", include: "xmlDoc")).GetProperty("content");
-        var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact", include: "xmlDoc")).GetProperty("content");
-
-        Assert.DoesNotContain(
-            code.GetProperty("source").EnumerateArray(),
-            line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
-        Assert.False(string.IsNullOrWhiteSpace(code.GetProperty("xmlDoc").GetProperty("summary").GetString()));
-
-        Assert.False(full.TryGetProperty("xmlDoc", out _));
-    }
-
-    /// <summary>
-    /// A slice is judged on the lines it actually kept, not on being a slice: one covering the whole doc
-    /// comment suppresses xmlDoc as a restatement, one landing past it still serves the structured form.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_XmlDoc_SuppressedWhenTheSliceItselfCarriesTheWholeDocComment()
-    {
-        var whole = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact")).GetProperty("content");
-        var docLines = whole.GetProperty("source").EnumerateArray()
-            .Where(l => l.GetProperty("text").GetString()!.TrimStart().StartsWith("///"))
-            .Select(l => l.GetProperty("line").GetInt32())
-            .ToList();
-        Assert.NotEmpty(docLines);
-
-        var covering = Root(await GetSymbol(
-            "Sample.Lib.Widget.Spin",
-            source: $"full-exact@{docLines[0]}-{docLines[^1]}", include: "xmlDoc")).GetProperty("content");
-        Assert.False(covering.TryGetProperty("xmlDoc", out _));
-
-        var past = Root(await GetSymbol(
-            "Sample.Lib.Widget.Spin",
-            source: $"full-exact@{docLines[^1] + 1}", include: "xmlDoc")).GetProperty("content");
-        Assert.False(string.IsNullOrWhiteSpace(past.GetProperty("xmlDoc").GetProperty("summary").GetString()));
     }
 
     /// <summary>
@@ -740,22 +667,6 @@ public sealed class WorkspaceIntegrationTests
         Assert.True(_f.Symbols.HasEdgeCoverageFor(id));
     }
 
-    [Fact]
-    public async Task GetSymbol_Full_CarriesVersionAndReferenceCounts()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.IWidget", "all"));
-
-        // "changed" is omitted when content is present — its presence is the signal.
-        Assert.False(root.TryGetProperty("changed", out _));
-        Assert.StartsWith("decl:", root.GetProperty("contentVersion").GetString());
-        // include:"all" serves the source, and kind is suppressed alongside displayString and modifiers
-        // whenever a served signature line already states it.
-        Assert.True(root.GetProperty("content").TryGetProperty("source", out _));
-        Assert.False(root.GetProperty("content").TryGetProperty("kind", out _));
-        // IWidget is implemented by Widget and TurboWidget.
-        Assert.Equal(2, root.GetProperty("content").GetProperty("referenceCounts").GetProperty("implementations").GetInt32());
-    }
-
     // A sym_... id handed out by any response is itself a valid retrieval target, so
     // suggestedInspection / search hits / reference items round-trip without name guessing.
     [Fact]
@@ -767,7 +678,7 @@ public sealed class WorkspaceIntegrationTests
         var byId = Root(await GetSymbol(symbolId));
 
         Assert.Equal(symbolId, byId.GetProperty("symbolId").GetString());
-        Assert.Equal(byName.GetProperty("contentVersion").GetString(), byId.GetProperty("contentVersion").GetString());
+        Assert.Equal(byName.GetProperty("content").GetProperty("displayString").GetString(), byId.GetProperty("content").GetProperty("displayString").GetString());
     }
 
     [Fact]
@@ -910,20 +821,6 @@ public sealed class WorkspaceIntegrationTests
 
     private Task<string> ContextToolsCallSlice(string from, string to) =>
         FlowTools.GetCallSlice(_f.Workspace, _f.Symbols, _f.CallSlice, _f.Builder, _f.Telemetry, from, to);
-
-        /// <summary>
-        /// A disjoint selection reports the runs it actually holds. Reporting min-to-max claimed the whole
-        /// envelope, which is exactly the string a caller reads as "I have the whole declaration".
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_DisjointLineRanges_ReportRunsNotTheEnvelope()
-        {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@9-10;12-13"))
-                .GetProperty("content");
-
-            Assert.Equal(new[] { 9, 10, 12, 13 }, SourceLineNumbers(content));
-            Assert.Equal("9-10;12-13/5-13", content.GetProperty("sourceLines").GetString());
-        }
 
     /// <summary>
     /// totalItems stays the FULL count while a page carries fewer, and nextOffset reaches the items the
@@ -1102,33 +999,6 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// Listing both parts under declarationSites is not the same as serving both under source, and until
-    /// contract 3.63 it was not: the response named two files and returned one part's text. Every part
-    /// must come back, each run tagged with the file it is in — a bare line number cannot identify a
-    /// place once both parts have their own line 5.
-    /// </summary>
-    /// <remarks>
-    /// The test above passed throughout that bug, which is why this one asserts on the source array
-    /// rather than on the site count: the two fields disagreeing was the defect, so only a check that
-    /// reads them together can see it.
-    /// </remarks>
-    [Fact]
-    public async Task GetSymbol_PartialClass_SourceCarriesEveryPartTaggedByFile()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.Gadget", source: "full")).GetProperty("content");
-        var runs = content.GetProperty("source").EnumerateArray().ToList();
-
-        var spans = runs.Select(r => r.GetProperty("lines").GetString()!).ToList();
-        Assert.Contains(spans, s => s.Contains("Gadget.cs:", StringComparison.Ordinal));
-        Assert.Contains(spans, s => s.Contains("Gadget.Extra.cs:", StringComparison.Ordinal));
-
-        var text = string.Join("\n", runs.SelectMany(r =>
-            r.GetProperty("text").EnumerateArray().Select(t => t.GetString())));
-        Assert.Contains("Left()", text, StringComparison.Ordinal);
-        Assert.Contains("Right()", text, StringComparison.Ordinal);
-    }
-
-    /// <summary>
     /// members' file:"" convention (this type's own primary declaration file) gets a legend, the same as
     /// shape/refs/read/modifiers -- only when the table actually mixes a blank and a named file, which a
     /// partial split across two files does (2026-08-13 self-eval finding 11).
@@ -1144,418 +1014,33 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains("primary declaration file", content.GetProperty("fileLegend").GetString());
     }
 
-    /// <summary>
-    /// Compact is imposed on a multi-file partial even against an explicit -exact, since the per-line
-    /// gutter has nowhere to put the file. sourceLineFormat is what tells the caller its request lost.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_PartialClass_ForcesSpansOverAnExplicitExact()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.Gadget", source: "full-exact")).GetProperty("content");
-
-        Assert.Equal("compact", content.GetProperty("sourceLineFormat").GetString());
-        Assert.All(content.GetProperty("source").EnumerateArray(), r => Assert.True(r.TryGetProperty("lines", out _)));
-    }
-
         /// <summary>
-        /// Widget.Spin has a /// doc comment on the line directly above its signature. declarationSites and
-        /// source must both start AT the comment, not at the signature — otherwise a validate_patch edit
-        /// built from declarationSites' own line span has no way to touch the comment at all.
+        /// Widget.Spin has a /// doc comment on the line directly above its signature. declarationSites
+        /// must start AT the comment, not at the signature — otherwise a ranged Read built from the span
+        /// never shows the comment, and an Edit anchored on that read cannot touch it.
         /// </summary>
         [Fact]
-        public async Task GetSymbol_DeclarationSpanIncludesTheLeadingDocComment()
+        public async Task GetSymbol_DeclarationSpanIncludesTheLeadingDocComment_AndEndsAtTheClosingBrace()
         {
-            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact"));
-            var content = root.GetProperty("content");
-            var site = content.GetProperty("declarationSites")[0];
+            // The line contract a caller's Read(file, offset, limit) depends on: startLine is where a
+            // leading /// comment begins, signatureLine where the declaration itself does, endLine the
+            // closing brace (or the last line of an expression-bodied member). Nothing else states it.
+            var root = Root(await GetSymbol("Sample.Lib.Widget"));
+            var site = root.GetProperty("content").GetProperty("declarationSites")[0];
 
             var startLine = site.GetProperty("startLine").GetInt32();
+            var endLine = site.GetProperty("endLine").GetInt32();
+            var signatureLine = site.GetProperty("signatureLine").GetInt32();
             var fileLines = await File.ReadAllLinesAsync(_f.Locator.AbsPath(site.GetProperty("file").GetString()!));
+
             Assert.Contains("///", fileLines[startLine - 1]);
+            Assert.Contains("class Widget", fileLines[signatureLine - 1]);
+            Assert.Equal("}", fileLines[endLine - 1].Trim());
+            Assert.True(signatureLine > startLine);
 
-            // source reads exactly as the file does, no header line prepended — the doc comment is the
-            // first line, leading indentation included (not just its own text) — a declaration's first
-            // extracted line silently lost its indentation once before, since the span's own start point
-            // sits on the first non-trivia character rather than that line's true start.
-            var sourceLines = content.GetProperty("source");
-            Assert.Contains("/// <summary>", sourceLines[0].GetProperty("text").GetString());
-            Assert.Equal(startLine, sourceLines[0].GetProperty("line").GetInt32());
-            Assert.Equal(fileLines[startLine - 1], sourceLines[0].GetProperty("text").GetString());
+            // No source text rides along: the text comes from a Read over exactly that range.
+            Assert.False(root.GetProperty("content").TryGetProperty("source", out _));
         }
-
-        /// <summary>
-        /// source:code renders the same declaration minus its leading doc comment — the signature line
-        /// itself, not the comment above it, is where source:code's own span starts.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceCode_ExcludesLeadingDocComment()
-        {
-            var full = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact"));
-            var code = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "code-exact"));
-
-            var fullFirstLine = full.GetProperty("content").GetProperty("source")[0];
-            var codeSource = code.GetProperty("content").GetProperty("source");
-
-            Assert.Contains("/// <summary>", fullFirstLine.GetProperty("text").GetString());
-            Assert.DoesNotContain(
-                codeSource.EnumerateArray(),
-                line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
-            Assert.True(codeSource[0].GetProperty("line").GetInt32() > fullFirstLine.GetProperty("line").GetInt32());
-        }
-
-        /// <summary>
-        /// Every rendered line carries its real indentation, the FIRST one included.
-        /// </summary>
-        /// <remarks>
-        /// The span opens at the declaration's first token, which sits after the leading whitespace — so the
-        /// first line used to arrive flush-left while every line beneath it kept its indent. That is not
-        /// cosmetic: this tool tells callers to reconstruct a declaration line from this text and hand it
-        /// back as a validate_patch edit, and the reconstructed line was misindented.
-        /// </remarks>
-        [Fact]
-        public async Task GetSymbol_Source_FirstLineKeepsItsIndentation()
-        {
-        foreach (var spec in new[] { "full-exact", "code-exact" })
-        {
-            var lines = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: spec))
-                    .GetProperty("content").GetProperty("source");
-
-                var first = lines[0].GetProperty("text").GetString()!;
-                Assert.NotEqual(first, first.TrimStart());
-            }
-        }
-
-        /// <summary>
-        /// source:code on a whole type also strips each MEMBER's own doc comment, not just the type's own —
-        /// otherwise a type-level fetch would still carry every member's /// block untouched.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceCode_ExcludesMemberLevelDocCommentsToo()
-        {
-            var full = Root(await GetSymbol("Sample.Lib.Widget", source: "full-exact"));
-            var code = Root(await GetSymbol("Sample.Lib.Widget", source: "code-exact"));
-
-            var fullSource = full.GetProperty("content").GetProperty("source");
-            var codeSource = code.GetProperty("content").GetProperty("source");
-
-            Assert.Contains(
-                fullSource.EnumerateArray(),
-                line => line.GetProperty("text").GetString()!.Contains("Spins the widget"));
-
-            Assert.DoesNotContain(
-                codeSource.EnumerateArray(),
-                line => line.GetProperty("text").GetString()!.TrimStart().StartsWith("///"));
-            Assert.Contains(
-                codeSource.EnumerateArray(),
-                line => line.GetProperty("text").GetString()!.Contains("public int Spin(int turns)"));
-        }
-
-    /// <summary>A -tag modifier drops only that doc-comment tag, leaving the rest of the comment intact.</summary>
-    [Fact]
-    public async Task GetSymbol_SourceFullMinusRemarks_KeepsReturnsDropsRemarks()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "full-remarks"));
-        var lines = root.GetProperty("content").GetProperty("source");
-
-        Assert.Contains(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("Always zero"));
-        Assert.DoesNotContain(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("returns and remarks"));
-    }
-
-        /// <summary>
-        /// -attributes drops an attribute that occupies its own whole line, but leaves one sharing a line
-        /// with real code alone — fetching the whole type (not one member) is what makes both cases visible
-        /// in a single response.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceFullMinusAttributes_DropsWholeLineButKeepsInlineAttribute()
-        {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-attributes-exact"));
-            var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
-
-            Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
-            Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
-            Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("WithOwnLineAttribute"));
-            Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("WithInlineAttribute"));
-        }
-
-    /// <summary>-attributes strips attributes under source:code too, not just source:full.</summary>
-    [Fact]
-    public async Task GetSymbol_SourceCodeMinusAttributes_DropsAttributesInCodeModeToo()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", source: "code-attributes"));
-        var lines = root.GetProperty("content").GetProperty("source");
-
-        Assert.DoesNotContain(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
-        Assert.Contains(lines.EnumerateArray(), l => l.GetProperty("text").GetString()!.Contains("WithOwnLineAttribute"));
-    }
-
-        /// <summary>
-        /// -comments drops a standalone // line but leaves a trailing // comment sharing a line with code
-        /// alone — same whole-type framing as the attributes test above.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceFullMinusComments_DropsStandaloneButKeepsTrailingComment()
-        {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-comments-exact"));
-            var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
-
-            Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
-            Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("trailing comment"));
-            Assert.Equal(2, lines.Count(l => l.GetProperty("text").GetString()!.Contains("[Obsolete]")));
-        }
-
-        /// <summary>
-        /// An attribute or // comment sharing a line with real code is left untouched even when both
-        /// -attributes and -comments are requested — whole-line removal only, never a partial-line rewrite.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceFullMinusAttributesMinusComments_InlineContentSurvivesBoth()
-        {
-            var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-attributes-comments-exact"));
-            var lines = root.GetProperty("content").GetProperty("source").EnumerateArray().ToArray();
-
-            Assert.DoesNotContain(lines, l => l.GetProperty("text").GetString()!.Contains("standalone comment"));
-            Assert.Single(lines, l => l.GetProperty("text").GetString()!.Contains("[Obsolete]"));
-            Assert.Contains(lines, l => l.GetProperty("text").GetString()!.Contains("trailing comment"));
-    }
-
-    /// <summary>
-    /// sourceSubtractionsApplied names exactly which requested subtraction removed a line: -attributes
-    /// matches the [Obsolete] here, but -remarks matches nothing since the member carries no doc comment at
-    /// all -- a silent no-op without this field (2026-08-13 self-eval finding 7).
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_SourceSubtraction_NamesOnlyTheTokensThatMatchedSomething()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture.WithOwnLineAttribute", source: "full-attributes-remarks"));
-        var applied = root.GetProperty("content").GetProperty("sourceSubtractionsApplied")
-            .EnumerateArray().Select(e => e.GetString()).ToList();
-
-        Assert.Contains("-attributes", applied);
-        Assert.DoesNotContain("-remarks", applied);
-    }
-
-    /// <summary>A doc-tag modifier under code is always redundant (code already excludes every tag) and rejected.</summary>
-    [Fact]
-    public async Task GetSymbol_SourceCodeMinusRemarks_IsInvalidComponent()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "code-remarks"));
-
-        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-        Assert.Contains("source:code-remarks", root.GetProperty("detail").GetString());
-    }
-
-    /// <summary>An unrecognized modifier name is rejected the same way an unrecognized component is.</summary>
-    [Fact]
-    public async Task GetSymbol_SourceFullBogusModifier_IsInvalidComponent()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.DocSectionsFixture.Full", source: "full-bogus"));
-
-        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-        Assert.Contains("source:full-bogus", root.GetProperty("detail").GetString());
-    }
-
-    /// <summary>An unrecognized source suffix is rejected the same way an unrecognized component is.</summary>
-    [Fact]
-    public async Task GetSymbol_SourceBadSuffix_IsInvalidComponent()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "bogus"));
-
-        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-        Assert.Contains("source:bogus", root.GetProperty("detail").GetString());
-    }
-
-        /// <summary>
-        /// An @ selector narrows source to the named absolute file lines, and reports the kept span against
-        /// the declaration's whole span so the caller can see it is holding a fragment.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceLineRange_ReturnsOnlyThoseLines()
-        {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@9-10")).GetProperty("content");
-
-            Assert.Equal(new[] { 9, 10 }, SourceLineNumbers(content));
-            Assert.Equal("9-10/5-13", content.GetProperty("sourceLines").GetString());
-        }
-
-    /// <summary>
-    /// A slice usually cuts the signature line out, so displayString/modifiers — suppressed alongside a
-    /// whole source — come back rather than leaving a fragment that never says what it belongs to.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_SlicedSource_RestoresDisplayStringAndModifiers()
-    {
-        var whole = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source")).GetProperty("content");
-        var sliced = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@9-10")).GetProperty("content");
-
-        Assert.True(IsAbsentOrNull(whole, "displayString"));
-        Assert.True(IsAbsentOrNull(whole, "modifiers"));
-        Assert.Equal("SourceQueryFixture", sliced.GetProperty("displayString").GetString());
-        Assert.Contains("static", sliced.GetProperty("modifiers").GetString());
-    }
-
-        /// <summary>
-        /// A range and a -modifier exclusion are both filters over the same absolute line numbers, so a line
-        /// the exclusion dropped stays dropped even when a range names it.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_LineRange_ComposesWithModifierExclusions()
-        {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "code-exact@5-13")).GetProperty("content");
-
-            // Line 5 is the type's doc comment, which source:code already removed.
-            Assert.DoesNotContain(5, SourceLineNumbers(content));
-            Assert.Equal("6-13/6-13", content.GetProperty("sourceLines").GetString());
-        }
-
-    /// <summary>
-    /// -lineNumbers replaces the per-line gutter with one span entry per contiguous run, so an
-    /// unbroken declaration comes back as a single span of bare text carrying no line property.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_SourceCodeMinusLineNumbers_ReturnsOneSpanOfBareText()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "code-lineNumbers")).GetProperty("content");
-        var spans = content.GetProperty("source").EnumerateArray().ToArray();
-
-        var span = Assert.Single(spans);
-        Assert.Equal("6-13", span.GetProperty("lines").GetString());
-        Assert.False(span.TryGetProperty("line", out _));
-        Assert.Contains(span.GetProperty("text").EnumerateArray(), t => t.GetString()!.Contains("WithOwnLineAttribute"));
-    }
-
-    /// <summary>
-    /// The default (Automatic) format renders as compact @start-end spans when that comes out shorter
-    /// than the numbered gutter, which is normal for an unmodified declaration of any real size.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_DefaultFormat_IsAutomaticAndPicksCompactWhenShorter()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", "source")).GetProperty("content");
-        var span = Assert.Single(content.GetProperty("source").EnumerateArray());
-
-        Assert.True(span.TryGetProperty("lines", out _));
-        Assert.False(span.TryGetProperty("line", out _));
-        Assert.Equal("compact", content.GetProperty("sourceLineFormat").GetString());
-    }
-
-        /// <summary>
-        /// sourceLineFormat is only reported when Automatic had to choose — an explicit -exact/-compact
-        /// (or its deprecated -lineNumbers alias) already told the caller what it would get, so restating
-        /// it would be pure duplication.
-        /// </summary>
-        [Fact]
-        public async Task GetSymbol_SourceLineFormat_AbsentWhenExplicitlyForced()
-        {
-            var compact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-lineNumbers")).GetProperty("content");
-            var exact = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact")).GetProperty("content");
-
-            Assert.False(compact.TryGetProperty("sourceLineFormat", out _));
-            Assert.False(exact.TryGetProperty("sourceLineFormat", out _));
-        }
-
-        /// <summary>-exact forces the numbered gutter even when Automatic would have picked the compact spans.</summary>
-        [Fact]
-        public async Task GetSymbol_SourceMinusExact_ForcesTheNumberedGutterEvenWhenCompactIsShorter()
-        {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact")).GetProperty("content");
-
-            Assert.All(content.GetProperty("source").EnumerateArray(), l => Assert.True(l.TryGetProperty("line", out _)));
-        }
-
-        /// <summary>-exact and -compact contradict each other, so together they are rejected.</summary>
-        [Fact]
-        public async Task GetSymbol_SourceMinusExactMinusCompact_IsInvalidComponent()
-        {
-            var root = Root(await GetSymbol("Sample.Lib.Widget.Spin", source: "full-exact-compact"));
-
-            Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-            Assert.Contains("source:full-exact-compact", root.GetProperty("detail").GetString());
-        }
-
-    /// <summary>
-    /// A line an exclusion dropped breaks the declaration into two runs, and each run states its own
-    /// absolute span — so bare text never reads as contiguous across a gap that is really there.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_MinusCommentsMinusLineNumbers_SplitsRunsAtTheDroppedLine()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-comments-lineNumbers")).GetProperty("content");
-        var spans = content.GetProperty("source").EnumerateArray().ToArray();
-
-        Assert.Equal(["5-7", "9-13"], spans.Select(s => s.GetProperty("lines").GetString()));
-        Assert.DoesNotContain(
-            spans.SelectMany(s => s.GetProperty("text").EnumerateArray()),
-            t => t.GetString()!.Contains("standalone comment"));
-    }
-
-    /// <summary>Disjoint ranges are separated by ';', since ',' already separates include's components.</summary>
-    /// <remarks>
-    /// Forces -exact because the assertion reads per-line numbers, and this test is about the ';' grammar
-    /// rather than about which rendering Automatic picks -- on a selection this small the compact spans
-    /// are genuinely shorter, so leaving it to Automatic would couple the grammar to that arbitration.
-    /// </remarks>
-    [Fact]
-    public async Task GetSymbol_SeveralLineRanges_AreSemicolonSeparated()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@6;9-10")).GetProperty("content");
-
-        Assert.Equal(new[] { 6, 9, 10 }, SourceLineNumbers(content));
-    }
-
-        /// <summary>An open-ended range clamps to the declaration rather than erroring or running past it.</summary>
-        [Fact]
-        public async Task GetSymbol_OpenEndedLineRange_ClampsToTheDeclaration()
-        {
-            var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "full-exact@10-")).GetProperty("content");
-
-            Assert.Equal(new[] { 10, 11, 12, 13 }, SourceLineNumbers(content));
-            Assert.Equal("10-13/5-13", content.GetProperty("sourceLines").GetString());
-        }
-
-    /// <summary>
-    /// A range missing the declaration entirely yields no lines rather than an error — sourceLines states
-    /// both that nothing was kept and which span would have worked.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_LineRangeOutsideDeclaration_ReturnsNoLinesAndNamesTheRealSpan()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@900-910")).GetProperty("content");
-
-        Assert.Empty(content.GetProperty("source").EnumerateArray());
-        Assert.Equal("none/5-13", content.GetProperty("sourceLines").GetString());
-    }
-
-    /// <summary>sourceLines is a slice-only field — an unsliced source pays nothing for it.</summary>
-    [Fact]
-    public async Task GetSymbol_UnslicedSource_OmitsSourceLines()
-    {
-        var content = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", include: "source")).GetProperty("content");
-
-        Assert.True(IsAbsentOrNull(content, "sourceLines"));
-    }
-
-    /// <summary>A malformed range is rejected the same way an unrecognized modifier is.</summary>
-    [Fact]
-    public async Task GetSymbol_MalformedLineRange_IsInvalidComponent()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.SourceQueryFixture", source: "@nope"));
-
-        Assert.Equal("invalid_component", root.GetProperty("error").GetString());
-        Assert.Contains("source:@nope", root.GetProperty("detail").GetString());
-    }
-
-    /// <summary>
-    /// One include applies to every batch entry, but a line span belongs to one symbol's own file — so
-    /// the combination is rejected instead of slicing each symbol by another's line numbers.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_LineRangeWithBatch_IsRejected()
-    {
-        var root = Root(await GetSymbols(["Sample.Lib.Widget.Spin", "Sample.Lib.SourceQueryFixture"], source: "@9-10"));
-
-        Assert.Equal("lines_with_batch", root.GetProperty("error").GetString());
-    }
 
     /// <summary>
     /// bodyOutline emits one row per control-flow landmark with text, span, and nesting depth among other
@@ -1692,73 +1177,15 @@ public sealed class WorkspaceIntegrationTests
             i => i["sites"].EnumerateArray().Any(s => (s.GetProperty("snippet").GetString() ?? "").Contains("Spin(3)")));
     }
 
-    // Conformance C3 + C5: a breaking change is neither sufficient nor applied, and every root cause
-    // carries a non-empty suggestedInspection.
-    [Fact]
-    public async Task ValidatePatch_BreakingChange_NotAppliedWithRootCauses_C3_C5()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns, int extra) => turns * 2 + extra;") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: true, intent: "add extra factor"));
-
-        Assert.False(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean());
-        Assert.False(root.GetProperty("applied").GetBoolean()); // C3: applied never co-occurs with insufficient
-
-        var rootCauses = TableRows(root.GetProperty("diagnostics").GetProperty("rootCauses"));
-        Assert.True(rootCauses.Count > 0);
-        foreach (var rc in rootCauses)
-            Assert.True(rc["suggestedInspection"].GetArrayLength() > 0); // C5
-    }
-
-    // Conformance C12 (+ C3 positive): a sufficient, successful, applied patch appends exactly one
-    // feature_log row with per-symbol rows matching detectedChanges.
-    [Fact]
-    public async Task ValidatePatch_BodyChange_AppliesAndLogsOnce_C12()
-    {
-        // This apply reaches DISK, and every test in this class shares one fixture copy. Being the only test
-        // that EDITS Widget.Spin is not isolation -- ValidatePatch_FindReplace_* search its body for
-        // "turns * 2", so they break on whichever ordering runs them after this. Undone in the finally.
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-        // Scoped by symbolId rather than a unique taskId (task ids are no longer a caller-facing
-        // concept - every call in this process shares one ambient session id).
-        var before = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 3;") };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string> { [symbolId] = version }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "tune spin factor", tags: null));
-
-        try
-        {
-            Assert.True(root.GetProperty("ladder").GetProperty("isSufficient").GetBoolean(), root.GetRawText());
-            Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
-
-            var after = _f.FeatureLog.RecentForSymbolWithChain(symbolId, 50).Count;
-            Assert.Equal(before + 1, after);   // exactly one feature_log row logged for this symbol
-        }
-        finally
-        {
-            await RestoreSpinBodyAsync();
-        }
-    }
-
     [Fact]
     public async Task RenameSymbol_InterfaceMember_DryRunReachesImplementersAndCrossProjectCallers()
     {
         var sym = Root(await GetSymbol("Sample.Lib.IWidget.Spin"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Rotate",
-            sym.GetProperty("contentVersion").GetString()!));
+        var root = Root(await RenameSymbolCall(sym.GetProperty("symbolId").GetString()!, "Rotate"));
 
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
         Assert.False(root.GetProperty("applied").GetBoolean());   // dry run: nothing reaches disk
+        Assert.Contains("Dry run", root.GetProperty("notChecked").GetString());
 
         var files = RenamedFiles(root);
         // The declaration and both implementers live in Widget.cs; the only call site is in a DIFFERENT
@@ -1772,13 +1199,12 @@ public sealed class WorkspaceIntegrationTests
     {
         var sym = Root(await GetSymbol("Sample.Lib.IWidget.Spin"));
         var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
 
         // Program.cs carries the name in a comment and a string literal as well as in the call. Both
         // extra occurrences are textual guesses, so they must stay opt-in: the default run has to leave
         // them alone, and asking for comments has to actually reach one.
-        var byDefault = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate", version)));
-        var withComments = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate", version, renameInComments: true)));
+        var byDefault = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate")));
+        var withComments = RenamedFiles(Root(await RenameSymbolCall(symbolId, "Rotate", renameInComments: true)));
 
         var program = byDefault.Keys.Single(f => f.EndsWith("App/Program.cs", StringComparison.Ordinal));
         Assert.True(withComments[program] > byDefault[program],
@@ -1786,20 +1212,18 @@ public sealed class WorkspaceIntegrationTests
     }
 
     [Fact]
-    public async Task RenameSymbol_AppliesRewritesEveryReferenceAndLogsOnce()
+    public async Task RenameSymbol_AppliesRewritesEveryReferenceAndRefreshesTheIndex()
     {
         // This apply reaches DISK, and every test in this class shares one fixture copy, so the target has to
         // be one nothing else reads: RenameApplySample exists only for this test. Aimed at RenameSample, it
         // broke whichever sibling xUnit scheduled next -- an order that moves whenever the assembly changes,
         // so the failure looked unrelated and landed on a different test each build.
         var sym = Root(await GetSymbol("Sample.Lib.RenameApplySample.Seed"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Origin",
-            sym.GetProperty("contentVersion").GetString()!,
-            applyOnSuccess: true, intent: "rename the rename fixture's seed accessor"));
+        var root = Root(await RenameSymbolCall(sym.GetProperty("symbolId").GetString()!, "Origin", apply: true));
 
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
         Assert.True(root.GetProperty("applied").GetBoolean(), root.GetRawText());
+        Assert.Contains("dotnet build", root.GetProperty("notChecked").GetString());
 
         var rename = root.GetProperty("rename");
         Assert.Equal("Origin", rename.GetProperty("newName").GetString());
@@ -1807,10 +1231,12 @@ public sealed class WorkspaceIntegrationTests
         // The declaration plus every reference: Doubled(), RenameApplySampleUser.Use, and the <see cref="Seed"/>.
         Assert.True(rename.GetProperty("occurrencesRewritten").GetInt32() >= 3, root.GetRawText());
 
-        // The apply is only half the point — a rename that reaches disk without a development-log entry
-        // is reasoning search_log can never recover.
+        // The apply refreshed the store in the same call: the new id resolves and the new name is findable
+        // without a reload, and the old id is gone.
         var newSymbolId = rename.GetProperty("newSymbolId").GetString()!;
-        Assert.NotEmpty(_f.FeatureLog.RecentForSymbolWithChain(newSymbolId, 50));
+        Assert.NotEqual(sym.GetProperty("symbolId").GetString(), newSymbolId);
+        Assert.Equal("Sample.Lib.RenameApplySample.Origin()", _f.Symbols.FqNameFor(newSymbolId));
+        Assert.Null(_f.Symbols.FqNameFor(sym.GetProperty("symbolId").GetString()!));
     }
 
     [Fact]
@@ -1818,77 +1244,16 @@ public sealed class WorkspaceIntegrationTests
     {
         var sym = Root(await GetSymbol("Sample.Lib.RenameSampleUser"));
         var oldSymbolId = sym.GetProperty("symbolId").GetString()!;
-        var root = Root(await RenameSymbolCall(
-            oldSymbolId, "RenameSampleConsumer", sym.GetProperty("contentVersion").GetString()!));
+        var root = Root(await RenameSymbolCall(oldSymbolId, "RenameSampleConsumer"));
 
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
+        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
 
-        // ChangeClassifier pairs a renamed METHOD by its name-stripped signature but has no such key for a
-        // type, so a renamed type arrives as an unpaired removed+added pair whose removed half still
-        // carries the old id. Deriving newSymbolId from the old id therefore echoed the old id straight
-        // back, and the method-rename test above could never catch it.
+        // A symbol id hashes the fully-qualified name, so a renamed type's id has to differ from the old
+        // one - and the tool has to find the renamed symbol by its declaration, not by looking the old id up.
         var rename = root.GetProperty("rename");
         Assert.Equal("Type", rename.GetProperty("kind").GetString());
         Assert.NotEqual(oldSymbolId, rename.GetProperty("newSymbolId").GetString());
     }
-
-    /// <summary>
-    /// A symbolId encodes its containing type, so renaming a type re-keys every member it declares and the
-    /// classifier reports each as a removed+added pair tagged breaking-public — for members whose own names
-    /// never changed. On an 8-member type that was 16 of 24 entries and ~65% of the response.
-    /// </summary>
-    [Fact]
-    public async Task RenameSymbol_TypeRename_CollapsesItsMembersMechanicalRekeys()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.RenameSample"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "RenamedSample",
-            sym.GetProperty("contentVersion").GetString()!));
-
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-
-        // Seed and Doubled keep their own names; only their ids move. The TYPE's own removed+added pair is
-        // not collapsed -- its name really did change -- so detectedChanges is not expected to be empty.
-        Assert.Equal(2, root.GetProperty("membersRekeyed").GetInt32());
-    }
-
-    [Fact]
-    public async Task RenameSymbol_CollidingMemberName_OmitsTheAliasedSymbolId()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Doubled",
-            sym.GetProperty("contentVersion").GetString()!));
-
-        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-
-        // Renaming Seed to Doubled collides with the pre-existing Doubled() of the same signature. A
-        // symbol id is a hash of its fully-qualified name, so the rewritten symbol's id is IDENTICAL
-        // to the pre-existing one it collided with - exposing it would silently point a caller at the
-        // wrong member (self-eval finding, 2026-08-10).
-        Assert.False(root.GetProperty("rename").TryGetProperty("newSymbolId", out _));
-        foreach (var change in root.GetProperty("detectedChanges").EnumerateArray())
-            Assert.False(change.TryGetProperty("symbolId", out _));
-    }
-
-    /// <summary>
-    /// A rename that collides with an existing member states the remedy once, in nameAlreadyExists --
-    /// ladder.nextAction's generic "the new name collides" wording is suppressed rather than repeating it
-    /// (2026-08-13 self-eval finding 5).
-    /// </summary>
-    [Fact]
-    public async Task RenameSymbol_CollidingMemberName_StatesTheRemedyOnlyOnce()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Seed"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Doubled",
-            sym.GetProperty("contentVersion").GetString()!));
-
-        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-        Assert.True(root.TryGetProperty("nameAlreadyExists", out var explained) && explained.GetString()!.Length > 0);
-        Assert.False(root.GetProperty("ladder").TryGetProperty("nextAction", out _));
-    }
-
 
     /// <summary>
     /// The tool's advice is to put every term in one call, so one call has to answer for each of them:
@@ -1916,9 +1281,7 @@ public sealed class WorkspaceIntegrationTests
     public async Task RenameSymbol_TypeNamedAfterItsFile_SaysTheFileWasNotRenamed()
     {
         var sym = Root(await GetSymbol("Sample.Lib.Widget"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Sprocket",
-            sym.GetProperty("contentVersion").GetString()!));
+        var root = Root(await RenameSymbolCall(sym.GetProperty("symbolId").GetString()!, "Sprocket"));
 
         // Renaming the file is deliberately out of scope, so the response has to say so rather than leave
         // Widget.cs quietly holding a type called Sprocket.
@@ -1931,36 +1294,9 @@ public sealed class WorkspaceIntegrationTests
     public async Task RenameSymbol_KeywordName_IsRejectedBeforeAnyValidation()
     {
         var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Doubled"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "class",
-            sym.GetProperty("contentVersion").GetString()!));
+        var root = Root(await RenameSymbolCall(sym.GetProperty("symbolId").GetString()!, "class"));
 
         Assert.Equal("invalid_name", root.GetProperty("error").GetString());
-    }
-
-    [Fact]
-    public async Task RenameSymbol_RequestedLevelTypo_SurfacesUnhonoredHint()
-        {
-            var version = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline")).GetProperty("contentVersion").GetString()!;
-
-            var root = Root(await RenameTools.RenameSymbol(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-                "Sample.Lib.BodyOutlineFixture.TooShortForOutline", "RenamedForHintTestOnly", version, applyOnSuccess: false, intent: null,
-                renameOverloads: false, renameInComments: false, renameInStrings: false,
-                requestedLevel: "solutionvalidate", tags: null, taskId: null));
-
-            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
-                var hint = ladderEl.GetProperty("requestedLevelHint").GetString();
-            Assert.Contains("solution_validate", hint, StringComparison.Ordinal);
-        }
-
-        [Fact]
-        public async Task RenameSymbol_StaleBaseVersion_IsRejected()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.RenameSample.Doubled"));
-        var root = Root(await RenameSymbolCall(
-            sym.GetProperty("symbolId").GetString()!, "Trebled", "decl:deadbeefdead"));
-
-        Assert.Equal("stale_base", root.GetProperty("error").GetString());
     }
 
     /// <summary>Relative file path -> edit count, from a rename response's files array.</summary>
@@ -1969,85 +1305,10 @@ public sealed class WorkspaceIntegrationTests
             .ToDictionary(f => f.GetProperty("file").GetString()!, f => f.GetProperty("occurrences").GetInt32(), StringComparer.Ordinal);
 
     private Task<string> RenameSymbolCall(
-        string symbol, string newName, string? baseVersion, bool applyOnSuccess = false, string? intent = null,
-        bool renameInComments = false) =>
-        RenameTools.RenameSymbol(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            symbol, newName, baseVersion, applyOnSuccess, intent,
-            renameOverloads: false, renameInComments: renameInComments, renameInStrings: false,
-            requestedLevel: null, tags: null, taskId: null);
-
-    /// <summary>Puts Widget.Spin's body back to its fixture text after the one test that applies a change to it.</summary>
-    /// <remarks>
-    /// Every test in this class shares one fixture copy, and ValidatePatch_FindReplace_* search Widget.Spin's
-    /// body for its original text. Unlike a rename, the symbol's NAME is unchanged by that apply, so the undo
-    /// can resolve its target normally and go back through validate_patch -- which keeps disk, the MSBuild
-    /// workspace and the symbol index in agreement, where rewriting the file alone would not.
-    /// </remarks>
-
-    /// <summary>Puts Widget.Spin's body back to its fixture text, for the same reason as <see cref="RestoreRenameAsync"/>.</summary>
-    private async Task RestoreSpinBodyAsync()
-    {
-        var patched = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var restore = Root(await ContextToolsValidate(
-            new Dictionary<string, string>
-            {
-                [patched.GetProperty("symbolId").GetString()!] = patched.GetProperty("contentVersion").GetString()!,
-            },
-            [new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 2;")],
-            applyOnSuccess: true, intent: "restore the shared fixture for sibling tests"));
-
-        Assert.True(restore.GetProperty("applied").GetBoolean(),
-            $"fixture restore failed; every sibling test reading Widget.Spin will now fail too: {restore.GetRawText()}");
-    }
-
-    /// <summary>
-    /// An identity edit (newText identical to what's already on disk) makes ChangeClassifier report no
-    /// Change for the touched symbol, since nothing differs -- that used to mean the stale-base check
-    /// (which only iterated detected changes) had nothing to compare a bogus baseVersions token against,
-    /// so it silently passed. Now DetectAsync also reports the current version of every touched-but-
-    /// unchanged symbol, so a bogus token is still caught even though the edit is a genuine no-op.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_IdentityEdit_WithBogusBaseVersion_ReturnsStaleBase()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-
-        var path = _f.Locator.AbsPath("Lib/Widget.cs");
-        var currentLine = (await File.ReadAllLinesAsync(path))[11]; // line 12, whatever it currently reads
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: currentLine) };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string> { [symbolId] = "decl:0000deadbeef|body:0000deadbeef" }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
-
-        Assert.Equal("stale_base", root.GetProperty("error").GetString());
-    }
-
-    [Fact]
-    public async Task ValidatePatch_ChangesTextButNoSymbol_StillRequiresACompile()
-    {
-        // A using directive sits outside every declaration, so the classifier attributes this edit to no
-        // symbol at all and the escalation table's max-over-symbols floors at parse. The directive is
-        // syntactically perfect and cannot bind, so a parse-only gate would report succeeded and write a
-        // file whose project no longer compiles. Line 1 is kept verbatim and the bogus using prepended:
-        // replacing line 1 would rewrite the file's namespace and re-attribute every symbol in it, which
-        // is the opposite of the no-symbol case under test.
-        var path = _f.Locator.AbsPath("Lib/Widget.cs");
-        var firstLine = (await File.ReadAllLinesAsync(path))[0];
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "1-1", NewText: $"using Sample.ThisNamespaceDoesNotExist;\n{firstLine}") };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string>(), edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
-
-        Assert.True(root.TryGetProperty("detectedChanges", out var dc), root.GetRawText());
-        Assert.Empty(dc.EnumerateArray());
-        Assert.Equal("project_compile", root.GetProperty("ladder").GetProperty("requiredLevel").GetString());
-        Assert.False(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-        Assert.False(root.GetProperty("applied").GetBoolean(), root.GetRawText());
-    }
+        string symbol, string newName, bool apply = false, bool renameInComments = false) =>
+        RenameTools.RenameSymbol(_f.Workspace, _f.Locator, _f.Symbols, _f.Builder, _f.Telemetry,
+            symbol, newName, apply,
+            renameOverloads: false, renameInComments: renameInComments, renameInStrings: false, taskId: null);
 
     /// <summary>
     /// A search hit carries where it was found, so "search, then go there" is one call rather than two.
@@ -2222,44 +1483,6 @@ public sealed class WorkspaceIntegrationTests
         }
     }
 
-    /// <summary>
-    /// An apply writes the whole document text back, so a patch built on a workspace copy that has
-    /// fallen behind disk reverts every other change made to that file in the meantime — silently, with
-    /// a success verdict. baseVersions cannot catch it: it guards the symbols the classifier saw
-    /// change, and the damage is to the part of the file nobody touched.
-    ///
-    /// Observed live in this repo before the guard existed: the workspace had missed a commit, a
-    /// one-method patch reported applied:true, and that commit's other edits to the same file were gone.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_RefusesToApplyOverAFileThatMovedUnderTheWorkspace()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var path = _f.Locator.AbsPath("Lib/Widget.cs");
-        var original = await File.ReadAllTextAsync(path);
-        // An out-of-band edit the workspace never saw — as a git checkout or a plain Edit would leave it.
-        var outOfBand = original + Environment.NewLine + "// touched on disk, behind the workspace's back";
-        await File.WriteAllTextAsync(path, outOfBand);
-        try
-        {
-            var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 9;") };
-            var root = Root(await ContextToolsValidate(
-                new Dictionary<string, string> { [symbolId] = version }, edits,
-                applyOnSuccess: true, intent: "should never be applied"));
-
-            Assert.Equal("stale_workspace", root.GetProperty("error").GetString());
-            // The out-of-band content is still intact: the patch reverted nothing.
-            Assert.Equal(outOfBand, await File.ReadAllTextAsync(path));
-        }
-        finally
-        {
-            await File.WriteAllTextAsync(path, original);
-        }
-    }
-
 /// <summary>
     /// The literal C# modifier phrase is unconditional, not an opt-in include component: it comes back on
     /// a default ("standard") call the same as any other. HighGear is `public sealed class HighGear :
@@ -2275,27 +1498,6 @@ public sealed class WorkspaceIntegrationTests
 
         var method = Root(await GetSymbol("Sample.Lib.HighGear.Ratio"));
         Assert.Equal("public override", method.GetProperty("content").GetProperty("modifiers").GetString());
-    }
-
-/// <summary>
-    /// source suppresses everything that would just restate the declaration's own signature/body as
-    /// structured JSON alongside the text: displayString, modifiers, xmlDoc, attributes, baseType,
-    /// interfaces. usings is NOT suppressed — a symbol's own source span never includes the file's using
-    /// directives, so it stays genuinely new information even next to source.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_Source_SuppressesFieldsSourceAlreadyPrintsAsText()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.HighGear", "source,xmlDoc,attributes,baseType,interfaces,usings"));
-        var content = root.GetProperty("content");
-
-        Assert.True(content.GetProperty("source").GetArrayLength() > 0);
-        Assert.False(content.TryGetProperty("displayString", out _));
-        Assert.False(content.TryGetProperty("modifiers", out _));
-        Assert.False(content.TryGetProperty("xmlDoc", out _));
-        Assert.False(content.TryGetProperty("attributes", out _));
-        Assert.False(content.TryGetProperty("baseType", out _));
-        Assert.False(content.TryGetProperty("interfaces", out _));
     }
 
     /// <summary>
@@ -2529,18 +1731,6 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal("external", resolved.GetProperty("content").GetProperty("origin").GetString());
         Assert.Equal("Interface", resolved.GetProperty("content").GetProperty("kind").GetString());
         Assert.Empty(resolved.GetProperty("content").GetProperty("declarationSites").EnumerateArray());
-    }
-
-    /// <summary>
-    /// A source symbol carries NO origin field: absent means "declared in this solution", which is almost
-    /// every response, so stating it cost a field on all of them to carry information on nearly none. Only
-    /// "external" is worth saying, because only it explains empty declarationSites/source/xmlDoc.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_SourceSymbol_OmitsOriginEntirely()
-    {
-        var root = Root(await GetSymbol("Sample.Lib.Widget"));
-        Assert.False(root.GetProperty("content").TryGetProperty("origin", out _));
     }
 
     [Fact]
@@ -2898,45 +2088,6 @@ public sealed class WorkspaceIntegrationTests
     }
 
     /// <summary>
-    /// A member ROW serves a name, a location and a shape - never a body - so the token it hands over must
-    /// not lease one. Leasing what was never served is exactly what unleased_body exists to prevent.
-    /// </summary>
-    [Fact]
-    public async Task GetSymbol_Members_ContentVersionOnlyUnderIncludeAll()
-    {
-        // A member row's contentVersion is narrowed to decl and is only worth its tokens when the caller
-        // is about to edit (include:"all"): a plain members-only fetch never patches from the row directly
-        // (self-eval finding, 2026-08-10).
-        var membersOnly = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "members"))
-            .GetProperty("content").GetProperty("members"));
-        Assert.NotEmpty(membersOnly);
-        Assert.All(membersOnly, row => Assert.False(row.ContainsKey("contentVersion")));
-
-        // A member row only appears under include:"all" when the large-source guard substitutes members for
-        // source -- otherwise source is served and members are suppressed, so content.members is absent and
-        // there is no lease to check. Nothing in the fixture is within two orders of magnitude of the
-        // 500-line default, so the threshold is lowered for this call instead. Reset() clears any earlier
-        // acknowledgement, since a repeat of the same fetch is exactly how a caller overrides the guard.
-        var originalThreshold = ResponseGuard.LineThreshold;
-        ResponseGuard.LineThreshold = 1;
-        ResponseGuard.Reset();
-        try
-        {
-            var all = TableRows(Root(await GetSymbol("Sample.Lib.Widget", include: "all"))
-                .GetProperty("content").GetProperty("members"));
-            Assert.NotEmpty(all);
-            Assert.All(all, row => Assert.DoesNotContain(
-                "body:", row["contentVersion"].GetString() ?? "", StringComparison.Ordinal));
-        }
-        finally
-        {
-            ResponseGuard.LineThreshold = originalThreshold;
-            ResponseGuard.Reset();
-        }
-    }
-
-
-    /// <summary>
     /// A branch the per-node cap left unexpanded hides the depths past it exactly as maxDepth does, so it
     /// sets depthCapped too - reporting false there read as "complete to maxDepth".
     /// </summary>
@@ -2953,62 +2104,6 @@ public sealed class WorkspaceIntegrationTests
         Assert.True(capped.GetProperty("depthCapped").GetBoolean());
         Assert.True(!whole.TryGetProperty("depthCapped", out var flag) || !flag.GetBoolean());
 
-    }
-
-    /// get_symbol narrows its contentVersion to the layers it actually served, so the default fetch hands
-    /// out no body layer -- and a body-rewriting patch built on one was never checked against the body it
-    /// overwrites, which is exactly the concurrent-edit case baseVersions exists to reject.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_BodyChangeWithoutABodyLayer_ReturnsUnleasedBody()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
-        Assert.DoesNotContain("body:", withoutBody);
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 3;") };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string> { [symbolId] = withoutBody }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
-
-        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
-        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
-        Assert.Contains("body:", root.GetProperty("current")[0].GetProperty("currentVersion").GetString()!);
-        Assert.True(root.TryGetProperty("draft", out _));
-        Assert.Equal(
-            "    public int Spin(int turns) => turns * 2;",
-            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/Widget.cs")))[11]);
-    }
-
-    /// <summary>
-    /// current[] is the set of baseVersions entries to resend, not a list of changes: two members added to
-    /// one type are two detected changes anchored to that same type, and naming it twice asked the caller
-    /// to send one map entry twice.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_TwoMembersAddedToOneType_NameThatTypeOnce()
-    {
-        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var widgetId = Root(await GetSymbol("Sample.Lib.Widget")).GetProperty("symbolId").GetString()!;
-
-        var edits = new[]
-        {
-            new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText:
-                "    public int Spin(int turns) => turns * 2;\n\n    public int AddedOne() => 1;\n\n    public int AddedTwo() => 2;"),
-        };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string>
-            {
-                [spin.GetProperty("symbolId").GetString()!] = spin.GetProperty("contentVersion").GetString()!,
-            },
-            edits, requestedLevel: null, applyOnSuccess: false, intent: "should never apply", tags: null));
-
-        Assert.Equal("unheld_symbol", root.GetProperty("error").GetString());
-        var current = Assert.Single(root.GetProperty("current").EnumerateArray().ToList());
-        Assert.Equal(widgetId, current.GetProperty("symbolId").GetString());
     }
 
     /// <summary>
@@ -3160,25 +2255,6 @@ public sealed class WorkspaceIntegrationTests
             Assert.False(root.TryGetProperty("groupByHint", out _));
         }
 
-        [Fact]
-        public async Task SearchIndex_IntentTypo_ReturnsCorrectiveHint()
-        {
-            var root = Root(await ContextTools.SearchIndex(
-                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", intent: "logicc", groupBy: "none"));
-
-            var hint = root.GetProperty("intentHint").GetString();
-            Assert.Contains("logic", hint, StringComparison.Ordinal);
-        }
-
-        [Fact]
-        public async Task SearchIndex_IntentValid_CarriesNoHint()
-        {
-            var root = Root(await ContextTools.SearchIndex(
-                _f.Symbols, _f.Index, _f.Workspace, _f.Telemetry, "FeatureLogStore", intent: "logic", groupBy: "none"));
-
-            Assert.False(root.TryGetProperty("intentHint", out _));
-        }
-
         /// <summary>
         /// receiver names something that HAS a type; a method name is the common miss. Reporting the bare error
     /// code left the caller with a correct diagnosis and nothing to do about it.
@@ -3210,59 +2286,6 @@ public sealed class WorkspaceIntegrationTests
         var message = root.GetProperty("message").GetString()!;
         Assert.Contains("Spin", message);
         Assert.Contains("Omit receiver", message);
-    }
-
-    /// <summary>
-    /// A degraded workspace reports errors the change did not cause, so the default advice sends the caller
-    /// to rewrite correct code -- which is exactly how a self-evaluation read a legitimate bind failure as a
-    /// defect in validate_patch.
-    /// </summary>
-    [Fact]
-    public void WriteVerdicts_OnADegradedWorkspace_NameTheWorkspaceRatherThanBlamingTheChange()
-    {
-        var failed = new DotnetToolkit.McpServer.Validation.ValidationLadder.LadderResult(
-            DotnetToolkit.McpServer.Validation.ValidationLevel.SemanticBind, Succeeded: false, [], []);
-        var required = DotnetToolkit.McpServer.Validation.ValidationLevel.ProjectCompile;
-
-        var (_, degradedPatch) = PatchTools.Verdict(failed, required, isSufficient: false, degraded: true);
-        var (_, healthyPatch) = PatchTools.Verdict(failed, required, isSufficient: false, degraded: false);
-        Assert.Contains("workspace_status", degradedPatch);
-        Assert.DoesNotContain("workspace_status", healthyPatch);
-
-        Assert.Contains("workspace_status", RenameTools.NextAction(failed, required, degraded: true));
-        Assert.DoesNotContain("workspace_status", RenameTools.NextAction(failed, required, degraded: false));
-        Assert.Contains("DEGRADED", RenameTools.Reason(failed, required, degraded: true));
-        Assert.DoesNotContain("DEGRADED", RenameTools.Reason(failed, required, degraded: false));
-    }
-
-    /// <summary>
-    /// A comment-only rewrite produces no semantic change, so keying the lease on the classifier's output
-    /// let it through — while it overwrites body TEXT exactly as a semantic rewrite does, which is the
-    /// concurrent-edit case the lease exists to catch, and a second agent editing comments is precisely
-    /// the likely case.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_CommentOnlyBodyEditWithoutABodyLayer_ReturnsUnleasedBody()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.Classify"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
-        Assert.DoesNotContain("body:", withoutBody);
-
-        var edits = new[]
-        {
-            new PatchEditInput(File: "Lib/BodyOutlineFixture.cs", Lines: "12-12", NewText: "        var result = \"\"; // lease probe"),
-        };
-        var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string> { [symbolId] = withoutBody }, edits,
-            requestedLevel: null, applyOnSuccess: true, intent: "should never apply", tags: null));
-
-        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
-        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
-        Assert.Equal(
-            "        var result = \"\";",
-            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/BodyOutlineFixture.cs")))[11]);
     }
 
     [Fact]
@@ -3309,253 +2332,6 @@ public sealed class WorkspaceIntegrationTests
         Assert.EndsWith("GenericSample.cs", generic["file"].GetString()!, StringComparison.Ordinal);
         Assert.StartsWith("@11", generic["lines"].GetString()!, StringComparison.Ordinal);
     }
-
-    /// <summary>
-    /// The body-layer demand cannot depend on the member's shape: rewriting a generic method's body against
-    /// a declaration-only token leaves exactly the same overwrite unverified as a non-generic one.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_BodyChangeToAGenericMethodWithoutABodyLayer_ReturnsUnleasedBody()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.GenericSample.Scale"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var withoutBody = sym.GetProperty("contentVersion").GetString()!;
-        Assert.DoesNotContain("body:", withoutBody);
-
-        var edits = new[] { new PatchEditInput(File: "Lib/GenericSample.cs", Lines: "17-17", NewText: "        return value * 3;") };
-        var root = Root(await ContextToolsValidate(
-            new Dictionary<string, string> { [symbolId] = withoutBody }, edits, applyOnSuccess: true, intent: "should never apply"));
-
-        Assert.Equal("unleased_body", root.GetProperty("error").GetString());
-        Assert.Equal(symbolId, root.GetProperty("current")[0].GetProperty("symbolId").GetString());
-        Assert.Contains("body:", root.GetProperty("current")[0].GetProperty("currentVersion").GetString()!);
-        Assert.Equal(
-            "        return value * 2;",
-            (await File.ReadAllLinesAsync(_f.Locator.AbsPath("Lib/GenericSample.cs")))[16]);
-    }
-
-    /// <summary>A line-range edit's symbolId is cross-checked against that symbol's own live declaration span, and a correct match does not block validation.</summary>
-    [Fact]
-    public async Task ValidatePatch_LinesWithSymbolId_MatchingSpanValidatesNormally()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", SymbolId: symbolId, Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 3;") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: false, intent: "cross-checked edit"));
-
-        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-    }
-
-    /// <summary>A line-range edit's symbolId cross-check rejects lines that fall outside that symbol's own declaration span, before any classification runs.</summary>
-    [Fact]
-    public async Task ValidatePatch_LinesWithSymbolId_SpanMismatchReturnsEditOutsideSymbol()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", SymbolId: symbolId, Lines: "1-1", NewText: "// not Spin's line") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: false, intent: "should be rejected"));
-
-        Assert.Equal("edit_outside_symbol", root.GetProperty("error").GetString());
-    }
-
-    /// <summary>Find/replace mode locates the unique match inside the symbol's own span and resolves it into an ordinary line-range edit, with no line numbers supplied by the caller.</summary>
-    [Fact]
-    public async Task ValidatePatch_RequestedLevelTypo_SurfacesUnhonoredHint()
-        {
-            var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline", "all"));
-            var symbolId = sym.GetProperty("symbolId").GetString()!;
-            var version = sym.GetProperty("contentVersion").GetString()!;
-
-            var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "x + 1", Replace: "x + 1") };
-            var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-                new PatchDraftStore(TimeProvider.System),
-                new Dictionary<string, string> { [symbolId] = version }, edits, requestedLevel: "solutionvalidate",
-                applyOnSuccess: false, intent: "requestedLevel typo test", tags: null, draftId: null));
-
-            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
-                var hint = ladderEl.GetProperty("requestedLevelHint").GetString();
-                Assert.Contains("solution_validate", hint, StringComparison.Ordinal);
-        }
-
-        [Fact]
-        public async Task ValidatePatch_RequestedLevelValid_CarriesNoHint()
-        {
-            var sym = Root(await GetSymbol("Sample.Lib.BodyOutlineFixture.TooShortForOutline", "all"));
-            var symbolId = sym.GetProperty("symbolId").GetString()!;
-            var version = sym.GetProperty("contentVersion").GetString()!;
-
-            var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "x + 1", Replace: "x + 1") };
-            var root = Root(await PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-                new PatchDraftStore(TimeProvider.System),
-                new Dictionary<string, string> { [symbolId] = version }, edits, requestedLevel: "project_compile",
-                applyOnSuccess: false, intent: "requestedLevel valid test", tags: null, draftId: null));
-
-            Assert.True(root.TryGetProperty("ladder", out var ladderEl), root.GetRawText());
-                Assert.False(ladderEl.TryGetProperty("requestedLevelHint", out _));
-        }
-
-        [Fact]
-        public async Task ValidatePatch_FindReplace_UniqueMatchResolvesAndValidatesNormally()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "turns * 2", Replace: "turns * 3") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: false, intent: "find/replace"));
-
-        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-    }
-
-    /// <summary>find/replace errors when the text does not occur anywhere inside the symbol's own span.</summary>
-    [Fact]
-    public async Task ValidatePatch_FindReplace_NoMatchReturnsFindNotFound()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "this text is not present anywhere", Replace: "x") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: false, intent: "should not resolve"));
-
-        Assert.Equal("find_not_found", root.GetProperty("error").GetString());
-    }
-
-    /// <summary>find/replace errors on more than one match unless replaceAll is set, rather than guessing which occurrence was meant.</summary>
-    [Fact]
-    public async Task ValidatePatch_FindReplace_MultipleMatchesWithoutReplaceAllReturnsAmbiguousFindMatch()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-
-        var edits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "public", Replace: "internal") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, edits,
-            applyOnSuccess: false, intent: "should be ambiguous"));
-
-        Assert.Equal("ambiguous_find_match", root.GetProperty("error").GetString());
-    }
-
-    /// <summary>replaceAll: true replaces every occurrence inside the symbol's span instead of requiring exactly one -- including a nested member's own "public", which is why both symbols' versions are held.</summary>
-    [Fact]
-    public async Task ValidatePatch_FindReplace_ReplaceAllResolvesMultipleMatches()
-    {
-        var type = Root(await GetSymbol("Sample.Lib.Widget", "all"));
-        var typeId = type.GetProperty("symbolId").GetString()!;
-        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var spinId = spin.GetProperty("symbolId").GetString()!;
-
-        var edits = new[] { new PatchEditInput(SymbolId: typeId, Find: "public", Replace: "internal", ReplaceAll: true) };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string>
-        {
-            [typeId] = type.GetProperty("contentVersion").GetString()!,
-            [spinId] = spin.GetProperty("contentVersion").GetString()!,
-        }, edits, applyOnSuccess: false, intent: "replace every occurrence"));
-
-        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
-    }
-
-    /// <summary>
-    /// Each find/replace edit resolves to a rewrite of the symbol's WHOLE declaration span, so two of them
-    /// naming one symbol handed the sandbox two rewrites of identical line spans and corrupted the file.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_TwoFindReplacesOnOneSymbol_FoldIntoOneRewrite()
-    {
-        var type = Root(await GetSymbol("Sample.Lib.Widget", "all"));
-        var typeId = type.GetProperty("symbolId").GetString()!;
-        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var spinId = spin.GetProperty("symbolId").GetString()!;
-
-        var edits = new[]
-        {
-            new PatchEditInput(SymbolId: typeId, Find: "public", Replace: "internal", ReplaceAll: true),
-            new PatchEditInput(SymbolId: typeId, Find: "internal", Replace: "public", ReplaceAll: true),
-        };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string>
-        {
-            [typeId] = type.GetProperty("contentVersion").GetString()!,
-            [spinId] = spin.GetProperty("contentVersion").GetString()!,
-        }, edits, applyOnSuccess: false, intent: "two corrections to one symbol"));
-
-        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
-        Assert.True(root.GetProperty("succeeded").GetBoolean(), root.GetRawText());
-    }
-
-    /// <summary>
-    /// Overlapping spans cannot both be honoured -- the second addresses line numbers the first has already
-    /// moved -- so they are refused rather than spliced together and reported as a success.
-    /// </summary>
-    [Fact]
-    public async Task ValidatePatch_OverlappingLineRangeEdits_AreRefused()
-    {
-        var spin = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var spinId = spin.GetProperty("symbolId").GetString()!;
-        var site = spin.GetProperty("content").GetProperty("declarationSites")[0];
-        var file = site.GetProperty("file").GetString()!;
-        var span = $"{site.GetProperty("startLine").GetInt32()}-{site.GetProperty("endLine").GetInt32()}";
-
-        var edits = new[]
-        {
-            new PatchEditInput(File: file, Lines: span, NewText: "        // replaced"),
-            new PatchEditInput(File: file, Lines: span, NewText: "        // replaced again"),
-        };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string>
-        {
-            [spinId] = spin.GetProperty("contentVersion").GetString()!,
-        }, edits, applyOnSuccess: false, intent: "overlapping spans"));
-
-        Assert.Equal("invalid_edit", root.GetProperty("error").GetString());
-        Assert.Contains("overlapping", root.GetRawText(), StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>find/replace resolves against the live workspace only -- amending a draft with one is rejected rather than resolved against stale coordinates.</summary>
-    [Fact]
-    public async Task ValidatePatch_FindReplaceUnderAmend_ReturnsFindReplaceRequiresFreshPatch()
-    {
-        var sym = Root(await GetSymbol("Sample.Lib.Widget.Spin", "all"));
-        var symbolId = sym.GetProperty("symbolId").GetString()!;
-        var version = sym.GetProperty("contentVersion").GetString()!;
-        var drafts = new PatchDraftStore(TimeProvider.System);
-
-        var firstEdits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "12-12", NewText: "    public int Spin(int turns) => turns * 4;") };
-        var first = Root(await ContextToolsValidate(new Dictionary<string, string> { [symbolId] = version }, firstEdits,
-            applyOnSuccess: false, intent: "first pass", drafts: drafts));
-        var draftId = first.GetProperty("draft").GetProperty("draftId").GetString()!;
-
-        var amendEdits = new[] { new PatchEditInput(SymbolId: symbolId, Find: "turns * 4", Replace: "turns * 5") };
-        var amended = Root(await ContextToolsValidate(new Dictionary<string, string>(), amendEdits,
-            applyOnSuccess: false, intent: "should be rejected", drafts: drafts, draftId: draftId));
-
-        Assert.Equal("find_replace_requires_fresh_patch", amended.GetProperty("error").GetString());
-    }
-
-    /// <summary>A malformed lines string is rejected before any classification runs, rather than being silently misparsed.</summary>
-    [Fact]
-    public async Task ValidatePatch_MalformedLinesString_ReturnsInvalidEdit()
-    {
-        var edits = new[] { new PatchEditInput(File: "Lib/Widget.cs", Lines: "not-a-range", NewText: "// irrelevant") };
-        var root = Root(await ContextToolsValidate(new Dictionary<string, string>(), edits,
-            applyOnSuccess: false, intent: "should be rejected"));
-
-        Assert.Equal("invalid_edit", root.GetProperty("error").GetString());
-    }
-
-
-    private Task<string> ContextToolsValidate(Dictionary<string, string> baseVersions, PatchEditInput[] edits, bool applyOnSuccess, string? intent, PatchDraftStore? drafts = null, string? draftId = null) =>
-        PatchTools.ValidatePatch(_f.Workspace, _f.Locator, _f.Symbols, _f.FeatureLog, _f.Builder, _f.TargetedTests, _f.Telemetry,
-            drafts ?? new PatchDraftStore(TimeProvider.System),
-            baseVersions, edits, requestedLevel: null, applyOnSuccess: applyOnSuccess, intent: intent, tags: null, draftId: draftId);
 
     [Fact]
     public async Task SearchIndex_FindsTopLevelGenericAndNestedDelegates()

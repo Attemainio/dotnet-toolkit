@@ -8,7 +8,7 @@ namespace DotnetToolkit.McpServer.Tools;
 /// </summary>
 /// <remarks>
 /// Retrieval tools differ widely in how much of the event they can fill in: <c>get_symbol</c> carries a
-/// resolution and a content version, while <c>search_log</c> has none of those. Every field beyond the
+/// resolution, while <c>get_project_graph</c> has none. Every field beyond the
 /// ones a tool cannot avoid knowing is therefore optional, so a tool records by naming only what it
 /// actually has rather than padding a positional call with nulls.
 /// </remarks>
@@ -38,7 +38,6 @@ internal static class ToolTelemetry
     /// <param name="result">The rendered response, whose estimated token count is the row's cost.</param>
     /// <param name="symbolId">The resolved symbol, when the tool resolved one.</param>
     /// <param name="resolution">How the request was resolved to that symbol, when the tool distinguishes resolution paths.</param>
-    /// <param name="contentVersion">The version token handed back to the caller, when the tool issues one.</param>
     /// <param name="returnedSymbols">How many symbols the response carried.</param>
     /// <param name="limitedBy">What degraded the answer (<c>index_only</c>, <c>degraded</c>), or null when it was fully live.</param>
     /// <param name="errorKind">The error identifier when the response is an error payload, else null.</param>
@@ -54,7 +53,6 @@ internal static class ToolTelemetry
         string result,
         string? symbolId = null,
         string? resolution = null,
-        string? contentVersion = null,
         int returnedSymbols = 0,
         string? limitedBy = null,
         string? errorKind = null,
@@ -70,7 +68,6 @@ internal static class ToolTelemetry
             SymbolId = symbolId,
             Resolution = resolution,
             Direction = direction,
-            ContentVersion = contentVersion,
             ReturnedSymbols = returnedSymbols,
             ReturnedTokens = TelemetryRecorder.EstimateTokens(result),
             // Telemetry keeps the pre-3.0 column name: retrieval_events is immutable raw history and

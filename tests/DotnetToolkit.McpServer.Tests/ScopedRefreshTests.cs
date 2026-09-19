@@ -66,7 +66,7 @@ public sealed class ScopedRefreshTests
             // The id search_index handed out resolves, against the refreshed text.
             var id = hit.GetProperty("symbolId").GetString()!;
             var symbol = Root(await ContextTools.GetSymbol(
-                _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry, id));
+                _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry, id));
             Assert.False(symbol.TryGetProperty("error", out _), symbol.GetRawText());
             Assert.Equal(id, symbol.GetProperty("symbolId").GetString());
 
@@ -102,7 +102,7 @@ public sealed class ScopedRefreshTests
             var inExtra = _f.Symbols.SymbolsDeclaredIn([extra]);
             var inMain = _f.Symbols.SymbolsDeclaredIn([main]);
             var gadget = Root(await ContextTools.GetSymbol(
-                _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.FeatureLog, _f.Builder, _f.Telemetry, "Sample.Lib.Gadget"));
+                _f.Workspace, _f.Locator, _f.Index, _f.Symbols, _f.Builder, _f.Telemetry, "Sample.Lib.Gadget"));
             var gadgetId = gadget.GetProperty("symbolId").GetString()!;
 
             Assert.Contains(gadgetId, inExtra);

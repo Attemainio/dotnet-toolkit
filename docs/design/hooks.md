@@ -5,7 +5,7 @@
 > page exists for the engineering rationale: why the guards are .NET subcommands rather than shell,
 > how membership is decided statically, and where enforcement has a known hole.
 
-The plugin ships nine hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
+The plugin ships seven hooks in `hooks/hooks.json`. They travel with the plugin — a consuming repo gets
 the enforcement from installation alone, with nothing repo-local to set up or clean up; uninstalling the
 plugin removes them.
 
@@ -34,14 +34,16 @@ MSBuild discovery or host startup runs.
 
 ## The off-switch, and the forced-on switch, and why both expire
 
-`HookCli` reads `GuardSuspension` before dispatching to any of the four **blocking-capable** guards
-(`guard-cs-edit`, `guard-cs-read`, `guard-cs-bash-read`, `guard-cs-bash-write`) and asks which of three
-modes (`GuardMode`) is in force. **`Suspended`** short-circuits before any of them evaluate — they
-return allow without running at all, the same for all four. **`Blocked`** does not short-circuit
-anything; it is passed into `guard-cs-read`/`guard-cs-bash-read` as a parameter that flips their
-outcome from `AllowAdvising` to `Deny` when the file is governed. `guard-cs-edit` and
-`guard-cs-bash-write` never see it, because they already `Deny` outside a suspension — `Blocked` looks
-identical to the default (`Active`) for them. The two hints and the meter are unaffected by either
+`HookCli` reads `GuardSuspension` before dispatching to either of the two **guards**
+(`guard-cs-read`, `guard-cs-bash-read`) and asks which of three modes (`GuardMode`) is in force.
+**`Suspended`** short-circuits before either evaluates — they return allow without running at all.
+**`Blocked`** does not short-circuit anything; it is passed into them as a parameter that flips their
+outcome from `AllowAdvising` to `Deny` when the file is governed and the read is a whole-file one — a
+ranged read passes silently in every mode, since it is the intended way to fetch a located symbol's
+text. Until 2026-09-19 two write guards (`guard-cs-edit`, `guard-cs-bash-write`) hard-denied
+`Edit`/`Write` and write-shaped `Bash` on a compiled `.cs` file, routing every edit through the
+plugin's own patch tool; that tool and both guards are gone (see the write-path note below). The
+hints, the refresh and the meter are unaffected by either
 mode — they add context or observe, rather than withhold a call, so silencing them would cost the
 caller information without buying back any of the freedom a suspend or a block is asked for. The meter
 especially: `dotnet-performance` suspends or blocks the guards precisely in order to measure a
@@ -75,7 +77,7 @@ says:
 - **State is scoped to the calling Claude Code session, when one is visible.** `set_hook_guards` reads
   `CLAUDE_CODE_SESSION_ID` from its own process environment and writes
   `guards-suspended-until.<sessionId>` instead of the bare `guards-suspended-until` file; `HookCli`
-  checks that scoped file first (via `HookPayload.SessionId`, the same field `hint-write-checklist`
+  checks that scoped file first (via `HookPayload.SessionId`, the same field `hint-cs-write-checklist`
   already reads) and falls back to the unscoped file. This exists so two *unrelated* Claude Code
   sessions pointed at the same repo root — two terminals, two worktrees — cannot silently share or
   clobber each other's suspension window. It does **not** isolate a subagent from its own parent
@@ -115,33 +117,26 @@ either instrument alone.
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
 environment — and reports that rather than claiming a restore it did not perform.
 
-## `hook guard-cs-edit` — PreToolUse on native edit tools
+## The write path has no guard (removed 2026-09-19)
 
-Blocks Claude Code's `Edit`/`Write`/`NotebookEdit` and Codex's `apply_patch` on an **existing**
-`.cs` file and returns the `validate_patch`
-procedure in the deny message instead. This enforces the write path: applying through `validate_patch`
-with an `intent` is the only thing that appends to the development log, so an edit made with `Edit` is a
-change whose reasoning is unrecoverable once the conversation ends. A blocked edit is the hook working,
-not a bug — rebuild the change as `validate_patch` calls.
+Two hooks — `guard-cs-edit` on `Edit`/`Write`/`NotebookEdit`/`apply_patch` and `guard-cs-bash-write`
+on write-shaped `Bash` (`sed -i`, `tee`, a redirect onto a `.cs`) — used to hard-deny any raw write to
+a compiled `.cs` file and route it through `validate_patch`, the plugin's line-anchored patch tool,
+whose apply was the only writer of the development log. Both went with that tool. The defect sweep
+that decided it (FluidScript, 2026-09-19) found the failure classes were the design: line-anchored
+edits missed the brace by one on a regular basis, a third of the tool's calls carried no edit at all
+(lease refusals), and `dotnet build` produced the same dependent-break list the tool's compile ladder
+did, uncapped, thirty seconds later.
 
-Creating a **new** `.cs` file with `Write` or an `*** Add File` patch is allowed, because
-`validate_patch`'s `baseVersions` needs a
-`symbolId` that does not exist yet; change the file through `validate_patch` after creation.
+`Edit`/`Write` are now the write path — string-anchored, on text the caller has read — with two
+things around them: `hint-cs-write-checklist` (below) puts the write-time checklist in front of the
+first edit, and `refresh-cs-files` (below) keeps the index in step with every write, which is what
+made the removal safe: before it, an `Edit` left `search_index` and the `sym_` ids frozen until a
+manual reload. `rename_symbol` stays, stripped to the rename and the write, because a rename is the
+one edit a string replacement cannot make.
 
-**A `.cs` file no project compiles is also allowed**, decided by the same `Hooks/CsFileMembership.cs`
-the read guards use (below). `validate_patch` resolves edits through the loaded solution and answers
-`file_not_in_solution` for anything outside it, so denying the plain tool there left **no write path at
-all** — the guard was pure obstruction, and its own escape hatch ("ask the user to allow it explicitly")
-was the only way through. This repo's `tests/**/fixtures/SampleSolution` is exactly that case: a nested
-solution deliberately excluded from the build so tests can load it as a workspace of their own. The read
-guard has always gated on membership; the edit guard did not, so the same file was readable and
-uneditable.
-
-The deny message restates the current `validate_patch` call procedure, and points a **pure rename** at
-`rename_symbol` instead — hand-authoring call-site edits misses interface, virtual and delegate dispatch,
-which is exactly the mistake a blocked `Edit` is usually about to make. When either procedure changes,
-`Hooks/GuardCsEdit.cs`'s message must change with it (see `docs/design/architecture.md`'s "Changing the tool
-surface").
+`BashCommandScanner.FindWriteTargetCsArgument`, the write-shape recogniser the Bash guard used,
+survives: the refresh hook uses it to learn which files a shell command wrote.
 
 ## `hook guard-cs-read` — PreToolUse on `Read`
 
@@ -153,9 +148,14 @@ deny. Built with `HookOutcome.AllowAdvising`, the read-side sibling of `AllowWit
 This guard was a hard deny through 2026-08-20. It moved to advisory-only after the 2026-08-21
 performance run showed the MCP route is not reliably cheaper or more correct on every question — a
 small file, a whole-repo negative, raw text search all favored the raw route, and a hard deny forced
-the more expensive tool even there. `guard-cs-edit` (below) keeps its hard deny: only `validate_patch`
-appends to the development log, so an unblocked edit is unrecoverable, not merely a less efficient
-read — a stakes difference this guard's own doc comment now states directly.
+the more expensive tool even there.
+
+**A ranged `Read` — one with `offset` or `limit` — draws no note in any mode**, forced-block
+included (since 2026-09-19). Once a symbol is located, `get_symbol`'s `declarationSites` plus a
+`Read` of that range is the intended way to fetch its text, so advising against it would be advising
+against the route the skills recommend; and a forced-block probe that could not read code at all
+would measure nothing. Only the whole-file read is the question the advisory exists for, and its
+text now says so: locate, then read the range.
 
 **`set_hook_guards(state: "block")` forces this guard back to its pre-2026-08-20 hard deny**, added the
 same day as that migration once `dotnet-performance` needed a third probe with a real forced-enforcement
@@ -246,9 +246,10 @@ contains a space, so `Tokenize` splits every one of them mid-path and `FindCsArg
 never see a `.cs`-suffixed token, meaning the advisory note never fires there at all. Now that this
 guard allows rather than denies, the blast radius of that gap is "a missed nudge", not "an unenforced
 boundary" — the read always proceeded either way. It was a live finding while this guard still denied;
-it is stated here for the record and because the same `Tokenize` limitation is exactly what
-`dotnet-guard-redteam` (see `agents/dotnet-guard-redteam.md`) exists to keep re-discovering on other
-repos, including ones without a space in their path.
+it is stated here for the record: the same `Tokenize` limitation also decides which `Bash` writes
+`refresh-cs-files` can see, where a missed path means one sweep of latency rather than a missed
+nudge. (`dotnet-guard-redteam`, which used to probe for exactly this class of gap, went with the
+write guards on 2026-09-19 — there is no enforcement left to bypass.)
 
 **`set_hook_guards(state: "block")` forces this guard's hard deny back on**, the same way it does for
 `guard-cs-read` above — `NamedCompiledFile`/`ScannedProject` and the membership check are unchanged;
@@ -269,60 +270,9 @@ it; `Grep`/`Glob` simply carry no nudge toward that. It matters most for `dotnet
 `tools:` list grants `Grep` and `Glob` outright, and `dotnet-explore`, whose own instructions forbid
 `Read` on a `.cs` file regardless of what any hook does.
 
-## `hook guard-cs-bash-write` — PreToolUse on `Bash`
+## `hook guard-cs-bash-write` — removed
 
-Added 2026-08-21 after `dotnet-guard-redteam` found the gap it closes: `guard-cs-edit` matches only the
-`Edit`/`Write`/`NotebookEdit` *tool names*, so a shell command that overwrites the same bytes — `echo
-'...' >> Foo.cs`, `sed -i`, `perl -i`, `tee Foo.cs`, a `cp`/`mv` onto an existing `.cs` file — reached
-disk with no compile check and no development-log entry, the exact failure `guard-cs-edit` exists to
-prevent. Confirmed live: `echo '// marker' >> Contracts/Contract.cs` landed unblocked before this hook
-existed.
-
-**A hard deny, not advisory** — unlike `guard-cs-bash-read` above, this guard keeps the harder bar
-`guard-cs-edit` sets. Only `validate_patch` appends to the development log, so an unblocked write is
-unrecoverable, not merely a less efficient read; the read/write split in stakes is the same one
-`guard-cs-edit`'s own section states.
-
-`Hooks/BashCommandScanner.cs`'s `FindWriteTargetCsArgument` decides whether a segment is write-shaped:
-
-- Output redirection — `>`, `>>`, and the fd-prefixed forms (`1>`, `2>`, `&>`, …) — followed by a
-  `.cs`-suffixed token.
-- `sed`/`perl` carrying an in-place flag (`-i`, `-i.bak`, `--in-place`), or `tee`, whose target is found
-  the same way `FindCsArgument` finds a read target.
-- `cp`/`mv`/`install`, whose *last* non-flag operand is the destination.
-- `dd`'s `of=` argument.
-
-Same membership question as every other guard here, through the shared `Hooks/CsFileMembership.cs` —
-and the same allowance `guard-cs-edit` makes for `Write` creating a brand-new file: a target that does
-not exist yet is let through, since `validate_patch` cannot lease a `baseVersions` entry for a symbol
-that has no version yet.
-
-**Not a shell parser, same posture as `guard-cs-bash-read`** — but two of the gaps this paragraph used
-to claim were closed on 2026-09-07 after a red-team pass, and the heredoc claim was simply wrong.
-
-- **An unspaced redirect** (`cat a.cs>>b.cs`) is now denied. It previously arrived from `Tokenize` as a
-  single token with no boundary for the operator scan to find, so the identical command was denied when
-  written with spaces and allowed without them — a guard whose enforcement depends on whether the user
-  typed a space teaches the space away. Redirects are now split out of a token, except inside quotes,
-  where `"a>b.cs"` is a filename and splitting it would invent a write target the command never had.
-- **A script interpreter writing a file** (`python3 -c "open('Foo.cs','w').write(x)"`) is now denied.
-  The `.cs` literal is found inside the program text, and an **explicit write mode** is required before
-  it counts — without that gate, the read-only `print(open('Foo.cs').read())` would be denied as a
-  write, a false block on the exact command `guard-cs-bash-read` is meant only to advise on.
-- **Heredocs were never the gap this page described.** A heredoc with a spaced redirect
-  (`cat <<'EOF' > Foo.cs`) has always been denied, because the write target is an ordinary redirect
-  token; it is the *unspaced* form that was missed, and that is now handled. Only a heredoc whose
-  target is itself quoted-with-a-space or variable-expanded remains unrecognized, which is the general
-  `Tokenize` limitation rather than anything about heredocs.
-
-What remains: an obscure in-place editor not on the list, a quoted path containing a space, and a
-variable-expanded target — the last of which cannot be closed without evaluating the shell. Deliberate
-under-detection, not a security boundary meant to be airtight, and exactly what `dotnet-guard-redteam`
-exists to keep re-discovering as this scanner's coverage evolves.
-
-Wired as a second hook under the `Bash` matcher in `hooks/hooks.json`, ahead of `guard-cs-bash-read`:
-both run on every `Bash` call, and a deny from this one blocks the tool regardless of what the advisory
-hook would have said about the same command.
+See "The write path has no guard" above. Its scanner lives on in `refresh-cs-files`.
 
 ## `hook refresh-cs-files` — PostToolUse on every tool that can write a `.cs` file
 
@@ -404,33 +354,30 @@ This is also the one hook that costs something on calls it has no opinion about:
 so it adds its ~70ms to calls the guards would have ignored. That is the price of the comparison being
 sound, and it is bounded — the rows are cleared on restart with the rest of the raw telemetry.
 
-## `hook hint-write-checklist` — PreToolUse on the `validate_patch` MCP tool
+## `hook hint-cs-write-checklist` — PreToolUse on `Edit`/`Write`/`NotebookEdit`
 
-The only hook here that matches an MCP tool rather than a built-in one, and the only one that is not a
-guard: it never denies.
+Not a guard: it never denies. Fires on the session's **first** edit of a `.cs` file some project of
+this repo compiles (the same `CsFileMembership` test the read guards use — a brand-new file, a loose
+file and a test fixture's own solution are not the C# the checklist is about, and must not consume the
+session's one emission) and injects the write-time checklist as `additionalContext`.
 
-Every other hook is **retrospective** — it fires once `Edit`/`Write`/`Bash` has already been reached
-for, which is exactly the wrong tool. A caller who does the right thing and goes straight to
-`validate_patch`, but without invoking `dotnet-write`, trips none of them, so a checklist carried in
-that skill's body would never arrive. This hook closes that gap by putting it in front of the caller at
-the moment it applies, which is also why it does not have to be pre-loaded: the delivery is pull-free.
-**The hook is the checklist's only owner** — `skills/dotnet-write/SKILL.md` points here and deliberately
-keeps no copy, since a copy would drift and would still miss the caller this exists for.
+A caller who goes straight to `Edit` without invoking `dotnet-write` would otherwise never see the
+checklist that skill carries. Firing here puts it in front of the caller at the moment it applies,
+which is also why it does not have to be pre-loaded. **The hook is the checklist's only owner** —
+`skills/dotnet-write/SKILL.md` points here and deliberately keeps no copy, since a copy would drift and
+would still miss the caller this exists for.
 
-**Once per session, not once per call.** A checklist repeated on every patch of a long editing task is
-noise, and noise gets ignored. `Hooks/WriteChecklistHint.cs` dedupes on a marker file under the OS temp
-directory named for `HookPayload.SessionId` (added to the payload parser for this hook), claimed with
-`FileMode.CreateNew` — so the claim is atomic and two agents sharing one session still produce exactly
-one checklist between them. The marker lives in temp rather than the repo deliberately: a consuming
-repo should not accumulate per-session files.
+**Once per session, not once per edit.** A checklist repeated on every edit of a long refactor is
+noise, and noise gets ignored. `Hooks/CsWriteChecklistHint.cs` dedupes on a marker file under the OS
+temp directory named for `HookPayload.SessionId`, claimed with `FileMode.CreateNew` — so the claim is
+atomic and two agents sharing one session still produce exactly one checklist between them. The marker
+lives in temp rather than the repo deliberately: a consuming repo should not accumulate per-session
+files.
 
 **No session id means silence.** Without one there is no way to tell a first call from a fiftieth, and
-emitting anyway would spam every patch in the session. The always-loaded rule and the `dotnet-write`
+emitting anyway would spam every edit in the session. The always-loaded rule and the `dotnet-write`
 skill remain the primary carriers; this hook is a backstop, so failing quiet is correct. Every IO
 failure — an existing marker, an unwritable temp directory — takes the same path.
-
-The tool-name check is repeated inside `HookCli`'s switch arm (`EndsWith("__validate_patch")`) rather
-than trusted from `hooks.json` alone, matching how the `guard-cs-*` arms re-check their own tool names.
 
 ## Related files
 

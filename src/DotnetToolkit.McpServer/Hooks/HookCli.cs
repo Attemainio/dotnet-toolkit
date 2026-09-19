@@ -81,7 +81,7 @@ internal static class HookCli
         // them would cost the caller information without buying back any of the freedom a suspension or a
         // forced block is asked for. The meter especially - a benchmark suspends the guards precisely so it
         // can measure the unguarded route, which is not measured if suspension also stops the measuring.
-        var guardState = name is "guard-cs-edit" or "guard-cs-read" or "guard-cs-bash-read" or "guard-cs-bash-write"
+        var guardState = name is "guard-cs-read" or "guard-cs-bash-read"
             ? GuardSuspension.Current(context.Root, DateTimeOffset.UtcNow, payload.SessionId)
             : null;
 
@@ -90,25 +90,19 @@ internal static class HookCli
             return HookOutcome.Allow;
         }
 
-        // Forced-block (dotnet-performance's MCP probe) only changes the read guards: guard-cs-edit and
-        // guard-cs-bash-write already hard-deny outside a suspension, so Blocked looks identical to Active
-        // for them.
+        // Forced-block (dotnet-performance's MCP probe) turns the advisory read guards into hard denies.
         var blocked = guardState is { Blocked: true };
 
         return name switch
         {
-            "guard-cs-edit" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" or "apply_patch" =>
-                GuardCsEdit.Evaluate(payload, context),
             "guard-cs-read" when payload.ToolName == "Read" =>
                 GuardCsRead.Evaluate(payload, context, blocked),
             "guard-cs-bash-read" when payload.ToolName == "Bash" =>
                 GuardCsBashRead.Evaluate(payload, context, blocked),
-            "guard-cs-bash-write" when payload.ToolName == "Bash" =>
-                GuardCsBashWrite.Evaluate(payload, context),
             "refresh-cs-files" =>
                 await CsFileRefresh.EvaluateAsync(payload, context),
-            "hint-write-checklist" when payload.ToolName.EndsWith("__validate_patch", StringComparison.Ordinal) =>
-                WriteChecklistHint.Evaluate(payload),
+            "hint-cs-write-checklist" when payload.ToolName is "Edit" or "Write" or "NotebookEdit" or "apply_patch" =>
+                CsWriteChecklistHint.Evaluate(payload, context),
             "meter-tool-call" =>
                 await ToolCallMeter.EvaluateAsync(payload, context),
             "track-subagent-start" =>

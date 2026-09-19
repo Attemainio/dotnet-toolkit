@@ -53,13 +53,12 @@ public sealed class TelemetryTests : IDisposable
         Assert.Empty(_metrics.Read(null, null, "none").Groups);
     }
 
-    // firstSeen/lastSeen let a caller bound its own probe in time. They come from the two-table union,
-    // so a task that both read and patched must come back as one span covering both.
+    // firstSeen/lastSeen let a caller bound its own probe in time.
     [Fact]
     public void GroupByTaskReportsFirstAndLastSeen()
     {
         _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "get_symbol", tokens: 50));
-        _recorder.RecordPatch(SamplePatch(Ids.AmbientSession, "tsk_1", tokens: 60));
+        _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "get_references", tokens: 60));
 
         var group = Assert.Single(_metrics.Read(null, null, "task").Groups, g => g.Key == "tsk_1");
         Assert.Equal(2, group.Calls);
@@ -167,129 +166,6 @@ public sealed class TelemetryTests : IDisposable
             TaskId = task,
             ToolName = tool,
             SymbolId = symbolId,
-            ReturnedTokens = tokens,
-        };
-
-    // Regression for the bug the ultrareview surfaced: validate_patch has no retrieval_events row
-    // (it writes patch_events via RecordPatch instead), so its calls/tokens were silently absent
-    // from every total and never appeared in any groupBy:tool bucket.
-    [Fact]
-    public void PatchEventsFoldIntoTotalsAndToolGroup()
-    {
-        _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "get_symbol", tokens: 100));
-        _recorder.RecordPatch(SamplePatch(Ids.AmbientSession, "tsk_1", tokens: 150));
-
-        var byTool = _metrics.Read(null, null, "tool");
-        Assert.Equal(2, byTool.Totals.ToolCalls);
-        Assert.Equal(250, byTool.Totals.TokensReturned);
-        Assert.Equal(1, byTool.Totals.ValidationAttempts);
-
-        var patchGroup = Assert.Single(byTool.Groups, g => g.Key == "validate_patch");
-        Assert.Equal(1, patchGroup.Calls);
-        Assert.Equal(150, patchGroup.TokensReturned);
-    }
-
-    /// <summary>
-    /// One call that writes to BOTH tables is one call, at the tokens it returned once.
-    /// </summary>
-    /// <remarks>
-    /// rename_symbol records a patch_events row for the validation AND a retrieval_events row for the
-    /// response, sharing one tool_call_id. Folding patch rows into the totals unconditionally - correct
-    /// while validate_patch was the only writer there - reported every rename as two calls at double its
-    /// real cost, and relabelled its tokens 'validate_patch' in the tool-grouped view.
-    /// </remarks>
-    [Fact]
-    public void OneCallWritingBothTablesIsCountedOnce()
-    {
-        var shared = Ids.ToolCall();
-        _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "rename_symbol", tokens: 400, toolCallId: shared));
-        _recorder.RecordPatch(SamplePatch(Ids.AmbientSession, "tsk_1", tokens: 400, toolCallId: shared));
-
-        var byTool = _metrics.Read(null, null, "tool");
-        Assert.Equal(1, byTool.Totals.ToolCalls);
-        Assert.Equal(400, byTool.Totals.TokensReturned);
-
-        // The validation itself still counts as an attempt - a rename really is one. Only its COST is
-        // already held by the retrieval row.
-        Assert.Equal(1, byTool.Totals.ValidationAttempts);
-        Assert.Equal("rename_symbol", Assert.Single(byTool.Groups).Key);
-
-        var byTask = Assert.Single(_metrics.Read(null, null, "task").Groups);
-        Assert.Equal(1, byTask.Calls);
-        Assert.Equal(400, byTask.TokensReturned);
-    }
-
-    // Regression: a validate_patch REJECT (stale_base, unheld_symbol, ...) records a retrieval_events
-    // row under tool_name 'validate_patch' via PatchTools.Reject, same as any other tool call - it is
-    // not routed through RecordPatch. groupBy:"tool" must merge that row with an actual validation's
-    // patch_events row into ONE 'validate_patch' group, not two (self-eval finding, 2026-08-10).
-    [Fact]
-    public void RejectAndPatchEventsMergeIntoOneToolGroup()
-    {
-        _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "validate_patch", tokens: 50));
-        _recorder.RecordPatch(SamplePatch(Ids.AmbientSession, "tsk_1", tokens: 150));
-
-        var byTool = _metrics.Read(null, null, "tool");
-        var patchGroup = Assert.Single(byTool.Groups, g => g.Key == "validate_patch");
-        Assert.Equal(2, patchGroup.Calls);
-        Assert.Equal(200, patchGroup.TokensReturned);
-    }
-
-    /// <summary>A new server process starts with no telemetry, and the development log survives that.</summary>
-    /// <remarks>
-    /// This is the property that makes get_retrieval_metrics report a session rather than a history.
-    /// feature_log is deliberately outside the purge - it records why code changed, which outlives the
-    /// process that recorded it - so both halves are asserted here: a purge that took the log with it
-    /// would stay silent until someone searched for a decision that was no longer there.
-    /// </remarks>
-    [Fact]
-    public void ReopeningTheStorePurgesTelemetryButKeepsTheDevelopmentLog()
-    {
-        _recorder.RecordRetrieval(Sample(Ids.AmbientSession, "tsk_1", "get_symbol", tokens: 100));
-        _recorder.RecordPatch(SamplePatch(Ids.AmbientSession, "tsk_1", tokens: 150));
-        _recorder.RecordToolCall(SampleToolCall("toolu_1", "Grep", request: 40, response: 900));
-        using (var seed = _store.Connect())
-        using (var insert = seed.CreateCommand())
-        {
-            insert.CommandText = """
-                INSERT INTO feature_log (log_id, task_id, intent, tags, created_at)
-                VALUES ('log_1', 'tsk_1', 'why the code changed', '[]', '2026-08-13T00:00:00Z');
-                """;
-            insert.ExecuteNonQuery();
-        }
-
-        SqliteConnection.ClearAllPools();
-        var reopened = new KnowledgeStore(
-            new SolutionLocator(NullLogger<SolutionLocator>.Instance, _root),
-            NullLogger<KnowledgeStore>.Instance);
-
-        var afterRestart = new MetricsReader(reopened).Read(null, null, "tool");
-        Assert.Equal(0, afterRestart.Totals.ToolCalls);
-        Assert.Null(afterRestart.Harness);
-
-        using var connection = reopened.Connect();
-        using var surviving = connection.CreateCommand();
-        surviving.CommandText = "SELECT COUNT(*) FROM feature_log;";
-        Assert.Equal(1L, Convert.ToInt64(surviving.ExecuteScalar()));
-    }
-
-    private static TelemetryRecorder.PatchEvent SamplePatch(string session, string task, int tokens,
-        string? toolCallId = null) =>
-        new()
-        {
-            ToolCallId = toolCallId ?? Ids.ToolCall(),
-            PatchId = Ids.ToolCall(),
-            ValidationAttemptId = Ids.ToolCall(),
-            SessionId = session,
-            TaskId = task,
-            ChangedSymbolIdsJson = "[]",
-            ChangeKindsJson = "[]",
-            BaseVersionsJson = "{}",
-            CompletedLevel = "parse",
-            RequiredLevel = "parse",
-            IsSufficient = true,
-            Succeeded = true,
-            Applied = false,
             ReturnedTokens = tokens,
         };
 

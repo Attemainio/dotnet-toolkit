@@ -5,7 +5,6 @@ using DotnetToolkit.McpServer.Output;
 using DotnetToolkit.McpServer.Store;
 using DotnetToolkit.McpServer.Telemetry;
 using DotnetToolkit.McpServer.Tools;
-using DotnetToolkit.McpServer.Validation;
 using DotnetToolkit.McpServer.Workspace;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,7 +25,6 @@ public sealed class StalenessTests : IDisposable
     private readonly WorkspaceHost _workspace;
     private readonly KnowledgeStore _store;
     private readonly SymbolStore _symbols;
-    private readonly FeatureLogStore _featureLog;
     private readonly SymbolIndexBuilder _builder;
     private readonly TelemetryRecorder _telemetry;
 
@@ -49,7 +47,6 @@ public sealed class StalenessTests : IDisposable
         _workspace.StartLoading(); // no solution → resolves to NoSolution, GetSolutionAsync returns null
         _store = new KnowledgeStore(_locator, NullLogger<KnowledgeStore>.Instance);
         _symbols = new SymbolStore(_store);
-        _featureLog = new FeatureLogStore(_store);
         _builder = new SymbolIndexBuilder(_workspace, _symbols, _store, _locator, NullLogger<SymbolIndexBuilder>.Instance);
         _telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
     }
@@ -67,13 +64,13 @@ public sealed class StalenessTests : IDisposable
     public async Task GetSymbol_IsIndexBackedWhenWorkspaceUnavailable_C11()
     {
         var root = Root(await ContextTools.GetSymbol(
-            _workspace, _locator, _index, _symbols, _featureLog, _builder, _telemetry,
+            _workspace, _locator, _index, _symbols, _builder, _telemetry,
             "Demo.Foo"));
 
         Assert.Equal("index_only", root.GetProperty("limitedBy").GetString());
         Assert.True(root.TryGetProperty("content", out _));
         Assert.Equal("Type", root.GetProperty("content").GetProperty("kind").GetString());
-        Assert.StartsWith("decl:", root.GetProperty("contentVersion").GetString());
+        Assert.StartsWith("symidx_", root.GetProperty("symbolId").GetString());
     }
 
     [Fact]
@@ -83,21 +80,6 @@ public sealed class StalenessTests : IDisposable
             _workspace, _locator, _symbols, _telemetry, "Demo.Foo", "callers"));
 
         Assert.Equal("workspace_loading", root.GetProperty("error").GetString());
-    }
-
-    // Conformance C8: applyOnSuccess without an intent is rejected before any validation runs.
-    [Fact]
-    public async Task ValidatePatch_ApplyWithoutIntent_Rejected_C8()
-    {
-        var edits = new[] { new PatchEditInput(File: "Foo.cs", Lines: "4-6", NewText: "public class Foo { }") };
-        var root = Root(await PatchTools.ValidatePatch(
-            _workspace, _locator, _symbols, _featureLog, _builder,
-            new TargetedTests(_locator, NullLogger<TargetedTests>.Instance), _telemetry,
-            new PatchDraftStore(TimeProvider.System),
-            new Dictionary<string, string>(), edits,
-            requestedLevel: null, applyOnSuccess: true, intent: null, tags: null));
-
-        Assert.Equal("intent_required", root.GetProperty("error").GetString());
     }
 
     [Fact]

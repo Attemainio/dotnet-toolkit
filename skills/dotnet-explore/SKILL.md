@@ -36,9 +36,8 @@ name.
 **Skip it** when:
 
 - **The symbol is already known.** A two-call lookup is not what this is for; use `dotnet-read`.
-- **The next step needs a `contentVersion`.** The agent is instructed never to report one — it is an
-  edit lease that goes stale the moment anything moves, and a patch built on a relayed one gets
-  `stale_base` at best and a silent revert at worst. You fetch your own with `get_symbol`.
+- **You need the text, not the map.** The agent never reads a `.cs` file; it reports
+  `declarationSites`, and the ranged `Read` over them is yours to make.
 - **The answer is in a non-C# file.** `.csproj`, `.json`, `.md`, `.editorconfig` are out of its
   scope; it will say so and stop.
 
@@ -81,10 +80,10 @@ explored "twice as thoroughly" is one.
 Fixed sections: **Target**, **Entry points**, **Blast radius**, **Affected files**, **What would need
 to change**, **Suggested next calls**, **Not covered**.
 
-- **`symbolId`s are the payload** — paste them straight into `get_symbol` or `validate_patch`. A
-  `symidx_` prefix is provisional (syntax tier) and a `symfb_` one is not a fetch target at all (a
-  local function, a lambda, a symbol with no doc-comment id); neither is usable for editing, and the
-  report flags those on the row.
+- **`symbolId`s are the payload** — paste them straight into `get_symbol`, `get_references` or
+  `rename_symbol`. A `symidx_` prefix is provisional (syntax tier) and a `symfb_` one is not a fetch
+  target at all (a local function, a lambda, a symbol with no doc-comment id); the report flags
+  those on the row.
 - **Read `Not covered` first, not last.** It is mandatory and carries `limitedBy` verbatim, budget
   stops, non-C# files the answer touches, and any ambiguity it resolved on your behalf. A map that
   says where it ends is useful; one that looks complete is dangerous.
@@ -95,6 +94,6 @@ to change**, **Suggested next calls**, **Not covered**.
 
 ## Then what
 
-The map is the input to a change, not the change. Invoke **`dotnet-write`** next: step 1 of its loop
-(fetch with `get_symbol(include: "all")` for your own `contentVersion`) is exactly the step the agent
+The map is the input to a change, not the change. Invoke **`dotnet-write`** next: its step 2 —
+`Read` the exact declaration span, then `Edit` anchored on that text — is exactly the step the agent
 deliberately did not do for you.

@@ -1,7 +1,7 @@
 {
   "name": "dotnet-toolkit",
-  "description": "Compiler-aware C# code intelligence for .NET repos — Roslyn-backed symbol search, reference tracing, and edits validated against the compiler before they touch disk.",
-  "version": "1.0.1",
+  "description": "Compiler-aware C# navigation for .NET repos — Roslyn-backed symbol search, reference tracing, call and type hierarchies, and a solution-wide rename, with an index that follows every edit.",
+  "version": "2.0.0",
   "author": {
     "name": "Atte Harrikari",
     "url": "https://github.com/Attemainio"

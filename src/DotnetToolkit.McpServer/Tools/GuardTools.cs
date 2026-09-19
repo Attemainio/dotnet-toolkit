@@ -15,15 +15,13 @@ namespace DotnetToolkit.McpServer.Tools;
 public static class GuardTools
 {
     [McpServerTool(Name = "set_hook_guards")]
-    [Description("Let raw Read/Edit/Write and shell reads (cat/grep/sed) through on .cs files for a while, "
-        + "force them to hard-deny a raw .cs read too (on top of the write guards, which always hard-deny), "
-        + "or restore normal enforcement. USE ONLY WHEN AN UNGUARDED OR FORCED-ENFORCEMENT PATH IS ITSELF THE "
-        + "POINT: measuring these tools against grep/Read, reproducing what a repo without this plugin does "
-        + "(suspend), or reproducing what this repo did before 2026-08-21 when the read guards were hard "
-        + "denies (block). It is not the way past a guard that is in your way — a guard names the skill "
-        + "covering what you were doing, and that route is both cheaper and recorded. Edits made while "
-        + "suspended reach disk WITHOUT compiling, without a dependent-compile check, and without a "
-        + "development-log entry, so the reasoning is gone when the session ends. A suspend or block expires "
+    [Description("Silence the advisory read guards on .cs files for a while (suspend), make them hard-deny a raw "
+        + ".cs read instead of advising (block), or restore normal enforcement. USE ONLY WHEN AN UNGUARDED OR "
+        + "FORCED-ENFORCEMENT PATH IS ITSELF THE POINT: measuring these tools against grep/Read, reproducing "
+        + "what a repo without this plugin does (suspend), or reproducing what this repo did before 2026-08-21 "
+        + "when the read guards were hard denies (block). It is not the way past an advisory that is in your "
+        + "way — the note names the skill covering what you were doing, and a ranged Read never draws one. "
+        + "A suspend or block expires "
         + "on its own (default 30 minutes, cap 4 hours) and cannot be made indefinite from here, so nothing "
         + "has to remember to undo it; workspace_status reports the time remaining while one is in force. "
         + "Scoped to your own Claude Code session once a hook has reported that session's id, so a different "
@@ -79,10 +77,8 @@ public static class GuardTools
                 + "to this one could not be verified)";
 
         var effect = mode == GuardMode.Blocked
-            ? "guard-cs-read and guard-cs-bash-read now hard-deny a raw .cs read too, on top of the write "
-                + "guards, which always did."
-            : "Raw .cs reads and edits now pass unchecked, and any edit made through them is absent from the "
-                + "development log.";
+            ? "guard-cs-read and guard-cs-bash-read now hard-deny a whole-file raw .cs read instead of advising."
+            : "Raw .cs reads now pass without an advisory note.";
 
         return $"hook guards {(mode == GuardMode.Blocked ? "blocked" : "suspended")} for "
             + $"{(until - now).TotalMinutes:F0} min, until {until:u}, {scope}. {effect} Call "

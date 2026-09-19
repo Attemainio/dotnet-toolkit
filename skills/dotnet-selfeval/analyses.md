@@ -24,10 +24,11 @@ because the documentation recommending it is wrong.
 
 | Outcome wanted | Cheap route | Expensive route |
 | --- | --- | --- |
-| What is this symbol for? | `search_index(include: "summary:full")` — answered by the search itself | `search_index` → `get_symbol(source: "full")` |
-| What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol(source: "full")` |
-| What happens near line N of a long member? | `bodyOutline` → `get_symbol(source: "code@N-M")` | `get_symbol(source: "full")` |
-| What is its signature? | default `include` | `source: "full"` |
+| What is this symbol for? | `search_index(include: "summary:full")` — answered by the search itself | `search_index` → `get_symbol` → ranged `Read` |
+| What does it do, in more detail? | `get_symbol(include: "xmlDoc,bodyOutline")` | `get_symbol` → ranged `Read` of the whole declaration |
+| What happens near line N of a long member? | `bodyOutline` → ranged `Read` of the one landmark | ranged `Read` of the whole declaration |
+| What is its signature? | default `include` | any `Read` |
+| The text of one method in a long file | `get_symbol` → `Read(offset: startLine, limit: endLine - startLine + 1)` | whole-file `Read` |
 | What shape are these five symbols? | one `get_symbol(symbols: [...])` — **calls only; see below** | five `get_symbol` calls |
 | Who calls it (just the list, one hop)? | `get_call_hierarchy(maxDepth: 1)` | `get_references` |
 | Where exactly is it called (file/line/snippet)? | `get_references` | repeated file reads |
@@ -91,47 +92,37 @@ mid-chain is load-bearing on a cold call. State the *conditional* — suppress w
 ## 3d · Advice: does a field that tells the caller what to do next actually pay?
 
 Most response fields are facts. A few are **advice** — they exist only to change the caller's next call.
-There are three, and they are not equally settled:
+Since 2026-09-19 the toolkit carries no explicit advice field (the `read` column and the large-source
+guard went with the source component), so what is left is **facts a caller is expected to derive
+advice from**, and the hook advisory on a whole-file read:
 
-- **`search_index`'s `read` column** (`mem`/`out`/`code`/`all`, absent when the default fetch is
-  already right) — the real advice field, and the one to price first. Its thresholds are admitted
-  guesses: `ReadAdvice.LargeDeclaration` (60 lines) decides when the no-intent path speaks at all,
-  and the `intent` values (`edit`/`logic`/`surface`) override it entirely. Both were set by argument,
-  not by measurement, and this analysis is what should move them.
-- **`get_symbol`'s `guard` block** on an unsliced `source` request past `ResponseGuard.LineThreshold`
-  (500 lines) — advice that also *withholds* the answer, so a wrong fire costs a whole round trip
-  rather than a few tokens. Price the threshold and the cost of the extra hop separately.
 - **`search_index`'s `shape` column** (`P`/`M`/`N`/`L`/`O`/`D`/`C`/`A`, each emitted at its real value
-  whenever non-zero and applicable; semantics in `docs/tools/search_index.md`) — facts a caller is
-  expected to derive advice *from*. Now that `read` states the derivation outright, the open question
-  about `shape` is whether it still earns its per-row cost alongside it, or has become 3b's
-  `unconsulted`.
+  whenever non-zero and applicable; semantics in `docs/tools/search_index.md`). The rule the
+  `dotnet-read` skill states is "large `M` → `members`, large `L` with an `O` → `bodyOutline` then a
+  ranged `Read`, otherwise locate and `Read`". The open question is at what values that rule starts
+  to pay, and whether `shape` earns its per-row cost or has become 3b's `unconsulted`.
+- **`bodyOutlineNote`** on `get_symbol` — the one remaining in-band note, saying the outline is
+  unlikely to beat a plain `Read`. Check it against the measured pair.
+- **The `guard-cs-read` advisory** on a whole-file `Read` — advice delivered by a hook, not a field.
+  Its claim is that `get_symbol` plus a ranged `Read` costs less; price that on files of several sizes.
 
-Advice is the only field class that can be *wrong* rather than merely expensive, so it gets its own
-test: follow it, ignore it, measure both. Nothing is threshold-gated in `shape`, so the question there
-is not "did the label fire correctly" but "at what value does following it start to pay" — report the
-crossover, not a verdict.
+Nothing is threshold-gated in `shape`, so the question is not "did the label fire correctly" but "at
+what value does following the derived rule start to pay" — report the crossover, not a verdict.
 
-Take a `search_index` result with at least 8 hits spanning labelled and unlabelled rows — Family B's
+Take a `search_index` result with at least 8 hits spanning small and large `shape`s — Family B's
 matrix keeps one for this. For each hit, run **both** routes to the same stated outcome and record
 `(calls, tokens)`:
 
-| Label | Outcome wanted | Route it advises | Compare against |
+| Shape | Outcome wanted | Route the rule implies | Compare against |
 | --- | --- | --- | --- |
-| `read: mem` | what is on this type | `include: "members"` | `source: "full"` |
-| `read: out` | what this member does | `bodyOutline` → `source: "code@a-b"` | `source: "code"` whole |
-| `read: code` | what this member does | `source: "code"` | `source: "full"` |
-| `read` absent on a hit | anything | the default `include` | whichever labelled route its `shape` would have implied |
-| `intent: "logic"` vs. omitted | behaviour, not docs | whatever `read` then says | the same query with no `intent` |
-| `guard: large_source` | what is in this declaration | the served `members`/`bodyOutline`, then a slice | the repeat call that returns the whole source |
-| `L…` with a large `O…` | what this member does | `bodyOutline` → `source: "code@a-b"` | `source: "full"` |
-| `L…` with a small `O…` | what this member does | `source: "code"` whole | `bodyOutline` → `source: "code@a-b"` |
-| `M…` | what is on this type | `include: "members"` | `source: "full"` |
-| `N…` | what is nested inside | `include: "members"` | `source: "full"` |
-| `D…` | the implementation only | `source: "code"` | `source: "full"` |
-| `C…` | what the body does | `source: "code-comments"` | `source: "code"` |
-| `A…` | which attributes it carries | `include: "attributes"` | `source: "full"` |
-| small `L`, nothing else | what this does | default `include` | any labelled route above |
+| `L…` with a large `O…` | what this member does | `bodyOutline` → ranged `Read` of one landmark | ranged `Read` of the whole declaration |
+| `L…` with a small `O…` | what this member does | ranged `Read` of the whole declaration | `bodyOutline` → ranged `Read` |
+| `M…` | what is on this type | `include: "members"` | ranged `Read` of the whole type |
+| `N…` | what is nested inside | `include: "members"` | ranged `Read` of the whole type |
+| `D…` | the implementation only | `xmlDoc` from `get_symbol`, then `Read` from `signatureLine` | `Read` from `startLine` |
+| `A…` | which attributes it carries | `include: "attributes"` | ranged `Read` |
+| small `L`, nothing else | what this does | default `include` | any route above |
+| any, in a file of N lines | the text of this one member | `get_symbol` → ranged `Read` | whole-file `Read` (what the advisory argues against) |
 
 Four outcomes, and **three of them are findings**:
 
@@ -145,9 +136,10 @@ Four outcomes, and **three of them are findings**:
 - **Unactionable** — the label fired but no different call follows from it. `[warning]`: a fact wearing
   advice's clothing, belonging under 3b or 3c instead.
 
-Check each label against ground truth too, which is cheap for a counting label: `D` must equal the number
-of lines `source:full` carries that `source:code` does not, and `L` must equal `endLine - line + 1`. A
-label that mispredicts its own fetch is a `[bug]` before any token argument is reached.
+Check each letter against ground truth too, which is cheap for a counting label: `D` must equal
+`signatureLine - startLine` on the `declarationSites` entry of an unattributed member (the doc-comment lines), and `L` must equal
+`endLine - line + 1`. A label that mispredicts its own fetch is a `[bug]` before any token argument is
+reached.
 
 **Rank by expected value, not best case.** A label saving 80% on the 5% of hits that carry it is a
 smaller win than one saving 15% on every hit — multiply the saving by the census fraction that actually

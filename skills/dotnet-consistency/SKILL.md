@@ -42,7 +42,7 @@ blocked, since 2026-08-21) rather than denying it, but `get_symbol` is still the
 of what the hook does — this is a symbol query, not a text search.
 
 ```
-get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools", "PatchTools",
+get_symbol(symbols: ["ContextTools", "FlowTools", "GraphTools", "HistoryTools",
                      "RenameTools", "MetricsTools", "ServerTools", "GuardTools"], include: "members")
 ```
 
@@ -71,7 +71,8 @@ Before running it, apply the staleness gate: if `claude-docs.md`'s `last-verifie
 the shortlists before checking anything against them.
 
 **2. Implementation.** For each tool from Step 0, read its method body (not just the `[Description]`)
-via `get_symbol(include: "source")` — confirm what it actually accepts, returns, and errors on. Docs
+— `get_symbol` for its `declarationSites`, then a ranged `Read` of that span — and confirm what it
+actually accepts, returns, and errors on. Docs
 get audited against this, not against their own prior text.
 
 **3. `[Description]` attributes vs. documented behavior and return shape.** Compare each tool's
@@ -91,12 +92,12 @@ still exists (Step 0) with the arguments they claim, and that every tool relevan
 subject actually appears in it — a tool added to `Tools/*.cs` that fits an existing skill's scope but
 isn't mentioned there is a finding, not just a missing doc row.
 
-**Every one of the 19 tools must be named by some skill**, because
+**Every one of the 17 tools must be named by some skill**, because
 `.claude/rules/dotnet-index.md` names none. A tool named by no skill is unreachable: nothing
 always-loaded points at it, and free-text `ToolSearch` does not reliably find it (§C). Split by side —
-retrieval and the four server/meta tools in `dotnet-read`, `validate_patch` and `rename_symbol` in
-`dotnet-write` — with `workspace_status` and `reload_workspace` legitimately in both, since each
-skill's step 0 depends on them.
+retrieval and the server/meta tools in `dotnet-read`, `rename_symbol` in `dotnet-write` — with
+`workspace_status` and `reload_workspace` legitimately in both, since each skill's step 0 depends on
+them, and `set_hook_guards` in `dotnet-performance` alone, its only sanctioned caller.
 
 **`set_hook_guards` is the one deliberate exception, owned by `dotnet-performance` alone.** It is not
 missing from `dotnet-read`; it is kept out. The tool suspends the guards that make the rest of the
@@ -118,17 +119,17 @@ nothing missing (a tool that exists but appears nowhere in it):
 | `.claude/rules/dotnet-index.md` | **the only always-loaded rule** — here *and* copied verbatim into consuming repos by init, so drift ships and is paid by every session and every subagent. **What it may and may not contain is `harness-compliance.md` §E**, and §D owns its size. It is a **pure skill router**: check that it names **no MCP tool at all** (one appearing is the finding), that its four rows still match the skills that exist, and that the "agents are launched by skills" mandate survives. A tool table, a standards table, a `limitedBy` section or a `pluginRoot` join reappearing here is drift — each was moved out deliberately |
 | `standards/index.md` | the **shared** standards routing table. It lists exactly the files present in `standards/`; its stated `dotnet-code-review` core matches `agents/dotnet-code-review.md`'s six exactly; every "When" cell states an **observable property of the code** rather than a topic; and the `pluginRoot` join matches what `workspace_status` actually returns, naming **exactly one** location per file — a per-repo override tier reappearing is the drift to flag |
 | `skills/dotnet-read/SKILL.md` | (a) it names every retrieval tool from Step 0, each with a **Manual:** pointer whose filename is derived (`<tool>.md`, the five server/meta tools sharing `server.md`); (b) its per-tool "Answers to" lists stay questions, never argument grammar — that is the manual's job; (c) it owns the **cheap-route table** and the `limitedBy`/TOON response conventions, which must not drift back into the always-loaded rule; (d) its step 0 mandates `workspace_status` before any read, and the `${CLAUDE_PLUGIN_ROOT}`-is-not-expanded warning is intact |
-| `skills/dotnet-write/SKILL.md` | (a) its pre-edit standards step **defers to `standards/index.md` rather than re-listing the files**; (b) it resolves standards as `<pluginRoot>/standards/<name>.md` via `workspace_status`, with no override tier; (c) **it owns the write-*decisions*** — when to dry-run, when to amend versus rebuild, the definition of done, raising `.editorconfig` severity with the user rather than unasked — which were moved out of the always-loaded layer and must not drift back; (d) its step 0 mandates `workspace_status` before an edit and `reload_workspace(scope: "all")` after a `.cs` file is added or deleted. Its three known duplication risks (standards list, write-time checklist, `validate_patch` error codes) are `harness-compliance.md` §A |
-| `skills/dotnet-explore/SKILL.md` | it is the **only** sanctioned launcher of the `dotnet-explore` agent. It must check workspace readiness before spawning, must state that the agent relays no `contentVersion`, and must not restate the agent's own router — `agents/dotnet-explore.md` is self-contained and authoritative |
+| `skills/dotnet-write/SKILL.md` | (a) its pre-edit standards step **defers to `standards/index.md` rather than re-listing the files**; (b) it resolves standards as `<pluginRoot>/standards/<name>.md` via `workspace_status`, with no override tier; (c) **it owns the write-*decisions*** — when to dry-run, when to amend versus rebuild, the definition of done, raising `.editorconfig` severity with the user rather than unasked — which were moved out of the always-loaded layer and must not drift back; (d) its step 0 mandates `workspace_status` before an edit, and its "How the index follows your edits" section matches what `refresh-cs-files` actually does (silent on success, a note only for a new/deleted file, a queued refresh, or an unreachable server); (e) it states `Edit`/`Write` as the write path and `rename_symbol` as the one tool-made edit, with `dotnet build` as the gate — a validating or compiling tool reappearing in its text is the drift to flag. Its two known duplication risks (standards list, write-time checklist) are `harness-compliance.md` §A |
+| `skills/dotnet-explore/SKILL.md` | it is the **only** sanctioned launcher of the `dotnet-explore` agent. It must check workspace readiness before spawning, must state that the agent reads no `.cs` text (it reports locations; the caller reads), and must not restate the agent's own router — `agents/dotnet-explore.md` is self-contained and authoritative |
 | `skills/dotnet-review/SKILL.md` | it does **not** claim to inject a `Standards root:` into the spawn — the agent resolves its own `pluginRoot` from its own `workspace_status` call (§below), so the skill's job is only to state each instance's scope/mode/focus, never a path. It must also check workspace readiness **before** spawning: launching parallel instances against a degraded workspace is a parallel waste, and it points at `standards/index.md` rather than restating the table |
 | every file in `standards/` | every MCP tool named in them (e.g. `get_references` in `testing.md`'s calibration, `get_symbol` in `xml-documentation.md`'s) still exists with the described behavior; cross-file pointers still resolve; **none offers a per-repo override path** — that tier was removed, and a reintroduced sentence would promise a mechanism nothing implements. The no-frontmatter invariant is `harness-compliance.md` §G |
 | `skills/dotnet-init/SKILL.md` | that it still **copies `.claude/rules/dotnet-index.md` verbatim** rather than embedding its own tool table or standards list. Also the "what is deliberately *not* written" table and the uninstall list: every asset the plugin ships is in exactly one of write / not-written / uninstall, and the write and uninstall lists name the same files |
 | `docs/install/audit.md` | the install-procedure audit this skill runs in Step 5b (maintainer-facing; the consumer never reads it). Its four-mechanism inventory must cover every top-level directory the plugin actually ships (`skills/`, `agents/`, `hooks/`, `docs/`, `docs/tools/`, `.claude/rules/`, `scripts/`, `.mcp.json`), and its reachability scenarios must resolve to files that exist |
 | `docs/install/{install,verify,uninstall}.md` | the three paths `dotnet-init` routes to. They name the files init actually writes (the settings allowlist, `install.json`, and `.claude/dotnet-toolkit/.gitignore`) and no file it doesn't, and the skill's router table points at all three. The three must agree on the **count**: a file added to install.md's table and not to verify.md's presence check is installed but never verified |
 | `.claude/dotnet-toolkit/.gitignore` | copied verbatim into consuming repos by init, so it is a mechanism-2 file like the rule. Check it still covers every directory the skills write reports into — a new report directory added to a skill without a line here is committed by the next `git add -A` in every consuming repo — and that it still leaves `install.json`, `config.json` and `cache/` alone |
-| `skills/dotnet-selfeval/SKILL.md` + `analyses.md` | the efficiency probe matrix. Its Step 2 families still cover every tool from Step 0; the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`, `set_hook_guards`) are still exactly the ones with no `ToolTelemetry.Record`/`RecordPatch` call, and it still tells the run **not to probe `set_hook_guards` by calling it** — a suspension mid-evaluation would let the rest of the run bypass the very tools being measured; its `taskId`/`taskIds`/`groupBy:"task"` recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed as unmeasurable understates what the evaluation can see |
+| `skills/dotnet-selfeval/SKILL.md` + `analyses.md` | the efficiency probe matrix. Its Step 2 families still cover every tool from Step 0; the tools it lists as recording **no** telemetry (`ping`, `workspace_status`, `set_output_format`, `reload_workspace`, `get_retrieval_metrics`, `set_hook_guards`) are still exactly the ones with no `ToolTelemetry.Record` call, and it still tells the run **not to probe `set_hook_guards` by calling it** — a suspension mid-evaluation would let the rest of the run bypass the very tools being measured; its `taskId`/`taskIds`/`groupBy:"task"` recipe still matches `MetricsTools`/`MetricsReader`. A tool newly instrumented but still listed as unmeasurable understates what the evaluation can see |
 | `agents/dotnet-code-review.md` | the agent's **complete, self-contained** instructions. `tools:` frontmatter matches Step 0's read-side subset (nothing stale, still excluding `get_project_graph`/`detect_circular_dependencies`, withheld as out of a scope slice's reach); every tool it names in Process, evidence bars and Boundaries is granted there *and* behaves as described; its standards core and per-aspect fold-ins resolve to real `standards/` filenames, reached through the `pluginRoot` it resolves itself from its own `workspace_status` call and **never** by constructing a `${CLAUDE_PLUGIN_ROOT}` path itself; the no-root fallback still reports standards-derived aspects as not-assessed rather than reviewing from memory; it still requires the `Standards:` line; and it has **not** re-acquired a `skills:` grant or a directive to read `docs/design/agents.md` — both removed to hold the per-instance token baseline down |
-| `agents/dotnet-explore.md` | the navigator's **complete, self-contained** instructions. Its router must name no write tool as callable, and three properties are load-bearing (rationale in `docs/design/agents.md`, not here): **no writer and no `memory:` key** in `tools:`, `Read` whitelisted to `docs/tools/<tool>.md` only, and no relaying of a `contentVersion` |
+| `agents/dotnet-explore.md` | the navigator's **complete, self-contained** instructions. Its router must name no write tool as callable, and three properties are load-bearing (rationale in `docs/design/agents.md`, not here): **no writer and no `memory:` key** in `tools:`, `Read` whitelisted to `docs/tools/<tool>.md` only, and no `.cs` reads at all |
 | `docs/design/agents.md` | covers **both** agents; **human-facing only — neither agent is told to read it.** It must not contradict the agent file (authoritative); its tool-grant and token-budget sections match the agents' actual frontmatter and loading rule; every tool it names still exists |
 | `docs/design/hooks.md` | maintainer-facing design notes; nothing routes to it. Describes exactly the hooks `hooks/hooks.json` registers and the behavior they implement — matchers, allow/deny cases, fallback chain |
 | `README.md`'s Features table | every tool from Step 0 appears in some row; no row names a tool that no longer exists |
@@ -154,9 +155,9 @@ Then two sweeps, both cheap:
 - **This repo's `CLAUDE.md`, paragraph by paragraph.** For each instruction, decide: is this *about
   maintaining the plugin* (correct — it belongs only here), or *about using the tools*? Anything in
   the second category must also exist in a shipped file, with `CLAUDE.md` carrying a pointer rather
-  than a second copy. The write-path discipline is the canonical example — the `validate_patch`
-  argument in "Non-negotiable workflow" is the same argument the init template and `dotnet-write`
-  must both make, because a consumer never sees `CLAUDE.md`.
+  than a second copy. The write-path discipline is the canonical example — the "`Edit`/`Write` are
+  the write path, the hook re-indexes, `dotnet build` is the gate" argument lives in the rule and
+  `dotnet-write`, never in `CLAUDE.md`, because a consumer never sees `CLAUDE.md`.
 - **The maintainer's memory directory** (`~/.claude/projects/<repo-slug>/memory/`, indexed by its
   `MEMORY.md`). Read the index, then each entry, and sort every one into: **(a)** operational for
   consumers → must be embedded in a shipped file; **(b)** operational for this repo only → belongs in
@@ -169,25 +170,32 @@ Report each finding as: the memory or `CLAUDE.md` paragraph, its category, and t
 should carry it. Do not copy a category-(c) fact into a shipped file to close a finding —
 categorising it correctly *is* closing it.
 
-**6. Hooks and launch path.** All nine hooks are `hook <name>` subcommands of the published server
+**6. Hooks and launch path.** All seven hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
-`Guard*`/`CsFileRefresh`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
-have no `hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard
-logic), `GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
-`set_hook_guards`) and `ControlClient.cs` (how `refresh-cs-files` and `meter-tool-call` both
-reach the running server, with the command words in `Control/ControlCommands.cs`).
+`GuardCsRead`/`GuardCsBashRead`/`CsFileRefresh`/`CsWriteChecklistHint`/`ToolCallMeter` files carry
+the behaviour, and four more have no `hooks.json` entry of their own: `CsFileMembership.cs`/
+`BashCommandScanner.cs` (shared guard logic, including the ranged-read recogniser), `GuardSuspension.cs`
+(the off-switch `HookCli` reads before dispatching the two read guards, written by `set_hook_guards`)
+and `ControlClient.cs` (how `refresh-cs-files` and `meter-tool-call` both reach the running server,
+with the command words in `Control/ControlCommands.cs`).
 Read those with `get_symbol` (not `grep` — a tree grep here would only earn an advisory note from
 `guard-cs-bash-read`, not a denial, but `get_symbol` is still the right call), plus `hooks/hooks.json`
 and `.mcp.json`:
-   - Does each guard's deny/hint text still name the correct tool(s) and procedure (`validate_patch`'s
-     current argument names, `search_index`/`get_symbol` for the read guards,
-     `reload_workspace(scope: "all")` for the reload hint)? It is read at the exact moment a caller is
-     blocked — a stale one teaches the wrong fix at the worst moment.
-   - **`hint-write-checklist` owns the write-time checklist**, and is the only hook matching an MCP
-     tool rather than a built-in. Its text must still match the standards it summarizes
-     (`security.md`, `testing.md`), and it must stay once-per-session and fail-quiet — a version that
-     fires on every patch, or that denies, is a finding. Matching an MCP tool name in `hooks.json` is
-     verified working; don't "fix" it back to a built-in.
+   - Does each guard's advisory text still name the correct tool(s) and procedure (`get_symbol` plus
+     a ranged `Read` for the read guards, `reload_workspace(scope: "all")` for the refresh hook's
+     unreachable-server note)? It is read at the exact moment a caller is nudged — a stale one
+     teaches the wrong fix at the worst moment. And do both read guards still pass a **ranged** read
+     silently in every mode (`Read` with `offset`/`limit`; `sed -n 'a,bp'`, `head -n`, `tail -n +N`)?
+     A guard that notes a ranged read is arguing against the route the skills recommend.
+   - **`hint-cs-write-checklist` owns the write-time checklist**, matching `Edit`/`Write`/
+     `NotebookEdit`. Its text must still match the standards it summarizes (`security.md`,
+     `testing.md`), and it must stay once-per-session and fail-quiet — a version that fires on every
+     edit, or that denies, is a finding.
+   - **`refresh-cs-files` is the `PostToolUse` hook that makes the index follow edits.** It must stay
+     silent on success, send every written `.cs` path (from `Edit`/`Write`/`NotebookEdit`/`apply_patch`
+     input and from `Bash` write shapes) to the server's `refresh` command, ask for a rescan on a git
+     verb, and answer with a note only when a file was added/deleted (reload started), a refresh is
+     queued, or the server was unreachable.
    - **`meter-tool-call` is the one hook matching every tool (`"*"`), and the one exempt from
      `GuardSuspension` on purpose.** It observes rather than withholds, and `dotnet-performance`
      suspends the guards precisely in order to measure the unguarded route — a version that honours
@@ -196,27 +204,26 @@ and `.mcp.json`:
      opening the store itself: a hook process has its own ambient session id, so a row it wrote
      directly would be invisible to every read.
    - Does `hooks/hooks.json` name subcommands `HookCli` actually dispatches, with matchers
-     (`Edit`/`Write`/`NotebookEdit`/`apply_patch`/`Read`/`Bash`, plus any host-qualified
-     `validate_patch` MCP tool
-     name) matching `docs/design/hooks.md` and `docs/design/architecture.md`'s "Packaging" section?
+     (`Edit`/`Write`/`NotebookEdit`/`apply_patch`/`Read`/`Bash`) matching `docs/design/hooks.md` and
+     `docs/design/architecture.md`'s "Packaging" section?
      The shell-free and output-cap invariants are `harness-compliance.md` §G. `scripts/` holds
      developer conveniences only; anything new there or in `Hooks/` unmentioned by
      `docs/design/hooks.md` or "Packaging" is a Step 7 finding.
    - Matchers key on tool name, not on which agent calls, so they fire for subagents too. For
      `dotnet-code-review`: (a) its `tools:` list never grants `Edit`/`Write`/`NotebookEdit` —
      `memory: project` makes the harness grant them anyway, which is why Boundaries carries the
-     weight; (b) its Process step 2 still goes to `search_index`/`get_symbol` first and to `Read` only
-     when a symbol lookup didn't give it the lines — a narrow, genuinely-reachable fallback now that
-     `guard-cs-read` only advises rather than blocks, so its own text (checked in Step 5's table) must
-     say so rather than imply the read would fail. For `dotnet-explore`, whose own file bans `Read` on
-     `.cs` outright with no hook backstop behind that ban any more, a `Read` of a `.cs` file appearing
-     in its transcript is itself the drift to report — the file's own instruction, not any hook, is
-     what should have stopped it.
+     weight; (b) its Process step 2 still locates with `search_index`/`get_symbol` and reads with a
+     **ranged** `Read` over `declarationSites`, treating a whole-file `Read` as the scope-mode
+     exception rather than the default — its own text (checked in Step 5's table) must say that a
+     ranged read draws no note and a whole-file one only advises. For `dotnet-explore`, whose own
+     file bans `Read` on `.cs` outright with no hook backstop behind that ban, a `Read` of a `.cs`
+     file appearing in its transcript is itself the drift to report — the file's own instruction,
+     not any hook, is what should have stopped it.
 
 **7. Internal drift.** Read `drift.md` and run it. This is the step that starts from *what changed*
-rather than from a file list: `get_semantic_diff` against a baseline, then `search_log` for the
-recorded intent, then `git` for everything the development log cannot see, checked against the
-drift-sensitivity ranking. It is how a shipped-but-undocumented tool gets found — nothing in a
+rather than from a file list: `get_semantic_diff` against a baseline, then `git log` for the recorded
+intent and for everything the semantic diff cannot see, checked against the drift-sensitivity
+ranking. It is how a shipped-but-undocumented tool gets found — nothing in a
 per-file check ever will, because the files that should mention it are internally consistent.
 
 **8. The skills' own instructions.** Once Steps 1–7 have surfaced concrete drift, the fix usually
@@ -247,7 +254,7 @@ distinct form so it is never mistaken for something this skill already fixed:
 
 > **CODE FINDING** — `src/…/Tools/X.cs:NN` · guideline: `harness-compliance.md §B` ·
 > current: *<measurement or text>* · required: *<threshold>* · proposed replacement: *<exact text>* ·
-> apply via: `dotnet-write` → `validate_patch`.
+> apply via: `dotnet-write` → `Edit`, then `dotnet build`.
 
 Group findings by file, in Step 5's table order, then hooks, then `CLAUDE.md`/`README.md` last, with
 `CODE FINDING`s collected together at the end. State the baseline Step 7 used. If a section is in
@@ -256,7 +263,7 @@ sync, say so in one line — don't manufacture findings to justify the run.
 ## Fixing vs. reporting
 
 - **Doc findings: fix them yourself**, in Step 1→9 order. Every such fix is to a non-`.cs` file, so
-  `Edit`/`Write` apply directly, not `validate_patch`.
+  no hook fires and no build is needed.
 - **`CODE FINDING`s: report only, never apply.** This skill does not edit `.cs`, even when the fix is
   a one-line attribute change with no behavior impact — an audit that can change the tool contract
   can no longer be run freely. Hand it off with the exact replacement text; the user or a follow-up

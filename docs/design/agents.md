@@ -4,8 +4,7 @@
 > and authoritative; if this page disagrees with `agents/<name>.md`, the agent file is right and this
 > one is stale. Kept for the rationale that is derivable nowhere else.
 
-This plugin ships six subagents, all read-only in intent (`dotnet-guard-redteam` included, despite its
-broad tool grant — see its own section for why):
+This plugin ships five subagents, all read-only in intent:
 
 - **`dotnet-code-review`** (`agents/dotnet-code-review.md`) — a **validation layer** that checks code
   against the standards in `standards/`, not a source of standards itself. Runs *after* code exists.
@@ -17,18 +16,18 @@ broad tool grant — see its own section for why):
   (`agents/dotnet-perf-full-probe.md`, `agents/dotnet-perf-mcp-probe.md`,
   `agents/dotnet-perf-raw-probe.md`) — a **benchmark instrument trio**, not general-purpose agents:
   identical except for tool grant and guard state (both MCP + raw tools at the default guard state vs.
-  MCP tools + `Read` restricted to one file under a forced block vs. `Read`/`Grep`/`Glob`/`Bash` only
-  under a suspension), and deliberately **not** self-contained — none carries its own procedure or
+  MCP tools + `Read` restricted to the protocol file and ranged declaration reads under a forced
+  block vs. `Read`/`Grep`/`Glob`/`Bash` only under a suspension), and deliberately **not** self-contained — none carries its own procedure or
   output format. All three read the same `skills/dotnet-performance/performance_protocol.md` for
   those; the per-run question list still comes from the invoking prompt, since it changes every run
   and a static file can't hold it. `dotnet-performance` is their only sanctioned launcher, and it runs
   them **sequentially**, never concurrently — guard state is one global switch per repo, so two probes
   in flight would either share a state neither asked for or race to change it. See the section at the
   end.
-- **`dotnet-guard-redteam`** (`agents/dotnet-guard-redteam.md`) — an **enforcement tester**: tries a
-  fixed battery of known and improvised bypasses against `guard-cs-edit`/`guard-cs-read`/
-  `guard-cs-bash-read` with the guards left armed, and reports which got through. `dotnet-guard-audit`
-  is its only sanctioned launcher. See the section at the end.
+
+`dotnet-guard-redteam` and its launcher `dotnet-guard-audit` were removed on 2026-09-19 with the
+write guards they tested: once `Edit`/`Write` became the write path there was no enforcement left
+to bypass, and the two read guards are advisory by design.
 
 ## Deferred tool schemas — why every MCP-granting agent also grants `ToolSearch`
 
@@ -52,7 +51,7 @@ invalid.**
 
 So: the authoritative tool list is still the agent file's `tools:` frontmatter — and for any agent
 granted an `mcp__plugin_dotnet-toolkit_dotnet__*` tool, that list **must** include `ToolSearch`.
-`dotnet-perf-raw-probe` and `dotnet-guard-redteam` grant no MCP tool and are deliberately left alone;
+`dotnet-perf-raw-probe` grants no MCP tool and is deliberately left alone;
 giving the raw probe `ToolSearch` would only muddy the baseline it exists to be. `harness-compliance.md`
 §G carries the static check that would have caught this.
 
@@ -117,14 +116,15 @@ to hold that down, and changing them without understanding the trade re-inflates
   every part of it was a second copy of `dotnet-index.md`'s router or a `docs/tools/` manual, so it
   was deleted rather than shrunk again. The retrieval guidance the agent needs is inline in the
   agent file; routing is the always-loaded rule's job, and per-tool mechanics are one `Read` away.
-- **Batched retrieval.** One `get_symbol` call with a `symbols` array over the whole scope, rather than
-  declaration-layer → body-layer → references per symbol.
+- **Batched location, ranged reads.** One `get_symbol` call with a `symbols` array over the whole
+  scope for `declarationSites`, then one ranged `Read` per symbol actually being judged — never a
+  per-symbol `get_symbol` walk, and never a whole-file `Read` to see three members.
 
-A related note: the `guard-cs-read` hook only *advises* against `Read` on `.cs` files a project
-compiles (it stopped blocking on 2026-08-21) and `PreToolUse` hooks fire for subagents too, so a
-whole-file `Read` would technically succeed here. The agent is still told to use MCP retrieval instead
-on cost grounds, not because the alternative is blocked — which is why the batching above matters
-regardless of hook state.
+A related note: the `guard-cs-read` hook only *advises* against a whole-file `Read` on `.cs` files a
+project compiles (it stopped blocking on 2026-08-21), says nothing at all about a ranged one, and
+`PreToolUse` hooks fire for subagents too. The agent is told to prefer ranged reads on cost grounds,
+not because the alternative is blocked — and in scope mode, where a whole file genuinely is the
+scope, the advisory is noise it is told to ignore.
 
 ## Tool grant — why two tools are withheld
 
@@ -172,8 +172,8 @@ points at it for exactly that reason.
 Deliberately **no `memory:` key.** That is the whole difference from `dotnet-code-review`, whose
 `memory: project` makes the harness grant `Write`/`Edit` back so it can maintain its memory namespace
 (see "Read-only is by instruction, not by capability" above). `dotnet-explore` gets no memory namespace,
-so its resolved tool list contains no writer at all: no `Write`, `Edit`, `NotebookEdit`,
-`validate_patch`, or `rename_symbol`. Adding project memory to this agent would silently hand it
+so its resolved tool list contains no writer at all: no `Write`, `Edit`, `NotebookEdit` or
+`rename_symbol`. Adding project memory to this agent would silently hand it
 `Write`/`Edit` and turn a real boundary back into an instruction — don't, and if a future version
 genuinely needs memory, the trade has to be stated in the agent file's Hard boundaries section.
 
@@ -193,21 +193,21 @@ Plus `Read`, restricted **by instruction** to `docs/tools/<tool>.md` — the on-
 tool mechanics, so the agent file itself can stay a compact router instead of an inlined manual. Its
 Hard boundaries name what is off-limits within that: no `.cs` file — the `guard-cs-read` hook is
 advisory only and no longer a backstop, so this instruction is the sole boundary — and specifically
-not `validate_patch.md`/`rename_symbol.md`, which document a path it has no tools for. No `Grep`/
+not `rename_symbol.md`, which documents a path it has no tools for. No `Grep`/
 `Glob`: a text search over C# is the thing this agent exists to replace, and non-C# files are out of
 scope by design.
 
 Plus `ToolSearch`, which loads a deferred tool's schema — see **Deferred tool schemas** above. Without
 it this whole grant is unreachable in any session where the harness defers schemas.
 
-## Why it must not report a `contentVersion`
+## Why it never reads a `.cs` file
 
-The agent calls `get_symbol` at the *default* include and is forbidden from passing `include: "all"` or
-echoing a `contentVersion`. A version is an edit lease scoped to the layers served, and it goes stale
-the moment anything moves — a main agent that patched against a version relayed through a subagent
-would hit `stale_base` at best and, if the file moved underneath, could revert other changes in it. So
-the handoff is `symbolId` + locations, and the caller leases its own version. That is what the
-`# lease your own contentVersion` comment in its `Suggested next calls` output is for.
+The agent calls `get_symbol` at the *default* include and never `Read`s source. Its output is a map —
+`symbolId`s and `declarationSites` — and the caller reads the text of whatever it decides to change,
+once, at the moment it is about to change it. A body read inside the agent is paid twice (once in the
+agent's context, once again when the caller reads it for real) and can also go stale between the two,
+so the handoff is locations only. `Suggested next calls` may name the caller's `Read` or a
+`rename_symbol` dry run, never perform either.
 
 ## Measured behavior — three probes against this repo
 
@@ -283,18 +283,20 @@ the others' runs. Originally there were two — `dotnet-perf-mcp-probe` (MCP too
 floor. `dotnet-perf-full-probe` was added 2026-08-22 to close the gap between them: neither extreme
 answers "what does a real, unrestricted session with this plugin installed actually do," since a real
 session is never tool-restricted and never runs under a guard state nobody chose. It carries both tool
-families and runs at the guards' plugin-shipped default (advisory reads, blocking writes, nothing
+families and runs at the guards' plugin-shipped default (advisory whole-file reads, nothing
 suspended or forced) — the practice measurement the other two, by design, cannot produce.
 
-`dotnet-perf-mcp-probe` has the dotnet-toolkit MCP tools plus `Read` restricted (by instruction) to one
-file; `dotnet-perf-raw-probe` has only `Read`/`Grep`/`Glob`/`Bash`; `dotnet-perf-full-probe` has both
-families at once — **tool absence for the actual route being measured, not a hook-blocked path either
-extreme is told to avoid.** Guard state is what keeps each extreme honest instead of tool grant alone:
+`dotnet-perf-mcp-probe` has the dotnet-toolkit MCP tools plus `Read` restricted (by instruction) to
+the protocol file and to *ranged* reads over `declarationSites` — since 2026-09-19 no MCP tool returns
+source, so the MCP route *is* "locate with the tools, read the range"; `dotnet-perf-raw-probe` has
+only `Read`/`Grep`/`Glob`/`Bash`; `dotnet-perf-full-probe` has both families at once — **tool
+absence for the actual route being measured, not a hook-blocked path either extreme is told to
+avoid.** Guard state is what keeps each extreme honest instead of tool grant alone:
 `dotnet-perf-raw-probe` runs under `set_hook_guards(state: "suspend")` so even its `Read` calls get no
 advisory nudge, simulating a session with no plugin installed at all; `dotnet-perf-mcp-probe` runs
-under `set_hook_guards(state: "block")` so its one narrow `Read` allowance (for
-`performance_protocol.md`) hard-fails loudly if it ever strays onto a `.cs` file, rather than quietly
-contaminating the "MCP-only ceiling" measurement with an advisory-only read nobody would notice.
+under `set_hook_guards(state: "block")`, where a ranged `Read` still passes silently but a
+whole-file `Read` of a `.cs` file hard-fails loudly — so the probe cannot quietly contaminate the
+"MCP-only ceiling" measurement with a whole-file read nobody would notice.
 `dotnet-perf-full-probe` needs no guard-state change at all — the default state **is** the condition
 being measured.
 
@@ -332,7 +334,7 @@ agent whose real job is different from a benchmark instrument's.
 **Model and cost.** Haiku for all three, matching `dotnet-explore` — these are lookup tasks with
 comparatively little judgment required (`dotnet-perf-full-probe`'s tool-choice decision is the closest
 any of them comes to real judgment, and it is still a per-question local call, not the sustained
-reasoning `dotnet-code-review` or `dotnet-guard-redteam` need), and running the same probe repeatedly
+reasoning `dotnet-code-review` needs), and running the same probe repeatedly
 should stay cheap. Pinning all three to the same model also keeps model choice from confounding the
 token comparison the way it would if `dotnet-perf-full-probe` inherited the caller's model instead. A
 first head-to-head (8 blind questions, `dotnet-explore` standing in for the not-yet-built MCP probe,
@@ -347,57 +349,3 @@ supersedes those specific numbers, not the rationale).
 report format of its own, so it produces a worse-informed `dotnet-explore`; `dotnet-perf-raw-probe` has
 no MCP tools at all; `dotnet-perf-full-probe` has both, but no report format or question list of its
 own either — for real exploration, `dotnet-explore` is still the right agent.
-
-# dotnet-guard-redteam
-
-Exists because a guard hook's own doc comment claiming it blocks (or advises on) a class of call is not
-the same claim as the hook actually doing so on every path a caller might take — and this repo has
-already had that gap found for it once, by a consuming repo rather than by this one. The 2026-08-20
-finding (`Hooks/BashCommandScanner.cs`'s `Tokenize` splitting on whitespace, so a compiled `.cs` path
-containing a space was invisible to `guard-cs-bash-read`) was discovered incidentally, during an
-unrelated performance run, by a user challenging that run's validity rather than by a process built to
-look for exactly this. This agent is that process.
-
-**Read-only in intent, not in tool grant — the one place this plugin's "read-only" framing is deliberately
-inverted.** Every other subagent above is either genuinely incapable of writing by tool grant
-(`dotnet-explore`, `dotnet-perf-mcp-probe`, `dotnet-perf-raw-probe`), capable only because a memory
-namespace requires it (`dotnet-code-review`), or capable via `Bash` but kept off that path by the same
-`guard-cs-bash-write` hook a normal session relies on, plus its own instruction never to attempt one
-(`dotnet-perf-full-probe`, which runs at the default guard state precisely because that state is what
-is being measured). This agent is granted `Edit`/`Write`/`Bash` **on purpose**, because testing whether
-an edit can reach disk
-unguarded requires actually attempting one. What keeps it read-only in effect is instruction, not
-capability: every write-shaped attempt must be reverted in the same turn, verified by re-reading the
-file, before moving to the next attempt — the agent file states this as a hard boundary, not a
-suggestion, precisely because nothing else enforces it.
-
-**Runs with the guards armed — the mirror image of the perf probes' precondition.**
-`dotnet-perf-raw-probe` needs `set_hook_guards(state: "suspend")` before it can reach a `.cs` file at
-all; this agent must run *without* any suspension in force, because a bypass attempt made while guards
-are down proves nothing about enforcement. `dotnet-guard-audit` checks `workspace_status` for a
-`hookGuards: SUSPENDED` line before launching, the same call `dotnet-performance` makes to prove a
-suspension reached the hooks — used here to prove the opposite state.
-
-**Why its battery includes write-shaped attempts through `Bash`, and why that half matters most.**
-`guard-cs-edit` matches Claude's `Edit`/`Write`/`NotebookEdit` tools and Codex's `apply_patch`
-alias (`hooks/hooks.json`'s `PreToolUse` matcher for it, same as `docs/design/hooks.md` documents
-for the read guards), and through
-2026-08-21 nothing in the shipped hook set watched `Bash` for a *write* the way `guard-cs-bash-read`
-watches it for a *read* — `sed -i`, `perl -i -pe`, or a shell redirect into a compiled file were none
-of them intercepted by name. Item 10 of the agent's battery is what found this: a run that day
-confirmed `echo '...' >> Foo.cs` reached disk unblocked, with no compile check and no development-log
-entry, which is now closed by `guard-cs-bash-write` (`docs/design/hooks.md`). The battery still runs
-item 10 on every audit rather than assuming the fix holds — a scanner limitation regressing, or a new
-write shape the scanner never covered, is exactly the kind of gap this agent exists to keep
-re-discovering rather than to have found once and stopped checking for.
-
-**Model: unset (inherits the caller's).** Unlike the perf probes, which are pure lookup tasks that
-tolerate Haiku, constructing and correctly judging the outcome of a dozen quoting/path/tool-name
-variations is closer to `dotnet-code-review`'s judgment load than to `dotnet-explore`'s navigation, so
-it is not pinned to a cheaper model.
-
-**Self-contained, unlike the perf-probe trio.** The perf probes split their procedure out into
-`performance_protocol.md` because three agents need byte-identical instructions for the comparison to
-isolate the variable each one holds constant. This agent has no sibling to stay identical to, so its
-full battery, boundaries, and report format live in its own file, the same way `dotnet-explore`'s and
-`dotnet-code-review`'s do.

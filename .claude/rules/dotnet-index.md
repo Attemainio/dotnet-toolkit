@@ -55,7 +55,15 @@ slower one read correctly, because a misread field becomes a wrong edit rather t
 
 Shell and plain file tools, unchanged: `dotnet build` / `dotnet test` / `dotnet publish`, `git`, and
 reading or editing non-C# files (Markdown, JSON, `.cmd`, `.csproj`, skill and agent definitions).
-A `PreToolUse` hook blocks `Edit`/`Write` on a compiled `.cs` file and points at the skill that covers
-the write path. `Read` and shell reads (`cat`/`grep`/`sed`/…) on a compiled `.cs` file are **not**
-blocked — a hook allows the call but adds an advisory note that the plugin's tools would likely answer
-it more cheaply or completely, which is guidance to weigh, not a wall to route around.
+
+**`Edit` and `Write` are the write path for `.cs` files too** — string-anchored, on text you have
+read. What the plugin adds around a write is locating the code and its blast radius first
+(`dotnet-write` routes to the reads), a `rename_symbol` tool for the one edit a string replacement
+cannot make safely, and a `PostToolUse` hook that re-indexes every file a tool writes, so the next
+`search_index` or `get_references` already sees the edit. `dotnet build` is the gate after a burst of
+edits; nothing compiles as you go.
+
+`Read` and shell reads (`cat`/`grep`/`sed`/…) on a compiled `.cs` file are **not** blocked. A hook
+adds an advisory note when a *whole* file is read raw, since a `get_symbol` and a ranged `Read` of its
+`declarationSites` usually cost less and miss nothing; a ranged read draws no note, because it is the
+intended way to fetch text once a symbol is located.

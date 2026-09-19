@@ -1,8 +1,8 @@
 # XML documentation
 
 Canonical XML-doc standard. Loaded on demand per `standards/index.md`'s table; read it before writing or
-editing doc comments — every symbol touched through `validate_patch` that lacks a `<summary>` gains one
-in the same edit (see the `dotnet-write` skill). `dotnet-code-review` validates against it (aspect
+editing doc comments — every symbol an edit touches that lacks a `<summary>` gains one in the same
+edit (see the `dotnet-write` skill). `dotnet-code-review` validates against it (aspect
 `[docs]`).
 
 ## Read before writing or judging
