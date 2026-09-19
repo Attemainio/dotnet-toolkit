@@ -171,10 +171,10 @@ categorising it correctly *is* closing it.
 
 **6. Hooks and launch path.** All nine hooks are `hook <name>` subcommands of the published server
 binary, in `src/DotnetToolkit.McpServer/Hooks/` — `HookCli.cs` dispatches, the
-`Guard*`/`ReloadHint`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
+`Guard*`/`CsFileRefresh`/`WriteChecklistHint`/`ToolCallMeter` files carry the behaviour, and four more
 have no `hooks.json` entry of their own: `CsFileMembership.cs`/`BashCommandScanner.cs` (shared guard
 logic), `GuardSuspension.cs` (the off-switch `HookCli` reads before dispatching, written by
-`set_hook_guards`) and `ControlClient.cs` (how `hint-reload-new-cs-file` and `meter-tool-call` both
+`set_hook_guards`) and `ControlClient.cs` (how `refresh-cs-files` and `meter-tool-call` both
 reach the running server, with the command words in `Control/ControlCommands.cs`).
 Read those with `get_symbol` (not `grep` — a tree grep here would only earn an advisory note from
 `guard-cs-bash-read`, not a denial, but `get_symbol` is still the right call), plus `hooks/hooks.json`

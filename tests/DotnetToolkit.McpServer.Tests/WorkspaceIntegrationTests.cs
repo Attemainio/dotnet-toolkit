@@ -80,7 +80,7 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
         _store = new KnowledgeStore(Locator, NullLogger<KnowledgeStore>.Instance);
         Symbols = new SymbolStore(_store);
         FeatureLog = new FeatureLogStore(_store);
-        Builder = new SymbolIndexBuilder(Workspace, Symbols, _store, Locator, NullLogger<SymbolIndexBuilder>.Instance);
+        Builder = new SymbolIndexBuilder(Workspace, Symbols, _store, Locator, NullLogger<SymbolIndexBuilder>.Instance, Index);
         await Builder.RebuildAsync();
         Assert.True(Builder.Ready);
         Telemetry = new TelemetryRecorder(_store, NullLogger<TelemetryRecorder>.Instance);
@@ -265,7 +265,7 @@ public sealed class WorkspaceIntegrationTests
     [Fact]
     public void WorkspaceStatus_NamesLoadedProjects()
     {
-        var status = ServerTools.WorkspaceStatus(_f.Locator, _f.Index, _f.Workspace, _f.Store);
+        var status = ServerTools.WorkspaceStatus(_f.Locator, _f.Index, _f.Workspace, _f.Store, _f.Builder);
 
         Assert.Contains("loaded:", status);
         Assert.Contains("Lib", status);

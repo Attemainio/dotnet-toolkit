@@ -324,33 +324,41 @@ Wired as a second hook under the `Bash` matcher in `hooks/hooks.json`, ahead of 
 both run on every `Bash` call, and a deny from this one blocks the tool regardless of what the advisory
 hook would have said about the same command.
 
-## `hook hint-reload-new-cs-file` — PostToolUse on a new-file write
+## `hook refresh-cs-files` — PostToolUse on every tool that can write a `.cs` file
 
-Fires when `Write` or an `apply_patch` add creates a brand-new `.cs` file (the one case the edit
-guard allows through). Both
-knowledge tiers are mtime-polling, not filesystem watchers, so a new file is invisible to the syntax
-index and the MSBuild workspace until a sweep and reload complete — a `validate_patch`/`get_symbol` call
-against it before then fails deterministically with `invalid_edit: file is not part of the loaded
-solution`.
+Fires after `Edit`, `Write`, `NotebookEdit`, `apply_patch` and `Bash`. It extracts the `.cs` and
+project files the call wrote — `tool_input.file_path` for the native tools, the `*** Add/Update/Delete
+File:` headers for `apply_patch`, and for `Bash` the same segment scan the write guard used
+(`BashCommandScanner.FindWriteTargetCsArgument`, with `cd` tracked) — and sends them to the running
+server as `refresh <json array>` over the loopback control channel. A tree-rewriting `git` verb
+(`checkout`, `pull`, `merge`, `rebase`, `stash`, …) names no file, so it sends `rescan`, the full
+sweep, instead.
 
-A hook process has no access to the MCP stdio pipe, so it cannot call `reload_workspace` through the
-running session — but the server also exposes `Control/ControlServer.cs`, a loopback TCP listener on
-`127.0.0.1` started alongside the other background services, whose port is published as plain text at
-`CacheDir/control.port`. `Hooks/ControlClient.cs` reads that port, sends `rescan` (synchronous — a
-syntax-index sweep, no MSBuild — the hook waits for the result) and then `reload` (fire-and-forget —
-starts the background MSBuildWorkspace reload and returns immediately, since that can run far longer
-than the hook's timeout), and reports both results in the injected `additionalContext`, telling Claude
-to check `workspace_status` before the next `validate_patch`/`get_symbol` call on the new file.
+Why it exists: both knowledge tiers are mtime-polling, not filesystem watchers. Before this hook the
+syntax index caught an edit on the next debounced sweep (2 s) and the live Roslyn solution followed
+it, but the SQLite symbol store — what `search_index`, every `sym_` id, `get_references` and both
+hierarchies answer from — subscribed to nothing and was rebuilt only by the (since removed) patch
+tool's own apply path or by a manual `reload_workspace`. An edit made any other way left them frozen.
+The store now subscribes to the sweep (`SymbolIndexBuilder.OnFilesChanged`), so **the sweep is what
+guarantees convergence**; the hook is what makes it immediate, so `search_index` right after `Edit`
+sees the edit.
 
-Falls back to the reminder-only text — "call `reload_workspace(scope: "all")` and wait for
-`workspace_status`" — if the control channel is unreachable for any reason (a server built before this
-feature existed, a missing port file, a refused connection, no response within the timeout). Fails open
-the same way every other hook here does.
+Server side, `refresh` runs `ProjectIndex.RefreshPathsAsync` (stat only those paths, re-parse what
+moved, raise the same `FilesChanged` notification a sweep would — which swaps the text into the live
+solution and queues the store refresh), then waits up to ten seconds for
+`SymbolIndexBuilder.RefreshDocumentsAsync` on the changed paths. That pass re-indexes exactly those
+documents, expanded to the other parts of any partial type they declare and, once it knows which
+symbols vanished, to the documents whose call edges still name them (above fifty of those it queues a
+full rebuild instead). A second asker for the same paths within the same pass joins it rather than
+queuing a repeat.
 
-The JSON reply is serialized, never hand-interpolated, since `file_path` is caller-controlled text (a
-Windows path's backslashes) that has no business near manual JSON string escaping.
+**Silent on success by design.** A refactor is thirty edits; thirty "refreshed" notes would be thirty
+lines of context saying nothing needs doing. The hook injects `additionalContext` only when the agent
+has to act: a new or deleted file starts a workspace reload (the only way the semantic tier learns of
+it), the pass outlasted its budget and is still running, or the server was unreachable for a *new*
+file — an edited one converges on the next sweep regardless. It fails open like every other hook here.
 
-## `hook track-subagent-start` / `hook track-subagent-stop`
+## ## `hook track-subagent-start` / `hook track-subagent-stop`
 
 Codex's tool hook payload does not repeat the active subagent identity. Its lifecycle payload does.
 These hooks keep a fail-open temporary correlation keyed by the hashed `session_id` plus `turn_id`

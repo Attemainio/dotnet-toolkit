@@ -141,31 +141,7 @@ public sealed class ProjectIndex : IDisposable
                 }
             }
 
-            // Computed ONCE per sweep, never per file: it walks the tree for project files, and the parse
-            // loop below runs over every changed .cs on what may be slow /mnt/* IO.
-            _entryPointScope ??= BuildEntryPointScope();
-            var entryPointScope = _entryPointScope;
-
-            Parallel.ForEach(toParse, item =>
-            {
-                try
-                {
-                    var entry = OutlineBuilder.Build(
-                        File.ReadAllText(item.Abs), item.Mtime, item.Len,
-                        synthesizeEntryPoint: entryPointScope.Covers(item.Rel));
-                    lock (changed)
-                    {
-                        if (!next.ContainsKey(item.Rel))
-                            structural = true;
-                        next[item.Rel] = entry;
-                        changed.Add(item.Rel);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "Failed to parse {File}", item.Rel);
-                }
-            });
+            structural |= ParseInto(toParse, next, changed);
 
             _lastQuickSweepUtc = DateTime.UtcNow;
             if (full)
@@ -191,6 +167,136 @@ public sealed class ProjectIndex : IDisposable
         {
             _sweepGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Outcome of <see cref="RefreshPathsAsync"/>: which repo-relative <c>.cs</c> paths actually moved,
+    /// whether any file was added or removed (which the semantic tier can only absorb with a reload),
+    /// and whether a project or solution file was among the paths.
+    /// </summary>
+    public sealed record RefreshOutcome(IReadOnlyList<string> Changed, bool Structural, bool ProjectFilesMoved);
+
+    /// <summary>
+    /// Targeted version of the sweep for paths a caller already knows moved — the refresh hook after an
+    /// <c>Edit</c>, a rename's own writes. Stats only those paths, re-parses the ones whose mtime or
+    /// length differs from the index, drops the ones that vanished, and raises the same
+    /// <see cref="FilesChanged"/>/<see cref="ProjectFilesChanged"/> notifications a sweep would, so
+    /// the workspace and the symbol store follow immediately rather than on the next debounced sweep.
+    /// </summary>
+    /// <param name="paths">Absolute or repo-relative paths; anything outside the root, excluded by
+    /// config, or not a <c>.cs</c>/project file is ignored.</param>
+    /// <remarks>
+    /// Shares <see cref="_sweepGate"/> with the sweeps, so a refresh and a sweep never interleave their
+    /// snapshot swaps. A project file among the paths is reported through
+    /// <see cref="ProjectFilesChanged"/> directly rather than by re-statting every project file: the
+    /// caller just wrote it, so "did it move" is already answered.
+    /// </remarks>
+    public async Task<RefreshOutcome> RefreshPathsAsync(IEnumerable<string> paths)
+    {
+        await _initTask;
+        await _sweepGate.WaitAsync();
+        try
+        {
+            var previous = _files;
+            var changed = new List<string>();
+            var next = new Dictionary<string, FileEntry>(previous, StringComparer.Ordinal);
+            var structural = false;
+            var projectFilesMoved = false;
+            var toParse = new List<(string Rel, string Abs, long Mtime, long Len)>();
+
+            foreach (var raw in paths.Distinct(StringComparer.Ordinal))
+            {
+                var abs = Path.IsPathRooted(raw) ? Path.GetFullPath(raw) : _locator.AbsPath(raw);
+                var rel = _locator.RelPath(abs);
+                if (rel.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(rel))
+                    continue;
+
+                if (IsProjectFile(abs))
+                {
+                    projectFilesMoved = true;
+                    continue;
+                }
+                if (!abs.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || IsExcluded(rel))
+                    continue;
+
+                var info = new FileInfo(abs);
+                if (!info.Exists)
+                {
+                    if (next.Remove(rel))
+                        structural = true;
+                    continue;
+                }
+                if (previous.TryGetValue(rel, out var existing)
+                    && existing.MtimeTicks == info.LastWriteTimeUtc.Ticks
+                    && existing.Length == info.Length)
+                    continue;
+                toParse.Add((rel, abs, info.LastWriteTimeUtc.Ticks, info.Length));
+            }
+
+            structural |= ParseInto(toParse, next, changed);
+            if (projectFilesMoved)
+            {
+                _entryPointScope = null;
+                _projectFiles = null;   // re-baseline on the next full sweep rather than reporting it twice
+            }
+
+            if (changed.Count > 0 || structural)
+            {
+                _files = next;
+                SaveCache(next);
+                FilesChanged?.Invoke(changed, structural);
+            }
+            if (projectFilesMoved)
+                ProjectFilesChanged?.Invoke();
+
+            return new RefreshOutcome(changed, structural, projectFilesMoved);
+        }
+        finally
+        {
+            _sweepGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Parses each listed file into <paramref name="next"/> and records it in <paramref name="changed"/>.
+    /// Shared by the sweeps and <see cref="RefreshPathsAsync"/> so both index a file identically.
+    /// </summary>
+    /// <returns>True when any parsed file was not in <paramref name="next"/> before (a new file).</returns>
+    private bool ParseInto(
+        List<(string Rel, string Abs, long Mtime, long Len)> toParse,
+        Dictionary<string, FileEntry> next,
+        List<string> changed)
+    {
+        if (toParse.Count == 0)
+            return false;
+
+        // Computed ONCE per pass, never per file: it walks the tree for project files, and the parse
+        // loop below runs over every changed .cs on what may be slow /mnt/* IO.
+        _entryPointScope ??= BuildEntryPointScope();
+        var entryPointScope = _entryPointScope;
+        var structural = false;
+
+        Parallel.ForEach(toParse, item =>
+        {
+            try
+            {
+                var entry = OutlineBuilder.Build(
+                    File.ReadAllText(item.Abs), item.Mtime, item.Len,
+                    synthesizeEntryPoint: entryPointScope.Covers(item.Rel));
+                lock (changed)
+                {
+                    if (!next.ContainsKey(item.Rel))
+                        structural = true;
+                    next[item.Rel] = entry;
+                    changed.Add(item.Rel);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Failed to parse {File}", item.Rel);
+            }
+        });
+        return structural;
     }
 
     private IEnumerable<string> EnumerateCsFiles()

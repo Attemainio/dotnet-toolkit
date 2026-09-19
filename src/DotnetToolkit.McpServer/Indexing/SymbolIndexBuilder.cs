@@ -11,41 +11,123 @@ namespace DotnetToolkit.McpServer.Indexing;
 /// <summary>
 /// Background job that populates the SQLite symbol index and call-edge cache (spec §18) from the
 /// loaded MSBuild workspace. Runs a full rebuild after the workspace becomes ready and after each
-/// reload; hash-gated incremental invalidation is a Phase 3 refinement. While this has not yet
-/// completed its first pass, <see cref="Ready"/> is false and symbol tools report
-/// <c>staleness: index_only</c> for reference counts (Conformance C11).
+/// reload, and a document-scoped refresh whenever the syntax index reports that files moved on disk —
+/// so an edit made with any tool reaches <c>search_index</c>, the <c>sym_</c> ids and the edge cache
+/// without a manual <c>reload_workspace</c>. While the first full pass has not completed,
+/// <see cref="Ready"/> is false and symbol tools report <c>staleness: index_only</c> for reference
+/// counts (Conformance C11).
 /// </summary>
+/// <remarks>
+/// Every pass — full or scoped — runs under one gate, in order, so a scoped refresh queued during a
+/// rebuild runs after it rather than interleaving writes with it. Scoped refreshes coalesce: paths
+/// queued while another refresh is waiting on the gate are picked up by that refresh, and the caller
+/// who queued them learns they were handled without running a second pass over the same documents.
+/// </remarks>
 public sealed class SymbolIndexBuilder
 {
+    /// <summary>
+    /// Above this many referring documents, a removed symbol's referrers are not re-indexed one by one;
+    /// the pass queues a full rebuild instead. A rename of a widely used member is the case: its
+    /// callers are already rewritten on disk, and one compilation walk is cheaper than a hundred
+    /// per-document ones.
+    /// </summary>
+    private const int MaxReferrerDocumentsPerRefresh = 50;
+
     private readonly WorkspaceHost _workspace;
     private readonly SymbolStore _symbols;
     private readonly KnowledgeStore _store;
     private readonly ILogger<SymbolIndexBuilder> _log;
     private readonly SolutionLocator _locator;
-    private int _running;
+
+    private readonly SemaphoreSlim _jobGate = new(1, 1);
+    private readonly object _pendingLock = new();
+    private readonly HashSet<string> _pendingPaths = new(StringComparer.Ordinal);
+    private HashSet<string>? _inFlightPaths;
+    private TaskCompletionSource<RefreshResult>? _inFlight;
+    private int _rebuildRequested;
 
     private volatile bool _ready;
     public bool Ready => _ready;
 
+    /// <summary>When the store last absorbed a pass, full or scoped; null before the first.</summary>
+    public DateTimeOffset? LastRefreshUtc { get; private set; }
+
+    /// <summary>Paths queued for a scoped refresh that no pass has picked up yet.</summary>
+    public int PendingCount { get { lock (_pendingLock) return _pendingPaths.Count; } }
+
+    /// <summary>What a scoped refresh did, for the control channel and <c>workspace_status</c> to report.</summary>
+    /// <param name="Files">Documents this pass re-indexed (after sibling and referrer expansion).</param>
+    /// <param name="Symbols">Rows whose version layers moved.</param>
+    /// <param name="Removed">Ids that vanished from the scoped documents.</param>
+    /// <param name="NotInSolution">Paths the loaded solution holds no document for — new files, which only a reload can add.</param>
+    /// <param name="FullRebuildQueued">True when the pass fell back to a full rebuild (workspace behind disk, or too many referrers).</param>
+    /// <param name="HandledByEarlierPass">True when another refresh had already absorbed every queued path before this one ran.</param>
+    public sealed record RefreshResult(
+        int Files, int Symbols, int Removed, IReadOnlyList<string> NotInSolution,
+        bool FullRebuildQueued, bool HandledByEarlierPass);
+
     public SymbolIndexBuilder(
         WorkspaceHost workspace, SymbolStore symbols, KnowledgeStore store, SolutionLocator locator,
-        ILogger<SymbolIndexBuilder> log)
+        ILogger<SymbolIndexBuilder> log, ProjectIndex? index = null)
     {
         _workspace = workspace;
         _symbols = symbols;
         _store = store;
         _locator = locator;
         _log = log;
+
+        // The workspace subscribes to the same event and swaps the new text into the live solution
+        // synchronously in its handler; it subscribed first (it is constructed first), so by the time
+        // this runs the solution the scoped pass will read already holds the edit. Optional only so a
+        // test can build the pieces by hand without wiring a sweep.
+        if (index is not null)
+            index.FilesChanged += OnFilesChanged;
     }
 
-    public void Start() => _ = Task.Run(RebuildAsync);
+    private void OnFilesChanged(IReadOnlyList<string> changedRelPaths, bool structural)
+    {
+        if (structural)
+        {
+            // A file appeared or vanished: the workspace is reloading (its own handler triggered it),
+            // and the rebuild below waits on that load before walking the new solution.
+            Start();
+            return;
+        }
+        var abs = changedRelPaths.Select(_locator.AbsPath).ToList();
+        _ = RefreshDocumentsAsync(abs).ContinueWith(
+            t => _log.LogWarning(t.Exception, "Scoped symbol refresh failed"),
+            TaskContinuationOptions.OnlyOnFaulted);
+    }
 
+    /// <summary>Queues a full rebuild. Coalesces: a request made while one is running yields exactly one more.</summary>
+    public void Start()
+    {
+        Interlocked.Exchange(ref _rebuildRequested, 1);
+        _ = Task.Run(RebuildAsync);
+    }
+
+    /// <summary>
+    /// Runs a full rebuild if one is requested (or if called directly), waiting for any pass in flight.
+    /// Direct callers (the test fixture) always get a pass; queued ones get it once per request burst.
+    /// </summary>
     public async Task RebuildAsync()
     {
         if (!_symbols.Available)
             return;
-        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
-            return;
+        await _jobGate.WaitAsync();
+        try
+        {
+            Interlocked.Exchange(ref _rebuildRequested, 0);
+            await RebuildCoreAsync();
+        }
+        finally
+        {
+            _jobGate.Release();
+        }
+    }
+
+    private async Task RebuildCoreAsync()
+    {
         try
         {
             // The store's own pages are checked here rather than in its constructor: the check reads
@@ -66,45 +148,26 @@ public sealed class SymbolIndexBuilder
             if (solution is null)
                 return;
 
-            var symbols = new Dictionary<string, SymbolStore.SymbolRow>(StringComparer.Ordinal);
-            var edges = new HashSet<SymbolStore.EdgeRow>();
-            var facts = new List<SymbolStore.FactsRow>();
-
+            var pass = new Pass();
             foreach (var project in solution.Projects)
             {
                 var compilation = await project.GetCompilationAsync();
                 if (compilation is null)
                     continue;
-
                 foreach (var document in project.Documents)
-                {
-                    var tree = await document.GetSyntaxTreeAsync();
-                    if (tree is null)
-                        continue;
-                    var model = compilation.GetSemanticModel(tree);
-                    var root = await tree.GetRootAsync();
-                    var file = document.FilePath ?? tree.FilePath;
-                    // This is the only pass that ever sees the path, so the reason a symbol will have no
-                    // indexed location has to be captured here or the row reaches a caller with no file,
-                    // no lines and nothing saying why. Two reasons, and they are not the same: a generator
-                    // writes under obj/, which ProjectIndex prunes, while a package can contribute a
-                    // Compile item from outside the repo root altogether (the test SDK's synthesized entry
-                    // point is one), which ProjectIndex never had in scope to begin with.
-                    var placement = PlacementOf(file);
-
-                    foreach (var node in root.DescendantNodes().Where(IsDeclaration))
-                        IndexDeclaration(node, model, project.Name, placement, symbols, edges, facts);
-                    IndexTopLevelStatements(root, model, edges, symbols);
-                }
+                    await IndexDocumentAsync(document, compilation, project.Name, pass);
             }
 
             // Fingerprint-gated: only rows whose version layers actually moved are rewritten, so a
             // formatting-only sweep costs a comparison pass and no semantic writes at all.
-            var stats = _symbols.ApplyIncremental([.. symbols.Values], [.. edges], facts);
+            var stats = _symbols.ApplyIncremental([.. pass.Symbols.Values], [.. pass.Edges], pass.Facts, pass.Sites);
+            lock (_pendingLock)
+                _pendingPaths.Clear();   // a full pass covers everything a scoped one was waiting to do
+            LastRefreshUtc = DateTimeOffset.UtcNow;
             _ready = true;
             _log.LogInformation(
                 "Symbol index updated: {Updated} changed, {Removed} removed, {Unchanged} untouched ({Symbols} symbols, {Edges} edges)",
-                stats.Updated, stats.Removed, stats.Unchanged, symbols.Count, edges.Count);
+                stats.Updated, stats.Removed, stats.Unchanged, pass.Symbols.Count, pass.Edges.Count);
         }
         catch (Exception ex)
         {
@@ -115,22 +178,263 @@ public sealed class SymbolIndexBuilder
             if (!_store.ReportFailure(ex))
                 _log.LogError(ex, "Symbol index build failed");
         }
+    }
+
+    /// <summary>
+    /// Re-indexes the symbols declared in the given files, and only those, into the store.
+    /// </summary>
+    /// <param name="absPaths">Absolute paths of <c>.cs</c> files that changed on disk.</param>
+    /// <remarks>
+    /// Expands the set twice before writing. First to the other parts of any partial type the files
+    /// declare, so a partial's row is computed from all of its parts rather than one. Then, once the
+    /// pass knows which symbols vanished from the scope, to the documents whose call edges still name
+    /// them — a renamed or deleted member's callers — so their edges are recomputed too; above
+    /// <see cref="MaxReferrerDocumentsPerRefresh"/> of those it queues a full rebuild instead. A
+    /// workspace whose copy of any path is still behind disk (the change arrived mid-load) also falls
+    /// back to a full rebuild, which waits for that load and then sees the text.
+    /// </remarks>
+    public async Task<RefreshResult> RefreshDocumentsAsync(IReadOnlyList<string> absPaths)
+    {
+        var none = new RefreshResult(0, 0, 0, [], false, false);
+        if (!_symbols.Available || absPaths.Count == 0)
+            return none;
+
+        var wanted = absPaths.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
+        Task<RefreshResult>? sameAsInFlight = null;
+        lock (_pendingLock)
+        {
+            // The sweep's handler and the refresh hook ask for the same paths within milliseconds of
+            // each other; the second asker joins the pass already running rather than queuing a repeat
+            // that would recompile the same documents to find nothing moved.
+            if (_inFlight is not null && _inFlightPaths is not null && wanted.IsSubsetOf(_inFlightPaths))
+                sameAsInFlight = _inFlight.Task;
+            else
+                _pendingPaths.UnionWith(wanted);
+        }
+        if (sameAsInFlight is not null)
+            return await sameAsInFlight;
+
+        await _jobGate.WaitAsync();
+        TaskCompletionSource<RefreshResult>? completion = null;
+        try
+        {
+            string[] batch;
+            lock (_pendingLock)
+            {
+                batch = [.. _pendingPaths];
+                _pendingPaths.Clear();
+                if (batch.Length > 0)
+                {
+                    _inFlightPaths = [.. batch];
+                    _inFlight = completion = new TaskCompletionSource<RefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+            if (batch.Length == 0)
+                return none with { HandledByEarlierPass = true };
+
+            RefreshResult result;
+            // A rebuild requested in the meantime supersedes this batch: it will walk these files too.
+            if (Volatile.Read(ref _rebuildRequested) == 1)
+            {
+                Interlocked.Exchange(ref _rebuildRequested, 0);
+                await RebuildCoreAsync();
+                result = none with { Files = batch.Length, FullRebuildQueued = true };
+            }
+            else
+            {
+                result = await RefreshCoreAsync(batch);
+            }
+            completion!.SetResult(result);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            completion?.TrySetException(ex);
+            throw;
+        }
         finally
         {
-            Interlocked.Exchange(ref _running, 0);
+            lock (_pendingLock)
+            {
+                _inFlight = null;
+                _inFlightPaths = null;
+            }
+            _jobGate.Release();
         }
+    }
+
+    private async Task<RefreshResult> RefreshCoreAsync(IReadOnlyList<string> batch)
+    {
+        var solution = await _workspace.GetSolutionAsync(TimeSpan.FromMinutes(5));
+        if (solution is null)
+            return new RefreshResult(0, 0, 0, [], false, false);
+
+        if (await _workspace.IsBehindDiskAsync(batch))
+        {
+            _log.LogInformation("Workspace is behind disk for a refreshed file; falling back to a full rebuild");
+            await RebuildCoreAsync();
+            return new RefreshResult(batch.Count, 0, 0, [], true, false);
+        }
+
+        var notInSolution = new List<string>();
+        var documents = new Dictionary<DocumentId, Document>();
+        foreach (var path in batch)
+        {
+            var ids = solution.GetDocumentIdsWithFilePath(path);
+            if (ids.IsEmpty)
+            {
+                notInSolution.Add(path);
+                continue;
+            }
+            foreach (var id in ids)
+            {
+                if (solution.GetDocument(id) is { } document)
+                    documents[id] = document;
+            }
+        }
+        if (documents.Count == 0)
+            return new RefreshResult(0, 0, 0, notInSolution, false, false);
+
+        try
+        {
+            await ExpandToPartialSiblingsAsync(solution, documents);
+            var pass = await IndexDocumentsAsync(documents.Values);
+            var scope = ScopeFilesOf(documents.Values);
+
+            // Symbols the scope used to declare and no longer does are known only after indexing, and
+            // their referrers only from the store — so the expansion to referrers is a second round.
+            var previously = _symbols.SymbolsDeclaredIn(scope);
+            var vanished = previously.Where(id => !pass.Symbols.ContainsKey(id)).ToList();
+            if (vanished.Count > 0)
+            {
+                var referrers = _symbols.ReferrerFilesOf(vanished, scope.ToHashSet(StringComparer.Ordinal));
+                if (referrers.Count > MaxReferrerDocumentsPerRefresh)
+                {
+                    _log.LogInformation(
+                        "{Count} documents refer to symbols removed from a refreshed file; falling back to a full rebuild",
+                        referrers.Count);
+                    await RebuildCoreAsync();
+                    return new RefreshResult(documents.Count, 0, vanished.Count, notInSolution, true, false);
+                }
+                var grew = false;
+                foreach (var file in referrers)
+                {
+                    foreach (var id in solution.GetDocumentIdsWithFilePath(file))
+                    {
+                        if (!documents.ContainsKey(id) && solution.GetDocument(id) is { } document)
+                        {
+                            documents[id] = document;
+                            grew = true;
+                        }
+                    }
+                }
+                if (grew)
+                {
+                    pass = await IndexDocumentsAsync(documents.Values);
+                    scope = ScopeFilesOf(documents.Values);
+                }
+            }
+
+            var (stats, removed) = _symbols.ApplyIncrementalScoped(
+                [.. pass.Symbols.Values], [.. pass.Edges], pass.Facts, pass.Sites, scope);
+            LastRefreshUtc = DateTimeOffset.UtcNow;
+            _log.LogInformation(
+                "Symbol index refreshed: {Files} files, {Updated} changed, {Removed} removed",
+                documents.Count, stats.Updated, removed.Count);
+            return new RefreshResult(documents.Count, stats.Updated, removed.Count, notInSolution, false, false);
+        }
+        catch (Exception ex)
+        {
+            if (!_store.ReportFailure(ex))
+                _log.LogError(ex, "Scoped symbol refresh failed");
+            return new RefreshResult(0, 0, 0, notInSolution, false, false);
+        }
+    }
+
+    private static IReadOnlyCollection<string> ScopeFilesOf(IEnumerable<Document> documents) =>
+        documents.Select(d => d.FilePath).OfType<string>().ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Adds the documents declaring the other parts of every partial type the given documents declare.
+    /// </summary>
+    private static async Task ExpandToPartialSiblingsAsync(Solution solution, Dictionary<DocumentId, Document> documents)
+    {
+        foreach (var document in documents.Values.ToList())
+        {
+            var model = await document.GetSemanticModelAsync();
+            var root = await document.GetSyntaxRootAsync();
+            if (model is null || root is null)
+                continue;
+            foreach (var node in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+            {
+                if (!node.Modifiers.Any(m => m.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PartialKeyword)))
+                    continue;
+                if (model.GetDeclaredSymbol(node) is not { } type)
+                    continue;
+                foreach (var reference in type.DeclaringSyntaxReferences)
+                {
+                    var sibling = solution.GetDocument(reference.SyntaxTree);
+                    if (sibling is not null && !documents.ContainsKey(sibling.Id))
+                        documents[sibling.Id] = sibling;
+                }
+            }
+        }
+    }
+
+    /// <summary>Everything one indexing pass collects, whether over the whole solution or a few documents.</summary>
+    private sealed class Pass
+    {
+        public Dictionary<string, SymbolStore.SymbolRow> Symbols { get; } = new(StringComparer.Ordinal);
+        public HashSet<SymbolStore.EdgeRow> Edges { get; } = [];
+        public List<SymbolStore.FactsRow> Facts { get; } = [];
+        public List<SymbolStore.SiteRow> Sites { get; } = [];
+    }
+
+    private async Task<Pass> IndexDocumentsAsync(IEnumerable<Document> documents)
+    {
+        var pass = new Pass();
+        foreach (var document in documents)
+        {
+            var compilation = await document.Project.GetCompilationAsync();
+            if (compilation is null)
+                continue;
+            await IndexDocumentAsync(document, compilation, document.Project.Name, pass);
+        }
+        return pass;
+    }
+
+    private async Task IndexDocumentAsync(Document document, Compilation compilation, string project, Pass pass)
+    {
+        var tree = await document.GetSyntaxTreeAsync();
+        if (tree is null)
+            return;
+        var model = compilation.GetSemanticModel(tree);
+        var root = await tree.GetRootAsync();
+        var file = document.FilePath ?? tree.FilePath;
+        // This is the only pass that ever sees the path, so the reason a symbol will have no
+        // indexed location has to be captured here or the row reaches a caller with no file,
+        // no lines and nothing saying why. Two reasons, and they are not the same: a generator
+        // writes under obj/, which ProjectIndex prunes, while a package can contribute a
+        // Compile item from outside the repo root altogether (the test SDK's synthesized entry
+        // point is one), which ProjectIndex never had in scope to begin with.
+        var placement = PlacementOf(file);
+
+        foreach (var node in root.DescendantNodes().Where(IsDeclaration))
+            IndexDeclaration(node, model, project, placement, file, pass);
+        IndexTopLevelStatements(root, model, pass.Edges, pass.Symbols);
     }
 
     private static bool IsDeclaration(SyntaxNode node) => node
         is BaseTypeDeclarationSyntax or DelegateDeclarationSyntax or BaseMethodDeclarationSyntax
         or PropertyDeclarationSyntax or EventDeclarationSyntax or BaseFieldDeclarationSyntax;
 
-    private void IndexDeclaration(
+    private static void IndexDeclaration(
         SyntaxNode node, SemanticModel model, string project, DeclarationPlacement placement,
-        Dictionary<string, SymbolStore.SymbolRow> symbols,
-        HashSet<SymbolStore.EdgeRow> edges,
-        List<SymbolStore.FactsRow> facts)
+        string? file, Pass pass)
     {
+        var symbols = pass.Symbols;
+        var edges = pass.Edges;
+        var facts = pass.Facts;
         // A field declaration can introduce several symbols; every other kind introduces one.
         var declared = node is BaseFieldDeclarationSyntax field
             ? field.Declaration.Variables.Select(v => model.GetDeclaredSymbol(v)).OfType<ISymbol>().ToList()
@@ -140,10 +444,13 @@ public sealed class SymbolIndexBuilder
             return;
 
         var (decl, body) = SyntaxFingerprint.Compute(node);
+        var span = node.SyntaxTree.GetLineSpan(node.Span);
 
         foreach (var symbol in declared)
         {
             var id = SymbolKey.IdOf(symbol);
+            if (!string.IsNullOrEmpty(file))
+                pass.Sites.Add(new SymbolStore.SiteRow(id, file, span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1));
             if (!symbols.ContainsKey(id))
             {
                 symbols[id] = new SymbolStore.SymbolRow(

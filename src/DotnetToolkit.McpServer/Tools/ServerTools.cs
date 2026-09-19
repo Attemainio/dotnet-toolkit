@@ -44,7 +44,8 @@ public static class ServerTools
         + "nothing else can name because ${CLAUDE_PLUGIN_ROOT} is not expanded inside a rule or an agent "
         + "definition.")]
     public static string WorkspaceStatus(
-        SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace, KnowledgeStore store)
+        SolutionLocator locator, ProjectIndex index, WorkspaceHost workspace, KnowledgeStore store,
+        SymbolIndexBuilder indexBuilder)
     {
         var sb = new StringBuilder();
         sb.Append("root: ").Append(locator.Root).Append('\n');
@@ -96,7 +97,14 @@ public static class ServerTools
             sb.Append("solution: none found (structure tools still work; semantic tools need one)\n");
 
         sb.Append("index: ").Append(index.State)
-          .Append(' ').Append(index.FileCount).Append(" files, ").Append(index.TypeCount).Append(" types\n");
+          .Append(' ').Append(index.FileCount).Append(" files, ").Append(index.TypeCount).Append(" types");
+        // The symbol store follows edits through scoped refreshes; this is how a caller tells "queued"
+        // from "done" after a refresh hook answered that it was still indexing.
+        if (indexBuilder.LastRefreshUtc is { } refreshed)
+            sb.Append("; symbols refreshed ").Append((int)(DateTimeOffset.UtcNow - refreshed).TotalSeconds).Append("s ago");
+        if (indexBuilder.PendingCount > 0)
+            sb.Append(", ").Append(indexBuilder.PendingCount).Append(" file(s) queued");
+        sb.Append('\n');
 
         // A damaged cache keeps answering from whatever pages still read, which a caller cannot tell
         // apart from a current answer. This is the call every skill makes first, so it is where saying

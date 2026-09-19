@@ -105,8 +105,8 @@ internal static class HookCli
                 GuardCsBashRead.Evaluate(payload, context, blocked),
             "guard-cs-bash-write" when payload.ToolName == "Bash" =>
                 GuardCsBashWrite.Evaluate(payload, context),
-            "hint-reload-new-cs-file" =>
-                await ReloadHint.EvaluateAsync(payload, context),
+            "refresh-cs-files" =>
+                await CsFileRefresh.EvaluateAsync(payload, context),
             "hint-write-checklist" when payload.ToolName.EndsWith("__validate_patch", StringComparison.Ordinal) =>
                 WriteChecklistHint.Evaluate(payload),
             "meter-tool-call" =>

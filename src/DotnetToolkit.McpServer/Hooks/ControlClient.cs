@@ -25,12 +25,16 @@ internal static class ControlClient
 
     /// <summary>Sends one command to the control channel and reads its single-line response.</summary>
     /// <param name="root">The repo root whose cache directory holds <c>control.port</c>.</param>
-    /// <param name="command">The command word, <c>rescan</c> or <c>reload</c>.</param>
+    /// <param name="command">The command line: <c>rescan</c>, <c>reload</c>, or a prefixed command with its payload.</param>
+    /// <param name="responseTimeout">
+    /// How long to wait for the response line; defaults to eight seconds. A <c>refresh</c> waits for
+    /// the server's own bounded pass and so passes a longer one.
+    /// </param>
     /// <returns>
     /// The server's response line, or null when the channel could not be reached for any reason. One
     /// connection per command, matching what the server's accept loop expects.
     /// </returns>
-    public static async Task<string?> SendAsync(string root, string command)
+    public static async Task<string?> SendAsync(string root, string command, TimeSpan? responseTimeout = null)
     {
         var portFile = Path.Combine(root, ".claude", "dotnet-toolkit", "cache", "control.port");
         if (!File.Exists(portFile))
@@ -62,7 +66,7 @@ internal static class ControlClient
             using var writer = new StreamWriter(stream) { AutoFlush = true };
             using var reader = new StreamReader(stream);
 
-            using var responseCts = new CancellationTokenSource(ResponseTimeout);
+            using var responseCts = new CancellationTokenSource(responseTimeout ?? ResponseTimeout);
             await writer.WriteLineAsync(command.AsMemory(), responseCts.Token);
             return await reader.ReadLineAsync(responseCts.Token);
         }

@@ -29,7 +29,30 @@ internal static class Schema
         new(16, "dispatch_edges", DispatchEdges),
         new(17, "tool_call_events", ToolCallEvents),
         new(18, "host_agnostic_tool_call_events", HostAgnosticToolCallEvents),
+        new(19, "declaration_sites_by_file", DeclarationSitesByFile),
     ];
+
+    // declaration_sites was created by migration 2, never written, and dropped by migration 9. It comes
+    // back because a document-scoped refresh needs "which files declare this symbol": the symbols the
+    // changed files USED to declare, so one that vanished from them can be removed, and one still
+    // declared elsewhere (the other part of a partial) can be kept. The file column holds the absolute
+    // path, the same form reference_edges.file already uses, so the two join without normalising.
+    // The derived tables are emptied so the next pass repopulates the sites alongside them.
+    private const string DeclarationSitesByFile = """
+        CREATE TABLE declaration_sites (
+            symbol_id  TEXT NOT NULL,
+            file       TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line   INTEGER NOT NULL
+        );
+        CREATE INDEX ix_declsites_symbol ON declaration_sites(symbol_id);
+        CREATE INDEX ix_declsites_file ON declaration_sites(file);
+
+        DELETE FROM mechanical_facts;
+        DELETE FROM reference_edges;
+        DELETE FROM symbols_fts;
+        DELETE FROM symbols;
+        """;
 
     /// <remarks>
     /// No ALTER: edge_kind is a VALUE in reference_edges, not a column, so the overrides and member-level

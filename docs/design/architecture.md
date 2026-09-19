@@ -44,7 +44,12 @@ timeout. Tool calls await readiness themselves rather than blocking startup.
   Powers `get_references` and `validate_patch`, and the live path of `get_symbol`.
 
 Change detection across both tiers is **mtime-polling**, not filesystem watchers — deliberate, so it
-works on WSL `/mnt/*` drives where inotify doesn't fire.
+works on WSL `/mnt/*` drives where inotify doesn't fire. Three things follow a changed `.cs` file from
+that poll (`ProjectIndex.FilesChanged`): the live solution takes the new text
+(`WorkspaceHost.ApplyChangedPaths`), and the SQLite symbol store re-indexes just the changed
+documents (`SymbolIndexBuilder.RefreshDocumentsAsync`, scoped by `declaration_sites`), while a file
+added or removed triggers the full workspace reload and rebuild. The `refresh-cs-files` hook drives
+the same path immediately after a tool writes, so the sweep is the guarantee and the hook the latency.
 
 Caches for a target repo live in `.claude/dotnet-toolkit/cache/` under that repo (self-gitignored) and
 are always rebuildable from source.
@@ -156,10 +161,12 @@ bump is what you actually needed.
   is inside a work tree, otherwise the repos checked out beneath it) + `SemanticDiff.cs`, behind
   `get_semantic_diff`.
 - `Control/ControlServer.cs` — a loopback TCP listener (127.0.0.1, OS-assigned port published at
-  `CacheDir/control.port`) letting a hook trigger an index rescan (`rescan`, synchronous) or a
-  background workspace reload (`reload`, fire-and-forget) without MCP stdio access; consumed by the
-  `hook hint-reload-new-cs-file` subcommand through `Hooks/ControlClient.cs`. **Not a security
-  boundary** — loopback-only, same trust level as the MCP session.
+  `CacheDir/control.port`) letting a hook trigger an index rescan (`rescan`, synchronous), a
+  background workspace reload (`reload`, fire-and-forget) or a scoped refresh of named files
+  (`refresh [paths]`, waits up to ten seconds for the store to absorb them) without MCP stdio access;
+  consumed by the `hook refresh-cs-files` subcommand through `Hooks/ControlClient.cs`, and by
+  `hook meter-tool-call` (`meter`). **Not a security boundary** — loopback-only, same trust level as
+  the MCP session.
 - `Diagnostics/` — the `doctor` and `stamp` subcommands. `Doctor.cs` verifies an installation end to
   end and is the only check that can fail, because every configuration listing reports what is
   *configured* and launches nothing: it classifies the executor (`HostProfile.cs`), judges each stored
@@ -276,7 +283,7 @@ workspace. The .NET runtime remains the only runtime requirement.
 `scripts/build-plugin.cmd` wrapper).
 
 `hooks/hooks.json` ships nine hooks — `hook guard-cs-edit`, `hook guard-cs-read`,
-`hook guard-cs-bash-read`, `hook guard-cs-bash-write`, `hook hint-reload-new-cs-file`,
+`hook guard-cs-bash-read`, `hook guard-cs-bash-write`, `hook refresh-cs-files`,
 `hook hint-write-checklist`, `hook meter-tool-call`, `hook track-subagent-start`, and
 `hook track-subagent-stop` — all subcommands of that same published
 binary, documented in `docs/design/hooks.md`. They travel with the plugin, so a consuming repo gets

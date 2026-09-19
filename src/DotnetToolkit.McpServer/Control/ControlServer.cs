@@ -18,7 +18,9 @@ namespace DotnetToolkit.McpServer.Control;
 /// One line in, one line out: "rescan" waits for a full ProjectIndex sweep and reports the result;
 /// "reload" starts a background MSBuildWorkspace reload and returns immediately, since that can take
 /// far longer than a hook's timeout - the caller polls workspace_status for completion the same way a
-/// manual reload_workspace call would.
+/// manual reload_workspace call would; "refresh [paths]" re-stats just those files, lets the workspace
+/// take their text, and waits (bounded) for the symbol store to re-index them, so the edit a hook just
+/// observed is queryable by the time the hook returns.
 /// </summary>
 public sealed class ControlServer
 {
@@ -98,6 +100,9 @@ public sealed class ControlServer
                 _ when command is not null
                     && command.StartsWith(ControlCommands.Meter + " ", StringComparison.Ordinal) =>
                     Meter(command[(ControlCommands.Meter.Length + 1)..]),
+                _ when command is not null
+                    && command.StartsWith(ControlCommands.Refresh + " ", StringComparison.Ordinal) =>
+                    await RefreshAsync(command[(ControlCommands.Refresh.Length + 1)..]),
                 _ => "err:unknown command",
             };
             await writer.WriteLineAsync(response);
@@ -119,6 +124,66 @@ public sealed class ControlServer
         _workspace.TriggerReload();
         _indexBuilder.Start();
         return "ok:reload started";
+    }
+
+    /// <summary>How long a refresh may hold the hook before answering "queued" instead of "refreshed".</summary>
+    /// <remarks>
+    /// Under the hook's own timeout in <c>hooks.json</c> with room for the two connections. A scoped
+    /// refresh is a semantic-model walk of a few documents — well under a second locally, a few across
+    /// a 9p mount — so this is the ceiling for a pathological case, not the expected wait.
+    /// </remarks>
+    private static readonly TimeSpan RefreshBudget = TimeSpan.FromSeconds(10);
+
+    /// <summary>Handles <see cref="ControlCommands.Refresh"/>: the paths a hook saw a tool write.</summary>
+    /// <param name="json">A JSON array of absolute or repo-relative paths.</param>
+    /// <returns>
+    /// <c>ok:refreshed …</c> when the store absorbed the change within the budget; <c>ok:reload started …</c>
+    /// when a file was added or removed (the reload is the only way the semantic tier learns of it);
+    /// <c>ok:refresh queued</c> when the pass outlasted the budget but will still complete;
+    /// <c>ok:nothing changed</c> when the paths matched what the index already held.
+    /// </returns>
+    private async Task<string> RefreshAsync(string json)
+    {
+        List<string> paths;
+        try
+        {
+            paths = System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "err:refresh payload is not a JSON array of paths";
+        }
+        if (paths.Count == 0)
+            return "ok:nothing changed";
+
+        var outcome = await _index.RefreshPathsAsync(paths);
+        if (outcome.ProjectFilesMoved || outcome.Structural)
+        {
+            // The workspace's own FilesChanged/ProjectFilesChanged handler has already triggered the
+            // reload, and the builder's handler queued the rebuild that waits on it. Say so.
+            return outcome.ProjectFilesMoved
+                ? "ok:reload started (project file changed)"
+                : "ok:reload started (file added or removed)";
+        }
+        if (outcome.Changed.Count == 0)
+            return "ok:nothing changed";
+
+        // The builder's own FilesChanged handler has queued exactly these paths; asking again either
+        // runs the pass (if this call reaches the gate first) or reports that the handler's did.
+        var refresh = _indexBuilder.RefreshDocumentsAsync(outcome.Changed.Select(_locator.AbsPath).ToList());
+        var finished = await Task.WhenAny(refresh, Task.Delay(RefreshBudget));
+        if (finished != refresh)
+            return "ok:refresh queued (still indexing; call workspace_status before trusting a search on these files)";
+
+        var result = await refresh;
+        if (result.FullRebuildQueued)
+            return "ok:reload started (symbol index rebuilding)";
+        if (result.NotInSolution.Count > 0)
+            return $"ok:refreshed, but {result.NotInSolution.Count} file(s) are not in the loaded solution: "
+                + string.Join(", ", result.NotInSolution.Select(_locator.RelPath));
+        return result.HandledByEarlierPass
+            ? "ok:refreshed"
+            : $"ok:refreshed {result.Symbols} symbol(s) in {result.Files} file(s)";
     }
 
     /// <summary>Records one metered tool call reported by the <c>meter-tool-call</c> hook.</summary>

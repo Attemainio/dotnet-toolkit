@@ -375,4 +375,72 @@ public sealed class ProjectIndexTests : IDisposable
         Assert.Equal(5, located["N.Cache<TKey, TValue>.Only<TItem>(TItem)"].Line);
         Assert.Equal(7, located["N.Mapper<TIn, TOut>"].Line);
     }
+
+    [Fact]
+    public async Task RefreshPaths_ReindexesOnlyThePathsThatMovedAndReportsThem()
+    {
+        var index = await CreateReadyIndexAsync();
+        var events = new List<(IReadOnlyList<string> Changed, bool Structural)>();
+        index.FilesChanged += (changed, structural) => events.Add((changed, structural));
+
+        var gadget = Path.Combine(_root, "src", "Gadget.cs");
+        File.WriteAllText(gadget, """
+            namespace N;
+            public class Gadget { public void Refreshed() { } }
+            """);
+        File.SetLastWriteTimeUtc(gadget, DateTime.UtcNow.AddMinutes(1));
+
+        // Widget.cs is passed too, untouched: it must neither be re-parsed nor reported.
+        var outcome = await index.RefreshPathsAsync([gadget, Path.Combine(_root, "src", "Widget.cs")]);
+
+        Assert.Equal(["src/Gadget.cs"], outcome.Changed);
+        Assert.False(outcome.Structural);
+        Assert.False(outcome.ProjectFilesMoved);
+        var raised = Assert.Single(events);
+        Assert.Equal(["src/Gadget.cs"], raised.Changed);
+        Assert.False(raised.Structural);
+        Assert.Single(index.FindSymbol("Refreshed", null, 10).Item1);
+    }
+
+    [Fact]
+    public async Task RefreshPaths_NewAndDeletedFilesAreStructural()
+    {
+        var index = await CreateReadyIndexAsync();
+        var structuralEvents = 0;
+        index.FilesChanged += (_, structural) => structuralEvents += structural ? 1 : 0;
+
+        var added = Path.Combine(_root, "src", "Added.cs");
+        File.WriteAllText(added, "namespace N; public class Added { }");
+        var addedOutcome = await index.RefreshPathsAsync([added]);
+        Assert.True(addedOutcome.Structural);
+        Assert.Equal(3, index.FileCount);
+
+        File.Delete(added);
+        var deletedOutcome = await index.RefreshPathsAsync([added]);
+        Assert.True(deletedOutcome.Structural);
+        Assert.Empty(deletedOutcome.Changed);
+        Assert.Equal(2, index.FileCount);
+        Assert.Null(index.GetFile("src/Added.cs"));
+        Assert.Equal(2, structuralEvents);
+    }
+
+    [Fact]
+    public async Task RefreshPaths_IgnoresPathsOutsideTheRootAndReportsProjectFiles()
+    {
+        var index = await CreateReadyIndexAsync();
+        var projectEvents = 0;
+        index.ProjectFilesChanged += () => projectEvents++;
+
+        var elsewhere = Path.Combine(Path.GetTempPath(), "not-in-this-repo-" + Guid.NewGuid().ToString("N") + ".cs");
+        var project = Path.Combine(_root, "src", "N.csproj");
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        var outcome = await index.RefreshPathsAsync([elsewhere, project, Path.Combine(_root, "README.md")]);
+
+        Assert.Empty(outcome.Changed);
+        Assert.False(outcome.Structural);
+        Assert.True(outcome.ProjectFilesMoved);
+        Assert.Equal(1, projectEvents);
+        Assert.Equal(2, index.FileCount);
+    }
 }

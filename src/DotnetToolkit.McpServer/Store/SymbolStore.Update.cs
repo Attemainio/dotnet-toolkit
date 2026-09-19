@@ -26,6 +26,12 @@ public sealed partial class SymbolStore
     /// <summary>A directed reference edge between two symbols (call, implements, etc.), with an optional call-site location.</summary>
     public sealed record EdgeRow(string From, string To, string EdgeKind, string? File, int? Line);
 
+    /// <summary>
+    /// One place a source symbol is declared: the absolute file path (the same form call edges carry)
+    /// and the 1-based line span of that declaration. A partial type has one row per part.
+    /// </summary>
+    public sealed record SiteRow(string SymbolId, string File, int StartLine, int EndLine);
+
     /// <summary>The version layers already recorded for a symbol — the gate for incremental updates.</summary>
     public sealed record ExistingSymbol(
         string DeclHash, string? BodyHash, string? RefsHash, string? ApiHash, bool IsTest, string Modifiers,
@@ -74,7 +80,8 @@ public sealed partial class SymbolStore
     public UpdateStats ApplyIncremental(
         IReadOnlyList<SymbolRow> symbols,
         IReadOnlyList<EdgeRow> edges,
-        IReadOnlyList<FactsRow> facts)
+        IReadOnlyList<FactsRow> facts,
+        IReadOnlyList<SiteRow>? sites = null)
     {
         if (!_store.Available)
             return new UpdateStats(0, 0, 0);
@@ -114,8 +121,163 @@ public sealed partial class SymbolStore
         WriteEdges(connection, tx, edges);
         WriteFacts(connection, tx, facts.Where(f => changed.Contains(f.SymbolId)).ToList());
 
+        // Sites are not fingerprint-gated: a declaration moves to another line, or another file, without
+        // a single token of it changing, and the fingerprint never sees that. A full pass rewrites them
+        // all — it already walked every declaration to compute them, and the rows are small.
+        if (sites is not null)
+        {
+            Exec(connection, tx, "DELETE FROM declaration_sites;");
+            WriteSites(connection, tx, sites);
+        }
+
         tx.Commit();
         return new UpdateStats(changed.Count, removed.Count, existing.Count - changed.Count - removed.Count);
+    }
+
+    /// <summary>
+    /// The files (absolute paths, as <see cref="SiteRow.File"/> stores them) whose call edges point at
+    /// any of <paramref name="symbolIds"/>, excluding the files in <paramref name="except"/>. When a
+    /// symbol disappears from a refreshed document, these are the documents whose edges still name it.
+    /// </summary>
+    public IReadOnlyList<string> ReferrerFilesOf(IReadOnlyCollection<string> symbolIds, IReadOnlySet<string> except)
+    {
+        var files = new HashSet<string>(StringComparer.Ordinal);
+        if (!_store.Available || symbolIds.Count == 0)
+            return [];
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT file FROM reference_edges WHERE to_symbol = $id AND file IS NOT NULL;";
+        var param = cmd.Parameters.Add("$id", Microsoft.Data.Sqlite.SqliteType.Text);
+        foreach (var id in symbolIds)
+        {
+            param.Value = id;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var file = reader.GetString(0);
+                if (!except.Contains(file))
+                    files.Add(file);
+            }
+        }
+        return [.. files];
+    }
+
+    /// <summary>The symbol ids with at least one declaration site in any of <paramref name="files"/>.</summary>
+    public IReadOnlyCollection<string> SymbolsDeclaredIn(IReadOnlyCollection<string> files)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        if (!_store.Available || files.Count == 0)
+            return ids;
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT symbol_id FROM declaration_sites WHERE file = $file;";
+        var param = cmd.Parameters.Add("$file", Microsoft.Data.Sqlite.SqliteType.Text);
+        foreach (var file in files)
+        {
+            param.Value = file;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                ids.Add(reader.GetString(0));
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// Document-scoped counterpart of <see cref="ApplyIncremental"/>: <paramref name="symbols"/>,
+    /// <paramref name="edges"/>, <paramref name="facts"/> and <paramref name="sites"/> were computed
+    /// from exactly the documents in <paramref name="scopeFiles"/>, and nothing outside that scope is
+    /// touched.
+    /// </summary>
+    /// <remarks>
+    /// Removal is the part that needs care. A symbol previously declared in a scoped file and absent
+    /// from this pass is deleted only when it has no declaration site OUTSIDE the scope — otherwise it
+    /// is the other part of a partial type, or a duplicate declaration another document still holds,
+    /// and the row stays. Rows in <paramref name="symbols"/> with no site (external references, the
+    /// synthesized entry point) are upserted and never scoped-deleted; the full pass prunes them.
+    /// Outgoing edges are replaced for every symbol the scope declares, in either the old or the new
+    /// pass, so a call that was removed from a body is removed from the cache too.
+    /// </remarks>
+    /// <returns>The update stats, plus the ids this pass removed, so the caller can re-index whoever
+    /// still refers to them.</returns>
+    public (UpdateStats Stats, IReadOnlyList<string> Removed) ApplyIncrementalScoped(
+        IReadOnlyList<SymbolRow> symbols,
+        IReadOnlyList<EdgeRow> edges,
+        IReadOnlyList<FactsRow> facts,
+        IReadOnlyList<SiteRow> sites,
+        IReadOnlyCollection<string> scopeFiles)
+    {
+        if (!_store.Available)
+            return (new UpdateStats(0, 0, 0), []);
+
+        var existing = ExistingSymbols();
+        var incoming = symbols.ToDictionary(s => s.SymbolId, StringComparer.Ordinal);
+        var previouslyInScope = SymbolsDeclaredIn(scopeFiles);
+        var scopeSet = scopeFiles.ToHashSet(StringComparer.Ordinal);
+
+        var changed = symbols
+            .Where(s => !existing.TryGetValue(s.SymbolId, out var prior) || Moved(prior, s))
+            .Select(s => s.SymbolId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        using var connection = _store.Connect();
+        using var tx = connection.BeginTransaction();
+
+        var removed = new List<string>();
+        foreach (var id in previouslyInScope)
+        {
+            if (incoming.ContainsKey(id) || HasSiteOutside(connection, tx, id, scopeSet))
+                continue;
+            DeleteSymbol(connection, tx, id);
+            removed.Add(id);
+        }
+
+        // Every owner the scope declared before or declares now gets its outgoing edges recomputed, plus
+        // any edge owner this pass produced that is not a declared symbol (the entry point).
+        var edgeOwners = previouslyInScope
+            .Concat(sites.Select(s => s.SymbolId))
+            .Concat(edges.Select(e => e.From))
+            .Where(id => !removed.Contains(id))
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var owner in edgeOwners)
+            ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id;", owner);
+        foreach (var id in changed)
+            ExecParam(connection, tx, "DELETE FROM mechanical_facts WHERE symbol_id = $id;", id);
+
+        WriteSymbols(connection, tx, symbols.Where(s => changed.Contains(s.SymbolId)).ToList());
+        WriteEdges(connection, tx, edges);
+        WriteFacts(connection, tx, facts.Where(f => changed.Contains(f.SymbolId)).ToList());
+
+        using (var del = connection.CreateCommand())
+        {
+            del.Transaction = tx;
+            del.CommandText = "DELETE FROM declaration_sites WHERE file = $file;";
+            var param = del.Parameters.Add("$file", Microsoft.Data.Sqlite.SqliteType.Text);
+            foreach (var file in scopeSet)
+            {
+                param.Value = file;
+                del.ExecuteNonQuery();
+            }
+        }
+        WriteSites(connection, tx, sites);
+
+        tx.Commit();
+        var unchanged = symbols.Count - changed.Count;
+        return (new UpdateStats(changed.Count, removed.Count, unchanged), removed);
+    }
+
+    private static bool HasSiteOutside(SqliteConnection connection, SqliteTransaction tx, string id, IReadOnlySet<string> scope)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT file FROM declaration_sites WHERE symbol_id = $id;";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (!scope.Contains(reader.GetString(0)))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -158,6 +320,7 @@ public sealed partial class SymbolStore
     private static void DeleteSymbol(SqliteConnection connection, SqliteTransaction tx, string id)
     {
         ExecParam(connection, tx, "DELETE FROM mechanical_facts WHERE symbol_id = $id;", id);
+        ExecParam(connection, tx, "DELETE FROM declaration_sites WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM reference_edges WHERE from_symbol = $id OR to_symbol = $id;", id);
         ExecParam(connection, tx, "DELETE FROM symbols_fts WHERE symbol_id = $id;", id);
         ExecParam(connection, tx, "DELETE FROM symbols WHERE symbol_id = $id;", id);
@@ -183,7 +346,7 @@ public sealed partial class SymbolStore
         using var tx = connection.BeginTransaction();
 
         Exec(connection, tx,
-            "DELETE FROM mechanical_facts; DELETE FROM reference_edges; "
+            "DELETE FROM mechanical_facts; DELETE FROM declaration_sites; DELETE FROM reference_edges; "
             + "DELETE FROM symbols_fts; DELETE FROM symbols;");
 
         WriteSymbols(connection, tx, symbols);
@@ -279,6 +442,27 @@ public sealed partial class SymbolStore
             cmd.Parameters.AddWithValue("$kind", e.EdgeKind);
             cmd.Parameters.AddWithValue("$file", (object?)e.File ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$line", (object?)e.Line ?? DBNull.Value);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    private static void WriteSites(SqliteConnection connection, SqliteTransaction tx, IReadOnlyList<SiteRow> sites)
+    {
+        if (sites.Count == 0)
+            return;
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO declaration_sites (symbol_id, file, start_line, end_line)
+            VALUES ($id, $file, $start, $end);
+            """;
+        foreach (var site in sites)
+        {
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$id", site.SymbolId);
+            cmd.Parameters.AddWithValue("$file", site.File);
+            cmd.Parameters.AddWithValue("$start", site.StartLine);
+            cmd.Parameters.AddWithValue("$end", site.EndLine);
             cmd.ExecuteNonQuery();
         }
     }
