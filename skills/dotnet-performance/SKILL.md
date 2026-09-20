@@ -123,16 +123,29 @@ next action is simply to read the result you already have and move to the next s
    `dotnet-perf-full-probe`'s run indistinguishable from `dotnet-perf-raw-probe`'s). If a line is
    present, resolve it first (wait it out, or `set_hook_guards(state: "restore")` after checking with
    the user that it is safe to clear) rather than starting the run underneath it.
-3. Record the repo's size honestly: file count, type count, and the size of the largest `.cs` file.
+3. **Confirm the consuming repo is actually wired**, because the full probe measures what a real
+   session does and a real session without the router does not know the tools exist:
+   `.claude/rules/dotnet-index.md` present (a verbatim copy of the plugin's), and the read-only tool
+   allowlist in `.claude/settings.json`. If either is missing, stop and run `dotnet-init` first — a
+   run against an uninitialised repo measures the absence of the install, not the plugin. The first
+   FluidScript run on 2.0.0 (2026-09-20) was exactly that: no rule file, and the full probe never made
+   an MCP call.
+4. **`set_hook_guards` prompts for permission, and an auto-mode classifier denies it outright.** It is
+   deliberately not on the init allowlist (it is the guards' off-switch). Before Pass 2, tell the user
+   the two calls are coming and that each needs approval, or have them add
+   `mcp__plugin_dotnet-toolkit_dotnet__set_hook_guards` to `.claude/settings.local.json` for the run.
+   A denial mid-run is not recoverable from inside the skill — the 2026-09-20 run stopped there and was
+   resumed a day later.
+5. Record the repo's size honestly: file count, type count, and the size of the largest `.cs` file.
    These are the axes the answer actually depends on, and a result reported without them is not
    transferable to any other repo.
-4. `get_retrieval_metrics` once, to fix the baseline all three probes are measured from. **Check that
+6. `get_retrieval_metrics` once, to fix the baseline all three probes are measured from. **Check that
    the `harness` block is present.** Absent means the `meter-tool-call` hook has recorded nothing, and
    this run has no instrument that sees all three routes — they would again be measured by different
    means, the flaw this design exists to remove. The usual cause is a server started before the hook
    was registered in `hooks.json`; restart it and begin again rather than reporting the run.
 
-5. **Confirm the probes can actually reach the MCP tools.** Tool schemas are deferred in sessions
+7. **Confirm the probes can actually reach the MCP tools.** Tool schemas are deferred in sessions
    carrying many tools, and a subagent whose grant omits `ToolSearch` gets `No such tool available` on
    every MCP call with no way to fix it from inside. Under that failure `dotnet-perf-mcp-probe` answers
    nothing and `dotnet-perf-full-probe` silently becomes a second raw probe — a run that reads as "the
@@ -161,6 +174,15 @@ questions, not to the orchestrator *knowing* what a good question looks like.
 
 Score **a stated outcome**, the way `dotnet-selfeval`'s 3a does — never a single call against a single
 command. "Find the definition of `X`" is an outcome; `search_index` is not.
+
+Two wording rules, each learned from a question that scored a wash it should not have:
+
+- **Describe the operation, never the product.** "The type that turns declarations into placement
+  hints" names what the result is called, and a file listing finds `LayoutHints.cs` before any route
+  finds the type that *derives* them; two routes then converge on the noun and the question is scored
+  ambiguous. Say what the type *does* and nothing about what it produces or what its output is named.
+- **"First executable statement" is ambiguous against a guard clause.** Ask for the first statement
+  *including* any guard, or for the first statement of the happy path — one or the other, stated.
 
 Pick outcomes that span the range where the answer plausibly changes sign, and say which is which:
 

@@ -190,6 +190,13 @@ include: "mechanicalFacts"              does it throw / await / lock / write, wi
 
 `members` is capped at 40, with `totalMembers`/`truncated` past the cap.
 
+**A single-symbol lookup always carries `xmlDoc`**, whatever `include` says — a batch keeps `include`
+literal. The doc comment is the one line you are about to act on: an `<remarks>` saying a method
+exists to satisfy an analyzer rule, or is not thread-safe, or is obsolete. **Read it before deciding
+anything about the symbol.** On FluidScript (2026-09-20) every route declared a method "safe to
+delete" on the strength of zero references, while its own remarks said the build depends on it.
+Zero references answers "is this called", never "is this needed".
+
 Manual: `<pluginRoot>/docs/tools/get_symbol.md`
 
 ### `get_references` — who calls it, and from where
@@ -378,6 +385,7 @@ committed before the note that prevents it was ever read.
 
 | Anti-pattern (route taken) | Cheap route |
 |---|---|
+| `search_index` for an exact name, then `get_symbol` on the hit "to confirm it" | Nothing — the hit already carries `file` and `lines` (the signature span), and that *is* the answer to "where is X declared". `get_symbol` is for what the hit does not carry: `declarationSites` with the doc comment, every part of a partial, members, docs, reference counts. Measured on FluidScript (2026-09-20): three of ten questions were answered by the search hit alone and the MCP route spent a second call on each anyway |
 | `search_index(pathPrefix: "<one exact .cs file>")` to browse a known file's symbols | `get_symbol(symbol: "TypeName", include: "members")` — no ranking needed, and you get signatures and docs for the same tokens |
 | `search_index`, then `get_references` (or `get_symbol`) only to learn whether anything uses it | Nothing — the `refs` column is already there by default. `R0` is the dead-code answer, `I`/`V` the dispatch one. Measured: that route took 3 calls where a single `grep` took 1. The one case still worth a second call is a symbol reached *only* through an interface, which reads `R0` — `get_symbol(include: "referenceCounts")` is dispatch-aware |
 | `search_index` for a symbol you found by describing it, then `get_symbol` just to read its `<summary>` and location | `search_index(include: "shape,refs,modifiers,summary:full")` — the location was already in the search hit, and the doc comes back with it. Measured: 2 calls where 1 answers |

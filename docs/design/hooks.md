@@ -117,6 +117,18 @@ either instrument alone.
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
 environment — and reports that rather than claiming a restore it did not perform.
 
+## The advisory carries a number (2026-09-20)
+
+The first FluidScript run on 2.0.0 had the full probe make thirteen whole-file reads, see the advisory
+on each, and override it each time without comment. The note restated a policy; a fourteenth copy of a
+policy the agent has already decided against changes nothing. Both read guards now open with the
+figure the read is about to cost — the file's lines and a `chars4` token estimate, the same scale the
+meter reports in — and from the second whole-file read of a session on, the session's running count
+and total (`Hooks/ReadCostNote.cs`, tally in a per-session file beside the checklist marker). The
+alternative candidate, firing only from the second read on, is folded in: the first note carries the
+per-file number, later ones carry a growing one. Whether a number persuades where a policy did not is
+the next run's measurement.
+
 ## The write path has no guard (removed 2026-09-19)
 
 Two hooks — `guard-cs-edit` on `Edit`/`Write`/`NotebookEdit`/`apply_patch` and `guard-cs-bash-write`

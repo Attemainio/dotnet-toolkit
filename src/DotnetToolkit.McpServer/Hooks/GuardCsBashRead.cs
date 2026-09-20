@@ -87,7 +87,9 @@ internal static class GuardCsBashRead
             {
                 return blocked
                     ? HookOutcome.Deny(BlockedFileMessage(name, named.Argument, named.Project))
-                    : HookOutcome.AllowAdvising(FileMessage(name, named.Argument, named.Project, context));
+                    : HookOutcome.AllowAdvising(FileMessage(
+                        name, named.Argument, named.Project, context,
+                        ReadCostNote.For(named.Absolute, payload.SessionId)));
             }
 
             // A recursive or glob-scoped search names no single file, so the check above cannot see it --
@@ -118,8 +120,8 @@ internal static class GuardCsBashRead
     /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>
     /// <param name="context">The repo root the guard is scoped to.</param>
     /// <param name="workingDirectory">The directory this segment runs in, after any earlier <c>cd</c>.</param>
-    /// <returns>The argument as written and its owning project, or null when neither applies.</returns>
-    private static (string Argument, string Project)? NamedCompiledFile(string segment, HookContext context, string workingDirectory)
+    /// <returns>The argument as written, its absolute path and its owning project, or null when none applies.</returns>
+    private static (string Argument, string Absolute, string Project)? NamedCompiledFile(string segment, HookContext context, string workingDirectory)
     {
         var argument = BashCommandScanner.FindReadTargetCsArgument(segment);
         if (argument is null)
@@ -134,7 +136,7 @@ internal static class GuardCsBashRead
         }
 
         return CsFileMembership.TryResolveOwningProject(absolute, context.Root, out var project)
-            ? (argument, project)
+            ? (argument, absolute, project)
             : null;
     }
 
@@ -214,13 +216,15 @@ internal static class GuardCsBashRead
     /// <param name="argument">The file as the caller wrote it.</param>
     /// <param name="project">The project compiling it.</param>
     /// <param name="context">The docs to cite.</param>
+    /// <param name="cost">The measured cost of this read and the session's tally, or null when unmeasurable.</param>
     /// <returns>The message fed back to the agent.</returns>
-    private static string FileMessage(string name, string argument, string project, HookContext context) =>
+    private static string FileMessage(string name, string argument, string project, HookContext context, string? cost) =>
         $"""
-        {argument} is compiled by {project}, and `{name}` here reads it whole. Locating first usually costs
-        less and misses nothing: search_index or get_symbol gives the symbol's declarationSites, and a
-        ranged read of that span (`sed -n 'a,bp'`, or Read with offset/limit) fetches exactly the text
-        wanted - a ranged read draws no note. This is advice, not a denial.
+        {argument} is compiled by {project}, and `{name}` here reads it whole.{(cost is null ? "" : " " + cost)}
+        Locating first usually costs less and misses nothing: search_index or get_symbol gives the
+        symbol's declarationSites, and a ranged read of that span (`sed -n 'a,bp'`, or Read with
+        offset/limit) fetches exactly the text wanted - a ranged read draws no note. This is advice, not a
+        denial.
 
         Consider invoking the dotnet-read skill instead. It names the right tool for the question you were
         about to answer, the call shape that costs least, and how to read the response. If you cannot invoke

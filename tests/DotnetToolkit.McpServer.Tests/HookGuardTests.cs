@@ -167,6 +167,34 @@ public sealed class GuardCsReadTests : IClassFixture<HookRepoFixture>
         Assert.Contains("dotnet-read", outcome.Stdout);
     }
 
+    /// <summary>
+    /// The advisory carries the number it just observed — the file's lines and estimated tokens — and
+    /// from the second whole-file read of a session on, the session's running total. A policy restated
+    /// thirteen times was overridden thirteen times (FluidScript, 2026-09-20); a growing figure is an
+    /// argument rather than a nag.
+    /// </summary>
+    [Fact]
+    public void Evaluate_ReadOfCompiledFile_StatesTheCostAndTheSessionTally()
+    {
+        var session = "hookguard-tally-" + Guid.NewGuid().ToString("N");
+        var lines = File.ReadAllLines(_repo.CompiledFile).Length;
+        var payload = new HookPayload("Read", _repo.CompiledFile, null) { SessionId = session };
+
+        var first = GuardCsRead.Evaluate(payload, _repo.Context()).Stdout;
+        Assert.Contains($"all {lines} lines of Compiled.cs", first);
+        Assert.Contains("tokens", first);
+        Assert.DoesNotContain("this session", first);
+
+        var second = GuardCsRead.Evaluate(payload, _repo.Context()).Stdout;
+        Assert.Contains("read number 2 this session", second);
+        Assert.Contains($"{2 * lines} lines", second);
+
+        // A payload with no session id still gets the per-file figure, just no tally.
+        var anonymous = GuardCsRead.Evaluate(new HookPayload("Read", _repo.CompiledFile, null), _repo.Context()).Stdout;
+        Assert.Contains($"all {lines} lines", anonymous);
+        Assert.DoesNotContain("this session", anonymous);
+    }
+
     [Fact]
     public void Evaluate_ReadOfFileNoProjectCompiles_Allows()
     {
@@ -258,6 +286,7 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
 
         Assert.Equal(0, outcome.ExitCode);
         Assert.Contains("ranged read", outcome.Stdout);
+        Assert.Contains("lines of Compiled.cs", outcome.Stdout);
     }
 
     [Fact]

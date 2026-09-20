@@ -93,7 +93,7 @@ public static class ContextTools
         if (targets is [var only] && symbols is null)
         {
             var one = await GetSymbolOne(workspace, locator, index, symbolStore, indexBuilder,
-                toolCallId, sessionId, attributedTask, only, include);
+                toolCallId, sessionId, attributedTask, only, include, singleLookup: true);
             var rendered = Formats.Render(JsonSerializer.Deserialize<JsonElement>(one.Json));
             return Record(telemetry, toolCallId, sessionId, attributedTask, "get_symbol", only, one.SymbolId,
                 include ?? "standard", 1,
@@ -110,7 +110,7 @@ public static class ContextTools
         foreach (var target in targets)
         {
             var one = await GetSymbolOne(workspace, locator, index, symbolStore, indexBuilder,
-                toolCallId, sessionId, attributedTask, target, include);
+                toolCallId, sessionId, attributedTask, target, include, singleLookup: false);
             results.Add(JsonSerializer.Deserialize<JsonElement>(one.Json));
             firstErrorKind ??= one.ErrorKind;
             firstLimitedBy ??= one.LimitedBy;
@@ -218,7 +218,7 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         WorkspaceHost workspace, SolutionLocator locator, ProjectIndex index, SymbolStore symbolStore,
         SymbolIndexBuilder indexBuilder,
         string toolCallId, string sessionId, string taskId,
-        string symbol, string? include)
+        string symbol, string? include, bool singleLookup)
     {
         // Every return in this method is PLAIN JSON, regardless of Formats.Current — its result is
         // always re-parsed and re-rendered by its caller (GetSymbol, for both the single-symbol and
@@ -270,6 +270,15 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             });
             return new SymbolFetchResult(badComponent, symbolId, "live", "invalid_component");
         }
+
+        // On a single-symbol lookup the doc comment is unconditional, whatever include said. It is the
+        // one line the caller is about to act on -- "exists for CA2225, do not delete", "obsolete since",
+        // "not thread-safe" -- and the 2026-09-20 FluidScript run showed every route deleting a method
+        // whose <remarks> said not to, the MCP one because include:"members" had replaced the default and
+        // silently dropped xmlDoc with it. A batch keeps include literal: there the caller chose the
+        // columns for many rows at once, and a doc block per entry is real cost.
+        if (singleLookup)
+            parts = parts.With(SymbolComponents.XmlDoc);
 
         var limitedBy = await LimitedByAsync(workspace, indexBuilder, SourceFilesOf(sym));
 

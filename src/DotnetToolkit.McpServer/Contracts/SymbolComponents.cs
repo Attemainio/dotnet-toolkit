@@ -43,6 +43,12 @@ public readonly record struct SymbolComponents
     /// <summary>The resolved set, in canonical order — echoed back so the caller can see what it got.</summary>
     public IReadOnlyList<string> Resolved => [.. All.Where(Has)];
 
+    /// <summary>This set plus one more component.</summary>
+    /// <param name="component">A name from <see cref="All"/>.</param>
+    /// <returns>A set that also carries <paramref name="component"/>; the same set when it already did.</returns>
+    public SymbolComponents With(string component) =>
+        Has(component) ? this : new SymbolComponents(new HashSet<string>(_set ?? [], StringComparer.Ordinal) { component });
+
     /// <summary>The default set: whichever components are meaningful on essentially every call.</summary>
     public static readonly IReadOnlyList<string> Standard = [XmlDoc, ReferenceCounts];
 

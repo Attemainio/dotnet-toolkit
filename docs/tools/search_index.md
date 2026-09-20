@@ -122,6 +122,7 @@ There is no recommendation column; the facts are enough once the rule is stated:
 
 | The hit is | Next call |
 |---|---|
+| the answer to "where is X declared" | **none** — `file` and `lines` are on the hit. `get_symbol` adds nothing to that question |
 | a type with a large `M` | `get_symbol(include: "members")` — navigate by member list, never a whole-type `Read` |
 | a member with a large `L` and an `O` worth mentioning | `get_symbol(include: "bodyOutline")` to map it, then a `Read` over the landmark's `startLine`–`endLine` |
 | anything else | `get_symbol` for `declarationSites`, then one `Read` of that range |

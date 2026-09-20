@@ -69,12 +69,16 @@ internal static class GuardCsRead
                 """);
         }
 
+        // The number is the argument; the policy text after it is what the number is an argument for.
+        // A note that only restated the policy was overridden thirteen times in one measured run.
+        var cost = ReadCostNote.For(absolute, payload.SessionId);
         return HookOutcome.AllowAdvising($"""
-            {file} is compiled by {project}, and this is a whole-file read. Locating first usually costs
-            less and misses nothing: search_index or get_symbol gives the symbol's declarationSites, and a
-            Read with offset/limit over that range fetches exactly the text wanted, every part of a partial
-            included. A ranged Read draws no note. This is advice, not a denial - a small file, or a
-            question about the file rather than a symbol in it, is a fine reason to read it whole.
+            {file} is compiled by {project}, and this is a whole-file read.{(cost is null ? "" : " " + cost)}
+            Locating first usually costs less and misses nothing: search_index or get_symbol gives the
+            symbol's declarationSites, and a Read with offset/limit over that range fetches exactly the
+            text wanted, every part of a partial included. A ranged Read draws no note. This is advice, not
+            a denial - a small file, or a question about the file rather than a symbol in it, is a fine
+            reason to read it whole.
 
             Consider invoking the dotnet-read skill: it names the right tool for the question you were
             about to answer and the call shape that costs least. None of that is repeated in this message

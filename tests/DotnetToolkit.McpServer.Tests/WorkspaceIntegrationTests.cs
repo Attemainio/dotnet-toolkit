@@ -381,10 +381,29 @@ public sealed class WorkspaceIntegrationTests
         var members = withMembers.GetProperty("content").GetProperty("members");
 
         Assert.NotEmpty(members.EnumerateArray());
-        // The standard default is gone: an explicit list is exactly what was asked for, nothing implied.
-        Assert.False(withMembers.GetProperty("content").TryGetProperty("xmlDoc", out _));
+        // The standard default is gone: an explicit list is exactly what was asked for, nothing implied --
+        // except xmlDoc, which a single-symbol lookup carries whatever include said (next test).
         Assert.False(withMembers.GetProperty("content").TryGetProperty("referenceCounts", out _));
         Assert.False(withMembers.GetProperty("content").TryGetProperty("source", out _));
+    }
+
+    /// <summary>
+    /// A single-symbol lookup always carries the doc comment, even when include named other components:
+    /// it is the one line the caller is about to act on, and the 2026-09-20 FluidScript run had every
+    /// route delete a method whose remarks said not to, the MCP route because include:"members" had
+    /// dropped xmlDoc. A batch keeps include literal, since a doc block per row is real cost there.
+    /// </summary>
+    [Fact]
+    public async Task GetSymbol_SingleLookupAlwaysCarriesXmlDoc_BatchKeepsIncludeLiteral()
+    {
+        var single = Root(await GetSymbol("Sample.Lib.Widget", include: "members")).GetProperty("content");
+        Assert.Equal("A spinning widget.", single.GetProperty("xmlDoc").GetProperty("summary").GetString());
+        Assert.True(single.TryGetProperty("members", out _));
+
+        var batch = Root(await GetSymbols(["Sample.Lib.Widget"], include: "members"));
+        var row = TableRows(batch.GetProperty("results"))[0]["content"];
+        Assert.False(row.TryGetProperty("xmlDoc", out _));
+        Assert.True(row.TryGetProperty("members", out _));
     }
 
     /// <summary>

@@ -59,6 +59,13 @@ One argument, one grammar. It only ever adds; there is no `-` and no `:` in it.
 An unrequested component is absent from the JSON entirely, not `null`. A misspelled name is an
 `invalid_component` error rather than being silently dropped.
 
+**One exception: a single-symbol lookup always carries `xmlDoc`**, even when `include` named other
+components. The doc comment is the line a caller is about to act on — "exists to satisfy CA2225",
+"not thread-safe", "obsolete since" — and a run where `include: "members"` silently dropped it ended
+with a method being declared safe to delete that the build depended on. A `symbols` batch keeps
+`include` literal: there the caller chose the columns for many rows, and a doc block per row is real
+cost.
+
 `kind`, `displayString`, `modifiers`, `containingType` and `declarationSites` are unconditional.
 There is no `accessibility` field — `modifiers` (`"public sealed"`) already carries it.
 
@@ -123,7 +130,9 @@ when the segment is under 3 characters, the name was a `sym_…` id, or nothing 
 - **0 callers** → usually nothing to find — **but not if the symbol can be invoked without being
   named.** `callers` counts static call sites in the loaded solution; anything a framework invokes by
   reflection (an entry point, a DI-registered implementation, a serialization target, a test) is
-  invisible to it. **Never conclude "dead code" from a 0 alone.**
+  invisible to it, and so is an obligation that is not a call at all — an analyzer rule that requires
+  a named equivalent of an operator, an interface the type satisfies structurally. **Never conclude
+  "dead code" from a 0 alone; read `xmlDoc` first**, which is why it is always in the response.
 - **1–5 and a signature change is planned** → `get_references`, then read each site.
 - **more than 5** → `get_references` for the list, then read only what you will actually change.
 
