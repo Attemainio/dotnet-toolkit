@@ -31,7 +31,16 @@ internal static class Schema
         new(18, "host_agnostic_tool_call_events", HostAgnosticToolCallEvents),
         new(19, "declaration_sites_by_file", DeclarationSitesByFile),
         new(20, "drop_development_log_and_patch_events", DropDevelopmentLogAndPatchEvents),
+        new(21, "whole_file_cs_read_on_tool_call_events", WholeFileCsReadOnToolCallEvents),
     ];
+
+    // The meter records whether a call read a compiled .cs file whole, so a benchmark can count an
+    // agent's whole-file reads from the same instrument that meters its tokens, instead of proving the
+    // MCP probe stayed off raw reads by forcing the guards to deny -- a guard-state switch the harness's
+    // auto mode refuses as self-modification (2026-09-20). Raw telemetry, so additive only.
+    private const string WholeFileCsReadOnToolCallEvents = """
+        ALTER TABLE tool_call_events ADD COLUMN whole_file_cs_read INTEGER NOT NULL DEFAULT 0;
+        """;
 
     // The patch tool was removed on 2026-09-19 (Edit/Write are the write path, dotnet build the gate),
     // and with it the only writer of the development log and of patch_events. A log that stops on a

@@ -68,9 +68,10 @@ Specific drift to look for, in the order it usually appears:
    `.claude/rules/dotnet-index.md` names no tool, so a tool no skill mentions is unreachable for a
    consumer. All **17** must be covered — retrieval and the server/meta tools in `dotnet-read`,
    `rename_symbol` in `dotnet-write`, with `workspace_status` and `reload_workspace` legitimately in
-   both, and `set_hook_guards` deliberately in `dotnet-performance` alone (it can suspend or force-block
-   the guards, so naming it in the skill every read task loads would advertise the off-switch to every
-   session).
+   both, and `set_hook_guards` deliberately in `dotnet-performance` alone, and there only in its
+   opt-in strict variant (it can suspend or force-block the guards, so naming it in the skill every
+   read task loads would advertise the off-switch to every session; the default benchmark reads the
+   meter's `wholeFileCsReads` instead, because auto mode denies the switch).
    The skills are served from the plugin and never copied, so unlike the old always-loaded table this
    one cannot go stale in a consumer's tree — but it can still fall behind `Tools/*.cs`.
 3. **A tool added but not in init's permission allowlist.** The allowlist covers the read-only tools

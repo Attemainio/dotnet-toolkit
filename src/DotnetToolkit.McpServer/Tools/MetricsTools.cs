@@ -75,12 +75,16 @@ public static class MetricsTools
                 calls = a.Calls,
                 requestTokens = a.RequestTokens,
                 responseTokens = a.ResponseTokens,
+                // Present only when non-zero: the count the read guards advise on, so a benchmark can say
+                // "this probe never read a .cs file whole" from the meter rather than from a forced deny.
+                wholeFileCsReads = a.WholeFileCsReads > 0 ? (int?)a.WholeFileCsReads : null,
                 byTool = a.ByTool.Select(g => new
                 {
                     key = g.Key,
                     calls = g.Calls,
                     requestTokens = g.RequestTokens,
                     responseTokens = g.ResponseTokens,
+                    wholeFileCsReads = g.WholeFileCsReads > 0 ? (int?)g.WholeFileCsReads : null,
                 }),
             }),
             byHarness = result.Harness.ByHarness.Select(g => new

@@ -69,6 +69,10 @@ internal static class ToolCallMeter
             ["turnId"] = payload.TurnId,
             ["transcriptPath"] = payload.TranscriptPath,
             ["guardSessionId"] = GuardSuspension.CurrentSessionId(),
+            // Counted here, by the same predicate the read guards advise on, so a benchmark can ask "how
+            // many whole-file .cs reads did this agent make" of the meter instead of proving it by forcing
+            // the guards to deny -- a switch the harness's auto mode refuses as self-modification.
+            ["wholeFileCsRead"] = WholeFileCsRead.Matches(payload, context),
             ["agentId"] = agentId,
             ["agentType"] = agentType,
         };

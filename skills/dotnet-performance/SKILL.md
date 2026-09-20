@@ -49,23 +49,34 @@ others' runs:
   question, and free to follow or ignore an advisory note the way any session would.
 - **`dotnet-perf-mcp-probe`** — only this repo's dotnet-toolkit MCP tools plus `Read`, narrowed by
   instruction to the protocol file and to **ranged** reads over `declarationSites` (no MCP tool returns
-  source, so "locate, then read the range" *is* the MCP route), run under `set_hook_guards(state:
-  "block")`. The tool grant keeps it off `Grep`/`Glob`/`Bash`; the forced block is a backstop against a
-  protocol slip — a whole-file `Read` of a `.cs` file — turning into silent contamination instead of a
-  loud, reportable denial, while a ranged read passes under every state. This is the **ceiling** — the
-  best case the MCP route can produce.
-- **`dotnet-perf-raw-probe`** — only `Read`/`Grep`/`Glob`/`Bash`, no MCP tools, run under
-  `set_hook_guards(state: "suspend")` so it can reach a `.cs` file at all with no advisory nudge either.
-  This is the **floor** — a session that has never seen this plugin.
+  source, so "locate, then read the range" *is* the MCP route). The tool grant keeps it off
+  `Grep`/`Glob`/`Bash`; whether it kept to ranged reads is read off the meter afterwards (Step 4's
+  `wholeFileCsReads`), not enforced by a guard. This is the **ceiling** — the best case the MCP route
+  can produce.
+- **`dotnet-perf-raw-probe`** — only `Read`/`Grep`/`Glob`/`Bash`, no MCP tools. It sees the advisory
+  note on a whole-file read like any session would, and has no MCP tool to switch to, so the note
+  cannot change its route; it is told to ignore it. This is the **floor** — a session that has never
+  seen this plugin, up to the note's own tokens, which the meter does not count (a hook's
+  `additionalContext` is not part of the tool result).
 
-The three tool grants and guard states, side by side — check a probe's agent file against this row if
-its permissions are ever in doubt, rather than guessing from its name:
+**No guard state changes, by default.** Through 2026-09-20 the raw probe ran under
+`set_hook_guards(state: "suspend")` and the MCP probe under `state: "block"`, and every run lost time
+to it: Claude Code's auto-mode permission classifier treats the call — and a probe prompt that so much
+as mentions suspended guards — as self-modification and refuses, on three separate runs. The two
+states bought one fact each (the raw probe saw no note; the MCP probe could not read a file whole), and
+both facts are now read from the meter instead: `wholeFileCsReads` per agent says whether the MCP
+probe slipped, and the raw probe's grant means the note it does see is inert. **Only when the host is
+not in auto mode and the user asks for the strict variant** do the two guard passes below apply.
 
-| Probe | Tool grant | Guard state | What a `.cs` read does |
+The three tool grants, side by side — check a probe's agent file against this row if its
+permissions are ever in doubt, rather than guessing from its name. All three run at the default
+guard state; the last column is the strict variant only.
+
+| Probe | Tool grant | What a whole-file `.cs` read does (default) | Strict variant |
 |---|---|---|---|
-| `dotnet-perf-full-probe` | MCP tools **and** `Read`/`Grep`/`Glob`/`Bash` | default (advisory) | a raw read succeeds and gets an advisory note nudging toward the MCP tools; not blocked |
-| `dotnet-perf-raw-probe` | `Read`/`Grep`/`Glob`/`Bash` only, no MCP tools | suspended | a raw read succeeds with no advisory note at all — simulates a session that never had this plugin |
-| `dotnet-perf-mcp-probe` | MCP tools, plus `Read` narrowed **by instruction, not by grant** to `performance_protocol.md` and ranged reads over `declarationSites` | forced block | a ranged `Read` (offset + limit) passes silently; a whole-file `Read` of a `.cs` file is denied outright by the hook — the grant alone doesn't stop it, the forced block does |
+| `dotnet-perf-full-probe` | MCP tools **and** `Read`/`Grep`/`Glob`/`Bash` | succeeds, draws an advisory note, is counted in `wholeFileCsReads` — the condition being measured | default (unchanged) |
+| `dotnet-perf-raw-probe` | `Read`/`Grep`/`Glob`/`Bash` only, no MCP tools | succeeds, draws a note the probe is told to ignore, is counted | `suspend`: no note at all |
+| `dotnet-perf-mcp-probe` | MCP tools, plus `Read` narrowed **by instruction, not by grant** to `performance_protocol.md` and ranged reads over `declarationSites` | succeeds and is counted — a count above zero means the probe slipped and the report says so; a ranged `Read` (offset + limit) is never counted | `block`: denied outright by the hook |
 
 No probe carries `Edit`/`Write`/`NotebookEdit` or a write MCP tool — all three are read-only by tool
 grant, not merely by instruction, per Boundaries below.
@@ -81,19 +92,19 @@ match a probe agent's, and its `Read` fallback (for non-`.cs` docs) is a stray v
 doesn't need. `dotnet-explore` keeps doing its real job unmodified — including a supporting role in
 Step 1 below, distinct from being a probe.
 
-**Guard state is global to this repo, so the three probes never run concurrently.** Two probes in
-flight at once would either share a guard state neither of them asked for, or race to change it out
-from under each other — either way the run is uninterpretable. `dotnet-perf-full-probe` needs the
-guards in their *default* state, `dotnet-perf-mcp-probe` needs them *blocked*, and
-`dotnet-perf-raw-probe` needs them *suspended*; these are three different, mutually exclusive states of
-the same global switch. Launch one, wait for it to fully return, change state (or don't) for the next,
-and only then launch the next. Step 3 is the exact order and the verification at each transition.
+**The three probes never run concurrently.** They share one server, whose `harness` rows are read
+between probes to attribute each one's calls and `wholeFileCsReads`; two in flight blur that
+reading, and a workspace reload one triggers lands on the other. Launch one, wait for it to fully
+return, read the meter, and only then launch the next. Step 3 is the exact order. (In the strict
+variant the constraint is harder — guard state is one global switch per repo, and the two switched
+probes need mutually exclusive states of it.)
 
-**Suspension and forced-block do not stop the metering.** `meter-tool-call` is a `PostToolUse` hook and
-is deliberately exempt from `GuardSuspension` — it observes rather than withholding, and a benchmark
-changes the guard state precisely so it can measure a route under that state, which is not measured at
-all if the state change also silences the measurement. Step 4 depends on this: the meter is what makes
-all three routes comparable.
+**Guard state, when the strict variant switches it, does not stop the metering.** `meter-tool-call`
+is a `PostToolUse` hook and is deliberately exempt from `GuardSuspension` — it observes rather than
+withholding, and a benchmark changes the guard state precisely so it can measure a route under that
+state, which is not measured at all if the state change also silences the measurement. Step 4
+depends on this: the meter is what makes all three routes comparable, and `wholeFileCsReads` is what
+replaces the switch in the default procedure.
 
 **A freshly created or edited agent file is not visible to the current session.** The harness
 snapshots the agent registry when the plugin loads, not per subagent spawn (`docs/design/agents.md`
@@ -130,12 +141,10 @@ next action is simply to read the result you already have and move to the next s
    run against an uninitialised repo measures the absence of the install, not the plugin. The first
    FluidScript run on 2.0.0 (2026-09-20) was exactly that: no rule file, and the full probe never made
    an MCP call.
-4. **`set_hook_guards` prompts for permission, and an auto-mode classifier denies it outright.** It is
-   deliberately not on the init allowlist (it is the guards' off-switch). Before Pass 2, tell the user
-   the two calls are coming and that each needs approval, or have them add
-   `mcp__plugin_dotnet-toolkit_dotnet__set_hook_guards` to `.claude/settings.local.json` for the run.
-   A denial mid-run is not recoverable from inside the skill — the 2026-09-20 run stopped there and was
-   resumed a day later.
+4. **The default procedure calls `set_hook_guards` nowhere.** Only the strict variant (Step 3) does,
+   and the auto-mode classifier denies that call outright as self-modification, so the strict variant
+   is offered only outside auto mode and only when asked for. Do not add the tool to any allowlist to
+   get past the classifier; the default procedure needs nothing it refuses.
 5. Record the repo's size honestly: file count, type count, and the size of the largest `.cs` file.
    These are the axes the answer actually depends on, and a result reported without them is not
    transferable to any other repo.
@@ -230,33 +239,38 @@ longer decides the comparison, though: the `taskId`s buy only the server-side vi
 responses, while the number every route is actually compared on comes from the harness meter, which
 needs nothing from any prompt (Step 4).
 
-## Step 3 — launch order and guard housekeeping
+## Step 3 — launch order
 
-Three sequential passes, in this order, because only the first needs no guard-state change and the
-other two each need a **different**, mutually exclusive state. **The main agent (you) sets the guard
-mode explicitly between every launch — never leave a probe to run under whatever state the previous
-one left behind.** Spelled out as one checklist, with the full reasoning and the positive-control
-detail for each line in the three passes below it:
+Three sequential passes, all at the guards' default state, each launched only after the previous one
+has returned (see the note above Step 0 — an `Agent` call blocks; there is nothing to poll):
 
-1. Guards are already at default (confirmed in Step 0.2) — no mode change needed.
-2. Launch `dotnet-perf-full-probe`. **Wait for it to return** (see the note above Step 0 — this is a
-   blocking call, not a background one).
-3. `set_hook_guards(state: "suspend", minutes: <sized to the pass>)`.
-4. Prove the suspension reached the hooks (Pass 2, step 2's positive control) before launching anything.
-5. Launch `dotnet-perf-raw-probe`. **Wait for it to return.**
-6. `set_hook_guards(state: "restore")`, then confirm via `workspace_status` that `hookGuards` is gone.
-7. `set_hook_guards(state: "block", minutes: <same sizing>)`.
-8. Prove the block reached the hooks (Pass 3, step 2's positive control) before launching anything.
-9. Launch `dotnet-perf-mcp-probe`. **Wait for it to return.**
-10. `set_hook_guards(state: "restore")`, then confirm via `workspace_status` that `hookGuards` is gone.
+1. Guards are at default (confirmed in Step 0.2). Launch `dotnet-perf-full-probe`. **Wait.**
+2. Launch `dotnet-perf-raw-probe`. **Wait.**
+3. Launch `dotnet-perf-mcp-probe`. **Wait.**
 
-### Pass 1 — `dotnet-perf-full-probe` (default state, no change needed)
+Sequential rather than parallel so the meter's `byAgentTool` rows never interleave two probes' calls
+under one agent type, and so each probe's `subagent_tokens` is its own.
 
-Launch it now, while the guards are still confirmed at their default (Step 0.2). Wait for it to return.
-Nothing to suspend, nothing to restore — this pass is why it goes first, so neither of the
-state-changing passes below has to hand a clean default back to it later.
+**The probe prompts must not mention guards, hooks, suspension, blocking or advisories.** A prompt
+that said "the guards are suspended for your run" was refused by the auto-mode classifier as
+self-modification (2026-09-20, third run), and the probe never started. The agent files already say
+what each probe may use; the prompt names the tool family in one line and nothing about enforcement.
 
-### Pass 2 — `dotnet-perf-raw-probe` (suspend → run → restore)
+**After each probe returns, read its `wholeFileCsReads` from the meter** (Step 4). That single
+number is what the old guard passes existed to establish: for the MCP probe it must be absent (zero),
+or the ceiling was contaminated by a raw read and the row says so in the report; for the raw probe it
+is the count of whole files the floor route paid for; for the full probe it is the practice finding —
+how many whole-file reads a real session made with the advisory in front of it.
+
+### The strict variant — only outside auto mode, only on request
+
+The two guard passes below reproduce what the old procedure enforced: a raw probe that sees no
+advisory at all, and an MCP probe whose whole-file read fails loudly instead of being counted after
+the fact. They need `set_hook_guards`, which the auto-mode classifier refuses. Run them only when the
+user has asked for the strict variant and the host is not in auto mode; otherwise the default
+procedure above is complete and the report's `Guards:` line says "default throughout".
+
+#### Pass 2 (strict) — `dotnet-perf-raw-probe` (suspend → run → restore)
 
 1. `set_hook_guards(state: "suspend", minutes: <sized to the whole pass with margin>)`. Eight to twelve
    outcomes has taken 5–15 minutes; the default is 30 minutes and the cap is 4 hours, so pass `minutes`
@@ -283,7 +297,7 @@ state-changing passes below has to hand a clean default back to it later.
    gone. **Never let the expiry do the restoring** — a suspension that lapses on its own leaves no
    record of when it ended, and this confirmation is what the report's `Guards:` line quotes.
 
-### Pass 3 — `dotnet-perf-mcp-probe` (block → run → restore)
+#### Pass 3 (strict) — `dotnet-perf-mcp-probe` (block → run → restore)
 
 1. `set_hook_guards(state: "block", minutes: <same sizing as pass 2>)`.
 2. **Prove the block actually reached the hooks before launching the probe**, the mirror image of pass
@@ -324,6 +338,13 @@ available, they answer three different questions, and the report must name which
   own `agent_type`, so no probe has to label itself and no self-report has to be trusted. Before this
   existed, each route was measured by a different mechanism, which is not a comparison however
   carefully it is presented.
+- **`wholeFileCsReads` on each `byAgentTool` row is the discipline check.** The meter counts, by the
+  same predicate the read guards advise on, every call that put a compiled `.cs` file into context
+  whole — an unranged `Read`, or `cat` and its kin on the file. It is absent when zero. For the MCP
+  probe it must be absent: a value there means the ceiling row read a file raw, and the report says
+  so. For the raw and full probes it is a finding in its own right — how many whole files each route
+  paid for — and the difference between the full probe's count and the raw probe's is what the
+  advisory bought.
 - **Report both directions; never blend them into one number.** `responseTokens` is what the call
   loaded into the model's context (**input** tokens); `requestTokens` is what the model had to
   generate to make the call (**output** tokens). Output runs roughly **5× dearer** — Opus 5 is $5/$25
@@ -480,13 +501,15 @@ Project structure (<n> projects)
 
 ## Guards
 
+Default throughout (no `set_hook_guards` call); `workspace_status` showed no `hookGuards` line before
+pass 1. Whole-file `.cs` reads per probe, from the meter's `wholeFileCsReads`: full <n>, raw <n>,
+mcp <n — must be 0, or say so under Correctness>.
+
+<Strict variant only:>
 | Pass | Agent | Guard state | Duration | Positive control | Result |
 |---|---|---|---|---|---|
-| 1 | full probe | default (no change) | — | — | n/a |
 | 2 | raw probe | suspended | <minutes>m at <time> | <the exact check run> | <confirmed real / did not reach hooks> |
 | 3 | mcp probe | blocked | <minutes>m at <time> | <the exact check run> | <confirmed real / did not reach hooks> |
-
-Restored after each of passes 2 and 3; both confirmed via `workspace_status` (`hookGuards` line absent).
 
 ## Questions
 <the numbered question list, verbatim — byte-for-byte the same text all three agents received per Step

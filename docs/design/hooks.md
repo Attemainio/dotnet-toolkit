@@ -46,16 +46,24 @@ plugin's own patch tool; that tool and both guards are gone (see the write-path 
 hints, the refresh and the meter are unaffected by either
 mode — they add context or observe, rather than withhold a call, so silencing them would cost the
 caller information without buying back any of the freedom a suspend or a block is asked for. The meter
-especially: `dotnet-performance` suspends or blocks the guards precisely in order to measure a
-*specific* route, which is not measured at all if changing the state also stops the measuring.
+especially: a state is switched precisely in order to measure a *specific* route, which is not
+measured at all if changing the state also stops the measuring.
 
-The reason `Suspended` exists at all is `dotnet-performance`'s floor probe: the claim that these tools
-beat `grep`/`Read` cannot be *measured* without running `grep`/`Read` in the same repo, and the guards
-make that route unreachable by construction. A benchmark that cannot run the baseline is not a
-benchmark. `Blocked` exists for the same skill's ceiling probe, added 2026-08-22: it reproduces this
-repo's own pre-2026-08-20 read enforcement as a comparison point, and doubles as a backstop against
-`dotnet-perf-mcp-probe`'s one narrow `Read` allowance turning a protocol slip into silent contamination
-instead of a loud, reportable denial.
+`Suspended` was added for `dotnet-performance`'s floor probe: the claim that these tools beat
+`grep`/`Read` cannot be *measured* without running `grep`/`Read` in the same repo, and the guards
+(then hard denials) made that route unreachable by construction. `Blocked` was added 2026-08-22 for
+the same skill's ceiling probe: it reproduces this repo's own pre-2026-08-20 read enforcement as a
+comparison point, and doubled as a backstop against `dotnet-perf-mcp-probe`'s one narrow `Read`
+allowance turning a protocol slip into silent contamination instead of a loud denial. **Since
+2026-09-20 the benchmark's default procedure uses neither.** Claude Code's auto-mode classifier
+denies `set_hook_guards` — and an `Agent` prompt that mentions the switched state — as
+self-modification, which stopped every auto-mode run at pass 2. The guards are advisory now, so the
+floor probe can run `grep`/`Read` at the default state and is simply told to ignore the notes; and
+the backstop became a measurement: `meter-tool-call` records `wholeFileCsRead` on every call through
+the same `WholeFileCsRead.Matches` predicate the guards advise on, and `get_retrieval_metrics`
+reports the count per agent. A probe that slipped is caught after the fact by a number instead of
+being stopped up front by a denial — which is the only shape of check the classifier permits. Both
+states remain for the skill's opt-in strict variant outside auto mode.
 
 Three properties carry the risk; the first two are deliberate inversions of what the rest of this page
 says:
@@ -108,10 +116,11 @@ remaining, and nothing when the guards are at their default — checking its own
 the same way `HookCli` does. It carries this rather than `set_hook_guards` alone because it is the call
 every skill makes first, so a session inheriting a suspend or a block it did not start finds out before
 it edits (or before an unexpected `Read` denial confuses it) rather than after. **Neither line is
-evidence that a hook will honour the state**, for the reason above; `dotnet-performance` therefore
-proves each transition with an actual guarded call before launching the probe that depends on it — an
-advisory-free `Read` before the raw probe, an actual denial before the MCP probe — rather than trusting
-either instrument alone.
+evidence that a hook will honour the state**, for the reason above; `dotnet-performance`'s strict
+variant therefore proves each transition with an actual guarded call before launching the probe that
+depends on it — an advisory-free `Read` before the raw probe, an actual denial before the MCP probe —
+rather than trusting either instrument alone. (Its default procedure switches no state at all, so it
+has nothing to prove.)
 
 `DOTNET_TOOLKIT_DISABLE_HOOKS` remains the separate, non-expiring hatch for a harness that owns the
 process lifetime. `set_hook_guards(state: "restore")` cannot clear it — it lives in the server's own
@@ -175,13 +184,14 @@ the more expensive tool even there.
 **A ranged `Read` — one with `offset` or `limit` — draws no note in any mode**, forced-block
 included (since 2026-09-19). Once a symbol is located, `get_symbol`'s `declarationSites` plus a
 `Read` of that range is the intended way to fetch its text, so advising against it would be advising
-against the route the skills recommend; and a forced-block probe that could not read code at all
-would measure nothing. Only the whole-file read is the question the advisory exists for, and its
+against the route the skills recommend; and a probe that could not read code at all would measure
+nothing. Only the whole-file read is the question the advisory exists for, and its
 text now says so: locate, then read the range.
 
 **`set_hook_guards(state: "block")` forces this guard back to its pre-2026-08-20 hard deny**, added the
 same day as that migration once `dotnet-performance` needed a third probe with a real forced-enforcement
-comparison point rather than only a ceiling (MCP-only tools) and a floor (guards suspended). `HookCli`
+comparison point rather than only a ceiling (MCP-only tools) and a floor (guards suspended); since
+2026-09-20 only the skill's strict variant asks for it (see the guard-mode section above). `HookCli`
 reads the `Blocked` half of `GuardSuspension.Current`'s tri-state result (`Active`/`Suspended`/`Blocked`)
 and passes it into `Evaluate`'s `blocked` parameter; the membership check and the file-vs-tree distinction
 are unchanged, only the outcome constructor flips from `AllowAdvising` to `Deny`. Not the plugin's shipped

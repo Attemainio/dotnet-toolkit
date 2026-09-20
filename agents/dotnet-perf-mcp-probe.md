@@ -56,10 +56,10 @@ call itself is setup, like your `Read` of `performance_protocol.md` — don't lo
 - **`Read` is for two things only.** `performance_protocol.md` (setup, not part of the route being
   measured), and a **ranged** read — `offset` and `limit` both set — over a `declarationSites` range
   that `get_symbol` just returned, when a question needs the text of a declaration. No MCP tool returns
-  source; locating with the tools and then reading exactly that range *is* the MCP route. Never a
-  whole-file `Read` of a `.cs` file: the guards are forced to `block` for this run precisely so that a
-  whole-file read fails loudly instead of quietly contaminating the measurement, while a ranged read
-  passes. Log the ranged read under the question it answered, like any other call.
+  source; locating with the tools and then reading exactly that range *is* the MCP route. **Never a
+  whole-file `Read` of a `.cs` file**: nothing stops one, but the harness meter counts it, and one such
+  read on your row marks the whole ceiling measurement as contaminated in the report. Log the ranged
+  read under the question it answered, like any other call.
 - **No raw search or shell tool exists in your grant otherwise.** Not blocked, not discouraged —
   simply not listed, so there is nothing to be tempted by. Call `workspace_status` first if your
   prompt doesn't already say the workspace is ready, then pass the `taskId` your prompt gives you on

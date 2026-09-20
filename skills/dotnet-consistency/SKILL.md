@@ -103,9 +103,11 @@ them, and `set_hook_guards` in `dotnet-performance` alone, its only sanctioned c
 missing from `dotnet-read`; it is kept out. The tool suspends the guards that make the rest of the
 plugin load-bearing, so naming it in the skill every read task loads would advertise the off-switch to
 every session — including the ones the guards exist for. Reachability is satisfied because
-`dotnet-performance` names it, and that skill is the only sanctioned reason to call it. **If a future
-audit finds it added to `dotnet-read` or to the always-loaded rule, that is the finding** — not its
-absence there.
+`dotnet-performance` names it (for its strict variant only — the default procedure calls it nowhere,
+because Claude Code's auto-mode classifier denies the call as self-modification and the meter's
+`wholeFileCsReads` count answers the same question without it), and that skill is the only sanctioned
+reason to call it. **If a future audit finds it added to `dotnet-read` or to the always-loaded rule,
+or back in `dotnet-performance`'s default steps, that is the finding** — not its absence there.
 
 **5. Every instruction/guideline file that tells a caller to use the MCP tools.** Check each still
 lists every tool from Step 0, with nothing stale (a tool it describes that no longer exists) and
@@ -197,9 +199,13 @@ and `.mcp.json`:
      verb, and answer with a note only when a file was added/deleted (reload started), a refresh is
      queued, or the server was unreachable.
    - **`meter-tool-call` is the one hook matching every tool (`"*"`), and the one exempt from
-     `GuardSuspension` on purpose.** It observes rather than withholds, and `dotnet-performance`
-     suspends the guards precisely in order to measure the unguarded route — a version that honours
+     `GuardSuspension` on purpose.** It observes rather than withholds, and a guard suspension is
+     asked for precisely in order to measure the unguarded route — a version that honours
      suspension silently produces a benchmark with half its data missing, which is the finding. It
+     is also the hook that records `wholeFileCsRead` on every call, the count `dotnet-performance`
+     reads per probe instead of switching guard state; the predicate is `WholeFileCsRead.Matches`,
+     shared with the two read guards so the count and the advisory agree on what a whole-file read
+     is — a version where they diverge is the finding. It
      must also stay fail-open-and-silent and keep reporting over the control channel rather than
      opening the store itself: a hook process has its own ambient session id, so a row it wrote
      directly would be invisible to every read.

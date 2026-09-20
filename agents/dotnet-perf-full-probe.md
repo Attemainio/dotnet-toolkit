@@ -3,12 +3,11 @@ name: dotnet-perf-full-probe
 description: >
   Benchmark-only instrument for dotnet-performance. Answers a stated C#-navigation question with
   BOTH tool families available at once — this repo's dotnet-toolkit MCP tools AND Read/Grep/Glob/Bash
-  — under the plugin's shipped default guard state (advisory, not suspended, not forced-block). Plays
-  a real, unrestricted Claude Code session with the plugin installed as it actually ships, in contrast
-  to dotnet-perf-mcp-probe (MCP tools only, guards forced to block as a backstop) and
-  dotnet-perf-raw-probe (raw tools only, guards suspended to simulate no plugin at all) — those two
-  measure the ceiling and the floor; this one measures what actually happens in practice. Free to use
-  either tool family for each question and to follow or ignore the advisory notes the guards surface,
+  — as a real session has them. Plays a real, unrestricted Claude Code session with the plugin
+  installed as it actually ships, in contrast to dotnet-perf-mcp-probe (MCP tools only) and
+  dotnet-perf-raw-probe (raw tools only) — those two measure the ceiling and the floor; this one
+  measures what actually happens in practice. Free to use either tool family for each question and to
+  follow or ignore the advisory note a whole-file read of a .cs file carries,
   the way any real session would. Only the dotnet-performance skill launches this agent — never invoke
   it directly, and never for a real task; for real exploration, use dotnet-explore instead. Read-only
   in intent, though its tool grant includes Bash — see Hard constraints.
@@ -28,11 +27,10 @@ color: blue
 ---
 
 You are the third leg of a token-cost comparison run by `dotnet-performance`. The other two agents are
-each artificially restricted to one tool family — `dotnet-perf-mcp-probe` (MCP tools only, guards
-forced to block) and `dotnet-perf-raw-probe` (raw tools only, guards suspended) — to measure a ceiling
-and a floor. You are not restricted at all: you have both families, and the guards are in whatever
-state this repo ships by default. Your run is what a real Claude Code session with this plugin
-installed actually does, question by question.
+each artificially restricted to one tool family — `dotnet-perf-mcp-probe` (MCP tools only) and
+`dotnet-perf-raw-probe` (raw tools only) — to measure a ceiling and a floor. You are not restricted at
+all: you have both families, exactly as this repo ships them. Your run is what a real Claude Code
+session with this plugin installed actually does, question by question.
 
 **This file is deliberately not self-contained.** Your invoking prompt names a
 `performance_protocol.md` file and gives you the question list and a `taskId`. Read that file first —

@@ -116,9 +116,9 @@ get_retrieval_metrics()
    "byAgent":[{"key":"dotnet-perf-raw-probe","calls":31,"requestTokens":850,"responseTokens":28100},
               {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602}],
    "byAgentTool":[
-     {"key":"dotnet-perf-raw-probe","calls":31,"requestTokens":850,"responseTokens":28100,
+     {"key":"dotnet-perf-raw-probe","calls":31,"requestTokens":850,"responseTokens":28100,"wholeFileCsReads":9,
       "byTool":[{"key":"Grep","calls":19,"requestTokens":610,"responseTokens":8300},
-                {"key":"Read","calls":12,"requestTokens":240,"responseTokens":19800}]},
+                {"key":"Read","calls":12,"requestTokens":240,"responseTokens":19800,"wholeFileCsReads":9}]},
      {"key":"(main thread)","calls":14,"requestTokens":460,"responseTokens":3602,
       "byTool":[{"key":"get_symbol","calls":14,"requestTokens":460,"responseTokens":3602}]}],
    "byHarness":[{"key":"codex","calls":45,"requestTokens":1310,"responseTokens":31702}],
@@ -132,6 +132,17 @@ folds every agent together per tool, `byAgent` folds every tool together per age
 read for "where did *this* agent's tokens actually go, call by call" instead of inferring it from two
 separate aggregates or trusting a probe's own self-reported call log, which every measured run so far
 has undercounted (see `skills/dotnet-performance/SKILL.md`).
+
+**`wholeFileCsReads`** on a `byAgentTool` row, and on its nested `byTool` rows, counts the calls that
+put a compiled `.cs` file into context whole: a `Read` without `offset`/`limit`, or a `Bash` segment
+whose command is a dumping utility (`cat`, `nl`, `bat`, `less`, `xxd`, …) naming such a file. It is
+recorded by `meter-tool-call` through the same predicate the two read guards advise on, so the count
+and the advisory agree on what a whole-file read is. The field is **absent, never zero**, on a row
+with none — the common case costs nothing. It exists for `dotnet-performance`: the MCP probe is
+instructed never to make such a read, and this is how a slip is caught after the fact — the skill
+used to force the guards to deny instead, a state switch Claude Code's auto-mode classifier refuses
+as self-modification. A ranged `Read` over `declarationSites`, `grep`, and `sed -n 'a,bp'` do not
+count; they are the intended way to read located code.
 
 `byHarness` distinguishes the host that dispatched the call (`claude-code`, `codex`, or a value set
 in `DOTNET_TOOLKIT_HARNESS`). `byModel` reports the hook's model identifier verbatim, so Codex

@@ -15,15 +15,14 @@ This plugin ships five subagents, all read-only in intent:
 - **`dotnet-perf-full-probe`, `dotnet-perf-mcp-probe` and `dotnet-perf-raw-probe`**
   (`agents/dotnet-perf-full-probe.md`, `agents/dotnet-perf-mcp-probe.md`,
   `agents/dotnet-perf-raw-probe.md`) — a **benchmark instrument trio**, not general-purpose agents:
-  identical except for tool grant and guard state (both MCP + raw tools at the default guard state vs.
-  MCP tools + `Read` restricted to the protocol file and ranged declaration reads under a forced
-  block vs. `Read`/`Grep`/`Glob`/`Bash` only under a suspension), and deliberately **not** self-contained — none carries its own procedure or
+  identical except for tool grant (both MCP + raw tools vs. MCP tools + `Read` restricted by
+  instruction to the protocol file and ranged declaration reads vs. `Read`/`Grep`/`Glob`/`Bash`
+  only), all at the default guard state, and deliberately **not** self-contained — none carries its own procedure or
   output format. All three read the same `skills/dotnet-performance/performance_protocol.md` for
   those; the per-run question list still comes from the invoking prompt, since it changes every run
   and a static file can't hold it. `dotnet-performance` is their only sanctioned launcher, and it runs
-  them **sequentially**, never concurrently — guard state is one global switch per repo, so two probes
-  in flight would either share a state neither asked for or race to change it. See the section at the
-  end.
+  them **sequentially**, never concurrently — the meter attributes calls per agent, and two probes in
+  flight share one server whose in-flight metrics they would blur. See the section at the end.
 
 `dotnet-guard-redteam` and its launcher `dotnet-guard-audit` were removed on 2026-09-19 with the
 write guards they tested: once `Edit`/`Write` became the write path there was no enforcement left
@@ -282,42 +281,44 @@ the others' runs. Originally there were two — `dotnet-perf-mcp-probe` (MCP too
 `dotnet-perf-raw-probe` (raw tools only) — each an artificially restricted extreme: a ceiling and a
 floor. `dotnet-perf-full-probe` was added 2026-08-22 to close the gap between them: neither extreme
 answers "what does a real, unrestricted session with this plugin installed actually do," since a real
-session is never tool-restricted and never runs under a guard state nobody chose. It carries both tool
-families and runs at the guards' plugin-shipped default (advisory whole-file reads, nothing
-suspended or forced) — the practice measurement the other two, by design, cannot produce.
+session is never tool-restricted. It carries both tool families and, like the other two since
+2026-09-20, runs at the guards' plugin-shipped default (advisory whole-file reads) — the practice
+measurement the other two, by design, cannot produce.
 
 `dotnet-perf-mcp-probe` has the dotnet-toolkit MCP tools plus `Read` restricted (by instruction) to
 the protocol file and to *ranged* reads over `declarationSites` — since 2026-09-19 no MCP tool returns
 source, so the MCP route *is* "locate with the tools, read the range"; `dotnet-perf-raw-probe` has
 only `Read`/`Grep`/`Glob`/`Bash`; `dotnet-perf-full-probe` has both families at once — **tool
 absence for the actual route being measured, not a hook-blocked path either extreme is told to
-avoid.** Guard state is what keeps each extreme honest instead of tool grant alone:
-`dotnet-perf-raw-probe` runs under `set_hook_guards(state: "suspend")` so even its `Read` calls get no
-advisory nudge, simulating a session with no plugin installed at all; `dotnet-perf-mcp-probe` runs
-under `set_hook_guards(state: "block")`, where a ranged `Read` still passes silently but a
-whole-file `Read` of a `.cs` file hard-fails loudly — so the probe cannot quietly contaminate the
-"MCP-only ceiling" measurement with a whole-file read nobody would notice.
-`dotnet-perf-full-probe` needs no guard-state change at all — the default state **is** the condition
-being measured.
+avoid.** What keeps each extreme honest beyond tool grant is a **count, not a wall**: the tool-call
+meter records whether each call put a compiled `.cs` file into context whole (an unranged `Read`, or
+a dumping utility such as `cat` through `Bash`), and `get_retrieval_metrics` reports it per agent as
+`wholeFileCsReads`. `dotnet-perf-mcp-probe` is told never to make such a read; if the row shows one
+anyway, the ceiling measurement is contaminated and the report says so, with the number. The raw probe
+is told to ignore the advisory notes, and the full probe is free to follow or ignore them — which is
+the condition being measured. Until 2026-09-20 the same discipline was enforced up front by guard
+state (`set_hook_guards`: `suspend` around the raw probe, `block` around the MCP probe); that was
+dropped from the default procedure because Claude Code's auto-mode classifier denies the switch — and
+any `Agent` prompt describing it — as self-modification, which stopped the benchmark at pass 2 on
+every auto-mode run. The switch survives only as the skill's opt-in strict variant outside auto mode.
 
-**Sequential, never concurrent, because guard state is one switch per repo.** Two probes running at
-once would either share a suspend/block/default state neither of them asked for, or race to change it
-out from under each other — either way the run is uninterpretable. `dotnet-performance` launches
-`dotnet-perf-full-probe` first (the only one needing no state change, so it goes before either state
-change happens), then brackets `dotnet-perf-raw-probe` with `suspend`→run→`restore` and
-`dotnet-perf-mcp-probe` with `block`→run→`restore`, verifying at each transition that the state change
-actually reached the hook processes (see `docs/design/hooks.md`'s "session id goes stale" finding, the
-reason neither `set_hook_guards`' own response nor `workspace_status` is trusted for this on its own).
+**Sequential, never concurrent.** All three probes share one server process, whose `harness` rows
+are attributed per agent name; running two at once blurs their in-flight `get_retrieval_metrics`
+reads and any workspace reload one triggers lands on the other. `dotnet-performance` launches
+`dotnet-perf-full-probe` first, then `dotnet-perf-raw-probe`, then `dotnet-perf-mcp-probe`, reading
+the meter after each. (The strict variant additionally needs sequencing because guard state is one
+switch per repo, and verifies each transition with an actual guarded call — see `docs/design/hooks.md`'s
+"session id goes stale" finding.)
 
 **Deliberately not self-contained, unlike this plugin's other agents — but split into three sources,
 not one.** Each file carries only its identity and its one hard constraint (which tool family it has,
-and — for the two restricted probes — the guard state `dotnet-performance` puts it under). The
+and — for the MCP probe — that a whole-file read is counted against it). The
 **procedure and output format** live in `skills/dotnet-performance/performance_protocol.md`, one file
 all three agents `Read` at the start of every run, rather than any agent file inlining a copy or
 `dotnet-performance` re-typing near-identical instructions into three separate prompts where a future
 edit could update one and miss the others. The **question list** stays in `dotnet-performance`'s
 invoking prompt, sent byte-for-byte identical to all three agents except for the one line naming each
-one's tool family and guard state — it's per-run content a static file can't hold. This is the
+one's tool family — it's per-run content a static file can't hold. This is the
 opposite of `dotnet-explore`'s and `dotnet-code-review`'s design, and deliberately so: those two exist
 to do a real job well on their own, so inlining their procedure is the right call; these three exist
 only to be interchangeable except for the variable each one holds constant, so the procedure has to

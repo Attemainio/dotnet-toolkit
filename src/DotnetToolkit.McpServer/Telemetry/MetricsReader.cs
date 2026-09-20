@@ -24,11 +24,13 @@ public sealed class MetricsReader
     public sealed record HarnessTotals(int ToolCalls, long RequestTokens, long ResponseTokens);
 
     /// <summary>One harness-metered breakdown row, keyed by tool name or by agent type.</summary>
-    public sealed record HarnessGroup(string Key, int Calls, long RequestTokens, long ResponseTokens);
+    /// <param name="WholeFileCsReads">Calls that put a compiled <c>.cs</c> file into context whole; the count the read guards advise on.</param>
+    public sealed record HarnessGroup(string Key, int Calls, long RequestTokens, long ResponseTokens, int WholeFileCsReads = 0);
 
         /// <summary>One agent's own harness-metered breakdown, further split out by tool.</summary>
         public sealed record HarnessAgentBreakdown(
-            string Agent, int Calls, long RequestTokens, long ResponseTokens, IReadOnlyList<HarnessGroup> ByTool);
+            string Agent, int Calls, long RequestTokens, long ResponseTokens, IReadOnlyList<HarnessGroup> ByTool,
+            int WholeFileCsReads = 0);
 
         /// <summary>What the PostToolUse meter saw: every tool the harness dispatched, MCP or not.</summary>
         /// <param name="Estimator">Names the approximation behind every count in this block.</param>
@@ -314,7 +316,8 @@ public sealed class MetricsReader
             {
                 cmd.CommandText = $"""
                     SELECT COALESCE(agent_type, '(main thread)'), tool_name,
-                           COUNT(*), COALESCE(SUM(request_tokens),0), COALESCE(SUM(response_tokens),0)
+                           COUNT(*), COALESCE(SUM(request_tokens),0), COALESCE(SUM(response_tokens),0),
+                           COALESCE(SUM(whole_file_cs_read),0)
                     FROM tool_call_events WHERE {where}
                     GROUP BY 1, 2 ORDER BY 1, 5 DESC;
                     """;
@@ -324,7 +327,7 @@ public sealed class MetricsReader
                 {
                     var agent = reader.GetString(0);
                     var tool = new HarnessGroup(
-                        reader.GetString(1), reader.GetInt32(2), reader.GetInt64(3), reader.GetInt64(4));
+                        reader.GetString(1), reader.GetInt32(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt32(5));
 
                     var bucket = byAgent.Count > 0 && byAgent[^1].Agent == agent ? byAgent[^1].Tools : null;
                     if (bucket is null)
@@ -340,14 +343,16 @@ public sealed class MetricsReader
             foreach (var (agent, tools) in byAgent)
             {
                 var calls = 0;
+                var wholeFileReads = 0;
                 long requestTokens = 0, responseTokens = 0;
                 foreach (var tool in tools)
                 {
                     calls += tool.Calls;
                     requestTokens += tool.RequestTokens;
                     responseTokens += tool.ResponseTokens;
+                    wholeFileReads += tool.WholeFileCsReads;
                 }
-                breakdowns.Add(new HarnessAgentBreakdown(agent, calls, requestTokens, responseTokens, tools));
+                breakdowns.Add(new HarnessAgentBreakdown(agent, calls, requestTokens, responseTokens, tools, wholeFileReads));
             }
             return breakdowns;
         }

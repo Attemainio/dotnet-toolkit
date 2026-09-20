@@ -125,16 +125,20 @@ By **default** they are advisory — the call is allowed, with a note that `get_
 state for a bounded window:
 
 - **`suspend`** — no advisory at all. Simulates a session with no plugin installed.
-- **`block`** — the two read guards hard-deny a whole-file raw read instead of advising. The
-  backstop `dotnet-performance`'s MCP-only probe runs under, so a probe cannot quietly fall back
-  to `cat`.
+- **`block`** — the two read guards hard-deny a whole-file raw read instead of advising, so a probe
+  cannot quietly fall back to `cat`.
 - **`restore`** — back to the default: advise.
 
 The legitimate uses are the ones where an unguarded or a forced path *is* the subject: measuring
 these tools against `grep`/`Read` (`suspend`), reproducing what a repo without the plugin does
-(`suspend`), or holding a probe to the MCP route (`block`) — `dotnet-performance`'s three-probe run
-uses all three states, one per probe. Outside a measurement, an advisory is guidance to weigh, not a
-wall to route around, so there is nothing here to reach for.
+(`suspend`), or holding a probe to the MCP route (`block`). Since 2026-09-20 even
+`dotnet-performance` does not call this by default: its three probes all run at the default state,
+and the tool-call meter counts each probe's whole-file `.cs` reads (`wholeFileCsReads` in
+`get_retrieval_metrics`) instead of denying them up front — Claude Code's auto-mode classifier
+refuses a guard-state switch as self-modification, and a benchmark that cannot run in auto mode is
+not run. Only the skill's opt-in strict variant, outside auto mode, uses `suspend` and `block`.
+Outside a measurement, an advisory is guidance to weigh, not a wall to route around, so there is
+nothing here to reach for.
 
 A suspend or a block is stored as an **expiry, not a flag**. The state file under
 `.claude/dotnet-toolkit/cache/` names the instant the guards resume and which of the two states is in

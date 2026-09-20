@@ -101,6 +101,9 @@ public sealed class TelemetryRecorder
         public string? ClaudeSessionId { get; init; }
         public string? AgentId { get; init; }
         public string? AgentType { get; init; }
+
+        /// <summary>Whether the call put a compiled <c>.cs</c> file into context whole (an unranged Read, or a dumping utility).</summary>
+        public bool WholeFileCsRead { get; init; }
     }
 
     /// <summary>Appends one metered tool call, ignoring one already recorded under the same id.</summary>
@@ -123,11 +126,11 @@ public sealed class TelemetryRecorder
                 INSERT OR IGNORE INTO tool_call_events
                     (event_id, session_id, claude_session_id, harness_session_id, harness, model,
                      turn_id, transcript_path, agent_id, agent_type, tool_use_id, tool_name,
-                     request_tokens, response_tokens, token_estimator, created_at)
+                     request_tokens, response_tokens, token_estimator, whole_file_cs_read, created_at)
                 VALUES
                     ($event_id, $session_id, $claude_session_id, $harness_session_id, $harness, $model,
                      $turn_id, $transcript_path, $agent_id, $agent_type, $tool_use_id, $tool_name,
-                     $request_tokens, $response_tokens, $token_estimator, $created_at);
+                     $request_tokens, $response_tokens, $token_estimator, $whole_file_cs_read, $created_at);
                 """;
             cmd.Parameters.AddWithValue("$event_id", Identity.Ids.Event());
             cmd.Parameters.AddWithValue("$session_id", Identity.Ids.AmbientSession);
@@ -144,6 +147,7 @@ public sealed class TelemetryRecorder
             cmd.Parameters.AddWithValue("$request_tokens", e.RequestTokens);
             cmd.Parameters.AddWithValue("$response_tokens", e.ResponseTokens);
             cmd.Parameters.AddWithValue("$token_estimator", e.TokenEstimator);
+            cmd.Parameters.AddWithValue("$whole_file_cs_read", e.WholeFileCsRead ? 1 : 0);
             cmd.Parameters.AddWithValue("$created_at", DateTimeOffset.UtcNow.ToString("O"));
             cmd.ExecuteNonQuery();
         }

@@ -227,6 +227,7 @@ public sealed class ControlServer
                 ClaudeSessionId = measurement["claudeSessionId"]?.GetValue<string>(),
                 AgentId = measurement["agentId"]?.GetValue<string>(),
                 AgentType = measurement["agentType"]?.GetValue<string>(),
+                WholeFileCsRead = measurement["wholeFileCsRead"]?.GetValue<bool>() ?? false,
             });
             return "ok:metered";
         }

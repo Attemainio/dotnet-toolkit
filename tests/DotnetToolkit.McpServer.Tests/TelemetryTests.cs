@@ -232,6 +232,27 @@ public sealed class TelemetryTests : IDisposable
         Assert.Equal(10, mainThread.ResponseTokens);
     }
 
+    /// <summary>
+    /// The meter counts whole-file .cs reads per agent and per tool, so a benchmark can say from the
+    /// instrument that a probe stayed off raw reads, instead of proving it by forcing the guards to deny.
+    /// </summary>
+    [Fact]
+    public void MeteredWholeFileReadsAreCountedPerAgentAndTool()
+    {
+        _recorder.RecordToolCall(SampleToolCall("toolu_1", "Read", 30, 4000, "dotnet-perf-raw-probe") with { WholeFileCsRead = true });
+        _recorder.RecordToolCall(SampleToolCall("toolu_2", "Read", 30, 400, "dotnet-perf-raw-probe"));
+        _recorder.RecordToolCall(SampleToolCall("toolu_3", "Bash", 20, 3000, "dotnet-perf-raw-probe") with { WholeFileCsRead = true });
+        _recorder.RecordToolCall(SampleToolCall("toolu_4", "get_symbol", 50, 300, "dotnet-perf-mcp-probe"));
+
+        var byAgentTool = _metrics.Read(null, null, "tool").Harness!.ByAgentTool;
+
+        var rawProbe = byAgentTool.Single(a => a.Agent == "dotnet-perf-raw-probe");
+        Assert.Equal(2, rawProbe.WholeFileCsReads);
+        Assert.Equal(1, rawProbe.ByTool.Single(g => g.Key == "Read").WholeFileCsReads);
+        Assert.Equal(1, rawProbe.ByTool.Single(g => g.Key == "Bash").WholeFileCsReads);
+        Assert.Equal(0, byAgentTool.Single(a => a.Agent == "dotnet-perf-mcp-probe").WholeFileCsReads);
+    }
+
     [Fact]
     public void MeteredCallsGroupByHarnessAndModelIncludingLocalModels()
     {

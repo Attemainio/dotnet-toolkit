@@ -291,6 +291,28 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
         Assert.Equal(template.StartsWith("cat", StringComparison.Ordinal), outcome.Stdout!.Contains("lines of Compiled.cs", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The predicate the meter counts by is the one the guards advise on: an unranged Read or a dumping
+    /// utility on a compiled file, and nothing else.
+    /// </summary>
+    [Fact]
+    public void WholeFileCsRead_MatchesUnrangedReadsAndDumpsOnly()
+    {
+        var context = _repo.Context();
+        Assert.True(WholeFileCsRead.Matches(new HookPayload("Read", _repo.CompiledFile, null), context));
+        Assert.False(WholeFileCsRead.Matches(
+            new HookPayload("Read", _repo.CompiledFile, null) { ToolInputRaw = $$"""{"file_path":"{{_repo.CompiledFile.Replace("\\", "\\\\")}}","offset":10,"limit":20}""" },
+            context));
+        Assert.False(WholeFileCsRead.Matches(new HookPayload("Read", _repo.FileWithoutProject, null), context));
+
+        Assert.True(WholeFileCsRead.Matches(new HookPayload("Bash", null, $"cat {_repo.CompiledFile}"), context));
+        Assert.True(WholeFileCsRead.Matches(new HookPayload("Bash", null, $"cd {_repo.Root} && cat src/App/Compiled.cs"), context));
+        Assert.False(WholeFileCsRead.Matches(new HookPayload("Bash", null, $"grep -n Foo {_repo.CompiledFile}"), context));
+        Assert.False(WholeFileCsRead.Matches(new HookPayload("Bash", null, $"head -n 5 {_repo.CompiledFile}"), context));
+        Assert.False(WholeFileCsRead.Matches(new HookPayload("Bash", null, $"sed -i s/a/b/ {_repo.CompiledFile}"), context));
+        Assert.False(WholeFileCsRead.Matches(new HookPayload("Grep", null, null), context));
+    }
+
     /// <summary>A write-shaped segment is an edit, not a read: nothing lands in context, so no note.</summary>
     [Theory]
     [InlineData("sed -i 's/a/b/' {0}")]

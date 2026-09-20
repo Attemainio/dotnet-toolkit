@@ -104,7 +104,8 @@ output size by eye; say so in the report rather than reporting a measured number
 outlives its response: suspending the guards would let the rest of this run make raw `.cs` reads that
 silently bypass the tools being evaluated, which is precisely the measurement error this skill exists
 to avoid. Check it by reading its source and `docs/tools/server.md`. Measuring the *unguarded* route
-on purpose is `dotnet-performance`'s job, not this one's.
+on purpose is `dotnet-performance`'s strict variant's job, not this one's — and even that skill's
+default procedure no longer calls it, since the auto-mode classifier denies it as self-modification.
 
 Record `totals.toolCalls` and `totals.tokensReturned` for your `taskId` at the start and end, so the
 report can state what the evaluation itself cost.
