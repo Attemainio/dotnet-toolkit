@@ -106,14 +106,20 @@ catches is the one that makes a confident answer wrong rather than thin.
 
 Roslyn's reference search **cascades**: a call written against a base or interface declaration is
 reported as a caller of every symbol that overrides or implements it, because it might dispatch there
-at runtime. Those sites carry **`indirect: true`**, and the envelope splits the totals into
-**`directItems`** and **`indirectItems`** whenever any indirect site is present (both are omitted when
-every site is direct, so the common case costs nothing).
+at runtime. Those rows carry **`indirect: true`** and **`via`** — the member the call actually binds
+to, e.g. `IFlowComponent.EvaluateResiduals/2` on a caller of `Pipe.EvaluateResiduals` — and the
+envelope splits the totals into **`directItems`** and **`indirectItems`** and states it once in
+**`dispatchNote`** whenever any indirect row is present (all four are omitted when every site is
+direct, so the common case costs nothing).
 
-This matters most on an `override` with a common name. A large total under `dispatchKind: virtual` is
-not evidence of a large real fan-in: it may be mostly cascaded sites that only reach this symbol when
-the receiver's runtime type is this one. Read `directItems` first, and treat `indirectItems` as
-"could land here", not "does".
+This matters in two shapes. On an `override` with a common name, a large total under
+`dispatchKind: virtual` is not evidence of a large real fan-in: it may be mostly cascaded sites that
+only reach this symbol when the receiver's runtime type is this one. And on a plain implementation
+asked about as *"where is this called with the receiver typed as `Pipe`"*, the answer is exactly the
+rows **without** `indirect` — `directItems` of them. On FluidScript (2026-09-20) a route reported all
+eight rows as certain where three had a `Pipe` receiver; the other five bound to the interface member,
+which `via` now names. Read `directItems` first, and treat `indirectItems` as "could land here", not
+"does".
 
 ### Paging a high-fan-in symbol
 

@@ -629,8 +629,17 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                 sites = i.Sites.Select(s => new { file = s.File, line = s.Line, snippet = s.Snippet, kind = s.IsCref ? "cref" : null }),
                 isTest = i.IsTest ? true : (bool?)null,
                 indirect = i.IsDirect ? null : (bool?)true,
+                via = i.Via,
             }),
             dispatchKind,
+            // Stated once, beside the counts, because a column of "indirect: true" cells was read past on
+            // the run above: the rows are real call sites, they just do not name this member.
+            dispatchNote = indirectCount > 0
+                ? $"{indirectCount} of {ordered.Count} items are indirect: the call binds to a base or interface "
+                  + "member this symbol implements or overrides (named in via), and reaches this symbol only by "
+                  + "dispatch. For sites whose receiver's static type IS this symbol's type, count directItems "
+                  + "and drop the rows marked indirect."
+                : null,
             entryPointHint,
             totalItems = ordered.Count,
             totalSites = totalSites != ordered.Count ? (int?)totalSites : null,
@@ -1418,14 +1427,18 @@ private static object? ContainingType(ISymbol sym)
                 .Select(s => (object)new
                     {
                         file = s.File,
+                        // First, and always present: it is the number to quote for "where is this declared",
+                        // and the field an agent reaches for is the first one in the row. Through contract
+                        // 4.0 it was emitted only when it differed from startLine, on the absent-means-default
+                        // convention -- and the 2026-09-20 FluidScript run had two probes quote startLine (one
+                        // of them 42 doc-comment lines early) and a third read a TOON table's empty cell as
+                        // "signatureLine: null, a defect". A convention that costs three misreads per run is
+                        // dearer than the integer it saves.
+                        signatureLine = s.SignatureLine,
+                        // startLine..endLine is the Read range: the leading /// comment when there is one,
+                        // through the closing brace.
                         startLine = s.StartLine,
                         endLine = s.EndLine,
-                        // Present ONLY when it differs from startLine, which is exactly when a leading /// doc
-                        // comment widened the span. startLine is where a Read of the whole declaration begins;
-                        // signatureLine is where the declaration itself starts, and is the number to quote when
-                        // answering "where does this live" -- reporting the doc block's first line there is the
-                        // mistake this field exists to remove. Absent means "same as startLine", not "not computed".
-                        signatureLine = s.SignatureLine == s.StartLine ? (int?)null : s.SignatureLine,
                     })
                 .ToArray();
 
@@ -1613,7 +1626,7 @@ private static object? ContainingType(ISymbol sym)
 
 private sealed record RefItem(string SymbolId, string DisplayString, string CompactDisplayString,
         IReadOnlyList<(string File, int Line, string Snippet, bool IsCref)> Sites, string? DispatchKind,
-        bool IsTest = false, bool IsDirect = true);
+        bool IsTest = false, bool IsDirect = true, string? Via = null);
 
 
 private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution, SolutionLocator locator)
@@ -1645,13 +1658,19 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 // everything they carried is still in the single row that survives.
                 .DistinctBy(s => (s.File, s.Line))
                 .ToList();
+            // An indirect caller binds to a base or interface member, not to this one: Roslyn hands that
+            // member back as CalledSymbol, and naming it on the row is what lets a caller answer "whose
+            // static type is the receiver" without reading every site. The 2026-09-20 FluidScript run had
+            // an agent report eight callers of Pipe.EvaluateResiduals as certain when five bound to
+            // IFlowComponent.EvaluateResiduals; indirect:true alone did not stop it.
             items.Add(new RefItem(
                 SymbolKey.IdOf(callingSymbol),
                 callingSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
                 CompactDisplay(callingSymbol),
                 sites,
                 dispatch,
-                TestAttributes.IsTestMethod(callingSymbol), caller.IsDirect));
+                TestAttributes.IsTestMethod(callingSymbol), caller.IsDirect,
+                caller.IsDirect ? null : CompactDisplay(caller.CalledSymbol)));
         }
 
         // Two callers can now land on one row -- a member that reaches the target both directly and from a
@@ -1664,6 +1683,7 @@ private static async Task<List<RefItem>> Callers(ISymbol sym, Solution solution,
                 {
                     Sites = [.. g.SelectMany(i => i.Sites).DistinctBy(s => (s.File, s.Line))],
                     IsDirect = g.Any(i => i.IsDirect),
+                    Via = g.Any(i => i.IsDirect) ? null : g.Select(i => i.Via).FirstOrDefault(v => v is not null),
                     IsTest = g.Any(i => i.IsTest),
                 })
             .ToList();
@@ -1961,7 +1981,10 @@ private static (object Content, string SymbolId)? IndexSymbol(
         {
             kind = MapKindCode(hit.Kind),
             displayString = hit.FqName,
-            declarationSites = new object[] { new { file = hit.File, span = new { startLine = hit.Line, endLine = hit.Line } } },
+            // The same row shape the live path emits, so a caller's Read(offset, limit) works either way.
+            // The syntax index holds the signature line only: startLine and endLine collapse onto it, and
+            // limitedBy: index_only says why the span is one line.
+            declarationSites = new object[] { new { file = hit.File, signatureLine = hit.Line, startLine = hit.Line, endLine = hit.Line } },
             xmlDoc = hit.Doc,
             referenceCounts = (object?)null,
         };

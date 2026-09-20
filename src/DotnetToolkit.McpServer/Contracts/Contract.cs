@@ -16,8 +16,11 @@ public static class Contract
     /// bound on every fetch that touched it. 4.0 (2026-09-19) removed validate_patch, search_log, the
     /// source component and contentVersion of get_symbol, includeBodies of get_references, and the
     /// read column and intent of search_index; rename_symbol lost baseVersion/intent/requestedLevel and
-    /// its ladder block, and applyOnSuccess became apply.
+    /// its ladder block, and applyOnSuccess became apply. 4.1 (2026-09-20): declarationSites always
+    /// carries signatureLine, first after file, on the live and index-only paths alike; get_references
+    /// rows marked indirect name the member they bind to in via, and the envelope carries dispatchNote
+    /// whenever any row is indirect; a single-symbol get_symbol always carries xmlDoc.
     /// </remarks>
-    public const string Id = "ctx-contract/4.0";
+    public const string Id = "ctx-contract/4.1";
 
 }

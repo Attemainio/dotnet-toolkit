@@ -84,8 +84,8 @@ content:
   containingType:
     symbolId: sym_1f27b0ce34a8d952
     displayString: FeeCalculator
-  declarationSites[1]{file,startLine,endLine,signatureLine}:
-    src/Billing/Fees/FeeCalculator.cs,58,152,64
+  declarationSites[1]{file,signatureLine,startLine,endLine}:
+    src/Billing/Fees/FeeCalculator.cs,64,58,152
   bodyOutline:
     if (invoice.Lines.Count == 0),71,73
     foreach (var line in invoice.Lines),78,124

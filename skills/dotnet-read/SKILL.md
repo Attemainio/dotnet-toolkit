@@ -142,6 +142,13 @@ page. Read its zeroes and its silences precisely:
   When dispatch is the question, ask `get_references` or `get_symbol`'s `referenceCounts` — both
   expand to the interface members a symbol implements.
 
+**A describe-the-operation lookup compares summaries, never takes the top hit.** When the question
+names what a type *does* rather than what it is called, ask with `include: "shape,refs,modifiers,summary:full"`
+so every hit's summary comes back in the same call, and read the top few before choosing. Two probes
+issued near-identical queries on FluidScript (2026-09-20); the one that took the top-ranked hit named
+the *consumer* of the thing asked for, the one that read the runner-up's summary got it. The verb in a
+summary ("derives", "computes", "builds") is what settles it; ranking is by name tokens and cannot.
+
 **Read `shape` before deciding the next call.** A type with a large `M` wants
 `get_symbol(include: "members")`, never a whole-type `Read`. A member with a large `L` wants
 `get_symbol(include: "bodyOutline")` to map it, then a `Read` of the one region. Anything small wants
@@ -173,10 +180,11 @@ That pair — `get_symbol` to locate, `Read` of that range to fetch — is the w
 costs less than a whole-file `Read` on anything but a tiny file, misses no part of a partial, and the
 ranged read draws no hook note. Do not `Read` a whole file to find a symbol you could have named.
 
-**Report a location from `signatureLine`, not `startLine`.** `startLine` is the read offset and takes
-in the doc comment; `signatureLine` is where the declaration begins, and matches what `search_index`
-reports. Answering "declared at line 3" when the `class` keyword is on line 7 is the mistake it
-exists to prevent.
+**Report a location from `signatureLine`, not `startLine`.** `signatureLine` comes first in the row
+and is where the declaration begins, matching what `search_index` reports; `startLine` is the read
+offset and takes in the doc comment. Answering "declared at line 3" when the `class` keyword is on
+line 7 is the mistake it exists to prevent — on FluidScript (2026-09-20) it was 42 lines, the length
+of the doc comment.
 
 **`include` is a plain comma list of component names** that replaces the default (`xmlDoc,
 referenceCounts`):
@@ -229,11 +237,14 @@ exact shape producing a confidently wrong "safe to delete" verdict — first on 
 on an `[McpServerTool]` one on an unrelated repo — before the hint generalized past tests; don't
 re-derive that caveat from memory when the field already states it.
 
-**Do not read a large `dispatchKind: virtual` count as a large real fan-in.** Roslyn cascades: a call
-written against a base or interface declaration is reported as a caller of everything that overrides
-or implements it. Those sites are marked `indirect: true`, and the envelope splits `directItems` from
-`indirectItems` whenever any are present. `indirectItems` means "could land here", not "does" — check
-`directItems` first.
+**Do not read a large `dispatchKind: virtual` count as a large real fan-in, and do not report an
+`indirect` row as a caller of this member.** Roslyn cascades: a call written against a base or
+interface declaration is reported as a caller of everything that overrides or implements it. Those
+rows are marked `indirect: true` and carry `via` — the member the call actually binds to — and the
+envelope splits `directItems` from `indirectItems` and says so once in `dispatchNote`. Asked "where is
+this called with the receiver typed as `Pipe`", the answer is the rows *without* `indirect`, and
+nothing else needs reading; on FluidScript (2026-09-20) a route reported all eight rows where three
+were right. `indirectItems` means "could land here", not "does".
 
 **Check `targetDisplayString` when a count surprises you.** A bare-name or suffix `symbol` handle can
 bind to something you never meant, and the wrong answer looks exactly as authoritative as the right

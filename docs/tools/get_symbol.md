@@ -10,7 +10,7 @@ range:
 
 ```
 get_symbol(symbol: "Sample.Lib.Widget.Spin")
-  → declarationSites: [{file: "Lib/Widget.cs", startLine: 12, endLine: 24, signatureLine: 15}]
+  → declarationSites: [{file: "Lib/Widget.cs", signatureLine: 15, startLine: 12, endLine: 24}]
 
 Read(file: "Lib/Widget.cs", offset: 12, limit: 13)        # endLine - startLine + 1
 ```
@@ -28,8 +28,8 @@ split across files, and not dependent on the index being current.
 | Field | Meaning |
 |---|---|
 | `file` | Repo-root-relative, forward slashes. |
-| `startLine` | Where the declaration's leading `///` doc comment begins, when it has one. Otherwise the same line as `signatureLine`. **This is the `Read` offset.** |
-| `signatureLine` | Where the declaration itself starts: the line with the `class`/method keyword. **Present only when it differs from `startLine`**, so absence means "same as `startLine`", not "not computed". This is the number to quote when answering "where is this declared" — `search_index` reports the same line as a hit's `line`. |
+| `signatureLine` | Where the declaration itself starts: the line with the `class`/method keyword. **This is the number to quote when answering "where is this declared"** — `search_index` reports the same line as a hit's `lines`. Always present, and first, because it is the one an answer wants; a probe that quoted `startLine` instead was 42 doc-comment lines early. |
+| `startLine` | Where the declaration's leading `///` doc comment begins, when it has one; otherwise equal to `signatureLine`. **This is the `Read` offset.** |
 | `endLine` | The closing brace, or the last line of an expression-bodied member. `Read(limit: endLine - startLine + 1)` covers the whole declaration. |
 
 Attribute lines sit between `startLine` and `signatureLine` when both a doc comment and attributes
@@ -157,7 +157,7 @@ get_symbol(symbol: "SymbolStore.SymbolsDeclaredIn")
    "modifiers":"public",
    "containingType":{"symbolId":"sym_fc346a8c5efa6a88","displayString":"SymbolStore"},
    "declarationSites":[{"file":"src/DotnetToolkit.McpServer/Store/SymbolStore.Update.cs",
-                         "startLine":27,"endLine":38,"signatureLine":30}],
+                         "signatureLine":30,"startLine":27,"endLine":38}],
    "xmlDoc":{"summary":"The ids of every symbol whose declaration lies in the given file."},
    "referenceCounts":{"callers":2,"tests":3}}}
 ```

@@ -605,6 +605,28 @@ public sealed class WorkspaceIntegrationTests
     /// calling members permanently unattributed while a clean index of the same source attributed all
     /// of them, and the resulting tests:0 is what the validation ladder reads to decide escalation.
     /// </summary>
+    /// <summary>
+    /// A caller that binds to the interface member reaches an implementation only by dispatch. The row is
+    /// marked indirect and names the member it actually binds to in via, and the envelope says so once in
+    /// dispatchNote -- on the 2026-09-20 FluidScript run a column of indirect:true cells was read past and
+    /// eight callers reported where three had the implementing type as their receiver.
+    /// </summary>
+    [Fact]
+    public async Task GetReferences_IndirectCallerNamesTheMemberItBindsTo()
+    {
+        var root = Root(await GetReferences("Sample.Lib.Widget.Spin", "callers"));
+        var rows = TableRows(root.GetProperty("items"));
+
+        var viaInterface = Assert.Single(rows, r => r["displayString"].GetString()!.Contains("SpinTwice"));
+        Assert.True(viaInterface["indirect"].GetBoolean());
+        Assert.Equal("IWidget.Spin/1", viaInterface["via"].GetString());
+        Assert.All(rows.Where(r => !r.ContainsKey("indirect")), r => Assert.False(r.ContainsKey("via")));
+
+        Assert.Equal(2, root.GetProperty("directItems").GetInt32());
+        Assert.Equal(1, root.GetProperty("indirectItems").GetInt32());
+        Assert.Contains("1 of 3 items are indirect", root.GetProperty("dispatchNote").GetString());
+    }
+
     [Fact]
     public async Task GetReferences_MarksTestCallersFromTheirOwnAttribute()
     {
@@ -1056,6 +1078,12 @@ public sealed class WorkspaceIntegrationTests
             Assert.Contains("class Widget", fileLines[signatureLine - 1]);
             Assert.Equal("}", fileLines[endLine - 1].Trim());
             Assert.True(signatureLine > startLine);
+
+            // Always present, even when nothing widened the span: an undocumented member reports its own
+            // line twice rather than an absent field a table renders as an empty cell.
+            var undocumented = Root(await GetSymbol("Sample.Lib.TurboWidget.Spin")).GetProperty("content")
+                .GetProperty("declarationSites")[0];
+            Assert.Equal(undocumented.GetProperty("startLine").GetInt32(), undocumented.GetProperty("signatureLine").GetInt32());
 
             // No source text rides along: the text comes from a Read over exactly that range.
             Assert.False(root.GetProperty("content").TryGetProperty("source", out _));
