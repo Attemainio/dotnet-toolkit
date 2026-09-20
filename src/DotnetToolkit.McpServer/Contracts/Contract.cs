@@ -19,7 +19,9 @@ public static class Contract
     /// its ladder block, and applyOnSuccess became apply. 4.1 (2026-09-20): declarationSites always
     /// carries signatureLine, first after file, on the live and index-only paths alike; get_references
     /// rows marked indirect name the member they bind to in via, and the envelope carries dispatchNote
-    /// whenever any row is indirect; a single-symbol get_symbol always carries xmlDoc.
+    /// whenever any row is indirect; a single-symbol get_symbol always carries xmlDoc;
+    /// get_project_graph lists SDK-inherited edges under transitiveReferences/transitivelyReferencedBy
+    /// and keeps only declared ones in references/referencedBy.
     /// </remarks>
     public const string Id = "ctx-contract/4.1";
 

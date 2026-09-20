@@ -1790,6 +1790,48 @@ public sealed class WorkspaceIntegrationTests
         Assert.Equal(projects.Count, root.GetProperty("totalProjectsInSolution").GetInt32());
         Assert.True(projects[0].TryGetProperty("references", out _));
         Assert.True(projects[0].TryGetProperty("referencedBy", out _));
+
+        // App declares Lib in its .csproj, so the edge is direct in both directions and the transitive
+        // lists -- for references the SDK flowed in that no file names -- are absent, not empty.
+        var app = Assert.Single(projects, p => p.GetProperty("name").GetString() == "App");
+        Assert.Equal(["Lib"], app.GetProperty("references").EnumerateArray().Select(r => r.GetString()!).ToArray());
+        Assert.False(app.TryGetProperty("transitiveReferences", out _));
+        var lib = Assert.Single(projects, p => p.GetProperty("name").GetString() == "Lib");
+        Assert.Equal(["App"], lib.GetProperty("referencedBy").EnumerateArray().Select(r => r.GetString()!).ToArray());
+        Assert.False(lib.TryGetProperty("transitivelyReferencedBy", out _));
+    }
+
+    /// <summary>
+    /// The declared-reference reader is what separates a .csproj's own ProjectReference items from the
+    /// ones the SDK flows in transitively; it reads includes as written and gives up on a file it cannot
+    /// parse rather than guessing.
+    /// </summary>
+    [Fact]
+    public void DeclaredProjectReferenceIncludes_ReadsIncludesAsWritten()
+    {
+        var dir = Directory.CreateTempSubdirectory("csproj-refs-").FullName;
+        try
+        {
+            var path = Path.Combine(dir, "X.csproj");
+            File.WriteAllText(path, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                    <ProjectReference Include="../Other/Other.csproj" Condition="'$(A)'=='b'" />
+                    <PackageReference Include="xunit" Version="2" />
+                  </ItemGroup>
+                </Project>
+                """);
+            Assert.Equal(["..\\Lib\\Lib.csproj", "../Other/Other.csproj"], GraphTools.DeclaredProjectReferenceIncludes(path));
+
+            File.WriteAllText(path, "<Project><ItemGroup>");
+            Assert.Null(GraphTools.DeclaredProjectReferenceIncludes(path));
+            Assert.Null(GraphTools.DeclaredProjectReferenceIncludes(Path.Combine(dir, "missing.csproj")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]

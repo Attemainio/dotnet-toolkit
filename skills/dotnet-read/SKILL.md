@@ -270,6 +270,12 @@ Answers to:
 `direction: "callers"|"callees"`, `maxDepth` (default 3). `includeTree: false` returns **only**
 `blastRadius` — the cheapest possible answer to "how much does changing this ripple".
 
+**Never for "how does A reach B".** When both ends are named, that is `get_call_slice`, and the
+difference is not small: a `callees` tree from a well-connected root is the most expensive response
+this server produces — on FluidScript (2026-09-20) two independent probes each paid 13–18k tokens for
+a three-hop path inside one file that `get_call_slice` answers in a few hundred. The hierarchy tool
+is for an *open-ended* question with one known end.
+
 Manual: `<pluginRoot>/docs/tools/get_call_hierarchy.md`
 
 ### `get_call_slice` — is there a path from X to Y
@@ -409,6 +415,9 @@ committed before the note that prevents it was ever read.
 | `get_references` for a caller list you only need as names | `get_call_hierarchy(maxDepth: 1)` — measured ~1/3 the tokens at 8 callers, ~1/6 at 25 (395 vs 2,255), ~1/8 at 105: the gap widens with fan-in because `get_references` pays per *site* and the hierarchy pays per *caller*. Reach for `get_references` when you need the `{file, line, snippet}` sites, and pay for it deliberately |
 | `get_references` for an open-ended multi-level tree on a high-fan-in symbol | `get_call_hierarchy(maxDepth: 1)` — at 105 callers it measured ~1/8 the tokens |
 | Repeated `get_references` walking outward to see whether X reaches Y | `get_call_slice(from: "X", to: "Y")` |
+| `get_call_hierarchy(direction: "callees")` to find the path from X to a named Y | `get_call_slice(from: "X", to: "Y")` — measured 18k tokens against a few hundred for a three-hop path (FluidScript, 2026-09-20); the tree answers a question nobody asked |
+| `search_index` with an exact identifier you already hold, "to get the symbolId first" | `get_symbol`, `get_references`, `get_call_hierarchy` all take the name directly — a fully-qualified name, a unique suffix, or `Name(ParamType)` for an overload. `search_index` is for a name you do *not* have. On PandaAI (2026-09-20) both MCP probes opened 7 of 10 questions with a search they already knew the answer to, ~6–8k tokens each |
+| `search_index(query: "TypeName", kinds: "method")` to count or list a type's members | `get_symbol(include: "members")` — a ranked search is not an enumeration: it ranks by name tokens, so same-file members of *other* types rank too, and a partial's parts merge only in `members`. On FluidScript (2026-09-20) the search route counted 122 methods of a type that declares 119 |
 | Chaining `get_references` by hand three levels up | `get_call_hierarchy` |
 | `get_call_hierarchy` with the full tree just to size a change | `get_call_hierarchy(includeTree: false)` — `blastRadius` alone, and it is byte-identical to the one the full tree carries (verified: same `totalUniqueNodes`, same `perDepth`). Measured at `maxDepth: 3` on an 11-caller root: **46 vs 1,020 tokens, 22×**; at `maxDepth: 1` on a 147-caller root, 44 vs 397. The tree is the expensive part and you were not going to read it |
 | Guessing a base chain from `get_symbol`'s one-hop `containingType` | `get_type_hierarchy` |

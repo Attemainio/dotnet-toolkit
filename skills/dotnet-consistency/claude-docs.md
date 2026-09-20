@@ -149,7 +149,11 @@ All fourteen resolved on `last-verified`.
   supported — our `hint-write-checklist` relies on it.
 - **Output cap is 10,000 characters.** Exit 0 = success (JSON on stdout is parsed), exit 2 = blocking
   error (stderr shown to the model, action blocked), anything else = non-blocking error.
-- `PreToolUse` decides via `permissionDecision`: `allow` / `deny` / `ask` / `defer`.
+- `PreToolUse` decides via `permissionDecision`: `allow` / `deny` / `ask` / `defer`. On `allow`, the
+  `permissionDecisionReason` is shown to the **user, not the model**; text the model must read on an
+  allowed call goes in `hookSpecificOutput.additionalContext` (our read guards and checklist hint).
+  An explicit `allow` also waives the user's permission prompt for that call — never emit it from a
+  hook that only advises.
 - Default timeout is generous (600 s for `command`), but per-event caps are much tighter — our
   `hooks.json` pins 10 s, which is the right instinct for a hook on a hot path.
 - Hooks are **deterministic**; `CLAUDE.md` is advisory. Anything that must always happen belongs in a

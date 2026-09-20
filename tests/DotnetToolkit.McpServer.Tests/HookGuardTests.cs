@@ -286,7 +286,20 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
 
         Assert.Equal(0, outcome.ExitCode);
         Assert.Contains("ranged read", outcome.Stdout);
-        Assert.Contains("lines of Compiled.cs", outcome.Stdout);
+        // Only a utility that dumps the file whole carries the size figure; a sed script or head
+        // without -n injects something the hook cannot size, so it gets the note without a number.
+        Assert.Equal(template.StartsWith("cat", StringComparison.Ordinal), outcome.Stdout!.Contains("lines of Compiled.cs", StringComparison.Ordinal));
+    }
+
+    /// <summary>A write-shaped segment is an edit, not a read: nothing lands in context, so no note.</summary>
+    [Theory]
+    [InlineData("sed -i 's/a/b/' {0}")]
+    [InlineData("perl -i -pe 's/a/b/' {0}")]
+    [InlineData("echo x > {0}")]
+    public void Evaluate_WriteShapedCommandOnCompiledFile_DrawsNoNote(string template)
+    {
+        var command = string.Format(template, _repo.CompiledFile);
+        Assert.Equal(HookOutcome.Allow, GuardCsBashRead.Evaluate(new HookPayload("Bash", null, command), _repo.Context()));
     }
 
     [Fact]
@@ -301,8 +314,13 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
         Assert.Equal(0, outcome.ExitCode);
         // The raw JSON text escapes the backtick to ` (System.Text.Json's default encoder), so
             // this decodes the payload rather than substring-matching the raw bytes.
-            var reason = System.Text.Json.Nodes.JsonNode.Parse(outcome.Stdout!)!["hookSpecificOutput"]!["permissionDecisionReason"]!.GetValue<string>();
+            var output = System.Text.Json.Nodes.JsonNode.Parse(outcome.Stdout!)!["hookSpecificOutput"]!;
+            var reason = output["additionalContext"]!.GetValue<string>();
             Assert.Contains("`grep`", reason);
+            // No decision field at all: an explicit allow would waive the user's permission prompt for the
+            // whole command, and the model only ever reads additionalContext.
+            Assert.Null(output["permissionDecision"]);
+            Assert.Null(output["permissionDecisionReason"]);
     }
 
     [Fact]

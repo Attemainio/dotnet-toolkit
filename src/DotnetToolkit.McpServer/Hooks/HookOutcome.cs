@@ -37,7 +37,17 @@ internal readonly record struct HookOutcome(int ExitCode, string? Stderr = null,
 
     /// <summary>Allow a <c>PreToolUse</c> call while surfacing non-blocking advice to the agent.</summary>
     /// <param name="reason">Why a different tool would likely serve this call better, without denying it.</param>
-    /// <returns>An outcome with exit code 0 and a <c>PreToolUse</c> advisory <c>permissionDecisionReason</c> on stdout.</returns>
+    /// <returns>An outcome with exit code 0 and a <c>PreToolUse</c> <c>additionalContext</c> payload on stdout.</returns>
+    /// <remarks>
+    /// The advice travels as <c>additionalContext</c>, the one field of a PreToolUse allow that the model
+    /// reads. Through 2026-09-20 it was sent as <c>permissionDecision: "allow"</c> plus a
+    /// <c>permissionDecisionReason</c>, and a run against PandaAI that day established that the harness
+    /// shows that reason to the user and never to the model — every "advised and ignored" finding before
+    /// it was an advisory nobody had received. The decision field is dropped as well as replaced: an
+    /// explicit allow from a hook also waives the user's own permission prompt for the call, which for
+    /// a <c>Bash</c> command whose first segment happens to read a compiled file meant auto-approving
+    /// whatever came after the semicolon. Advice must never widen what a call may do.
+    /// </remarks>
     public static HookOutcome AllowAdvising(string reason)
     {
         var json = new JsonObject
@@ -45,8 +55,7 @@ internal readonly record struct HookOutcome(int ExitCode, string? Stderr = null,
             ["hookSpecificOutput"] = new JsonObject
             {
                 ["hookEventName"] = "PreToolUse",
-                ["permissionDecision"] = "allow",
-                ["permissionDecisionReason"] = reason,
+                ["additionalContext"] = reason,
             },
         };
         return new HookOutcome(0, Stdout: json.ToJsonString(JsonSerializerOptions.Default));

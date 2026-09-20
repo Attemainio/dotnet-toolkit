@@ -6,6 +6,14 @@ Which `.csproj` references which, and the reverse (`referencedBy`) — computed 
 loaded solution every call, no caching (project counts are small). Pass `project` to scope to
 one project's direct references and dependents instead of the whole graph.
 
+**`references`/`referencedBy` are the edges a `.csproj` declares.** The .NET SDK flows project
+references transitively, so the compilation of `WebHost.Tests` depends on `Core` even when its file
+names only `WebHost`; those inherited edges are listed separately as `transitiveReferences` and
+`transitivelyReferencedBy`, absent when there are none. Asked "which projects reference `Core`", the
+answer a developer means — the files that would have to change — is `referencedBy`. On PandaAI
+(2026-09-20) two agents answered five where the files said four, with nothing in the response to say
+the fifth was inherited.
+
 ```
 get_project_graph()
 ```

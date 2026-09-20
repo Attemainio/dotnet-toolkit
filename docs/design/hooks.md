@@ -153,9 +153,19 @@ survives: the refresh hook uses it to learn which files a shell command wrote.
 ## `hook guard-cs-read` — PreToolUse on `Read`
 
 **Advisory by default, not blocking.** Allows `Read` on a `.cs` file that a project actually compiles,
-but returns `hookSpecificOutput.permissionDecision: "allow"` with a `permissionDecisionReason` pointing
-at `search_index`/`get_symbol` instead — the read-side counterpart of the edit guard, but not a hard
-deny. Built with `HookOutcome.AllowAdvising`, the read-side sibling of `AllowWith`.
+and returns `hookSpecificOutput.additionalContext` pointing at `search_index`/`get_symbol` plus a
+ranged `Read` — the read-side counterpart of the old edit guard, but not a hard deny. Built with
+`HookOutcome.AllowAdvising`, the read-side sibling of `AllowWith`.
+
+**`additionalContext`, not `permissionDecisionReason` — since 2026-09-20.** Through that date the
+advisory went out as `permissionDecision: "allow"` with a `permissionDecisionReason`, and a run against
+PandaAI verified what the hooks reference says: on an allow, the reason is shown to the user and never
+to the model. Every earlier "the probe saw the advisory and overrode it" finding was an advisory nobody
+received, and the cost figure added that morning was invisible too. The decision field is gone as well
+as the reason: an explicit hook allow waives the user's own permission prompt for the call, which on a
+`Bash` command whose first segment reads a compiled file meant auto-approving whatever followed the
+semicolon. The advisory now rides the same channel the write-checklist hint always used, and no longer
+decides anything.
 
 This guard was a hard deny through 2026-08-20. It moved to advisory-only after the 2026-08-21
 performance run showed the MCP route is not reliably cheaper or more correct on every question — a

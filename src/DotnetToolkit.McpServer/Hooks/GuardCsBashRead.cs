@@ -83,13 +83,25 @@ internal static class GuardCsBashRead
                 continue;
             }
 
+            // sed -i, perl -i, tee, a redirect onto the file: a write, not a read. Nothing lands in
+            // context, the refresh hook re-indexes what it wrote, and a note saying "this read injects
+            // 882 lines" about an edit is simply false -- it fired on this repo's own edit scripts.
+            if (BashCommandScanner.FindWriteTargetCsArgument(segment) is not null)
+            {
+                continue;
+            }
+
             if (NamedCompiledFile(segment, context, workingDirectory) is { } named)
             {
                 return blocked
                     ? HookOutcome.Deny(BlockedFileMessage(name, named.Argument, named.Project))
                     : HookOutcome.AllowAdvising(FileMessage(
                         name, named.Argument, named.Project, context,
-                        ReadCostNote.For(named.Absolute, payload.SessionId)));
+                        // The cost figure is true only of a utility that puts the whole file in the
+                        // transcript. A grep or an awk pattern over one file injects its matches, which
+                        // the hook cannot size, so those get the note without the number -- a wrong
+                        // number is worse than none, and "this grep injects 662 lines" was one.
+                        WholeFileDumpers.Contains(name) ? ReadCostNote.For(named.Absolute, payload.SessionId) : null));
             }
 
             // A recursive or glob-scoped search names no single file, so the check above cannot see it --
@@ -115,6 +127,11 @@ internal static class GuardCsBashRead
         IgnoreInaccessible = true,
         MatchCasing = MatchCasing.CaseInsensitive,
     };
+
+    /// <summary>Utilities whose output is the file itself, so a read of one is sized by the file.</summary>
+    private static readonly HashSet<string> WholeFileDumpers = new(
+        ["cat", "tac", "nl", "bat", "less", "more", "xxd", "od", "hexdump", "base64", "strings", "dd"],
+        StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The compiled <c>.cs</c> file a segment names outright, if it names one.</summary>
     /// <param name="segment">One segment from <see cref="BashCommandScanner.Segments"/>.</param>

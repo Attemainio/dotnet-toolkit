@@ -63,11 +63,26 @@ public static class GraphTools
             ? refs.Keys.OrderBy(n => n, StringComparer.Ordinal)
             : new[] { project };
 
+        // The SDK flows ProjectReferences transitively, so Roslyn's Project.ProjectReferences names every
+        // project a compilation depends on, not only the ones the .csproj declares. A caller asking
+        // "which projects reference X" almost always means the declared edge -- the one a developer
+        // would edit -- and two agents on PandaAI (2026-09-20) answered five where the .csproj files said
+        // four, with nothing in the response to say the fifth was inherited. Declared edges stay in
+        // references/referencedBy; inherited ones move to their own lists, absent when empty.
+        var declared = DeclaredReferences(solution);
+        List<string> Direct(string from, List<string>? all) =>
+            all is null ? [] : declared.TryGetValue(from, out var d) ? [.. all.Where(d.Contains)] : all;
+        List<string>? Inherited(string from, List<string>? all) =>
+            all is null || !declared.TryGetValue(from, out var d) ? null
+            : all.Where(t => !d.Contains(t)).ToList() is { Count: > 0 } rest ? rest : null;
+
         var projects = names.Select(name => new
         {
             name,
-            references = refs.GetValueOrDefault(name) ?? [],
-            referencedBy = referencedBy.GetValueOrDefault(name) ?? [],
+            references = Direct(name, refs.GetValueOrDefault(name)),
+            transitiveReferences = Inherited(name, refs.GetValueOrDefault(name)),
+            referencedBy = (referencedBy.GetValueOrDefault(name) ?? []).Where(d => Direct(d, refs[d]).Contains(name)).ToList(),
+            transitivelyReferencedBy = (referencedBy.GetValueOrDefault(name) ?? []).Where(d => !Direct(d, refs[d]).Contains(name)).ToList() is { Count: > 0 } t ? t : null,
             degraded = diags.Any(d => d.Contains(name, StringComparison.OrdinalIgnoreCase)) ? true : (bool?)null,
         });
 
@@ -174,5 +189,64 @@ public static class GraphTools
         }
 
         return (refs, referencedBy);
+    }
+
+    /// <summary>
+    /// The project references each <c>.csproj</c> declares itself, by project name, read from the file
+    /// rather than from the evaluated compilation.
+    /// </summary>
+    /// <param name="solution">The loaded solution, for each project's path.</param>
+    /// <returns>
+    /// Project name to the names of the projects its file names in a <c>ProjectReference</c>. A project
+    /// whose file could not be read is absent, and its callers then treat every evaluated reference as
+    /// declared rather than guessing.
+    /// </returns>
+    private static Dictionary<string, HashSet<string>> DeclaredReferences(Solution solution)
+    {
+        var byPath = solution.Projects
+            .Where(p => p.FilePath is not null)
+            .GroupBy(p => Path.GetFullPath(p.FilePath!), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Name, StringComparer.OrdinalIgnoreCase);
+
+        var declared = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var proj in solution.Projects)
+        {
+            if (proj.FilePath is null)
+                continue;
+            var includes = DeclaredProjectReferenceIncludes(proj.FilePath);
+            if (includes is null)
+                continue;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            var directory = Path.GetDirectoryName(proj.FilePath) ?? "";
+            foreach (var include in includes)
+            {
+                var full = Path.GetFullPath(Path.Combine(directory, include.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar)));
+                if (byPath.TryGetValue(full, out var name))
+                    names.Add(name);
+            }
+            declared[proj.Name] = names;
+        }
+        return declared;
+    }
+
+    /// <summary>The <c>Include</c> of every <c>ProjectReference</c> item in a project file, as written.</summary>
+    /// <param name="csprojPath">The project file.</param>
+    /// <returns>The includes, or null when the file is missing or not well-formed XML.</returns>
+    internal static IReadOnlyList<string>? DeclaredProjectReferenceIncludes(string csprojPath)
+    {
+        try
+        {
+            var doc = System.Xml.Linq.XDocument.Load(csprojPath);
+            return doc.Descendants()
+                .Where(e => e.Name.LocalName == "ProjectReference")
+                .Select(e => e.Attribute("Include")?.Value)
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v!)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+        {
+            return null;
+        }
     }
 }
