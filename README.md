@@ -10,10 +10,12 @@ instead of reading whole files, reads only the lines a symbol occupies, and edit
 already has — the index follows every edit on its own.
 
 - **Fewer wrong answers** — real dispatch, overloads, inheritance and partial classes, not text matches.
-- **Less context burned** — [measured](#measured-against-raw-tools) at 2.6× less injected into the
-  context window than the same questions answered with `Read`/`Grep`, across two real solutions.
+- **Less context burned** — [measured](#measured-against-raw-tools) at 1.7× less injected into the
+  context window than the same questions answered with `Read`/`Grep`, across two real solutions —
+  with every answer right where the raw route got three wrong.
 - **Navigation only, by design** — it locates; `Read`, `Edit` and `dotnet build` do what they already
   do well. One tool-made edit remains: a compiler-derived `rename_symbol`.
+  [Why the 1.x write path was removed →](docs/design/navigation-only.md)
 - **Local by design** — nothing leaves your machine; caches live in your repo and rebuild from source.
 
 > **Status:** beta · **Requires:** Claude Code or Codex and the .NET 10 SDK · **Platforms:** Windows, Linux,
@@ -85,27 +87,31 @@ Now ask your agent something you would normally grep for. To find out whether it
 
 ## Measured against raw tools
 
-Each run sends one identical question list, blind, to three subagents, run sequentially: one granted
-**only** these MCP tools (guards forced to hard-deny a whole-file raw read, the ceiling), one granted **only**
-`Read`/`Grep`/`Glob`/`Bash` (guards suspended, the floor), and one granted **both** tool families at the
-plugin's shipped default guard state (what a real session actually does). All three are metered by the
-same hook, and ground truth is established independently after every probe returns.
+Each run sends one identical question list, blind, to three subagents, run one after another: one
+granted **both** tool families exactly as the plugin ships (what a real session actually does), one
+granted **only** these MCP tools (the ceiling), and one granted **only** `Read`/`Grep`/`Glob`/`Bash`
+(the floor). Nothing is denied to any of them; a per-agent count of whole-file `.cs` reads from the
+same meter is what shows whether a probe kept to its route. Ground truth is established independently
+before any probe runs.
 
-**21 questions across two solutions**, from before the third probe was added — a private 290-file
-trading/ML codebase and this repository:
+**19 scored questions across two solutions** on 2.0.0 (2026-09-20) — a 316-file physics/layout engine
+and a 329-file trading/ML codebase, both private:
 
-| | With the plugin | Raw tools | Ratio |
+| | Plugin installed, both tool families | Raw tools only | Ratio |
 |---|---:|---:|---:|
-| **Correct answers** | **18 / 21** | 17 / 21 | |
-| Tool calls | **46** | 102 | 2.2× |
-| **Tool-result tokens** — what lands in context | **25,582** | 66,793 | **2.6×** |
-| Tool-call argument tokens — model output | **824** | 4,339 | 5.3× |
-| Total agent tokens — including reasoning | **87,159** | 136,405 | 1.6× |
+| **Correct answers** | **19 / 19** | 16 / 19 | |
+| Tool calls | **71** | 97 | 1.4× |
+| **Tool-result tokens** — what lands in context | **41,451** | 69,542 | **1.7×** |
+| Tool-call argument tokens — model output, tools only | **1,719** | 3,391 | 2.0× |
+| Total agent tokens — including reasoning | **136,971** | 151,624 | 1.1× |
 
 Token figures are `chars4` approximations applied identically to both routes, so the ratios hold while
-the absolute numbers do not. **The raw route won several individual questions** — enumerating a 13-file
-partial class outright, and exact-name lookups on cost — and those losses are published in full
-alongside the method, the per-question breakdown and what the results do *not* transfer to.
+the absolute numbers do not. The session with the plugin reached for the MCP route on every question
+without a nudge. **The raw route won individual questions on cost** — an exact class name, a type
+described only in its `<remarks>` prose, a partial class whose parts follow a filename convention —
+and lost on correctness where text search cannot see structure: a `grep -v "<"` that dropped every
+`<= Tolerances.FlowZero` site, an implementer reached through a base class, a lambda counted as a
+method. Every loss is published alongside the method and what the results do *not* transfer to.
 
 [Full benchmarks, caveats and where the raw route won →](docs/benchmarks.md)
 
@@ -194,8 +200,8 @@ It is an **add-in**. It never replaces your repo's CLAUDE.md, your conventions, 
   to get the full answer.
 - **Tool response shapes are not yet stable.** They are versioned in `Contracts/Contract.cs` and do
   change between releases.
-- **Benchmarked on solutions up to ~500 types across 3 projects.** Larger monorepos are untested, and
-  the write path has not been benchmarked against raw tools at all.
+- **Benchmarked on solutions up to ~650 types across 6 projects.** Larger monorepos are untested, and
+  `rename_symbol` — the one tool-made edit — has not been benchmarked against a hand-written rename.
 - **C# only.** F#, VB.NET and non-`.cs` files are ordinary `Read`/`Grep` territory.
 
 ---
@@ -209,6 +215,8 @@ It is an **add-in**. It never replaces your repo's CLAUDE.md, your conventions, 
 | [Tool reference](docs/tools/) | One page per tool: arguments, a real call and response, what to call next |
 | [Worked example](docs/examples/compiler-aware-navigation.md) | What the tools exchange to answer one question |
 | [Architecture](docs/design/architecture.md) | Server internals, startup order, packaging |
+| [Why navigation-only](docs/design/navigation-only.md) | What the 1.x write path was measured to do, and the principles behind removing it |
+| [Changelog](CHANGELOG.md) | What changed for a consumer in each release |
 | [Contributing](CONTRIBUTING.md) | Building, layout, invariants, and reporting how the tools behave on your repo |
 
 Contributors can run `/dotnet-selfeval` to surface inefficient or incomplete tool responses on a repo

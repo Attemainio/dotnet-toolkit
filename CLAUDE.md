@@ -9,10 +9,9 @@ needed only for a particular kind of task lives behind a pointer below.
 A Claude Code plugin for .NET repositories: a Roslyn-powered MCP server (`DotnetToolkit.McpServer`)
 exposing token-efficient symbol location, navigation and relationship tools, plus skills that teach
 Claude to locate with these tools, read only the located range, and edit with `Edit`/`Write` while a
-hook keeps the index current. This repo is both the plugin's
-implementation and (via `.mcp.json`) a live consumer of its own server. Dogfooding is the point: if a
-tool is awkward or wrong for a real task here, that's a bug report about the tool, not a reason to fall
-back to shell.
+hook keeps the index current. This repo is both the plugin's implementation and (via `.mcp.json`) a
+live consumer of its own server. Dogfooding is the point: if a tool is awkward or wrong for a real
+task here, that's a bug report about the tool, not a reason to fall back to shell.
 
 ## Non-negotiable workflow
 
@@ -35,58 +34,31 @@ copies always diverge.
 
 What this repo adds on top, because it is the plugin's own source tree:
 
-**Before finishing**, run `dotnet test` and, if anything under `src/` changed, re-publish to `dist/`
-— `dist/` is what actually runs, so a server change is not delivered until it is republished. **`dist/`
-now also carries the hooks**, so a change under `Hooks/` is live only after republishing too.
-
-**`dist/` is committed to git, not ignored** — a consuming machine gets a working plugin from
-`git clone`/`git pull` alone, with no local build step. This makes the republish step above
-load-bearing at commit time, not just at session end: **before any commit or merge to `main`,
-re-publish `dist/` and commit the republished output in the same commit as the `src/`/`Hooks/`
-change that required it.** A source change committed without its matching `dist/` rebuild ships a
-stale binary to every consumer who pulls, not just a locally stale session — treat it as a blocking
-error, the same as a failing test.
-
-**That rule is now enforced, not remembered.** The publish scripts stamp `dist/build-manifest.json`
-with a hash of the sources the binary was built from, and `dotnet dist/DotnetToolkit.McpServer.dll
-doctor --no-probe` fails (nonzero exit) when `src/` has moved past it. **Run it before every commit
-that touches `src/`.** A rebuilt binary is never byte-identical — the module version id changes on
-every compile — so hashing the inputs is what makes the check mean "was this binary produced from
-this source" rather than "did two builds happen to match".
+**`dist/` is what runs, and it is committed.** The MCP server *and* the seven hooks execute from
+`dist/`, and a consuming machine gets a working plugin from `git pull` alone. So after any change
+under `src/` or `Hooks/`: run `dotnet test`, run `scripts/build-plugin.sh` (never the bare publish —
+it leaves the source stamp stale), and **commit the republished `dist/` in the same commit as the
+change that required it.** `dotnet dist/DotnetToolkit.McpServer.dll doctor --no-probe` fails when
+`src/` has moved past the stamped build; run it before every commit that touches `src/`. A stale
+committed `dist/` ships a stale binary to every consumer who pulls — a blocking error, the same as a
+failing test. Commits go straight to `main`.
 
 ## Commands
 
 ```bash
 dotnet build                        # build the solution
-dotnet test                         # unit + MSBuildWorkspace integration tests
+dotnet test                         # unit + MSBuildWorkspace integration tests (slower: loads a fixture solution)
 dotnet test --filter FullyQualifiedName~ClassName   # a single test class
 scripts/build-plugin.sh                 # required after any src/ or Hooks/ change
-scripts/package-plugin.sh               # clean package/ for a LOCAL marketplace source
+scripts/package-plugin.sh               # clean package/ for a LOCAL marketplace source — never point one at this tree
 dotnet dist/DotnetToolkit.McpServer.dll doctor --no-probe   # pre-commit: is dist/ current?
 ```
 
-`scripts/build-plugin.sh|.cmd` wrap `dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`,
-then trim `dist/runtimes` and write the source stamp `doctor` checks. **Use the script, not the bare
-publish line** — a bare publish leaves the stamp describing the previous build, so the gate reports
-`dist/` stale immediately after you republished it. Nothing the plugin ships at
-runtime runs a shell: `.mcp.json` and `hooks/hooks.json` both invoke `dotnet <dll>`, so it works on
-Windows as well as WSL/Linux/macOS.
-
-**Never point a local marketplace at this working tree** — `scripts/package-plugin.sh|.cmd` builds
-`package/` for that. A host's plugin installer snapshots the marketplace root verbatim, so the repo
-root ships 632 MB of `src/`, `tests/`, `.git/` and build output instead of 50 MB of plugin, and on
-Windows it *fails*: Visual Studio holds `.vs/<solution>/FileContentIndex/*.vsidx` under a deny-read
-lock and the copy dies with `Permission denied (os error 13)`. A fresh `git clone` has none of those
-directories, so a remote marketplace needs no packaging step; a working tree does. `dotnet test` includes `WorkspaceIntegrationTests`, which loads a
-fixture solution via `MSBuildWorkspace` — slower than the pure unit tests. `TreatWarningsAsErrors` is
-set repo-wide (`Directory.Build.props`), so a build with warnings fails. The root `.editorconfig` is
-deliberately near-empty and states why in its own header; silencing a rule there needs its reasoning
-in the same edit.
-
-**If more than one net10 SDK is installed, build with the same one the server registers for MSBuild**
-(`~/.dotnet/dotnet` here). It picks the newest installed SDK and logs `MSBuild: ...` to stderr at
-startup; `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install. Building with a different one silently
-degrades the server's workspace — symptoms and repair in `docs/design/architecture.md`.
+`TreatWarningsAsErrors` is set repo-wide (`Directory.Build.props`), so a build with warnings fails.
+The root `.editorconfig` is deliberately near-empty and states why in its own header; silencing a
+rule there needs its reasoning in the same edit. **If more than one net10 SDK is installed, build with
+the one the server registers for MSBuild** (`~/.dotnet/dotnet` here) — a different one silently
+degrades the server's workspace; symptoms and repair in `docs/design/architecture.md`.
 
 ## Where to read what
 
@@ -95,14 +67,15 @@ rows are the maintainer's routes — files a consuming repo does not have.
 
 | When | Read |
 |---|---|
-| Changing server internals, startup order, a subsystem, or packaging | `docs/design/architecture.md` |
+| Changing server internals, startup order, a subsystem, packaging, or anything that shells out | `docs/design/architecture.md` |
 | Changing the always-loaded rule, or what init ships | `.claude/rules/dotnet-index.md`; `skills/dotnet-init/SKILL.md` copies it |
 | Changing which tool answers what, or a route finding | `skills/dotnet-read/SKILL.md` (reads) or `skills/dotnet-write/SKILL.md` (writes) — **not** the always-loaded rule |
 | Changing a coding standard | `standards/<name>.md`, plus its row in `standards/index.md` |
 | Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/design/agents.md` |
-| Why a hook is built the way it is, or why its off-switch expires | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`; nothing routes to this file) |
+| Why a hook is built the way it is, or why its off-switch expires | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`) |
 | Measuring the plugin against not having it | `skills/dotnet-performance/SKILL.md` — runs at the default guard state; the only sanctioned caller of `set_hook_guards` (strict variant only) |
 | Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-init`) |
+| Why the 1.x write path was removed | `docs/design/navigation-only.md` |
 
 **`.claude/rules/dotnet-index.md` is the only always-loaded rule**, because it is the only file in
 `.claude/rules/` with no frontmatter. The standards under `standards/` are read by explicit path
@@ -113,10 +86,6 @@ which is why they live outside `.claude/rules/` and carry none.
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr; never write to `Console.Out` in
   server code.
-- **`dist/` is what runs**, not `src/` — for the MCP server *and* the seven hooks, and it is
-  **committed to git** so a consuming machine needs no local build step. Re-publish after any server
-  change, **and commit the republished `dist/` in the same commit** — a stale *committed* `dist/` is
-  worse than a stale local one, since it ships to every consumer who pulls.
 - **Tool signature changes break in-process callers** — the tests call these methods positionally — and
   **any response-shape change needs `Contracts/Contract.cs` bumped.**
 - **Change detection is mtime-polling, not filesystem watchers**, so it works on WSL `/mnt/*` where
@@ -124,23 +93,10 @@ which is why they live outside `.claude/rules/` and carry none.
 - **`.claude/rules/` holds exactly one file**, and the standards live in `standards/` with no
   frontmatter. A second unfrontmattered rule, or a `paths:` key reappearing on a standard, is a
   silent always-loaded regression paid by every session *and* every subagent.
-- **Any new code that shells out to a child process with redirected stdout+stderr must drain both
-  streams concurrently** (`Task.WhenAll`, never one fully then the other) — an unread stream's OS
-  pipe buffer fills and the child hangs forever. `WorkspaceHost.RestoreAsync` shipped that bug once
-  (commit `71fe3fa`). Shelling out to **`dotnet`** carries two more rules, both learned the hard way:
-  - **Call `MSBuildRegistration.ScrubInheritedRegistration(psi)`.** Registering an SDK points
-    `MSBUILD_EXE_PATH`/`MSBuildExtensionsPath`/`MSBuildSDKsPath` at that one install *for the whole
-    process*, and a child inherits them. When the child's host is a different install — the normal
-    case for a bare `dotnet` off `PATH` — it loads a foreign MSBuild and **exits nonzero having
-    written nothing to either stream**. That silence is the trap: it is indistinguishable from a
-    held-open pipe, so the symptom points at process plumbing while the cause is an environment
-    variable. It failed the entire integration collection (205 tests) exactly once.
-  - **Set `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0`, but never treat EOF as
-    the completion signal.** Those switches reduce surviving MSBuild worker nodes; they do not
-    eliminate them — measured, `dotnet restore` returns in under a second with both set and leaves
-    ten nodes holding the inherited pipe write-ends. **Process exit is the completion signal; a
-    stream drain is best-effort and only decorates a failure message.** Waiting on `ReadToEndAsync`
-    after exit hangs until whatever timeout bounds it.
+- **Shelling out has three rules** — drain both streams concurrently, scrub the inherited MSBuild
+  registration before launching `dotnet`, and treat process exit (never EOF) as completion. Each was
+  learned from a real hang or a silent failure; the full statement is "Shelling out to a child
+  process" in `docs/design/architecture.md`. Read it before writing any `Process.Start`.
 - **`.gitattributes` forces LF on `*.sh`/`*.cs`/`*.csproj`.** Windows-side tooling once CRLF'd
   `.cs` files, breaking raw string literals in two tests — if a new file type needs the same
   protection, add it there rather than fixing line endings reactively.
@@ -153,24 +109,20 @@ Claude documentation is the ground truth for **design** — how a tool gets foun
 loaded, what a rule or skill may contain — and there the code is what moves.
 
 - After changing a tool name, signature, or response contract — or a hook, script, skill, or documented
-  workflow — **invoke `dotnet-consistency`**. It owns the authoritative list of files that
-  describe the surface, the checklist against official Claude guidance, and the drift sweep. Don't
-  silently patch one file and move on; two copies always diverge.
-- Update every affected file in the same task as the change.
+  workflow — **invoke `dotnet-consistency`**. It owns the authoritative list of files that describe
+  the surface, the checklist against official Claude guidance, and the drift sweep. Don't silently
+  patch one file and move on; two copies always diverge.
+- Update every affected file in the same task as the change, and `CHANGELOG.md` for anything a
+  consumer sees.
 - Update **this file** only when the change affects an always-applicable workflow, invariant, or route.
-  Detailed mechanics, transient findings, and per-tool behavior belong in the shipped file that owns
-  them, with at most a pointer here.
-- Anything operational that lives *only* in this file never reaches a consuming repo — which is a
-  finding, not a convenience.
+  Anything operational that lives *only* here never reaches a consuming repo — a finding, not a
+  convenience.
 
 ## Context budget
 
 **This file and `.claude/rules/dotnet-index.md` are the only always-loaded files**, and the only two
-under a size budget. Keep them declarations of *when* and *where*, not procedure.
-
-The policy — the targets, what counts as scatter, why an overage is fixed by moving guidance behind a
-pointer rather than deleting it, and the harness facts behind all of it — is owned and enforced by
-`dotnet-consistency` (`harness-compliance.md` §D–§F). Don't re-derive it here.
+under a size budget. Keep them declarations of *when* and *where*, not procedure. The policy is owned
+and enforced by `dotnet-consistency` (`harness-compliance.md` §D–§F); don't re-derive it here.
 
 # Compact instructions
 

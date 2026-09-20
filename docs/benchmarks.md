@@ -18,28 +18,27 @@ Each run is driven by the `dotnet-performance` skill:
    lookups, one method inside a very large file, partial-class enumeration, call-site counting on a
    common name, interface implementers, override enumeration, dead-symbol confirmation, base chains.
 2. That identical list goes **verbatim and blind** to three subagents, run sequentially:
-   - `dotnet-perf-mcp-probe` — granted **only** the dotnet-toolkit MCP tools. No `Grep`, `Glob` or
-     `Bash` exists in its grant, so there is no raw shortcut to fall back on. Runs with the guards
-     forced into a hard-deny mode (`set_hook_guards(state: "block")`) as a backstop against its one
-     narrow `Read` allowance quietly contaminating the run. This is the **ceiling**.
-   - `dotnet-perf-raw-probe` — granted **only** `Read`/`Grep`/`Glob`/`Bash`. No MCP tool of any kind.
-     Runs with the guards suspended (`set_hook_guards(state: "suspend")`), simulating a session with no
-     plugin installed at all. This is the **floor**.
-   - `dotnet-perf-full-probe` — granted **both** tool families at once, run at the guards' plugin-shipped
-     default (read guards advisory, write guards blocking, nothing suspended or forced). This is
-     **practice**: what a real, unrestricted session with this plugin installed actually does, free to
-     follow or ignore an advisory nudge per question. Added 2026-08-22; runs before either of the other
-     two, since it is the only one that needs no guard-state change.
+   - `dotnet-perf-full-probe` — granted **both** tool families at once, exactly as the plugin ships.
+     This is **practice**: what a real, unrestricted session with this plugin installed actually does,
+     free to follow or ignore an advisory note per question. Added 2026-08-22.
+   - `dotnet-perf-mcp-probe` — granted **only** the dotnet-toolkit MCP tools plus `Read`, narrowed by
+     instruction to ranged reads over `declarationSites`. No `Grep`, `Glob` or `Bash` exists in its
+     grant, so there is no raw shortcut to fall back on. This is the **ceiling**.
+   - `dotnet-perf-raw-probe` — granted **only** `Read`/`Grep`/`Glob`/`Bash`. No MCP tool of any kind;
+     told to ignore the advisory note, which it has no MCP tool to act on anyway. This is the **floor**.
 3. No probe sees another's answers, or the orchestrator's own prior exploration.
-4. All three receive the same `performance_protocol.md`, so the comparison isolates the tool family (and,
-   for the full probe, the guard state actually shipped) rather than the instructions.
-5. Guard hooks are moved from their default state for a bounded window around the raw and MCP probes
-   only — suspended for the raw probe, forced to block for the MCP probe — because guard state is one
-   global switch per repo, so the three probes run one at a time rather than concurrently. A positive
-   control confirms each state change actually reached the hook processes before that probe launches; a
-   negative control confirms the guards returned to default afterwards.
-6. **Ground truth for every contested answer is established independently by the orchestrator, after
-   all three probes return** — never taken from a probe's self-report.
+4. All three receive the same `performance_protocol.md`, so the comparison isolates the tool family
+   rather than the instructions.
+5. **All three run at the plugin's default guard state; nothing is denied to any of them.** Whether a
+   probe kept to its route is read off the meter afterwards: it records, per call, whether a compiled
+   `.cs` file was put into context whole, and `get_retrieval_metrics` reports the count per agent as
+   `wholeFileCsReads`. A nonzero count on the MCP probe means the ceiling is contaminated and the
+   report says so. Until 2026-09-20 the same discipline was enforced up front by switching guard
+   state (`suspend` around the raw probe, `block` around the MCP probe); Claude Code's auto-mode
+   classifier denies that switch as self-modification, which stopped every auto-mode run, and the
+   count answers the same question without it. Specimens A and B were run the old way.
+6. **Ground truth for every contested answer is established independently by the orchestrator** —
+   never taken from a probe's self-report.
 
 Every MCP-granting probe also holds `ToolSearch` (added 2026-08-25). The harness defers tool schemas in
 sessions carrying many tools, and a subagent without `ToolSearch` cannot load one — every MCP call comes
@@ -104,6 +103,58 @@ non-MCP call, which the server never sees. The two instruments agree.
 | **Tool-result tokens** | **12,650** | 37,551 | **2.97×** |
 | Tool-call argument tokens | **342** | 2,648 | 7.74× |
 | Total agent tokens | **40,940** | 70,931 | 1.73× |
+
+### Specimens C and D — the navigation-only surface (2.0.0)
+
+Both run on 2026-09-20, after `get_symbol` stopped returning source and the read guards became
+advisory-only — so "with the plugin" here is a session that *locates* with the MCP tools and reads
+the located span with a ranged `Read`, exactly as the plugin ships. Three probes each, run at the
+default guard state; the MCP-only probe's `wholeFileCsReads` was 0 on both, so the ceiling is clean.
+
+**Specimen C — FluidScript**, a private physics/layout engine. 316 files, 649 types, 5 projects, 78 175
+lines; largest file 3 569 lines. 10 questions.
+
+| | Both families (default) | MCP only (ceiling) | Raw tools (floor) | Default vs raw |
+|---|---:|---:|---:|---:|
+| **Correct answers** (of 10) | **10** | 10 | 9 | |
+| Tool calls | **29** | 37 | 52 | 1.79× |
+| **Tool-result tokens** | **15,789** | 16,219 | 24,185 | **1.53×** |
+| Tool-call argument tokens, tools only | **704** | 1,051 | 1,806 | 2.57× |
+| Total agent tokens | **57,445** | 52,424 | 64,406 | 1.12× |
+
+**Specimen D — PandaAI**, a private trading/ML solution (Specimen A a month on: 329 files, 551 types,
+6 projects; largest file 1 585 lines). 10 questions, one scored as a wash — its wording described no
+type in the repo, an orchestrator error — leaving 9.
+
+| | Both families (default) | MCP only (ceiling) | Raw tools (floor) | Default vs raw |
+|---|---:|---:|---:|---:|
+| **Correct answers** (of 9) | **9** | 9 | 7 | |
+| Tool calls | **42** | 34 | 45 | 1.07× |
+| **Tool-result tokens** | **25,662** | 28,962 | 45,357 | **1.77×** |
+| Tool-call argument tokens, tools only | **1,015** | 910 | 1,585 | 1.56× |
+| Total agent tokens | **79,526** | 78,695 | 87,218 | 1.10× |
+
+"Tools only" argument tokens exclude each probe's final report (`SubagentHandback`, 1.1–2.0k tokens),
+which the meter now records as a call and which is the same shape on every route.
+
+What the two runs add to A and B:
+
+- **The default session used the MCP route on every question, unprompted.** Neither full probe made
+  a whole-file `.cs` read, so no advisory fired and none could be followed or ignored. On a wired
+  repo the router rule is doing the routing; the guards are not.
+- **The full probe beat the MCP-only ceiling on both.** Not because raw tools helped — it made one
+  `Bash` call in twenty questions — but because two agents with the same tools spent differently:
+  the MCP probe put 9 calls into one dispatch question the full probe answered in 2, and three
+  150-line ranged reads into a question the full probe answered with one 100-line read. The MCP
+  route is only as cheap as the ranges the agent picks; `bodyOutline` exists for that.
+- **The whole-agent gap is ~10 %.** A 20–30k saving in tool results survives as 7–9k at the agent
+  level, because bootstrap and reasoning dominate a 10-question subagent. The saving is real and is
+  where the plugin claims it — per call — and it is proportionally larger in a long main-thread
+  session that pays bootstrap once.
+- **The raw route's three wrong answers are the always-loaded rule's claims, verbatim:** a
+  `grep -v "<"` meant to drop `<see cref>` lines dropped every `<= Tolerances.FlowZero` site (8 of 12,
+  reported `certain`); `grep ": ISolver"` cannot see a test double that inherits the interface through
+  a base class (3 of 4); a method-counting regex matched a lambda in a field initialiser (23 for 22).
 
 ## Reading the numbers honestly
 
@@ -192,8 +243,8 @@ A route that fails loudly is cheaper to work with than one that fails at 26-vs-2
 
 ## What these runs do not measure
 
-- **The write path.** `rename_symbol` versus a hand-written rename has never been benchmarked
-  against raw tools. Both probes are read-only.
+- **`rename_symbol`**, the one tool-made edit, versus a hand-written rename. All probes are
+  read-only.
 - **Multi-project ripple.** Every question in Specimen A landed in one of its three projects.
 - **Repos larger than ~500 types**, or monorepos.
 - **Comment density**, which is under-sampled. The false hit above came from a large block-commented-out
@@ -207,9 +258,10 @@ A route that fails loudly is cheaper to work with than one that fails at 26-vs-2
 /dotnet-performance
 ```
 
-It builds the question matrix from *your* solution, runs all three probes in sequence, and writes a
-report to `.claude/dotnet-toolkit/perf/` with these same tables — including which questions a raw-tool
-route won and which size axes the result does or does not transfer to.
+It builds the question matrix from *your* solution, runs all three probes in sequence at the default
+guard state — nothing is denied, and no permission prompt is needed in auto mode — and writes a report
+to `.claude/dotnet-toolkit/perf/` with these same tables, including each probe's whole-file read count,
+which questions a raw-tool route won, and which size axes the result does or does not transfer to.
 
 What it does to your machine:
 

@@ -36,10 +36,14 @@ instead — see [docs/benchmarks.md](docs/benchmarks.md).
 dotnet build
 dotnet test                                                      # unit + MSBuildWorkspace integration tests
 dotnet test --filter FullyQualifiedName~ClassName                # a single test class
-dotnet publish src/DotnetToolkit.McpServer -c Release -o dist    # required after any src/ or Hooks/ change
+scripts/build-plugin.sh                                          # required after any src/ or Hooks/ change
+dotnet dist/DotnetToolkit.McpServer.dll doctor --no-probe        # before a commit: is dist/ built from this src/?
 ```
 
-`scripts/build-plugin.sh` and `scripts/build-plugin.cmd` are thin wrappers over that publish line.
+`scripts/build-plugin.sh` and `scripts/build-plugin.cmd` wrap `dotnet publish src/DotnetToolkit.McpServer
+-c Release -o dist`, then trim `dist/runtimes` and stamp `dist/build-manifest.json` with a hash of the
+sources. Use the script, not the bare publish: a bare publish leaves the stamp describing the previous
+build, and `doctor` then reports `dist/` stale right after you rebuilt it.
 
 Two rules that are not optional:
 

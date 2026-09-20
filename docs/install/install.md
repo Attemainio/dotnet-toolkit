@@ -160,8 +160,10 @@ per **read-only** tool: `search_index`, `get_symbol`, `get_references`, `get_sco
 `get_semantic_diff`, `workspace_status`, `reload_workspace`, `get_retrieval_metrics`, `ping`,
 `set_output_format`.
 
-**`rename_symbol` is deliberately absent.** It writes to the user's source; it must keep prompting.
-Adding it is a finding, not an improvement — say so if the user asks for "all of them".
+**`rename_symbol` and `set_hook_guards` are deliberately absent.** The first writes to the user's
+source; the second switches the read guards' state for a window — each must keep prompting. Adding
+either is a finding, not an improvement — say so if the user asks for "all of them". (Nothing the
+plugin does by default needs `set_hook_guards`; even `dotnet-performance` runs without it.)
 
 - **Additive only.** Read the existing file, append the missing entries, preserve every existing key,
   entry, and the file's formatting. Never replace the file, and never touch `permissions.deny`.

@@ -253,9 +253,21 @@ workspace on native Windows and Unix. This split avoids shell launchers and work
 Codex plugin-MCP limitation: a bundled server cannot both locate plugin files and inherit the session
 workspace. The .NET runtime remains the only runtime requirement.
 
-**The published server in `dist/` is what actually runs — after editing anything under `src/`, re-run
-`dotnet publish src/DotnetToolkit.McpServer -c Release -o dist`** (or its `scripts/build-plugin.sh` /
-`scripts/build-plugin.cmd` wrapper).
+**The published server in `dist/` is what actually runs — after editing anything under `src/` or
+`Hooks/`, re-run `scripts/build-plugin.sh` (or `.cmd`).** The script wraps `dotnet publish
+src/DotnetToolkit.McpServer -c Release -o dist`, trims `dist/runtimes`, and stamps
+`dist/build-manifest.json` with a hash of the sources; `dotnet dist/DotnetToolkit.McpServer.dll doctor
+--no-probe` fails when `src/` has moved past that stamp, which is the pre-commit gate. A bare publish
+leaves the stamp describing the previous build, so the gate then reports `dist/` stale right after a
+rebuild. `dist/` is committed, so a consuming machine needs no build step — and a source change
+committed without its rebuilt `dist/` ships a stale binary to every consumer who pulls.
+
+**Never point a local marketplace at this working tree** — `scripts/package-plugin.sh|.cmd` builds
+`package/` for that. A host's plugin installer snapshots the marketplace root verbatim, so the repo
+root ships 632 MB of `src/`, `tests/`, `.git/` and build output instead of 50 MB of plugin, and on
+Windows it *fails*: Visual Studio holds `.vs/<solution>/FileContentIndex/*.vsidx` under a deny-read
+lock and the copy dies with `Permission denied (os error 13)`. A fresh `git clone` has none of those
+directories, so a remote marketplace needs no packaging step; a working tree does.
 
 `hooks/hooks.json` ships seven hooks — `hook hint-cs-write-checklist`, `hook guard-cs-read`,
 `hook guard-cs-bash-read`, `hook refresh-cs-files`, `hook meter-tool-call`,
@@ -302,6 +314,27 @@ its own `.claude/rules/`, outside this plugin. These standards are default guida
 repos** installing this
 plugin, not a description of this repo's own style specifically — though this repo's own code happens
 to follow them.
+
+## Shelling out to a child process
+
+Three rules, each learned from a real hang or a real silent failure:
+
+- **Drain redirected stdout and stderr concurrently** (`Task.WhenAll`, never one fully then the
+  other) — an unread stream's OS pipe buffer fills and the child hangs forever.
+  `WorkspaceHost.RestoreAsync` shipped that bug once (commit `71fe3fa`).
+- **When the child is `dotnet`, call `MSBuildRegistration.ScrubInheritedRegistration(psi)`.**
+  Registering an SDK points `MSBUILD_EXE_PATH`/`MSBuildExtensionsPath`/`MSBuildSDKsPath` at that one
+  install *for the whole process*, and a child inherits them. When the child's host is a different
+  install — the normal case for a bare `dotnet` off `PATH` — it loads a foreign MSBuild and **exits
+  nonzero having written nothing to either stream**. That silence is the trap: it is
+  indistinguishable from a held-open pipe, so the symptom points at process plumbing while the cause
+  is an environment variable. It failed the entire integration collection (205 tests) exactly once.
+- **Set `MSBUILDDISABLENODEREUSE=1` and `DOTNET_CLI_USE_MSBUILD_SERVER=0`, but never treat EOF as
+  the completion signal.** Those switches reduce surviving MSBuild worker nodes; they do not
+  eliminate them — measured, `dotnet restore` returns in under a second with both set and leaves ten
+  nodes holding the inherited pipe write-ends. **Process exit is the completion signal; a stream
+  drain is best-effort and only decorates a failure message.** Waiting on `ReadToEndAsync` after exit
+  hangs until whatever timeout bounds it.
 
 ## Environment: build with the same SDK the server uses
 

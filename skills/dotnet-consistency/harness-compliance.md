@@ -157,7 +157,11 @@ done
 tool table, `limitedBy` section and standards table moved into `skills/dotnet-read`,
 `skills/dotnet-write` and `standards/index.md`: `.claude/rules/dotnet-index.md` fell from 161 lines
 / 10,590 B to roughly a third of that, inside the byte target. `CLAUDE.md` was 127 lines / 8,293 B —
-inside the official line limit, over the repo byte target. Re-measure before reporting either.
+inside the official line limit, over the repo byte target. **Re-measured 2026-09-20**: `CLAUDE.md`
+had grown to 12,803 B (the child-process rules and the marketplace-packaging warning, each stated in
+full); moving both behind pointers into `docs/design/architecture.md` and stating the `dist/` rule
+once brought it to 8,923 B / 132 lines. `.claude/rules/dotnet-index.md` is 4,879 B. Re-measure before
+reporting either.
 
 Three rules for acting on an overage:
 

@@ -61,10 +61,11 @@ own CLAUDE.md — its architecture, commands, and conventions, written and owned
 alone entirely.
 
 **Be honest with the user about the loading mechanics.** A `paths:`-scoped rule fires only when the
-built-in `Read` touches a matching file — and here `.cs` contact goes through the MCP tools or is
-blocked by the guards, so `paths: ["**/*.cs"]` would almost never load. Worse, it does not reliably
-*suppress* either: the read guard deliberately allows `Read` on `.cs` files no project compiles, so
-such a rule fires unpredictably rather than on demand. (Earlier versions of this skill shipped
+built-in `Read` touches a matching file — and here a `.cs` file is located through the MCP tools and
+read by a *ranged* `Read` of one declaration, so `paths: ["**/*.cs"]` would load on the first ranged
+read rather than when the standard is needed, and never for a session that answered from the index
+alone. Nor does it reliably *suppress*: the read guard only ever advises, so a rule scoped to `.cs`
+fires on every kind of read, on demand or not. (Earlier versions of this skill shipped
 standards as path-scoped rules for exactly this reason, and it was wrong both ways.)
 
 So: **one file is copied**, `dotnet-index.md`, carrying no `paths:` and therefore always-loaded —

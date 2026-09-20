@@ -61,8 +61,9 @@ ls .claude/rules/ .claude/dotnet-toolkit/ 2>/dev/null
   broken install — it is the design. There is no per-repo override tier, so a
   `.claude/dotnet-toolkit/standards/` directory left over from an older install is **dead text**
   nothing reads: report it for deletion.
-- `.claude/settings.json`'s `permissions.allow` covers the read-only tools and **not**
-  `rename_symbol` — the writer must keep prompting. Its presence is a finding.
+- `.claude/settings.json`'s `permissions.allow` covers the 15 read-only tools and **neither**
+  `rename_symbol` nor `set_hook_guards` — the writer and the guard switch must keep prompting. Either
+  one's presence is a finding.
 - The plugin is actually connected: `workspace_status` answers, and the solution it resolved is the
   one the repo expects. A rule installed against a plugin that is not loaded is worse than no rule —
   it tells the session to call tools that will not answer.
