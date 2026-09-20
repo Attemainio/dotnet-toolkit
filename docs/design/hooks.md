@@ -186,7 +186,10 @@ included (since 2026-09-19). Once a symbol is located, `get_symbol`'s `declarati
 `Read` of that range is the intended way to fetch its text, so advising against it would be advising
 against the route the skills recommend; and a probe that could not read code at all would measure
 nothing. Only the whole-file read is the question the advisory exists for, and its
-text now says so: locate, then read the range.
+text now says so: locate, then read the range. The shell-side equivalent (`BashCommandScanner.IsRangedRead`)
+accepts `sed -n` with one numeric address or several joined by `;` (`85,97p;150,167p` — added
+2026-09-20 after the advisory fired on that form while the meter, which never looks at `sed`,
+correctly did not count it), `head -n N`/`head -N`, and `tail -n +N`.
 
 **`set_hook_guards(state: "block")` forces this guard back to its pre-2026-08-20 hard deny**, added the
 same day as that migration once `dotnet-performance` needed a third probe with a real forced-enforcement

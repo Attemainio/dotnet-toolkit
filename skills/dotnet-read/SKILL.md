@@ -109,7 +109,12 @@ so it is the line to quote for "where is this", not the range to `Read` for the 
 
 **Names only.** The index holds identifiers and doc summaries, not bodies: a string literal, a log
 message, a comment or a local variable is not findable here. That one question is a `Grep`, and the
-only one on C# where it is the right tool.
+only one on C# where it is the right tool. **A type you can only describe is often that question
+too**: `<summary>` text is indexed, `<remarks>` and body comments are not, so when the phrase that
+discriminates it ("full pivoting", "re-runs elimination") lives in prose, one `Grep` over the tree
+lands on the doc comment where two name-guessing searches return nothing — measured on FluidScript
+(2026-09-20), where the raw route won that question outright. Grep the phrase, then `get_symbol` on
+the type it sits above.
 
 **`include` picks each hit's columns**, comma-separated, and **replaces** the default set exactly as
 `get_symbol`'s `include` does. Default: `shape,refs,modifiers`. Also available: `summary`
@@ -179,6 +184,12 @@ Read(file, offset: startLine, limit: endLine - startLine + 1)
 That pair — `get_symbol` to locate, `Read` of that range to fetch — is the whole reading path. It
 costs less than a whole-file `Read` on anything but a tiny file, misses no part of a partial, and the
 ranged read draws no hook note. Do not `Read` a whole file to find a symbol you could have named.
+**Read `startLine..endLine` once — it already includes the `///` block.** Reading from
+`signatureLine` and then a second time from `startLine` "to get the doc comment" is two reads for one
+span; both MCP routes on PandaAI (2026-09-20) paid it. **And a range past ~100 lines is a sign to
+outline first**: `get_symbol(include: "bodyOutline")` maps a long member's landmarks so the read is
+the one region, not three 150-line slices of it — the MCP ceiling on PandaAI lost ~5k tokens to
+exactly that, on a question the outline would have settled in one slice.
 
 **Report a location from `signatureLine`, not `startLine`.** `signatureLine` comes first in the row
 and is where the declaration begins, matching what `search_index` reports; `startLine` is the read
@@ -235,7 +246,13 @@ invoked by its own framework's reflection scan or routing table, which leaves no
 this or any static reference search to find. Two separate blind benchmarks of this tool caught this
 exact shape producing a confidently wrong "safe to delete" verdict — first on a `[Fact]` method, later
 on an `[McpServerTool]` one on an unrelated repo — before the hint generalized past tests; don't
-re-derive that caveat from memory when the field already states it.
+re-derive that caveat from memory when the field already states it. **For a routed action the hint
+also says where the callers are — outside the compilation** — and that is a `Grep` of the route
+template over the client code (`ClientApp/`, a TypeScript tree, `HttpClient` callers) before any
+"safe to delete" verdict. On PandaAI (2026-09-20) the MCP route stopped at the hint with a correct
+"no" and no caller; the raw route's whole-tree grep found the React consumer. The compiler's view
+ends at the process boundary, and this is the one delete-safety question where that boundary is
+crossed.
 
 **Do not read a large `dispatchKind: virtual` count as a large real fan-in, and do not report an
 `indirect` row as a caller of this member.** Roslyn cascades: a call written against a base or
@@ -426,7 +443,7 @@ committed before the note that prevents it was ever read.
 | `search_index` (at any `limit`) to enumerate the files a partial type is declared in, reading the returned hits as the list | `get_symbol` — its `declarationSites` returns every fragment, and is the only call that does. A partial type is **one** hit; `parts: N` on it says how many files, never which. Measured on a 13-file partial: two ranked searches reported 5 files and rated themselves "fairly sure", while one `get_symbol` had all 13 |
 | Hand-tallying `sites` rows across `get_references` items to answer "how many call sites" | `totalSites` — the tool's own count over the whole result, present whenever it differs from `totalItems`. The hand tally lost one site of 19 on a response that carried all 19 |
 | `get_symbol(include: "members")` on a very large or many-fragment partial type | Check the hit's `shape` first: `members` is **capped at 40** — a `M245` type reports the first 40 plus `totalMembers: 245, truncated: true`, not all 245 (measured 11,367 tokens for the old uncapped response on a 13-file partial). Past the cap, reach for `search_index(pathPrefix: "<the one fragment file>", kinds: "method property field")` |
-| `search_index(implements: "IFoo")` returns zero when you expected hits | Cheap and correct once `IFoo` resolves — direct implementers only, same edges `search_index`'s `I` column counts. Check `implementsHint` first: **present** means the name never resolved to an indexed interface (a spelling problem, not a filter problem); **absent** means a real zero — cross-check with `get_type_hierarchy` or `get_references(direction:"implementations")`, which count transitively and so can still show something further down the chain |
+| `search_index(query: "ISolver", implements: "ISolver")` treated as broken because it once returned nothing, then `get_symbol`, `get_references`, `get_symbol` … | It is the one-call listing of direct implementers (since 2026-09-20 — before that the interface's own name ranked only the interface, and a full probe on FluidScript spent five calls where one answers). An empty page always carries `implementsHint` saying *which* zero it is: the name resolved to no interface (spelling), or it resolved and a different `query` excluded every implementer. **Direct only**: an implementer that inherits the interface through a base class is invisible here and to any `grep ": ISolver"` — `get_references(direction: "implementations")` or `get_type_hierarchy` walk the chain, and on PandaAI (2026-09-20) that was the one implementer the raw route missed |
 | Reading a whole long member to see one region | `get_symbol(include: "bodyOutline")` to map it, then `Read` over the one landmark's `startLine`–`endLine` |
 | Opening every `.csproj` to trace references | `get_project_graph` |
 | Reading `git diff` and inferring what changed | `get_semantic_diff` |

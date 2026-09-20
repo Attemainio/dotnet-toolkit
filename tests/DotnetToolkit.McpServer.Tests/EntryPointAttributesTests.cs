@@ -63,6 +63,21 @@ public class EntryPointAttributesTests
         Assert.Contains($"[{expectedAttributeName}]", reason);
     }
 
+    /// <summary>
+    /// A routed action's callers are HTTP clients outside the compilation, and the reason says so; a
+    /// reflection-discovered handler that is not routed carries no such direction.
+    /// </summary>
+    [Theory]
+    [InlineData("GetWidget", true)]
+    [InlineData("SearchEnergyCertificates", false)]
+    [InlineData("ReadJson", false)]
+    public void RoutedActions_PointAtTheClientCode(string member, bool routed)
+    {
+        var reason = EntryPointAttributes.MatchedReason(Member(member))!;
+
+        Assert.Equal(routed, reason.Contains("HTTP clients outside this compilation", StringComparison.Ordinal));
+    }
+
     /// <summary>Delegates to TestAttributes rather than duplicating its list — one recognised set.</summary>
     [Fact]
     public void RecognisesTestAttributes_ViaTestAttributes() =>

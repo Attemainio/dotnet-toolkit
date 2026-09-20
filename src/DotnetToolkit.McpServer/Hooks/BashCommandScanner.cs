@@ -215,7 +215,10 @@ internal static partial class BashCommandScanner
         }
     }
 
-    [GeneratedRegex(@"^\d+(,\d+)?p$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
+    // One numeric address (12p, 12,40p) or several joined by ';' (85,97p;150,167p) -- a multi-range read
+    // is still bounded by its addresses, and the advisory once fired on that form while the meter, which
+    // shares nothing with this regex, correctly did not count it (FluidScript, 2026-09-20).
+    [GeneratedRegex(@"^\d+(,\d+)?p(;\d+(,\d+)?p)*$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]
     private static partial Regex SedRange();
 
     [GeneratedRegex(@"^\+?\d+$", RegexOptions.None, matchTimeoutMilliseconds: 1000)]

@@ -60,7 +60,16 @@ public static class EntryPointAttributes
             var display = matchedName.EndsWith("Attribute", StringComparison.Ordinal)
                 ? matchedName[..^"Attribute".Length]
                 : matchedName;
-            return $"a [{display}] attribute discovered by its framework's own reflection scan or routing convention";
+            // A routed action's real callers are HTTP clients -- a TypeScript front end, another service, a
+            // test fixture -- none of which is in this compilation. Saying so is what turns "no C# caller"
+            // into the right next step: on PandaAI (2026-09-20) the raw route found the React consumer of an
+            // endpoint the MCP route had already, correctly but incompletely, called reflection-invoked.
+            var routed = display.StartsWith("Http", StringComparison.Ordinal) || display == "Route";
+            return $"a [{display}] attribute discovered by its framework's own reflection scan or routing convention"
+                + (routed
+                    ? "; its callers are HTTP clients outside this compilation, so before treating it as unused "
+                      + "Grep its route template over the client code and any HttpClient callers in the tree"
+                    : "");
         }
 
         if (symbol is IMethodSymbol { IsStatic: true, Name: "Main" })

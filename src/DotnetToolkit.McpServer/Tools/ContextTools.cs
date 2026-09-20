@@ -698,9 +698,10 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             + "indexer, initonly, disposable, asyncdisposable. UNLIKE kinds, bare tokens are AND-ed and '-' "
             + "combines with them: \"public -sealed\". Narrows the ranked hits, so query still needs a real "
             + "term. modifiersHint names an unrecognized token on zero hits.")] string? modifiers = null,
-        [Description("Interface name; filters to its DIRECT implementers only. Narrows the ranked hits, so "
-            + "query still needs a real term. An unresolvable name yields an empty result, not an "
-            + "error.")] string? implements = null,
+        [Description("Interface name; filters to its DIRECT implementers only. With query set to that same "
+            + "name it LISTS them (the call for 'who implements IFoo'); any other query narrows the ranked "
+            + "hits to implementers. Transitive implementers: get_references direction:implementations. "
+            + "implementsHint explains an empty result.")] string? implements = null,
         [Description("Filter on which XML doc sections a hit carries: summary, returns, remarks, value, "
             + "inheritdoc, params, typeparams, exceptions. Same AND/exclude grammar as modifiers. This only "
             + "FILTERS -- include:\"summary:full\" is how you get the text.")] string? xmlDoc = null,
@@ -768,11 +769,12 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
 
         HashSet<string>? implementorIds = null;
         string? implementsHint = null;
+        SymbolStore.SearchHit? resolvedInterface = null;
         if (!string.IsNullOrWhiteSpace(implements))
         {
             var interfaceHits = symbolStore.Search(implements, ["Interface"], null, 1, origin: "all");
-            var interfaceHit = interfaceHits.Count > 0 ? interfaceHits[0] : null;
-            if (interfaceHit is null)
+            resolvedInterface = interfaceHits.Count > 0 ? interfaceHits[0] : null;
+            if (resolvedInterface is null)
             {
                 implementorIds = new HashSet<string>(StringComparer.Ordinal);
                 implementsHint = $"implements:'{implements}' did not resolve to any indexed interface, so nothing "
@@ -781,9 +783,17 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
             }
             else
             {
-                implementorIds = new HashSet<string>(symbolStore.ImplementorsOf(interfaceHit.SymbolId), StringComparer.Ordinal);
+                implementorIds = new HashSet<string>(symbolStore.ImplementorsOf(resolvedInterface.SymbolId), StringComparer.Ordinal);
             }
         }
+        // query:"IFoo" implements:"IFoo" is the obvious way to ask "who implements IFoo", and ranking that
+        // query answers it with the interface and its members -- never a type that implements it, whose name
+        // shares no token with the interface. Two probes on FluidScript (2026-09-20) issued exactly that call,
+        // got nothing twice, and spent three more calls arriving at get_type_hierarchy. When every term of
+        // the query names the interface, the implementers ARE the result set; the query has nothing to rank.
+        var queryNamesTheInterface = resolvedInterface is not null
+            && query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) is { Length: > 0 } interfaceTerms
+            && interfaceTerms.All(t => NamesSymbol(resolvedInterface, t));
 
         var scope = string.IsNullOrWhiteSpace(pathPrefix) ? null : NormalizePathPrefix(pathPrefix);
         var fetchLimit = scope is null ? limit : ScopedOverfetchCap;
@@ -817,7 +827,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                     + (VocabularyHint.NearestToken(groupBy, ["namespace", "file", "none"]) is { } nearestGroupBy
                         ? $" Did you mean '{nearestGroupBy}'?" : "");
 
-        var hits = symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter);
+        var hits = queryNamesTheInterface
+            ? symbolStore.ImplementorHits(resolvedInterface!.SymbolId, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter)
+            : symbolStore.Search(query, includeKinds, excludeKinds, fetchLimit, includeMods, excludeMods, originFilter);
         var searchLimitedBy = workspace.IsDegraded ? "degraded"
             : symbolStore.SymbolCount() > 0 ? null
             : "index_only";
@@ -833,6 +845,15 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
         if (includeDocs is not null || excludeDocs is not null)
             resolved = resolved.Where(r => MatchesXmlDocFilter(r.Site?.DocSections, includeDocs, excludeDocs));
         var limited = resolved.Take(limit).ToList();
+        // A resolved interface whose implementers were all removed by the query is the other silent empty
+        // result: the caller reads "nothing implements it" when the filter did exactly its job.
+        if (limited.Count == 0 && resolvedInterface is not null && !queryNamesTheInterface && implementorIds!.Count > 0)
+        {
+            implementsHint = $"implements:'{implements}' resolved to {resolvedInterface.DisplayString} with "
+                + $"{implementorIds.Count} direct implementer(s), but none of them matched query '{query}'. To list "
+                + "them, set query to the interface name itself; for types that implement it through a base "
+                + "class, get_references(direction:\"implementations\") or get_type_hierarchy.";
+        }
 
         // Every hit is looked up, types included. Call edges bind to MEMBERS, so a type has no caller count to
         // report -- but it does have implementations, and RefCode picks the letter set from the kind. Filtering
@@ -923,7 +944,9 @@ private static async Task<SymbolFetchResult> GetSymbolOne(
                   + "string literals, comments, or local variables. For text inside a body use Grep; for a "
                   + "name you are unsure of, try a shorter or camel-case-interior fragment."
                 : null;
-        var termsWithNoHits = terms.Count > 1
+        // When the query is the interface's own name, its terms were never searched for -- the implementers
+        // are the page -- so none of them can be "uncovered".
+        var termsWithNoHits = terms.Count > 1 && !queryNamesTheInterface
             ? terms.Where(t => !limited.Any(r => r.Hit.FqName.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList()
             : [];
 
@@ -1909,6 +1932,21 @@ private static RefItem ToItem(ISymbol s, SolutionLocator locator, string? dispat
     // Segment-boundary match, not a raw StartsWith: a prefix of "Tools" must not match a sibling
     // folder named "ToolsFoo". A null file (an overload site.Locate could not disambiguate) is out
     // of scope rather than guessed into it.
+    /// <summary>
+    /// Whether one query term is this hit's own name: its simple name, its fully-qualified name, or a
+    /// trailing dotted suffix of it (<c>Solvers.ISolver</c>), compared case-insensitively. A generic
+    /// interface's arity suffix (<c>IFoo`1</c>) is stripped so <c>IFoo</c> names it too.
+    /// </summary>
+    private static bool NamesSymbol(SymbolStore.SearchHit hit, string term)
+    {
+        var fq = hit.FqName;
+        var tick = fq.IndexOf('`', StringComparison.Ordinal);
+        if (tick >= 0)
+            fq = fq[..tick];
+        return string.Equals(fq, term, StringComparison.OrdinalIgnoreCase)
+            || fq.EndsWith("." + term, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool WithinPathScope(string? file, string normalizedPrefix)
     {
         if (file is null)

@@ -6,7 +6,7 @@ namespace DotnetToolkit.McpServer.Contracts;
 /// </summary>
 public static class Contract
 {
-    /// <summary>The response contract version — current: 4.0.</summary>
+    /// <summary>The response contract version — current: 4.2.</summary>
 
     /// <remarks>
     /// Bump this whenever a tool's request/response shape changes, so a caller can react to a
@@ -21,8 +21,12 @@ public static class Contract
     /// rows marked indirect name the member they bind to in via, and the envelope carries dispatchNote
     /// whenever any row is indirect; a single-symbol get_symbol always carries xmlDoc;
     /// get_project_graph lists SDK-inherited edges under transitiveReferences/transitivelyReferencedBy
-    /// and keeps only declared ones in references/referencedBy.
+    /// and keeps only declared ones in references/referencedBy. 4.2 (2026-09-20): search_index with a
+    /// query naming the implements: interface returns its direct implementers as the page, and
+    /// implementsHint also appears when a resolved interface's implementers were all excluded by the
+    /// query (it was "unresolved name" only); get_retrieval_metrics byAgentTool rows carry
+    /// wholeFileCsReads when nonzero.
     /// </remarks>
-    public const string Id = "ctx-contract/4.1";
+    public const string Id = "ctx-contract/4.2";
 
 }

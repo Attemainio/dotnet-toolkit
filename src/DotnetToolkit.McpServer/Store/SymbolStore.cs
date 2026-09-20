@@ -675,6 +675,39 @@ public sealed partial class SymbolStore
     }
 
     /// <summary>
+    /// The direct implementers of <paramref name="interfaceSymbolId"/> as search hits, under the same
+    /// kind/modifier/origin filters <see cref="Search"/> applies, ordered by name. This is what
+    /// search_index answers with when the query IS the interface name: ranking that query would score
+    /// the interface itself and its members, never the types that implement it, so the obvious call
+    /// shape for "who implements IFoo" returned nothing (FluidScript, 2026-09-20).
+    /// </summary>
+    public IReadOnlyList<SearchHit> ImplementorHits(
+        string interfaceSymbolId, IReadOnlyCollection<string>? includeKinds, IReadOnlyCollection<string>? excludeKinds,
+        int limit, IReadOnlyCollection<string>? includeModifiers = null, IReadOnlyCollection<string>? excludeModifiers = null,
+        string origin = "source")
+    {
+        if (!_store.Available)
+            return [];
+        using var connection = _store.Connect();
+        using var cmd = connection.CreateCommand();
+        var kindFilter = AppendKindFilter(cmd, "s.kind", includeKinds, excludeKinds);
+        var modifierFilter = AppendModifierFilter(cmd, "s.modifiers", includeModifiers, excludeModifiers);
+        var originFilter = AppendOriginFilter(cmd, "s.origin", origin);
+        cmd.CommandText = $"""
+            SELECT s.symbol_id, s.display_string, s.kind, s.fq_name, s.decl_hash, 0 AS rank,
+                   s.namespace, s.generated, s.modifiers
+            FROM reference_edges e
+            JOIN symbols s ON s.symbol_id = e.from_symbol
+            WHERE e.to_symbol = $id AND e.edge_kind = 'implements'{kindFilter}{modifierFilter}{originFilter}
+            ORDER BY s.fq_name
+            LIMIT $limit;
+            """;
+        cmd.Parameters.AddWithValue("$id", interfaceSymbolId);
+        cmd.Parameters.AddWithValue("$limit", limit);
+        return ReadHits(cmd);
+    }
+
+    /// <summary>
     /// Reads hits in rank order, keeping the first row per symbol. The dedupe lives here rather than as
     /// a GROUP BY because FTS5 refuses bm25() in an aggregate context ("unable to use function bm25 in
     /// the requested context") — and that error is swallowed by the degradation catch below, so the

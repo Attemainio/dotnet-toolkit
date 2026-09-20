@@ -83,6 +83,14 @@ Absent on every other call shape: a non-`callers` direction, a target with any r
 target that carries none of the recognized attributes and is not `Main` — an ordinary 0-caller method
 still reads as ordinary dead code, uncaveated.
 
+**A routed action's hint goes one step further** — for `[HttpGet]`/`[HttpPost]`/…/`[Route]` it adds
+that the callers are HTTP clients outside this compilation, and that the next step before treating it
+as unused is a `Grep` of its route template over the client code and any `HttpClient` callers in the
+tree. Added after PandaAI (2026-09-20): asked whether a `[HttpPost]` action was safe to delete, the
+MCP route stopped at the hint — a correct "no" with no evidence of who calls it — while a whole-tree
+grep found the React consumer. For a delete-safety question on an endpoint, "is there a caller" lives
+outside the C# compilation, and this tool can only point there.
+
 **A call made from inside a local function or a lambda is attributed to the member that encloses it.**
 Roslyn names the local function as the caller, but a local function is not a fetch target: it is not in
 the symbol index, so `get_symbol` answers `symbol_not_found` for the very handle this tool just handed

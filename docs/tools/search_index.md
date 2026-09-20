@@ -191,7 +191,7 @@ looking at the argument. A failure inside the tool now comes back as `search_ind
 |---|---|---|
 | `kinds` | bare tokens **OR** (a symbol has one kind); `-token` excludes; mixing forms, bare wins | `class`/`type`, `interface`, `struct`, `record`, `enum`, `delegate`, `method`, `property`, `field`, `event`. An unrecognized token matches no symbol; when that leaves zero hits the response carries `kindsHint`. Space- or comma-separated; a JSON array serialised into the string (`["method","property"]`) parses the same way, as it does for `modifiers` and `xmlDoc` |
 | `modifiers` | bare tokens **AND** (a symbol carries several at once) — opposite of `kinds`; `-token` excludes and combines | literal C# keywords (`public`, `static`, `readonly`, `sealed`, `override`, `async`, `partial`, …) + derived tags `extension`, `indexer`, `initonly`, `disposable`, `asyncdisposable`. Same zero-hit `modifiersHint` as `kinds` |
-| `implements` | narrows ranked hits like `pathPrefix` — `query` still needs a real term | direct implementers only (not transitive); a name that resolves to no interface returns an empty result **plus `implementsHint`**, so that zero is never confused with "resolved, but nothing implements it" |
+| `implements` | with `query` set to the interface's own name (simple, qualified, or a dotted suffix; case-insensitive), the page **is** the list of its direct implementers, ranked by name — the call for "who implements `IFoo`"; with any other `query`, narrows the ranked hits like `pathPrefix` | direct implementers only (not transitive — `get_references(direction: "implementations")` or `get_type_hierarchy` walk base chains); an empty page always carries **`implementsHint`** saying which of two things happened: the name resolved to no interface, or it resolved and the `query` excluded every implementer |
 | `pathPrefix` | folder/file, repo-root-relative, forward slashes, matched on a path-segment boundary | a hit whose file can't resolve (ambiguous overload) is dropped, not guessed, so an overload-heavy query can undercount. Ranking runs over the whole index before scoping — narrow the query text if a far-more-hits-outside case returns fewer than `limit` |
 | `xmlDoc` | same AND/exclude grammar as `modifiers` | tokens: `summary`, `returns`, `remarks`, `value`, `inheritdoc`, `params`, `typeparams`, `exceptions` — which sections a doc comment carries beyond plain `<summary>` presence |
 | `origin` | — | `"source"` (default, this repo's own declarations) \| `"external"` (BCL/NuGet already referenced from this repo's source — not a general library browser) \| `"all"`. An external hit has no `file`/`lines`; follow with `get_symbol` on its `symbolId`. An unrecognized value falls back to `"source"` and the response carries `originHint` |
@@ -268,10 +268,13 @@ variable name returns nothing here by design; that is a `Grep`, and the one plac
 tool on C#.
 
 `implementsHint` and `refsHint` are neither of the above — both report a state the *index* is in, not
-a typo in an argument. `implementsHint` is present whenever `implements` was supplied and did not
-resolve to any indexed interface: unlike a vocabulary miss there is no fallback value to report, since
-an unresolvable name always yields zero implementers, so the hint exists purely to say *that* is why —
-a caller who sees it should suspect the spelling, not the filter. `refsHint` is gated on `items` being
+a typo in an argument. `implementsHint` is present on an empty page whenever `implements` was
+supplied, and its text says which of two things happened. Either the name resolved to no indexed
+interface — there is no fallback value to report, since an unresolvable name always yields zero
+implementers, so a caller who sees it should suspect the spelling, not the filter — or it resolved,
+has N direct implementers, and `query` matched none of them: the filter did its job, and the hint
+names the listing call (`query` set to the interface name itself). Before 2026-09-20 only the first
+case carried a hint, and the second read as "nothing implements it". `refsHint` is gated on `items` being
 non-empty (a zero-hit page has no rows for a refs caveat to attach to) and fires when refs were wanted
 — by default, or via explicit `include:"refs"` — but the reference index had nothing to report for some
 or all hits; see "Reading `refs`, and its three silences" above for which of the two absences it names.

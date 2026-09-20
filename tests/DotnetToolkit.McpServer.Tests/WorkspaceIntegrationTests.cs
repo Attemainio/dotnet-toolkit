@@ -1635,14 +1635,41 @@ public sealed class WorkspaceIntegrationTests
         Assert.Contains("NotARealInterfaceZzz", root.GetProperty("implementsHint").GetString());
     }
 
-    /// <summary>A resolved implements: name never carries implementsHint, even when nothing matches the accompanying query.</summary>
+    /// <summary>
+    /// A resolved interface whose implementers the query excluded says so in implementsHint — the
+    /// empty page is the filter working, not "nothing implements it" — and names the listing call.
+    /// </summary>
     [Fact]
-    public async Task SearchIndex_ImplementsFilter_ResolvedName_CarriesNoHint()
+    public async Task SearchIndex_ImplementsFilter_QueryExcludingEveryImplementer_SaysSo()
     {
         var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
             "Gear", kinds: "class", implements: "IWidget", limit: 10, groupBy: "none"));
 
+        var hint = root.GetProperty("implementsHint").GetString()!;
+        Assert.Contains("direct implementer", hint);
+        Assert.DoesNotContain("did not resolve", hint, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// query:"IWidget" implements:"IWidget" lists the implementers — the obvious call shape for "who
+    /// implements IWidget", which ranking the query could never answer (the interface's own name shares
+    /// no token with its implementers' names).
+    /// </summary>
+    [Theory]
+    [InlineData("IWidget")]
+    [InlineData("Sample.Lib.IWidget")]
+    [InlineData("iwidget")]
+    public async Task SearchIndex_ImplementsFilter_QueryNamingTheInterface_ListsItsImplementers(string query)
+    {
+        var root = Root(await ContextTools.SearchIndex(_f.Symbols, _f.Index, _f.Workspace, _f.Telemetry,
+            query, implements: "IWidget", limit: 10, groupBy: "none"));
+
+        var names = TableRows(root.GetProperty("items")).Select(i => i["name"].GetString()).ToList();
+        Assert.Contains("Sample.Lib.Widget", names);
+        Assert.Contains("Sample.Lib.TurboWidget", names);
+        Assert.DoesNotContain("Sample.Lib.IWidget", names);
         Assert.False(root.TryGetProperty("implementsHint", out _));
+        Assert.False(root.TryGetProperty("termsWithNoHits", out _));
     }
 
     /// <summary>

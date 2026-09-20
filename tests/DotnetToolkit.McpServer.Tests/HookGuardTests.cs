@@ -263,6 +263,7 @@ public sealed class GuardCsBashReadTests : IClassFixture<HookRepoFixture>
 
     [Theory]
     [InlineData("sed -n '12,40p' {0}")]
+    [InlineData("sed -n '12,40p;85,97p' {0}")]
     [InlineData("sed -n 12p {0}")]
     [InlineData("head -n 40 {0}")]
     [InlineData("head -40 {0}")]
