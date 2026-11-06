@@ -64,7 +64,7 @@ stderr at startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install.
 | `src/DotnetToolkit.McpServer/` | The server. `Tools/` is the MCP surface and the ground truth for names, signatures and return shapes |
 | `tests/` | Unit tests plus `WorkspaceIntegrationTests`, which loads a fixture solution via `MSBuildWorkspace` |
 | `skills/` | The skills Claude invokes — see below |
-| `agents/` | Agent definitions: `dotnet-explore`, `dotnet-code-review`, the three `dotnet-perf-*-probe` instruments |
+| `agents/` | Agent definitions: `dotnet-explore`, `dotnet-code-review`, `dotnet-architecture-review`, the three `dotnet-perf-*-probe` instruments |
 | `standards/` | The 13 coding standards, plus `index.md` saying which apply when. Read by explicit path, never auto-loaded |
 | `.claude/rules/` | Exactly one file: the always-loaded router `dotnet-init` copies into consuming repos |
 | `hooks/` | `hooks.json`; every hook is a subcommand of the published server binary |
@@ -81,6 +81,7 @@ stderr at startup, and `DOTNET_TOOLKIT_DOTNET_ROOT` pins a different install.
 | `dotnet-write` | Editing C# — `Edit`/`Write` on located text, `rename_symbol`, the pre-edit standards step, and how the index follows edits |
 | `dotnet-explore` | Surveying an unfamiliar area — briefs and launches the `dotnet-explore` agent |
 | `dotnet-review` | Review requests — partitions scope across parallel `dotnet-code-review` instances |
+| `dotnet-architecture` | System-level review — stale code, compatibility layers, scattering and abstraction fit, stale tests — across parallel `dotnet-architecture-review` instances |
 | `dotnet-init` | Install / verify / uninstall in a consuming repo |
 | `dotnet-consistency` | Audits whether the docs, skills, rules and hooks still match `Tools/*.cs` |
 | `dotnet-performance` | Benchmarks the MCP tools against raw `Read`/`Grep` on a target repo |

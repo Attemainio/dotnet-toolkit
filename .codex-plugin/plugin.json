@@ -1,6 +1,6 @@
 {
   "name": "dotnet-toolkit",
-  "version": "2.0.0+codex.20260919000000",
+  "version": "2.1.0+codex.20261018000000",
   "description": "Compiler-aware C# navigation and retrieval metrics for Claude Code and Codex.",
   "author": {
     "name": "Attemainio"

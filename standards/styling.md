@@ -110,17 +110,37 @@ public bool TryFind(OrderId id, [NotNullWhen(true)] out Order? order)
 - Allman brace style (opening brace on its own line) — consistency within one file matters more than
   which style a repo picked.
 - 4-space indentation, no tabs.
-- One statement per line, and **always brace** an `if`/`for`/`while` body, even a one-liner — the
-  unbraced form is the classic next-line-added-without-braces bug.
+- One statement per line.
+- **No braces around a one-line `if` or `else` body.** When a branch is a single statement that fits on
+  one line, write it unbraced on its own indented line; brace a branch only when it holds more than one
+  statement or the statement spans several lines. Each branch of an `if`/`else` is judged on its own.
+  A nested `if` is not a one-liner — brace the outer body, so an `else` can never bind to the wrong `if`.
 
 ```csharp
 // DON'T
-if (x) DoThing();
-
-// DO
 if (x)
 {
     DoThing();
+}
+else
+{
+    DoOther();
+}
+
+if (x) DoThing();          // the statement goes on its own line
+
+// DO
+if (x)
+    DoThing();
+else
+    DoOther();
+
+if (frame.HasNaN())
+    throw new InvalidDataException("NaN in frame.");
+else
+{
+    frames.Add(frame);
+    count++;
 }
 ```
 

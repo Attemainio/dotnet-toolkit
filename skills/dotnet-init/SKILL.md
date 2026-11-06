@@ -70,7 +70,8 @@ standards as path-scoped rules for exactly this reason, and it was wrong both wa
 
 So: **one file is copied**, `dotnet-index.md`, carrying no `paths:` and therefore always-loaded —
 which is why it is kept short. It costs tokens in every session, and is **inherited by every
-subagent with no opt-out**, so a parallel review pays it once per instance. **The coding standards
+subagent** (an agent's `omitClaudeMd` drops the `CLAUDE.md` files; the docs do not say it drops
+rules), so a parallel review pays it once per instance. **The coding standards
 are not copied at all**: they live at `${CLAUDE_PLUGIN_ROOT}/standards/` and are read by explicit
 path, so a consuming repo is always on the current versions and has nothing to refresh. Rules load
 *alongside* CLAUDE.md at the same priority — never tell the user they "override" anything. Actual

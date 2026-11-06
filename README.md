@@ -151,8 +151,10 @@ You talk to Claude normally; the skills pick the tools.
 - **Report its own cost** — per-call token accounting, so retrieval spend is measurable rather than
   assumed.
 
-Two agents do wide work in their own context instead of yours: `dotnet-explore` for read-only
-navigation, `dotnet-code-review` for review against shared standards.
+Three agents do wide work in their own context instead of yours: `dotnet-explore` for read-only
+navigation, `dotnet-code-review` for review against shared standards, and `dotnet-architecture-review`
+for what the system no longer needs — stale code, compatibility layers, scattered implementations and
+stale tests.
 
 [Full tool reference](docs/tools/) · [Worked example with real responses](docs/examples/compiler-aware-navigation.md)
 

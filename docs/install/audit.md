@@ -100,6 +100,7 @@ Walk the scenarios and name, for each, the file the consumer would actually reac
 | Change a method | `dotnet-index.md` routes to the `dotnet-write` skill → locate (`dotnet-read`), ranged `Read`, `Edit`, `dotnet build`; the `refresh-cs-files` hook re-indexes what was written |
 | Rename a symbol | `dotnet-index.md` routes to the `dotnet-write` skill → `docs/tools/rename_symbol.md` |
 | Review a change | `dotnet-review` skill (resolves and injects `Standards root:`) → `dotnet-code-review` agent → `${CLAUDE_PLUGIN_ROOT}/standards/*.md` |
+| Find what is stale, scattered or kept only for compatibility | `dotnet-architecture` skill → `dotnet-architecture-review` agent → `<pluginRoot>/standards/index.md` and the files its table names |
 | Map an unfamiliar change onto the code before editing | `dotnet-index.md` routes to the `dotnet-explore` **skill**, which briefs and launches the `dotnet-explore` agent |
 | Know which standards to read before editing | `dotnet-write` step 2 → `<pluginRoot>/standards/index.md` — served by the plugin, never copied, so it is the same table the plugin itself uses and cannot go stale in a consumer |
 | Call a tool without a permission prompt on every use | the allowlist init merges into `.claude/settings.json` |

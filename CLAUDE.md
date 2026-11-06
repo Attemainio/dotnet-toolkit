@@ -71,7 +71,7 @@ rows are the maintainer's routes — files a consuming repo does not have.
 | Changing the always-loaded rule, or what init ships | `.claude/rules/dotnet-index.md`; `skills/dotnet-init/SKILL.md` copies it |
 | Changing which tool answers what, or a route finding | `skills/dotnet-read/SKILL.md` (reads) or `skills/dotnet-write/SKILL.md` (writes) — **not** the always-loaded rule |
 | Changing a coding standard | `standards/<name>.md`, plus its row in `standards/index.md` |
-| Reviewing code, or changing the review agent | `agents/dotnet-code-review.md`; design rationale in `docs/design/agents.md` |
+| Reviewing code, or changing a review agent | `agents/dotnet-code-review.md` (correctness, conventions) or `agents/dotnet-architecture-review.md` (stale code, compatibility, structure); design rationale in `docs/design/agents.md` |
 | Why a hook is built the way it is, or why its off-switch expires | `docs/design/hooks.md` (design notes — hooks fire from `hooks/hooks.json`) |
 | Measuring the plugin against not having it | `skills/dotnet-performance/SKILL.md` — runs at the default guard state; the only sanctioned caller of `set_hook_guards` (strict variant only) |
 | Auditing the install procedure, or what a consumer ends up with | `docs/install/audit.md` (maintainer side, run by `dotnet-consistency`) and `docs/install/verify.md` (consumer side, run by `dotnet-init`) |

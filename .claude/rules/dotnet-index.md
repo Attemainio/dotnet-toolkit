@@ -21,6 +21,7 @@ failure modes — loaded when you need it and not before.
 | **Write, add, edit, modify, rename, or delete** `.cs` files | `dotnet-write` |
 | **Survey an unfamiliar area** before deciding what to change, when the set of symbols the task touches is not already known | `dotnet-explore` |
 | **Review** C#/.NET code, a PR, a diff, or a subsystem — or **audit whether a convention holds** across existing code ("are all DTOs records", "does everything public have XML docs") | `dotnet-review` |
+| **Find what the system no longer needs** — stale or superseded code, backwards-compatibility layers, scattered implementations that want one abstraction, stale tests; or clean up after a substantial refactor | `dotnet-architecture` |
 
 Rules for the table:
 
@@ -30,8 +31,9 @@ Rules for the table:
 - **`dotnet-read` before the first `.cs` read of a session.** It is also what turns a vague question
   ("who calls this", "what changed", "what's in scope here") into the one right tool and the one
   right call shape.
-- **Agents are launched by skills, never directly.** `dotnet-explore` and `dotnet-review` own the
-  briefing, the scoping, and the workspace-readiness check their agents depend on.
+- **Agents are launched by skills, never directly.** `dotnet-explore`, `dotnet-review` and
+  `dotnet-architecture` own the briefing, the scoping, and the workspace-readiness check their agents
+  depend on.
 - **Reading is a prerequisite for writing, not a substitute.** A task that edits C# invokes
   `dotnet-write`; that skill routes back to `dotnet-read` for the fetches it needs.
 

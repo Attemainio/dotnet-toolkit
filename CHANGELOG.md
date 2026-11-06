@@ -3,6 +3,25 @@
 Each entry is what a consumer sees change: tools, response contract, hooks, skills, install. The
 response contract version (`ctx-contract/<n>`, reported by `ping`) is listed where it moved.
 
+## 2.1.0 — 2026-10-18
+
+### Added
+
+- **`dotnet-architecture` skill and `dotnet-architecture-review` agent** — a system-level review beside
+  `dotnet-review`: stale and superseded code, backwards-compatibility layers (asked about, never
+  assumed removable), scattered implementations that want one interface or base class and abstractions
+  that earn nothing, and stale or invalid tests. Unreferenced public members are classified as
+  capability (kept, reported per family) or stale, never condemned by a zero reference count alone.
+  Half-finished migrations are reported under structure, and recurring finding classes come back as
+  `[gate]` proposals (analyzer rules such as `IDE0051`/`IDE0052`/`IDE0060`, or ratchet tests). Read-only;
+  every finding carries an action class (`auto` / `approve` / `ask`) and a risk.
+
+### Changed
+
+- **`.claude/rules/dotnet-index.md`** routes "find what the system no longer needs" to
+  `dotnet-architecture` (a fifth row) and names it among the skills that launch agents. Consuming repos
+  hold a verbatim copy: re-run `dotnet-init` to refresh it.
+
 ## 2.0.0 — 2026-09-20
 
 **dotnet-toolkit is now navigation-only.** It locates symbols, references, implementations and call

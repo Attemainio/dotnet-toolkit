@@ -4,11 +4,14 @@
 > and authoritative; if this page disagrees with `agents/<name>.md`, the agent file is right and this
 > one is stale. Kept for the rationale that is derivable nowhere else.
 
-This plugin ships five subagents, all read-only in intent:
+This plugin ships six subagents, all read-only in intent:
 
 - **`dotnet-code-review`** (`agents/dotnet-code-review.md`) — a **validation layer** that checks code
   against the standards in `standards/`, not a source of standards itself. Runs *after* code exists.
   Self-contained.
+- **`dotnet-architecture-review`** (`agents/dotnet-architecture-review.md`) — a **system-level
+  reviewer**: stale and superseded code, backwards-compatibility layers, scattering and abstraction fit,
+  stale tests. Self-contained. See the section at the end.
 - **`dotnet-explore`** (`agents/dotnet-explore.md`) — a **navigator** that maps a task onto the
   codebase's symbols and reference graph. Runs *before* code is written. Self-contained. See the
   section at the end.
@@ -103,9 +106,12 @@ code, because every instance re-pays an identical fixed cost. Three properties o
 to hold that down, and changing them without understanding the trade re-inflates it:
 
 - **The inherited floor.** `CLAUDE.md` and `.claude/rules/dotnet-index.md` are injected into every
-  subagent with no opt-out, so ~13 KB of Tier-0 text is part of each instance's fixed cost before it
-  reads anything. Trimming those two files is the only lever on it; the agent file cannot decline
-  them, and an instruction telling an agent not to read them saves a round trip, not a byte.
+  subagent, so ~13 KB of Tier-0 text is part of each instance's fixed cost before it reads anything.
+  Since 2026-10 an agent can set `omitClaudeMd: true` to drop the user, project and local `CLAUDE.md`
+  files (the official page does not say whether `.claude/rules/` files go with them). None of ours
+  sets it yet: a consuming repo's `CLAUDE.md` often carries conventions a reviewer should know, so
+  dropping it is a per-agent decision to measure, not a default. An instruction telling an agent not
+  to read them saves a round trip, not a byte.
 - **Tiered standards loading.** Six core files always; the other seven only when the standards
   table's "When" column (in `standards/index.md`) matches the retrieved code (~19k → ~7.8k). The
   cost is that an aspect can go unexamined, so the agent must end every report with a `Standards:`
@@ -350,3 +356,38 @@ supersedes those specific numbers, not the rationale).
 report format of its own, so it produces a worse-informed `dotnet-explore`; `dotnet-perf-raw-probe` has
 no MCP tools at all; `dotnet-perf-full-probe` has both, but no report format or question list of its
 own either — for real exploration, `dotnet-explore` is still the right agent.
+
+## dotnet-architecture-review — why a second reviewer
+
+`dotnet-code-review` checks each piece of code against `standards/`, and the writing agent reads the
+same files before it edits (`dotnet-write`'s standards step). Writer and reviewer therefore share one
+source of truth, which is the design — and also why the reviewer rarely finds anything in code the
+writer just produced: the questions it asks are the ones the writer already answered. What neither
+asks is whether the code should exist at all, or exist once instead of several times. Those answers
+live in the *relationships* between pieces (who still calls this, what replaced it, which siblings
+share a shape), so they need the reference graph over a wide scope, not a per-member pass.
+
+**The capability rule.** A naive "zero callers → dead" pass deletes the most valuable part of a
+library-like codebase: the members built ahead of use (an indicator family, a series toolkit). The
+agent classifies unreferenced *public* members as capability / stale / uncertain, reports capability
+per family in one line, and never proposes removing it. Internal and private members get no such
+benefit of the doubt.
+
+**Compatibility is asked, never assumed.** Each `[compat]` finding names what the layer protects, so
+the owner can decide in one line; the default assumption (single user, no external consumers) is
+stated in the brief and overridable by it.
+
+**Tool grant.** The read-side set `dotnet-code-review` has, **plus** `get_project_graph` and
+`detect_circular_dependencies`, which the code reviewer withholds because a scope slice cannot judge
+solution shape. Here solution shape is the subject: where a "duplicate" may legitimately live twice
+depends on which projects reference which.
+
+**Gates over repeated findings.** Unused non-public members are exactly what `IDE0051`/`IDE0052`/
+`IDE0060` report on every build, so the agent proposes enabling them (`[gate]`) rather than re-finding
+them each run; its own judgement is spent where no analyzer reaches — capability, compatibility,
+structure.
+
+**Read-only by instruction, as for the reviewer:** `memory: project` grants `Write`/`Edit` for the
+memory namespace, which is where kept-capability and kept-compatibility answers are recorded so later
+runs do not re-raise them.
+

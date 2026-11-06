@@ -22,7 +22,7 @@ For each pair below, confirm the second file **points** rather than restates:
 
 | Fact | Sole owner | Must only point |
 | --- | --- | --- |
-| Which standards apply when | `standards/index.md` | `skills/dotnet-write/SKILL.md`; `skills/dotnet-review/SKILL.md`; `agents/dotnet-code-review.md`'s load rule |
+| Which standards apply when | `standards/index.md` | `skills/dotnet-write/SKILL.md`; `skills/dotnet-review/SKILL.md`; `agents/dotnet-code-review.md`'s load rule; `agents/dotnet-architecture-review.md`'s load rule |
 | The write-time checklist | the `hint-cs-write-checklist` hook | `skills/dotnet-write/SKILL.md` |
 | `rename_symbol` arguments, response fields, errors | `docs/tools/rename_symbol.md` | `skills/dotnet-write/SKILL.md` |
 | How the index follows an edit (what `refresh-cs-files` does and says) | `docs/design/hooks.md` for the mechanism; `skills/dotnet-write/SKILL.md` for the caller-facing rule | `docs/tools/server.md` (`reload_workspace` says when it is *not* needed); `skills/dotnet-read/SKILL.md` |
@@ -45,10 +45,13 @@ is fine). Two hits outside the owner means a copy, not a coincidence.
 
 ## §B — `[Description]` attribute budget in `.cs`
 
-**Threshold — house rule, not an Anthropic cap.** The official guidance (`claude-docs.md` →
-*Defining tools*) pushes the *other* way: detailed, 3–4 sentences minimum, no stated maximum.
-Anthropic does not publish a character limit. Say so plainly wherever this is cited; a future reader
-must not be able to attribute the number to Anthropic.
+**Threshold — house rule, stricter than the official cut.** The API guidance (`claude-docs.md` →
+*Defining tools*) pushes the *other* way: detailed, 3–4 sentences minimum, no maximum. Claude Code
+does cut MCP tool descriptions — at **4,096** characters for a tool loaded upfront and **16,384** for
+one loaded through tool search, and tool search **matches only the first 4,096** (`claude-docs.md` →
+*MCP*). The 2,000 below is ours, well inside that cut; say so plainly wherever it is cited, so nobody
+attributes the number to Anthropic. The official cut adds one check: the words a caller would search
+for must sit near the start of the description.
 
 The number is ours, and the argument for it is tool-search economics: a deferred schema is re-paid in
 full every time the tool is fetched, so a `[Description]` that has grown into a manual is a per-call
@@ -103,8 +106,9 @@ search*). The model sees **names only** until it fetches. Two consequences the a
 **C1 — the searchable index is real text.** Names, descriptions, argument names, argument
 descriptions. Check each tool:
 
-- Name matches `^[a-zA-Z0-9_-]{1,64}$`, including the `mcp__plugin_dotnet-toolkit_dotnet__` prefix the
-  harness prepends — the prefix is 34 characters, so a bare tool name over 30 is a finding.
+- Name matches `^[a-zA-Z0-9_-]{1,128}$`, and the full qualified name stays within 128 characters
+  (Claude Code drops a longer one from the tool list) — the `mcp__plugin_dotnet-toolkit_dotnet__`
+  prefix the harness prepends is 34 characters, so a bare tool name over 94 is a finding.
 - The description **leads with the question the tool answers**, in the vocabulary a caller would
   actually use, before any mechanics.
 - It names its own `docs/tools/<tool>.md`, since that pointer is what a caller sees without the rule.
@@ -140,7 +144,7 @@ Exactly two files are always loaded:
 
 | File | Official | Repo target | Why it is paid more than once |
 | --- | --- | --- | --- |
-| `CLAUDE.md` | under 200 lines | ~5 KB | every session; **inherited by every subagent, no opt-out** |
+| `CLAUDE.md` | under 200 lines | ~5 KB | every session; **inherited by every subagent** unless the agent sets `omitClaudeMd` |
 | `.claude/rules/dotnet-index.md` | under 200 lines | ~6 KB | the same, **plus** every session in every consuming repo `dotnet-init` has touched |
 
 A seven-way parallel review pays both files eight times. That multiplier, not the raw size, is the
@@ -173,9 +177,13 @@ Three rules for acting on an overage:
    catalogue, a per-tool procedure, or a standards body in an always-loaded file is drift regardless
    of size.
 
-**Skills, `standards/` and `docs/` have no size budget.** They load on demand and cost nothing until
-invoked (`claude-docs.md` → *Skills authoring*). **Do not report a long skill as a finding.** A
-single-purpose skill should carry its whole procedure inline.
+**`standards/` and `docs/` have no size budget**: they load only when read. **Skills have no
+always-loaded budget, but they do have one once invoked**: a skill body stays in context on every
+later turn, the official tip is **`SKILL.md` under 500 lines**, and after compaction only its first
+5,000 tokens return (`claude-docs.md` → *Skills authoring*). So a `SKILL.md` over 500 lines **is** a
+finding — the fix is to move reference material (tables, worked examples, rarely-needed procedure)
+into supporting files beside it, read on demand, never to delete guidance — and in every skill the
+instructions that must survive compaction come first.
 
 ### Scatter — the finding to look for instead of length
 
@@ -203,13 +211,15 @@ in it is the finding, not a detail to correct.
 **Admitted** — each because nothing in context would otherwise reveal it:
 
 - **The intent→skill mandate**: read C# → `dotnet-read`; write C# → `dotnet-write`; survey an unknown
-  symbol set → `dotnet-explore`; review → `dotnet-review`. Triggers only, never a summary of what
+  symbol set → `dotnet-explore`; review → `dotnet-review`; find what the system no longer needs →
+  `dotnet-architecture`. Triggers only, never a summary of what
   each skill carries — that is in its always-loaded description already (§F).
 - **That the MCP tools, not Grep/Read/Edit, are the C# path at all**, with the one-line reason (text
   search is wrong on C#, not merely slower). Without this a caller never recognises there is a skill
   to invoke.
 - **That agents are launched by skills, never directly** — otherwise a caller spawns
-  `dotnet-explore` or `dotnet-code-review` raw and skips the readiness check and the brief.
+  `dotnet-explore`, `dotnet-code-review` or `dotnet-architecture-review` raw and skips the readiness
+  check and the brief.
 - **The non-C# escape hatch** — shell, git, and Markdown/JSON/csproj editing are unaffected — so the
   rule is not read as blocking ordinary work.
 
@@ -252,6 +262,11 @@ Two checks fall out of the table:
   should be picked — because that text is always resident and is the entire basis for selection.
 - **No agent or skill description may be a summary of its own body.** The body is fetched on
   selection; a summary is paid always and read never.
+- **A skill's `description` plus `when_to_use` stays under 1,536 characters**, the cut in the skill
+  listing; past it the tail is lost. And the listing has a budget of 1% of the context window — when
+  it overflows, the least-invoked skills lose their descriptions first, so a short trigger is also what
+  keeps a rarely used skill selectable. Combined agent descriptions over 15,000 tokens draw a startup
+  warning.
 
 ---
 
@@ -259,8 +274,15 @@ Two checks fall out of the table:
 
 Structural checks against `claude-docs.md`. Cheap, and each has a silent failure mode.
 
-- **Frontmatter completeness.** Every `SKILL.md` has `name` + `description`; every `agents/*.md` has
-  `name` + `description`. A missing `description` means the file is never selected, with no error.
+- **Frontmatter completeness.** Every `agents/*.md` has `name` + `description` (both required). Every
+  `SKILL.md` has `description` (officially recommended — without it the skill is never selected, with
+  no error) and `name` (officially optional, but a plugin skill without it is named after its cache
+  directory on a marketplace install). Unknown frontmatter fields are ignored silently, so a typo'd key
+  is a finding nobody else will report. Plugin agents ignore `permissionMode`, `hooks`, `mcpServers`
+  and `initialPrompt`; one relying on them is a finding.
+- **No `CLAUDE.md` at the plugin root.** A plugin cannot ship always-loaded context — a root
+  `CLAUDE.md` is not loaded and `claude plugin validate` warns — which is why the router reaches a
+  consumer only through `dotnet-init` copying it into the repo.
 - **`.claude/rules/` holds exactly one file with no frontmatter, and it is `dotnet-index.md`.** A
   second unfrontmattered rule is an always-loaded file nobody costed, charged to every session and
   every subagent.
